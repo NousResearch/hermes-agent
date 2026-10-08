@@ -10,8 +10,8 @@ import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from typing import Dict, List, Optional, Set, Tuple
+from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -66,21 +66,20 @@ def _connect_cooldown_active(server_name: str) -> bool:
     return deadline is not None and time.monotonic() < deadline
 
 
-def _enabled(cfg: dict) -> bool:
-    return _parse_boolish(cfg.get("enabled", True), default=True)
-
-
 def _owner_scope_home() -> Optional[Path]:
-    """The profile home whose secret scope MCP credential reads must resolve under, or None when
-    the caller is already scoped or this is a single-profile process (scope key ``None``).
+    """The profile home whose secret scope MCP credential reads must resolve under, or None for a
+    single-profile process (scope key ``None``).
 
     The owner is the profile the connection is keyed under (``_mcp_registry_scope()``), never the
-    ambient one, so a served profile is never handed another profile's token (#111151)."""
-    from agent.secret_scope import current_secret_scope
-    if current_secret_scope() is not None:
-        return None
+    ambient one, so a served profile is never handed another profile's token (#111151). A scope the
+    caller already bound is rebuilt rather than trusted: a bound mapping is a snapshot, and the
+    gateway's boot-time one is taken before the profile's external secret source may have answered
+    (#119092) — the rebuild retries that hydration (cached once it succeeds)."""
     scope_key = _core._mcp_registry_scope()
-    return None if scope_key is None else Path(scope_key)
+    if scope_key is None:
+        return None
+    from agent.secret_scope import current_secret_scope_home
+    return Path(current_secret_scope_home() or scope_key)
 
 
 async def _install_owner_secret_scope():
@@ -92,14 +91,36 @@ async def _install_owner_secret_scope():
     and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
     config load, under :func:`_owner_secret_scope`.
     """
-    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    from agent.secret_scope import set_secret_scope
     home = _owner_scope_home()
     if home is None:
         return None
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
     # Off-loop: an external source runs a helper subprocess (once per home, then cached).
-    await asyncio.to_thread(hydrate_profile_secret_sources, home)
-    return set_secret_scope(build_profile_secret_scope(home))
+    return set_secret_scope(await asyncio.to_thread(_owner_secret_mapping, home), profile_home=str(home))
+
+
+_HYDRATE_RETRY_INTERVAL_SEC = 30.0
+_hydrate_retry_after: Dict[str, float] = {}
+
+
+def _owner_secret_mapping(home: Path) -> Dict[str, str]:
+    """The owner's FRESH secret mapping. The launch profile's is ``launch_secret_scope`` (its files
+    over the frozen launch env): a credential injected only by systemd ``Environment=`` /
+    ``op run`` / Compose has no file to rebuild from, so a files-only rebuild dropped it, left the
+    header literal ``${VAR}`` and parked a server that worked. A served profile gets its own ``.env``
+    + external sources only. A source that did not fully hydrate is retried at most once per
+    interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    from hermes_cli import env_loader
+    key = str(home.resolve())
+    if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
+        env_loader.hydrate_profile_secret_sources(home)
+        if key not in env_loader._APPLIED_HOMES:
+            _hydrate_retry_after[key] = time.monotonic() + _HYDRATE_RETRY_INTERVAL_SEC
+    if _is_process_home(home):
+        from tui_gateway.launch_profile_policy import launch_secret_scope
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(home)
 
 
 @contextmanager
@@ -110,14 +131,12 @@ def _owner_secret_scope():
     the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
     probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
     binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
     home = _owner_scope_home()
     if home is None:
         yield
         return
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-    hydrate_profile_secret_sources(home)
-    token = set_secret_scope(build_profile_secret_scope(home))
+    token = set_secret_scope(_owner_secret_mapping(home), profile_home=str(home))
     try:
         yield
     finally:
@@ -136,6 +155,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     scope_token = None
     try:
         scope_token = await _install_owner_secret_scope()
+        # The config was rendered at load time (a lazy server's at boot): re-render under the
+        # owner's fresh scope so a ref left literal before its secret source answered resolves
+        # now, and refuse to send one that still does not.
+        config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -203,6 +226,20 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
     return message
 
 
+def _stderr_tail_note(name: str) -> str:
+    """Operator-facing stderr tail for a connect-failure log line (#125300).
+
+    ``Connection closed`` alone hides why the child died — the reason sits in the shared
+    mcp-stderr.log. The stored status message stays single-line; only the log line quotes
+    the child's output."""
+    from tools.mcp_tool_config import _tail_server_stderr
+    tail = _tail_server_stderr(name)
+    if not tail:
+        return ""
+    indented = "\n".join(f"    {line}" for line in tail.splitlines())
+    return f"\n  child stderr tail (full log: mcp-stderr.log):\n{indented}"
+
+
 def _note_connect_success(name: str) -> None:
     """Clear connecting/error/cooldown state after a successful connect (under ``_lock``)."""
     with _core._lock:
@@ -245,7 +282,8 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
                                timeout=float(connect_timeout) + 30.0)
     except BaseException as exc:
-        logger.warning("Lazy MCP connect failed for '%s': %s", server_name, _note_connect_failure(server_name, exc))
+        logger.warning("Lazy MCP connect failed for '%s': %s%s",
+                       server_name, _note_connect_failure(server_name, exc), _stderr_tail_note(server_name))
         return False
     _note_connect_success(server_name)
     with _core._lock:
@@ -335,9 +373,9 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             k: v for k, v in servers.items()
             if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
             and keys[k] not in _core._lazy_server_configs
-            and _enabled(v) and not _connect_cooldown_active(k)}
+            and mcp_server_enabled(v) and not _connect_cooldown_active(k)}
         stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
-                        if keys[k] in _core._servers and _enabled(v)
+                        if keys[k] in _core._servers and mcp_server_enabled(v)
                         and getattr(_core._servers[keys[k]], "session", None) is None]
         for srv_name in new_servers:
             _core._server_connecting.add(keys[srv_name])
@@ -415,8 +453,9 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
         if isinstance(result, BaseException):
             command = new_servers.get(name, {}).get("command")
             message = _note_connect_failure(name, result)
-            logger.warning("Failed to connect to MCP server '%s'%s: %s",
-                           name, f" (command={command})" if command else "", message)
+            logger.warning("Failed to connect to MCP server '%s'%s: %s%s",
+                           name, f" (command={command})" if command else "", message,
+                           _stderr_tail_note(name))
         else:
             _note_connect_success(name)
 
@@ -587,7 +626,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             keys = {name: _resolve_server_key(name) for name in servers}
             new_server_names = [name for name, cfg in servers.items()
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
-                                and _enabled(cfg)]
+                                and mcp_server_enabled(cfg)]
             prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
@@ -619,7 +658,7 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
+    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
     scope = _core._mcp_registry_scope()
     with _core._lock:
         owned = [key for key, owner in _core._server_scope_keys.items() if owner == scope]
@@ -633,6 +672,14 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
     for key in lazy:
         _forget_lazy_server(key)
+    added = _awaiting_connect(wanted, scope)
+    if added:
+        discover_mcp_tools()
+    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
+            "pending": sorted(connecting - wanted)}
+
+
+def _awaiting_connect(wanted: Set[str], scope) -> List[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
         # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
@@ -641,15 +688,22 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         known = {name for name in wanted
                  if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
-    # A configured server that is not live is retried here — this is the only reviver for one whose
-    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # A configured server that is not live is retried — the only way one whose FIRST connect
+    # failed comes back (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
-    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
-    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
-    if added:
-        discover_mcp_tools()
-    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
-            "pending": sorted(connecting - wanted)}
+    # waiting when another process holds it) and logs a failed pass, every call, for nothing.
+    return sorted(name for name in wanted - known if not _connect_cooldown_active(name))
+
+
+def mcp_servers_awaiting_connect() -> List[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
+    registration for, whose connect cooldown has lapsed: added to config since the last discovery
+    run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
+    would connect."""
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
+    return _awaiting_connect(wanted, _core._mcp_registry_scope())
 
 
 def _forget_lazy_server(key) -> None:
@@ -708,7 +762,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
 
     result: List[dict] = []
     for name, cfg in configured.items():
-        enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
+        enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
@@ -754,7 +808,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     if not _core._ensure_mcp_sdk():
         return {}
     with _owner_secret_scope():
-        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
+        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if mcp_server_enabled(v)}
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()

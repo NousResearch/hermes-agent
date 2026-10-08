@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { atom } from 'nanostores'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -14,8 +15,10 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $localSetupMenuRequest, acceptLocalSetupOffer } from '@/store/local-setup-offer'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
+import { useComposerModelPillLabel } from './contrib'
 import { onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
@@ -24,8 +27,13 @@ import type { ChatBarState } from './types'
 // `shrink` (not `shrink-0`) with a truncating label: the pill is the one
 // control in the row that can give width back continuously, so it absorbs the
 // squeeze between collapse stages instead of pushing Send past the edge.
+// No `max-w-*` cap: the pill sizes to its label, so a long model name only
+// truncates when the row is genuinely out of room (#49340) — not at an
+// arbitrary 160px.
+const UNKNOWN_TIER = atom('')
+
 const PILL = cn(
-  'h-(--composer-control-size) min-w-0 max-w-40 shrink gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) min-w-0 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 
@@ -57,6 +65,8 @@ export function ModelPill({
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
   const fastMode = useStore(view.$fast)
+  const serviceTier = useStore(view.$serviceTier ?? UNKNOWN_TIER)
+  const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
@@ -112,6 +122,22 @@ export function ModelPill({
     [scope.target, disabled, hasLiveMenu]
   )
 
+  // The local-setup card's "Show me": open THIS composer's menu (the card names
+  // its own composer), where the offer row sits on top. The offer is accepted
+  // only once a menu actually opened. A click fired it, never a background event.
+  useEffect(
+    () =>
+      $localSetupMenuRequest.listen(request => {
+        if (!request || request.target !== scope.target || disabled || !hasLiveMenu) {
+          return
+        }
+
+        acceptLocalSetupOffer()
+        setOpen(true)
+      }),
+    [scope.target, disabled, hasLiveMenu]
+  )
+
   // The composer pick is sticky: a manual selection is pinned and every NEW
   // chat uses it instead of the Settings → Model default — silently, which has
   // cost users real money on a forgotten paid-model pick (#62055). Surface the
@@ -124,12 +150,18 @@ export function ModelPill({
   // The model resolves a beat after the gateway/session comes up. Rather than
   // flash a literal "No model", show a quiet loader (inherits the pill text
   // color at half opacity) until a model lands.
+  //
+  // A `composer.modelPill` provider may override the LABEL (compact reasoning
+  // label, custom naming) — the pill keeps its chrome, pin dot, and menu; only
+  // the text changes, and a provider that declines leaves the core label.
+  const pillLabel = useComposerModelPillLabel({ compact, model: currentModel, reasoningEffort: reasoningEffort || '' })
+
   const label = compact ? (
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode })}</span>
+        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
@@ -207,7 +239,7 @@ export function ModelPill({
       </Tip>
       <DropdownMenuContent
         align="end"
-        className="w-64 p-0"
+        className="w-72 p-0"
         onCloseAutoFocus={event => {
           if (restoreSelection.current) {
             event.preventDefault()

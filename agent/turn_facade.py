@@ -8,7 +8,7 @@ MRO unchanged.
 import logging
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
@@ -28,6 +28,8 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None,
+        title_user_message: Optional[str]=None,
+        prelude: Optional[Generator]=None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
@@ -47,6 +49,7 @@ class TurnFacadeMixin:
             set_conversation_context,
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
+        from agent.relay_cwd import resolve_relay_scope_cwds
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
@@ -94,11 +97,19 @@ class TurnFacadeMixin:
             lease = admission.lease
             conversation_history = admission.conversation_history
 
+            relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
+                self,
+                effective_task_id,
+                task_context["session_id"],
+                task_context["platform"],
+            )
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"], platform=task_context["platform"],
                 parent_session_id=relay_parent_session_id,
                 model=str(getattr(self, "model", None) or ""),
+                session_cwd=relay_session_cwd,
+                turn_cwd=relay_turn_cwd,
             )
             relay_turn_kwargs: Dict[str, Any] = {
                 "turn_id": relay_turn_id,
@@ -142,6 +153,8 @@ class TurnFacadeMixin:
                         persist_user_display_metadata=persist_user_display_metadata,
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                         turn_author=turn_author,
+                        title_user_message=title_user_message,
+                        prelude=prelude,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;

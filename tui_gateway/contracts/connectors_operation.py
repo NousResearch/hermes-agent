@@ -9,16 +9,23 @@ projection: every frame carries the full target snapshot, and the renderer never
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
+from hermes_cli.plugin_install_phase import InstallPhase
+
 from .base import Params, Payload, Result, WireEnum
-from .common import ProfileParams
+from .common import ConnectorOwner, ProfileParams
 from .registry import event, method
 
 
 class ConnectionTargetKind(WireEnum):
     connector = "connector"
     mcp = "mcp"
+    # ``manage_catalog`` rows: a catalog plugin (may bring MCP tools and/or skills) or a skill.
+    plugin = "plugin"
+    skill = "skill"
 
 
 class ConnectionTargetAction(WireEnum):
@@ -38,7 +45,6 @@ class ConnectionTargetState(WireEnum):
     skipped = "skipped"
     failed = "failed"
     expired = "expired"
-    unavailable = "unavailable"
     not_connected = "not_connected"
 
 
@@ -57,7 +63,6 @@ class ConnectionSettleReason(WireEnum):
     continue_ = "continue"
     deadline = "deadline"
     interrupt = "interrupt"
-    unavailable = "unavailable"
 
 
 class ConnectionTargetEnvField(Payload):
@@ -71,6 +76,49 @@ class ConnectionTargetEnvField(Payload):
     prompt: str | None = None
 
 
+class CatalogTier(WireEnum):
+    official = "official"
+    community = "community"
+
+
+class CatalogAppState(WireEnum):
+    """The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration."""
+
+    present = "present"
+    missing_app = "missing_app"
+    app_not_running = "app_not_running"
+    unknown = "unknown"
+
+
+class CatalogScanStatus(WireEnum):
+    passed = "passed"
+    warnings = "warnings"
+    failed = "failed"
+
+
+class CatalogScan(Payload):
+    """The catalog's security scan of the pinned commit; read-only on the card."""
+
+    status: CatalogScanStatus
+    summary: str
+
+
+class CatalogApproved(Payload):
+    """The non-secret Advanced choices the user approved on a catalog row; a Try again after the
+    operation settled repeats them."""
+
+    force: bool
+    enable: bool
+    ref: str | None = None
+
+
+class CatalogServerError(Payload):
+    """An MCP server an installed plugin brought that did not connect, with the raw reason."""
+
+    name: str
+    error: str
+
+
 class ConnectionOperationTarget(Payload):
     """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
@@ -79,6 +127,8 @@ class ConnectionOperationTarget(Payload):
     kind: ConnectionTargetKind
     action: ConnectionTargetAction
     state: ConnectionTargetState
+    # ``Target.resolved``: the row needs nothing more from the user (a failed catalog row counts).
+    resolved: bool | None = None
     detail: str | None = None
     instructions: str | None = None
     discovery_error: str | None = None
@@ -90,6 +140,30 @@ class ConnectionOperationTarget(Payload):
     required_env: list[ConnectionTargetEnvField] | None = None
     tools: list[str] | None = None
     hint: str | None = None
+    # Catalog rows (kind ``plugin`` / ``skill``) only; field set agreed in CATALOG-ROW-CONTRACT.md.
+    display: str | None = None
+    description: str | None = None
+    tier: CatalogTier | None = None
+    platforms: list[str] | None = None
+    repo: str | None = None
+    sha: str | None = None
+    subdir: str | None = None
+    scan: CatalogScan | None = None
+    # The Hermes version range the plugin needs; its env vars ride in ``required_env``.
+    requires_hermes: str | None = None
+    has_desktop_half: bool | None = None
+    # The profile the row installs into; absent when the chat's home is no named profile.
+    target_profile: str | None = None
+    app_state: CatalogAppState | None = None
+    # On an installed skill row: the qualified skill name the model can now load.
+    skill: str | None = None
+    phase: InstallPhase | None = None
+    approved: CatalogApproved | None = None
+    # Facts on an installed row, drawn by the card (``detail`` words them for the model).
+    enabled: bool | None = None
+    missing_env: list[str] | None = None
+    server_errors: list[CatalogServerError] | None = None
+    already_installed: bool | None = None
 
 
 class ConnectionRequestPayload(Payload):
@@ -127,6 +201,7 @@ class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
     """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
+    owner: ConnectorOwner
     target: str | None = None
     from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
     to: ConnectionTargetState | None = None
@@ -138,16 +213,16 @@ event("connection.update", ConnectionUpdatePayload,
 
 
 class ConnectionOperationParams(ProfileParams):
-    session_id: str
+    owner: ConnectorOwner
     op_id: str
 
 
 method("connectors.operation.status", params=ConnectionOperationParams, result=ConnectionOperationStatus,
-       doc="The current snapshot of one open operation on an owned session.")
+       doc="The current snapshot of one open session or account operation.")
 
 
 class ConnectionWakeResult(Result):
-    status: str
+    status: Literal["ok"]
 
 
 method("connectors.operation.wake", params=ConnectionOperationParams, result=ConnectionWakeResult,
@@ -184,7 +259,7 @@ class ConnectionRespondParams(ConnectionOperationParams):
 
 
 class ConnectionRespondResult(Result):
-    status: str
+    status: Literal["ok"]
     settled: bool
 
 

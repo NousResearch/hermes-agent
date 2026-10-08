@@ -81,7 +81,8 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        pending_warning = _pending_switch_selection_warning(
+            pending_model, pending_provider, session.get("agent"))
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -113,7 +114,13 @@ def _set_model(rid, params, key, value, session):
         from hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
-        if session.get("running"):
+        # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
+        # the child process — the direct path below would build a SECOND agent in
+        # the server, switch that copy, and leave the child (which handles every
+        # turn) on the old model: checkmark shows the pick, requests keep the old
+        # model. The stash crosses the boundary in the turn frame and the child's
+        # turn thread applies it (_apply_pending_model_switch).
+        if session.get("running") or session.get("_compute_host_active"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
@@ -158,7 +165,7 @@ def _set_model(rid, params, key, value, session):
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",
-               "auto": "auto", "cold": "cold"}
+               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast"}
 
 
 def _set_fast(rid, params, key, value, session):
@@ -170,13 +177,14 @@ def _set_fast(rid, params, key, value, session):
         current_tier = session["create_service_tier_override"] or None  # pre-build pin beats global
     else:
         current_tier = _load_service_tier()
+    from agent.fast_mode import STATIC_TIERS, service_tier_word
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
-    nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
+        return _kv(rid, key, service_tier_word(current_tier))
+    nv = _FAST_WORDS.get(raw, ("normal" if current_tier in STATIC_TIERS else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
-    if nv == "fast":
+    if nv in ("fast", "ultrafast"):
         from hermes_cli.models import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
@@ -186,9 +194,10 @@ def _set_fast(rid, params, key, value, session):
         if not target_model:
             return _err(rid, 4002, "fast mode is not available without a selected model")
         overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
-                                                base_url=getattr(agent, "base_url", None))
+                                                base_url=getattr(agent, "base_url", None),
+                                                tier="ultrafast" if nv == "ultrafast" else None)
         if overrides is None:
-            return _err(rid, 4002, "fast mode is not available for this model")
+            return _err(rid, 4002, f"{nv} mode is not available for this model")
     if session is not None:
         # Session-scoped like `reasoning` (global = `--global` / Settings → Model): writing config.yaml
         # here flipped fast mode for every surface. The create override survives rebuilds; "" pins normal.
@@ -471,12 +480,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

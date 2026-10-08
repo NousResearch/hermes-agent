@@ -16,7 +16,7 @@ class Emitter(StatusOutputMixin):
 
 @pytest.mark.parametrize("setting", [None, False, True, "typo", [], {}])
 def test_warning_policy_at_real_presentation_boundary(tmp_path, monkeypatch, setting):
-    import yaml
+    import hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
@@ -84,7 +84,7 @@ def test_direct_print_diagnostics_preserve_content_and_muted_turn_has_no_prints(
 def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, caplog, suppress):
     import logging
     from types import SimpleNamespace
-    import yaml
+    import hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if suppress is None else {"display": {"suppress_warning_notifications": suppress}}))
@@ -116,7 +116,7 @@ def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, cap
 
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatch, suppress):
-    import yaml
+    import hermes_yaml as yaml
     from agent import conversation_loop
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
@@ -132,7 +132,7 @@ def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatc
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path, monkeypatch, capsys, suppress):
     from agent import agent_init
-    import yaml
+    import hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if suppress is None else {"display": {"suppress_warning_notifications": suppress}}))
@@ -144,7 +144,6 @@ def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path
     monkeypatch.setattr(agent_init, "_explicit_client_kwargs",
                         lambda *a: {"api_key": "dummy-key", "base_url": agent.base_url})
     monkeypatch.setattr(agent_init, "_apply_openai_header_policy", lambda *a: None)
-    monkeypatch.setattr("agent.ssl_guard.verify_ca_bundle", lambda: None)
     agent_init._init_openai_client(agent, "dummy-key", agent.base_url, None, 30)
     output = capsys.readouterr().out
     assert ("API key appears invalid or missing" in output) is (suppress is not True)

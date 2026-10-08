@@ -21,6 +21,10 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+# Expanded by initialize() against the profile that opens it. A concrete path is copied by a profile clone
+# and outlives a rename, so it keeps naming the old profile's DB.
+_DEFAULT_DB_PATH = "$HERMES_HOME/memory_store.db"
+
 
 FACT_STORE_SCHEMA = {
     "name": "fact_store",
@@ -116,12 +120,17 @@ class HolographicMemoryProvider(MemoryProvider):
         # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.
         # ``merge_existing`` keeps every other section; *hermes_home* is the active profile already.
         from hermes_cli.config import save_config
-        save_config({"plugins": {"hermes-memory-store": dict(values)}}, merge_existing=True)
+        values = dict(values)
+        # This profile's own DB spelled out (older setups wrote it; the dashboard form re-submits what it
+        # read) pins every clone and rename of the profile to this file, so it is stored as the placeholder.
+        db_path = values.get("db_path")
+        if isinstance(db_path, str) and Path(db_path).expanduser() == Path(hermes_home) / "memory_store.db":
+            values["db_path"] = _DEFAULT_DB_PATH
+        save_config({"plugins": {"hermes-memory-store": values}}, merge_existing=True)
 
     def get_config_schema(self):
-        from hermes_constants import display_hermes_home
         return [
-            {"key": "db_path", "description": "SQLite database path", "default": f"{display_hermes_home()}/memory_store.db"},
+            {"key": "db_path", "description": "SQLite database path", "default": _DEFAULT_DB_PATH},
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},

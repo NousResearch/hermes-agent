@@ -1,6 +1,7 @@
 """Credential-pool auth subcommands."""
 
 from __future__ import annotations
+from pm import install_hint
 from hermes_cli.cli_output import line_input
 
 import math
@@ -17,6 +18,7 @@ from agent.credential_pool import (
     STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
+from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
@@ -404,6 +406,8 @@ def auth_add_command(args) -> None:
     except auth_mod.AuthError as exc:
         # A denied / mismatched / timed-out OAuth login is a user-facing outcome, not a crash.
         raise SystemExit(f"Login failed: {auth_mod.format_auth_error(exc)}") from exc
+    except CredentialNotSavedError as exc:
+        raise SystemExit(str(exc)) from exc
     if wanted_priority is not None:
         placed_pool = load_pool(provider)
         moved = placed_pool.move_entry(entry.id, int(wanted_priority))
@@ -550,6 +554,15 @@ def _print_external_login_notice() -> None:
         print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
+    _print_oauth_heal_notices()
+
+
+def _print_oauth_heal_notices() -> None:
+    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
+    for note in auth_mod.consume_oauth_heal_notices():
+        print(f"note: {note}")
+
+
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
@@ -658,7 +671,10 @@ def auth_status_command(args) -> None:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if dispatch_plugin_auth("status", args, provider):
         return
+    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
+    _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
         label, hint = _free_tier_lines()
@@ -739,7 +755,10 @@ def _print_azure_entra_status() -> None:
         print(f"  Endpoint: {base_url or '(not configured)'}")
         print(f"  Scope: {scope}")
         if not has_azure_identity_installed():
-            print("  Status: ⚠ azure-identity not installed (pip install azure-identity)")
+            print("  Status: ⚠ azure-identity not installed")
+            print("  From the Hermes environment, run: "
+                  f"{install_hint('azure-identity')}")
+            print("  Then restart Hermes.")
         else:
             info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
             env_sources = info.get("env_sources") or []
@@ -778,7 +797,8 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
+    from providers import unlisted_provider_names
+    known = sorted((set(PROVIDER_REGISTRY) - unlisted_provider_names()) | {"openrouter"})
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:

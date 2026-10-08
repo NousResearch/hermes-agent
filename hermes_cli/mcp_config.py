@@ -1,6 +1,7 @@
 """MCP Server Management CLI — ``hermes mcp`` subcommand."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -19,7 +20,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +422,9 @@ def _probe_single_server(
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
-        raise ValueError("; ".join(issues))
+        rejected = ValueError("; ".join(issues))
+        rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
+        raise rejected
 
     from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
     from tools.mcp_tool_discovery import _connect_server
@@ -512,7 +515,11 @@ def _probe_single_server(
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
     except BaseException as exc:
-        raise _redact_probe_exception(exc) from None
+        redacted = _redact_probe_exception(exc)
+        # Classified from the ORIGINAL exception: redaction may rebuild it as a RuntimeError.
+        with contextlib.suppress(Exception):
+            redacted.failure_class = probe_failure_class(exc)  # type: ignore[attr-defined]
+        raise redacted from None
     finally:
         _stop_mcp_loop_if_idle()
     return tools_found
@@ -641,11 +648,21 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
-    if name in _get_mcp_servers() and not _confirm(
+    # Overwriting an existing server is a re-add, not an install; cancels are not recorded either.
+    fresh = name not in _get_mcp_servers()
+    if not fresh and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
         _info("Cancelled.")
         return
+
+    def _record(saved: bool, failure_class: str = "config_rejected") -> None:
+        # A save only fails on a suspicious configuration (_save_mcp_server returns False).
+        if fresh:
+            from hermes_cli.mcp_catalog import record_mcp_install
+
+            record_mcp_install("url" if url else "local", None, "success" if saved else "failed",
+                               failure_class=None if saved else failure_class)
 
     if url:
         server_config["url"] = url
@@ -659,6 +676,7 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     if not _validate_or_warn(name, server_config):
+        _record(False)
         return
     if url and not _configure_http_auth(name, url, auth_type, server_config):
         return
@@ -670,29 +688,37 @@ def cmd_mcp_add(args):
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
+        saved = False
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
+            saved = _save_mcp_server(name, server_config)
+            if saved:
                 _success(f"Saved '{name}' to config (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
+        _record(saved, probe_failure_class(exc))
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True) and _save_mcp_server(name, server_config):
-            _success(f"Saved '{name}' to config")
+        if _confirm("Save config anyway?", default=True):
+            saved = _save_mcp_server(name, server_config)
+            _record(saved)
+            if saved:
+                _success(f"Saved '{name}' to config")
         return
 
     tool_count = _choose_tools(name, tools, server_config)
     if tool_count is None:
         return
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    saved = _save_mcp_server(name, server_config)
+    _record(saved)
+    if saved:
         print()
         _success(
             f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
         )
-        _info("Start a new session to use these tools.")
+        _info("Start a new session to use these tools, or run /reload-mcp to load them into open sessions.")
 
 
 def cmd_mcp_remove(args):
@@ -755,9 +781,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
@@ -770,12 +794,37 @@ def _probe_failure_reason(exc: BaseException) -> str:
     return redact_mcp_probe_text(_format_connect_error(exc))
 
 
+def probe_failure_class(exc: BaseException) -> str:
+    """Extension-install class for a failed MCP probe, from the exception TYPE (the same tests
+    :func:`_probe_failure_next_step` uses), never its message. Never raises: an exception whose own
+    attribute hooks raise reads ``connect_failed`` instead of replacing the user's error."""
+    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
+    if tagged := tagged_failure_class(exc):
+        return tagged
+    from tools.mcp_tool_errors import _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
+    from tools.mcp_tool_node_abi import NodeAbiMismatchError
+    try:
+        root = _unwrap_exception_group(exc)
+        if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
+            return "auth_required"
+        # A missing stdio command (FileNotFoundError) or a native module built for another Node.
+        if any(isinstance(node, (FileNotFoundError, NodeAbiMismatchError)) for node in _iter_exception_nodes(exc)):
+            return "server_start_failed"
+    except Exception:  # a hook on the exception raised; the type tests could not finish
+        logger.debug("MCP probe failure not classified", exc_info=True)
+    return "connect_failed"
+
+
 def _probe_failure_next_step(name: str, exc: BaseException) -> str:
     """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
     from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    from tools.mcp_tool_node_abi import NodeAbiMismatchError
     root = _unwrap_exception_group(exc)
     if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
         return f"The server rejected the sign-in. Run: hermes mcp login {name}"
+    if isinstance(root, NodeAbiMismatchError):
+        return f"After rebuilding it under Hermes's Node as above, run: hermes mcp test {name}"
     if "missing executable" in _format_connect_error(exc):
         return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
                 "to its full path.")
@@ -1066,7 +1115,7 @@ def cmd_mcp_configure(args):
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)
     _success(f"Updated config: {len(chosen)}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _info("Run /reload-mcp for changes to take effect.")
 
 
 _MCP_USAGE = (

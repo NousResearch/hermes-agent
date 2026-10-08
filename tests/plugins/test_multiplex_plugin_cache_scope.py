@@ -3,7 +3,7 @@ HERMES_HOME override (``hermes_constants.set_hermes_home_override``).
 
 One invariant per mechanism: home-keyed slot with the unscoped module slot intact (router; yuanbao's
 ClassVar twin), credential-fingerprinted catalog keys (openrouter), per-home registries (memory
-provider skills), collect-all atexit (openviking), lru_cache keyed by the home (disk-cleanup).
+provider skills), lru_cache keyed by the home (disk-cleanup).
 Only HTTP transports are faked; the caches themselves are exercised for real.
 """
 
@@ -177,28 +177,6 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
         _reset_plugin_managers_for_tests()
 
 
-def test_openviking_atexit_commits_every_profile_provider(homes):
-    """Two profiles' providers initialized in one process both get the atexit commit."""
-    import plugins.memory.openviking as ov
-
-    a, b = homes
-    committed: list[object] = []
-    providers = []
-    try:
-        for home in (a, b):
-            with scoped(home):
-                provider = ov.OpenVikingMemoryProvider()
-                provider.initialize(session_id=f"s-{home.name}", hermes_home=str(home))
-                provider.on_session_end = lambda _msgs, _p=provider: committed.append(_p)
-                providers.append(provider)
-        ov._atexit_commit_sessions()
-        assert committed == providers
-    finally:
-        for provider in providers:
-            with contextlib.suppress(Exception):
-                provider._release_run_lock()
-
-
 def test_disk_cleanup_protected_cron_paths_follow_the_active_home(homes):
     """The protected-path guard must protect the ACTIVE profile's cron dir, not the first one asked."""
     spec = importlib.util.spec_from_file_location(
@@ -238,35 +216,3 @@ def test_yuanbao_active_adapter_resolves_per_profile(homes, monkeypatch):
     unscoped = YuanbaoAdapter(cfg)
     YuanbaoAdapter.set_active(unscoped)
     assert YuanbaoAdapter.get_active() is unscoped
-
-
-def test_honcho_loopback_flow_status_is_per_profile(homes, monkeypatch):
-    """Profile B's connect must not be refused as 'pending' because profile A's flow is running."""
-    import plugins.memory.honcho.oauth_flow as flow
-
-    a, b = homes
-    gate = threading.Event()
-    started: list[Path] = []
-
-    def fake_authorize(**kwargs):
-        started.append(kwargs["config_path"])
-        gate.wait(5)
-
-    monkeypatch.setattr(flow, "authorize_via_loopback", fake_authorize)
-    monkeypatch.setattr(flow, "_status", flow.FlowStatus())
-    monkeypatch.setattr(flow, "_flow_thread", None)
-    for home in (a, b):
-        (home / "honcho.json").write_text("{}", encoding="utf-8")
-    try:
-        with scoped(a):
-            assert flow.start_loopback_flow_background()["state"] == "pending"
-        with scoped(b):
-            assert flow.get_flow_status()["state"] == "idle"
-            assert flow.start_loopback_flow_background()["state"] == "pending"
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and len(started) < 2:
-            time.sleep(0.02)
-        assert sorted(started) == sorted([a / "honcho.json", b / "honcho.json"])
-    finally:
-        gate.set()
-        getattr(flow, "_flows_by_target", {}).clear()

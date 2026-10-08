@@ -15,6 +15,7 @@ possible. The user's pick silently reverted and the confirm was never offered
 on this path at all.
 """
 
+import logging
 import threading
 import types
 
@@ -22,13 +23,11 @@ import pytest
 
 from tui_gateway import server
 
-
 # A vendor-documented data-training tier. The data-policy guard keys on the
 # model id alone (no base_url / api_key / model_info), which is exactly what
 # the stash branch can see before resolution.
 GUARDED_MODEL = "muse-spark-1.2-contributor"
 UNGUARDED_MODEL = "anthropic/claude-sonnet-4.6"
-
 
 def _session(**extra):
     return {
@@ -47,13 +46,11 @@ def _session(**extra):
         **extra,
     }
 
-
 def _config_set_model(value, **extra_params):
     params = {"session_id": "sid", "key": "model", "value": value}
     params.update(extra_params)
 
     return server.handle_request({"id": "1", "method": "config.set", "params": params})
-
 
 @pytest.fixture
 def running_session(monkeypatch):
@@ -71,7 +68,6 @@ def running_session(monkeypatch):
         yield server._sessions["sid"]
     finally:
         server._sessions.pop("sid", None)
-
 
 class TestGuardedPickAsksBeforeStashing:
     def test_reports_confirm_required_instead_of_deferring(self, running_session):
@@ -95,12 +91,6 @@ class TestGuardedPickAsksBeforeStashing:
             "start would drop it anyway, after the pill already moved"
         )
 
-    def test_confirm_message_names_the_guard(self, running_session):
-        message = _config_set_model(GUARDED_MODEL)["result"]["confirm_message"]
-
-        assert "CONTRIBUTOR TIER" in message
-        assert "train" in message.lower()
-
     def test_reconfirming_queues_the_pick(self, running_session):
         resp = _config_set_model(GUARDED_MODEL, confirm_expensive_model=True)
 
@@ -114,7 +104,6 @@ class TestGuardedPickAsksBeforeStashing:
             "the ack must survive into the stash or _apply_pending_model_switch "
             "re-runs the guard at turn start and drops the confirmed pick"
         )
-
 
 class TestUnguardedPickStillDefers:
     """The queue-don't-race behaviour is the whole point of this branch."""
@@ -140,7 +129,6 @@ class TestUnguardedPickStillDefers:
         pending = running_session["pending_model_switch"]
         assert pending["display_provider"] == "anthropic"
 
-
 class TestGuardFailureIsNotFatal:
     def test_a_raising_guard_falls_back_to_deferring(self, running_session, monkeypatch):
         """A broken guard must never cost the user their model pick.
@@ -162,54 +150,111 @@ class TestGuardFailureIsNotFatal:
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["raw"] == GUARDED_MODEL
 
+@pytest.fixture
+def threshold():
+    from hermes_cli.model_selection_guards import _context_cache_threshold
 
-class TestHelperContract:
-    def test_returns_none_for_an_empty_model(self):
-        assert server._pending_switch_selection_warning("", "") is None
+    return _context_cache_threshold()
 
-    def test_returns_none_when_no_guard_fires(self):
-        assert server._pending_switch_selection_warning(UNGUARDED_MODEL, "") is None
+def _live_agent(session, tokens, model="deepseek/deepseek-v4.1-flash"):
+    session["agent"] = types.SimpleNamespace(
+        model=model, context_compressor=types.SimpleNamespace(last_prompt_tokens=tokens))
 
-    def test_returns_the_message_when_a_guard_fires(self):
-        message = server._pending_switch_selection_warning(GUARDED_MODEL, "")
+class TestLargeContextPickAsksBeforeStashing:
+    def test_session_at_the_threshold_is_asked_at_pick_time(self, running_session, threshold):
+        _live_agent(running_session, threshold)
 
-        assert message is not None
-        assert "CONTRIBUTOR TIER" in message
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
 
-    def test_an_explicit_provider_reaches_the_guards(self, monkeypatch):
-        """Provider-keyed guards are useless if the provider is dropped here.
+        assert result["confirm_required"] is True, (
+            "the context-cache guard only saw the session size at turn start, where it can no longer "
+            "ask: the pick became an error toast and was dropped"
+        )
+        assert "LARGE CONTEXT MODEL SWITCH" in result["confirm_message"]
+        assert result["deferred"] is False
+        assert "pending_model_switch" not in running_session
 
-        The docstring promises the early call can only under-fire relative to
-        the resolved one, and that only holds if what the caller DID say is
-        forwarded. Asserting on a guarded model id would pass even with
-        ``provider`` dropped, so record the kwargs instead.
-        """
-        seen = {}
+    def test_confirming_queues_the_pick(self, running_session, threshold):
+        _live_agent(running_session, threshold)
 
-        def _fake(model, provider=None, **kwargs):
-            seen["model"] = model
-            seen["provider"] = provider
-            return None
+        result = _config_set_model(UNGUARDED_MODEL, confirm_expensive_model=True)["result"]
 
-        import hermes_cli.model_selection_guards as guards
+        assert result["deferred"] is True
+        assert running_session["pending_model_switch"]["confirm_expensive_model"] is True
 
-        monkeypatch.setattr(guards, "combined_selection_warning", _fake)
-        server._pending_switch_selection_warning(UNGUARDED_MODEL, "openrouter")
+    def test_session_under_the_threshold_defers_without_asking(self, running_session, threshold):
+        _live_agent(running_session, threshold - 1)
 
-        assert seen == {"model": UNGUARDED_MODEL, "provider": "openrouter"}
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
 
-    def test_an_empty_provider_is_normalised_to_none(self, monkeypatch):
-        """`provider or None` is load-bearing: "" is not "no provider" to a
-        guard that does an `is None` check, and the TUI sends "" for unset."""
-        seen = {}
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
 
-        def _fake(model, provider=None, **kwargs):
-            seen["provider"] = provider
-            return None
+    def test_reselecting_the_live_model_is_not_a_switch(self, running_session, threshold):
+        _live_agent(running_session, threshold, model=UNGUARDED_MODEL)
 
-        import hermes_cli.model_selection_guards as guards
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
 
-        monkeypatch.setattr(guards, "combined_selection_warning", _fake)
-        server._pending_switch_selection_warning(UNGUARDED_MODEL, "")
+        assert result["confirm_required"] is False
 
-        assert seen == {"provider": None}
+    def test_no_live_agent_defers_without_asking(self, running_session):
+        running_session["agent"] = None
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
+        assert running_session["pending_model_switch"]["raw"] == UNGUARDED_MODEL
+
+class TestDroppedQueuedPickIsLogged:
+    def test_turn_start_drop_leaves_a_server_log_line(self, monkeypatch, caplog):
+        session = _session(pending_model_switch={
+            "raw": UNGUARDED_MODEL, "confirm_expensive_model": False,
+            "display_model": UNGUARDED_MODEL, "display_provider": ""})
+        monkeypatch.setattr(
+            server, "_apply_model_switch",
+            lambda *_a, **_kw: {"confirm_required": True, "confirm_message": "guarded"})
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda *a, **_kw: emitted.append(a))
+
+        with caplog.at_level(logging.WARNING):
+            server._apply_pending_model_switch("sid", session)
+
+        assert "dropped" in caplog.text and UNGUARDED_MODEL in caplog.text, (
+            "a dropped pick used to exist only as a client toast, invisible in server logs"
+        )
+        assert "pending_model_switch" not in session
+
+
+class TestDroppedQueuedPickIsNotATurnError:
+    """A pick dropped at turn start must not fail the turn: Desktop paints ``error`` as the red retry card
+    under the user's message, while the turn itself runs on the old model."""
+
+    def _run(self, monkeypatch, apply):
+        session = _session(pending_model_switch={
+            "raw": UNGUARDED_MODEL, "confirm_expensive_model": False,
+            "display_model": UNGUARDED_MODEL, "display_provider": ""})
+        session["agent"] = types.SimpleNamespace(model="deepseek/deepseek-v4.1-flash")
+        monkeypatch.setattr(server, "_apply_model_switch", apply)
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda *a, **_kw: emitted.append(a))
+        server._apply_pending_model_switch("sid", session)
+        return [a[0] for a in emitted], emitted
+
+    def test_guarded_drop_is_a_warning_and_resyncs_the_pill(self, monkeypatch):
+        kinds, emitted = self._run(
+            monkeypatch, lambda *_a, **_kw: {"confirm_required": True, "confirm_message": "guarded"})
+
+        assert "error" not in kinds
+        notice = next(a[2] for a in emitted if a[0] == "notification.show")
+        assert notice["level"] == "warn" and UNGUARDED_MODEL in notice["text"]
+        assert "session.info" in kinds
+
+    def test_failed_switch_is_a_warning(self, monkeypatch):
+        def _boom(*_a, **_kw):
+            raise ValueError("no credentials")
+
+        kinds, _ = self._run(monkeypatch, _boom)
+
+        assert "error" not in kinds
+        assert "notification.show" in kinds

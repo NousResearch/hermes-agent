@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.message_metadata import append_message
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -187,6 +187,10 @@ def handle_api_interrupt(
     api_elapsed = time.time() - api_start_time
     agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
     interrupted = True
+    # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
+    # pair after an executed tool result; strip it so the row appended below follows the tool
+    # row (the finalizer then closes the tail with this exit's own reason).
+    agent._drop_trailing_empty_response_scaffolding(messages)
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
@@ -194,13 +198,12 @@ def handle_api_interrupt(
         # The interrupted row is replayed next turn; looped bytes there re-seed the loop
         # (#112764). Same hidden shape as the redirect placeholder: nothing visible in the
         # transcript, a neutral api_content so the pre-call sanitizer does not re-heal it.
-        append_message(messages, {
-            "role": "assistant", "content": "", "display_kind": "hidden",
-            "api_content": _INTERRUPTED_PLACEHOLDER,
-        })
+        append_message(messages, hidden_interrupt_placeholder_row())
         final_response = REPETITION_LOOP_INTERRUPTED
     elif _partial:
-        append_message(messages, {"role": "assistant", "content": _partial})
+        append_message(messages, {
+            "role": "assistant", "content": _partial, "display_metadata": {"interrupted": True},
+        })
         final_response = _partial
     else:
         final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."

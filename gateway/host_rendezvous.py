@@ -15,17 +15,19 @@ which scopes to the **OS user**. That is the correct granularity: separate OS us
 separate ``$HOME``s, separate ``~/.hermes`` profile roots, separate ports-by-convention and
 separate credentials, so "one per host" means "one per host per OS user".
 
-**Staleness is proved, never assumed.** A record carries ``(pid, createTime)``; a record whose
-PID is dead, or whose PID is alive with a different process creation time (PID reuse), is
-STALE and is ignored — an attaching client must never dial a recycled PID's port.
+**Staleness is proved, never assumed.** New records pair the PID with the repository's stable
+process-start fingerprint (boot-relative on Linux/WSL); ``createTime`` remains the legacy fallback.
+A dead PID or a mismatched process incarnation is STALE and ignored — an attaching client must
+never dial a recycled PID's port.
 
 **Relationship to ``spawn-ledger.json``** (``hermes_cli/process_identity.py``): the ledger stays
 the append-only machine roster of every long-lived Hermes process (Desktop's attach ladder reads
 it) and is still written unchanged. It cannot be the host record: it has no lock, no
 single-writer semantics, no removal on exit, and no place to publish a protocol version or
 an authentication handle. The record here is authoritative for "who owns this host role"; the
-ledger remains authoritative for "what is running". Both are written, and this module reuses the
-ledger's ``(pid, create_time)`` liveness proof rather than inventing a second one.
+ledger remains authoritative for "what is running". Both are written. New host records pair the
+ledger's live-PID proof with ``gateway.status``'s canonical process-start fingerprint; legacy
+records without that fingerprint keep the old ``(pid, create_time)`` proof.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,7 +63,13 @@ PROBE_TIMEOUT_S = 2.0
 
 ROLE_GATEWAY = "gateway"
 ROLE_SERVE = "serve"
-_ROLES = (ROLE_GATEWAY, ROLE_SERVE)
+#: A Desktop-owned pool child (loopback, random port, per-profile lifecycle). It is NOT a host
+#: owner — the attach/refuse ladder reads ``ROLE_SERVE`` only, so a supervised public dashboard
+#: never stands down behind it (#119824) — but ``hermes plugins install`` from a terminal still
+#: has to reach the backend hosting the open chats (#119644), and this record + 0600 token is
+#: how it dials one on a Desktop-only box.
+ROLE_DESKTOP_SERVE = "desktop-serve"
+_ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
 
 # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
 # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.
@@ -84,12 +93,24 @@ class HostRecord:
     token_fingerprint: str
     profiles: tuple[str, ...]
     updated_at: str
+    #: HERMES_HOME the owner was launched from. The attach channel (``gateway.control_socket``) is
+    #: keyed by home, so without it a client can only guess the default root — wrong as soon as a
+    #: named profile launches the host process. Absent in records written before this field; added
+    #: WITHOUT a protocol bump on purpose, because a bump would make every live owner's record read
+    #: as stale and a second gateway would start.
+    home: str = ""
+    #: Stable process-start fingerprint. On Linux/WSL this is boot-relative /proc start ticks,
+    #: so a wall-clock resync cannot make a live owner look like a recycled PID. Optional for
+    #: records written by older Hermes versions, which still fall back to create_time.
+    start_time: Optional[int] = None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            "home": self.home,
             "pid": self.pid,
             "createTime": self.create_time,
+            "startTime": self.start_time,
             "host": self.host,
             "port": self.port,
             "protocolVersion": self.protocol_version,
@@ -107,6 +128,7 @@ class HostRecord:
         if not isinstance(pid, int) or pid <= 0 or role not in _ROLES:
             return None
         create = payload.get("createTime")
+        start = payload.get("startTime")
         port = payload.get("port")
         profiles = payload.get("profiles")
         version = payload.get("protocolVersion")
@@ -114,12 +136,18 @@ class HostRecord:
             role=role,
             pid=pid,
             create_time=float(create) if isinstance(create, (int, float)) else None,
+            start_time=(
+                int(start)
+                if isinstance(start, int) and not isinstance(start, bool) and start > 0
+                else None
+            ),
             host=str(payload.get("host") or ""),
             port=int(port) if isinstance(port, int) and 0 < port <= 65535 else None,
             protocol_version=version if isinstance(version, int) else 0,
             token_fingerprint=str(payload.get("tokenFingerprint") or ""),
             profiles=tuple(str(p) for p in profiles if isinstance(p, str)) if isinstance(profiles, list) else (),
             updated_at=str(payload.get("updatedAt") or ""),
+            home=str(payload.get("home") or ""),
         )
 
 
@@ -128,6 +156,47 @@ def host_state_dir() -> Path:
     from gateway.status import _get_lock_dir
 
     return _get_lock_dir()
+
+
+def ensure_host_state_dir() -> Path:
+    """The rendezvous dir, created owner-only (``0o700``) and tightened if it is not.
+
+    A bare ``mkdir`` under the common ``umask 002`` leaves the dir group-writable, and the record
+    inside it is what every lifecycle verb believes: a same-group process could unlink+replace it
+    and choose this host's ATTACH answers (which home to dial, which profiles are "served").
+    Ownership of the dir is ours, so widening is repaired rather than refused.
+    """
+    directory = host_state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            if stat.S_IMODE(directory.stat().st_mode) & 0o077:
+                os.chmod(directory, 0o700)
+    return directory
+
+
+def _record_is_own(path: Path) -> bool:
+    """True when ``path`` was written by THIS OS user inside a dir this user owns.
+
+    ``read_record`` hands its result straight to :mod:`gateway.host_attach`, which dials the home
+    it names and believes the served set it carries. A hand-written record therefore buys an
+    attacker the lifecycle verdict for every profile on the host, so the file's ``st_uid`` — not
+    its contents — is what makes it a record at all. Windows sets no ACLs from mode bits; there
+    the dir already lives under the user's own state root.
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        info = path.stat()
+        parent = path.parent.stat()
+    except OSError:
+        return False
+    uid = os.getuid()  # windows-footgun: ok — unreachable on Windows (early return above)
+    if info.st_uid != uid or parent.st_uid != uid:
+        logger.warning(
+            "ignoring host record %s: owned by uid %s (expected %s)", path, info.st_uid, uid)
+        return False
+    return True
 
 
 def _validated_role(role: str) -> str:
@@ -167,6 +236,24 @@ def _pid_incarnation_matches(pid: int, create_time: Optional[float]) -> Optional
     return _pid_alive_matches(pid, create_time)
 
 
+def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
+    """Whether the record still names the same live process incarnation.
+
+    New records prefer the canonical start fingerprint: on Linux/WSL it comes from /proc start
+    ticks and is immune to wall-clock shifts that move psutil.create_time(). Legacy records keep
+    the create-time check until their owner republishes them.
+    """
+    if record.start_time is None:
+        return _pid_incarnation_matches(record.pid, record.create_time)
+    alive = _pid_incarnation_matches(record.pid, None)
+    if alive is not True:
+        return alive
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+
+    current = get_process_start_time(record.pid)
+    return None if current is None else start_time_fingerprints_match(record.start_time, current)
+
+
 def record_is_stale(record: Optional[HostRecord]) -> bool:
     """A record nobody may attach to: absent, unknown protocol, dead PID, or PID reuse.
 
@@ -181,24 +268,18 @@ def record_is_stale(record: Optional[HostRecord]) -> bool:
         return True
     if record.protocol_version != HOST_PROTOCOL_VERSION:
         return True
-    return _pid_incarnation_matches(record.pid, record.create_time) is False
+    return _record_incarnation_matches(record) is False
 
 
 def liveness_is_proven(record: HostRecord) -> bool:
-    """True only when the PID+createTime probe positively matched (never on ``None``)."""
-    return _pid_incarnation_matches(record.pid, record.create_time) is True
+    """True only when the record's process-incarnation probe positively matched (never on ``None``)."""
+    return _record_incarnation_matches(record) is True
 
 
 def dial_host(record: HostRecord) -> str:
     """Address to dial for ``record``: a wildcard bind is reached over loopback."""
     host = record.host or "127.0.0.1"
     return "127.0.0.1" if host in ("0.0.0.0", "::", "*", "") else host
-
-
-def url_host(record: HostRecord) -> str:
-    """URL authority host for ``record`` (IPv6 literals require brackets)."""
-    host = dial_host(record)
-    return f"[{host}]" if ":" in host else host
 
 
 def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Optional[dict]:
@@ -227,8 +308,10 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
 
     token = read_token(record.role)
     headers = {"X-Hermes-Token": token, "Authorization": f"Bearer {token}"} if token else {}
+    from hermes_cli.url_utils import format_url_host
+
     request = urllib.request.Request(
-        f"http://{url_host(record)}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
+        f"http://{format_url_host(host)}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed http scheme
             if response.status != 200:
@@ -245,9 +328,12 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
 
 
 def read_record(role: str, *, include_stale: bool = False) -> Optional[HostRecord]:
-    """Published record for ``role``; ``None`` when absent, corrupt or (by default) stale."""
+    """Published record for ``role``; ``None`` when absent, foreign, corrupt or (by default) stale."""
+    path = record_path(role)
+    if not _record_is_own(path):
+        return None
     try:
-        raw = record_path(role).read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return None
     try:
@@ -269,7 +355,7 @@ def read_token(role: str) -> str:
     of, same-OS-user authority — the authority boundary the host lock is scoped to.
     """
     try:
-        return token_path(role).read_text(encoding="utf-8").strip()
+        return token_path(role).read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -348,7 +434,7 @@ def claim_host_lock(role: str) -> tuple[HostLockOutcome, Optional[OSError]]:
 
     path = Path(key[1])
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_host_state_dir()
         handle = open(path, "a+", encoding="utf-8")
     except OSError as exc:
         logger.debug("host %s lock could not be opened at %s", role, path, exc_info=True)
@@ -385,25 +471,32 @@ def publish_record(
     port: Optional[int] = None,
     profiles: Sequence[str] = (),
     token: Optional[str] = None,
+    home: str = "",
 ) -> Optional[HostRecord]:
     """Publish this process as the host owner of ``role``. ``None`` when the write failed.
 
     ``token`` (serve) is persisted 0600 next to the record and only its fingerprint is published.
+    ``home`` is the launch HERMES_HOME — the key an attaching client needs to reach this owner's
+    control socket.
     """
     role = _validated_role(role)
+    from gateway.status import get_process_start_time
+
     record = HostRecord(
         role=role,
         pid=os.getpid(),
         create_time=process_create_time(),
+        start_time=get_process_start_time(os.getpid()),
         host=str(host or ""),
         port=int(port) if isinstance(port, int) and port > 0 else None,
         protocol_version=HOST_PROTOCOL_VERSION,
         token_fingerprint=token_fingerprint(token or ""),
         profiles=tuple(str(p) for p in profiles),
         updated_at=datetime.now(timezone.utc).isoformat(),
+        home=str(home or ""),
     )
     try:
-        record_path(role).parent.mkdir(parents=True, exist_ok=True)
+        ensure_host_state_dir()
         if token:
             # No record without its token: publishing one an attaching client cannot
             # authenticate against would degrade to a silent "attach refused forever".
@@ -412,7 +505,36 @@ def publish_record(
     except OSError:
         logger.warning("host %s record could not be published; discovery will not find it", role, exc_info=True)
         return None
+    _invalidate_attach_cache()
     return record
+
+
+def _invalidate_attach_cache() -> None:
+    """Drop :mod:`gateway.host_attach`'s memo: the record it summarises just changed."""
+    with contextlib.suppress(Exception):
+        from gateway.host_attach import invalidate_host_gateway_cache
+
+        invalidate_host_gateway_cache()
+
+
+def discard_dead_record(role: str) -> bool:
+    """Retract the record for ``role`` when its owner is provably gone; True when one was removed.
+
+    A confirmed stop must retract the record too. Leaving it made ``gateway restart --all`` a
+    silent no-op: the re-entered ``gateway run`` read the corpse's record, decided ATTACH and
+    exited 0, so the host ended up with no gateway at all.
+    """
+    role = _validated_role(role)
+    record = read_record(role, include_stale=True)
+    if record is None:
+        return False
+    if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
+        return False
+    for path in (record_path(role), token_path(role)):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+    _invalidate_attach_cache()
+    return True
 
 
 def clear_record(role: str) -> None:
@@ -424,6 +546,7 @@ def clear_record(role: str) -> None:
     for path in (record_path(role), token_path(role)):
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+    _invalidate_attach_cache()
 
 
 # Roles this process must clean up on the way out, and the signal handlers we prepended.
@@ -489,12 +612,30 @@ def cleanup_on_exit(role: str) -> None:
             _prev_signal_handlers[signum] = prev
 
 
-def served_profiles() -> tuple[str, ...]:
-    """Profiles this process multiplexes; ``()`` when the roster cannot be read."""
+def _multiplex_profiles_enabled() -> bool:
+    """Will THIS process multiplex? An explicit ``true`` and an unset key both say yes, and an
+    explicit ``false`` is RETIRED (``hermes_cli.gateway_multiplex_mode``) — it is warned about and
+    ignored at boot, so it must not make the claim-time record advertise a narrower roster than
+    the process actually serves. Reading it here was the last place the retired flag still decided
+    topology, and it made CLI/dashboard report "standalone, serving default" while the runtime
+    multiplexed. The RUNTIME verdict (a boot-time guard refusal) narrows the record afterwards, in
+    ``gateway.run._refresh_host_gateway_record``, which republishes the SETTLED set.
+    """
+    return True
+
+
+def served_profiles(*, multiplex: Optional[bool] = None) -> tuple[str, ...]:
+    """Profiles this process multiplexes; ``()`` when the roster cannot be read.
+
+    ``multiplex`` defaults to what this process's own config says. Hard-coding ``True`` here
+    published a record claiming EVERY profile from a gateway that would only ever serve its own,
+    and a second profile's supervised unit then stood down against a set nobody serves.
+    """
     try:
         from hermes_cli.profiles import profiles_to_serve
 
-        return tuple(name for name, _ in profiles_to_serve(multiplex=True))
+        enabled = _multiplex_profiles_enabled() if multiplex is None else bool(multiplex)
+        return tuple(name for name, _ in profiles_to_serve(multiplex=enabled))
     except Exception:
         logger.debug("served profile roster unavailable", exc_info=True)
         return ()

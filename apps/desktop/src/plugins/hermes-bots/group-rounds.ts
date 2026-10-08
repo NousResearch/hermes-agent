@@ -204,6 +204,53 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
   return members.filter(member => mentioned.has(groupMemberKey(member)))
 }
 
+/** #129443: member keys the thread's user sends EXPLICITLY addressed —
+ *  @everyone expands to every member, a bare @mention to just the mentioned
+ *  ones, and a send with no mention at all to nobody (that turn is
+ *  collaborative, so an ordinary "(pass)" stays legitimate silence). Only
+ *  user entries are scanned: a member's @handoff inside its own reply is the
+ *  #94478 continuation's business, not this addressing state. This is the
+ *  structured address the pass path consults, so a directly addressed
+ *  member can never settle the room silently. */
+export function explicitlyAddressedMemberKeys(log: GroupMessage[], members: GroupMember[]) {
+  let sinceLastUser: GroupMessage[] = []
+
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].from.kind === 'user') {
+      sinceLastUser = log.slice(i)
+
+      break
+    }
+  }
+
+  const keys = new Set<string>()
+  let everyone = false
+
+  for (const entry of sinceLastUser) {
+    if (entry.from.kind !== 'user') {
+      continue
+    }
+
+    const parsed = parseGroupChatMentions(entry.text, members)
+
+    if (parsed.everyone) {
+      everyone = true
+    }
+
+    for (const key of parsed.mentioned) {
+      keys.add(key)
+    }
+  }
+
+  if (everyone) {
+    for (const member of members) {
+      keys.add(groupMemberKey(member))
+    }
+  }
+
+  return keys
+}
+
 /** Rotate the roster so a different member leads each round. */
 export function rotateGroupSpeakers(members: GroupMember[], round: number) {
   if (members.length < 2) {
@@ -324,7 +371,11 @@ function maskQuotedAndCodeSpans(value: string): string {
  *  halt" = 2, "@x go, das ist halt ein Test" = 4); widen only with measured
  *  cases, never by guessing. */
 function stopWordPlacement(value: string): 'adjacent' | 'distant' | null {
-  const tokens = maskQuotedAndCodeSpans(value).toLowerCase().match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+  const tokens =
+    maskQuotedAndCodeSpans(value)
+      .toLowerCase()
+      .match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+
   const mentionAt: number[] = []
   const stopAt: number[] = []
 
@@ -567,13 +618,24 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
   const binding = followGroupChat(group, name => {
     group = name
   })
 
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => binding.isLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+
+  // #129443: the driving send's explicit addresses, frozen for the whole
+  // drive — mid-drive member handoffs stay the #94478 continuation's job.
+  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+
+  const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
 
   const context = {
     get group() {
@@ -583,6 +645,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     thread,
     startEpoch,
     failedMembers,
+    addressedKeys,
     binding,
     isCurrent
   }
@@ -944,7 +1007,12 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     } catch (error) {
       if (binding.isLive()) {
         const reason = groupFailureReason(error)
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread, ...(reason ? { reason } : {}) })
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: null,
+          thread: currentThread,
+          ...(reason ? { reason } : {})
+        })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

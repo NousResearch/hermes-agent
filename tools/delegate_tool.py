@@ -14,6 +14,7 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
@@ -58,6 +59,39 @@ from tools.delegate_tool_results import (  # noqa: F401
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
+
+def _parent_live_home(parent_agent: Any) -> Optional[Path]:
+    """Resolve the live transcripts' profile home from parent-owned state.
+
+    The parent's per-profile SessionDB sits directly under its profile home
+    (``<home>/state.db``), so the db path's parent IS the home. Returns None
+    when the parent exposes no usable SessionDB — the caller then falls back
+    to the ambient resolve, which is exactly the #91996 failure mode, so the
+    skip is logged rather than silent.
+    """
+    parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    # Concrete str/Path only — NOT the os.PathLike protocol: MagicMock (and any
+    # duck-typed test double) registers __fspath__ and so IS PathLike, which is
+    # how a Mock "home" slipped through and transcripts landed at
+    # str(<MagicMock>) paths (PR #131931 side-effect screen).
+    if isinstance(parent_db, (str, Path)):
+        return Path(parent_db).parent
+    if parent_db is not None:
+        logger.debug(
+            "delegate_task: parent _session_db.db_path is %r (not a str/Path); "
+            "live-transcript home pinning skipped, falling back to ambient "
+            "HERMES_HOME resolve (transcripts may land in a different profile, #91996)",
+            parent_db,
+        )
+        return None
+    logger.warning(
+        "delegate_task: parent agent exposes no _session_db; live-transcript "
+        "home pinning skipped, falling back to ambient HERMES_HOME resolve "
+        "(transcripts may land in a different profile, #91996)"
+    )
+    return None
+
+
 # Nested delegation is granted by depth/role in _build_child_agent, never by the
 # model naming toolsets (there is no model-facing toolsets argument).
 def _normalize_role(r: Optional[str]) -> str:
@@ -76,6 +110,10 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # tools can finish.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
+# After the stale verdict ends the wait, keep polling the worker this long for its real
+# result (#113222): a child that already wrote its final answer often finishes unwinding a
+# moment later, and that recorded result must be collected instead of a synthesized timeout.
+_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
@@ -237,6 +275,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                side_agent=True,
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -511,9 +550,22 @@ def delegate_task(
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+    #
+    # The transcripts' profile home is resolved from stable parent-owned
+    # state (the parent's per-profile SessionDB path), NOT ambient
+    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
+    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
+    # and process-wide HERMES_HOME is unstable under concurrent
+    # multi-profile workers — either way transcripts could land in the
+    # wrong profile (#91996). state.db sits directly under the home, so
+    # its parent IS the home; None falls back to today's ambient resolve
+    # (with a warning — that fallback is exactly the #91996 failure mode).
+    _live_home = _parent_live_home(parent_agent)
+
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        home=_live_home,
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
@@ -527,6 +579,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_home=_live_home,
     )
     return _run_batch(batch, background)
 
@@ -748,41 +801,3 @@ registry.register(
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FuturesTimeoutError  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import enum  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-from urllib.parse import urlsplit  # noqa: F401,E402
-from urllib.parse import urlunsplit  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_CHILD_TIMEOUT': ('tools.delegate_tool_config', 'DEFAULT_CHILD_TIMEOUT'),
-    'DEFAULT_MAX_SUMMARY_CHARS': ('tools.delegate_tool_results', 'DEFAULT_MAX_SUMMARY_CHARS'),
-    'DEFAULT_TOOLSETS': ('tools.delegate_tool_toolsets', 'DEFAULT_TOOLSETS'),
-    'MAX_DEPTH': ('tools.delegate_tool_config', 'MAX_DEPTH'),
-    'TOOLSETS': ('toolsets', 'TOOLSETS'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'file_state': ('tools', 'file_state'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

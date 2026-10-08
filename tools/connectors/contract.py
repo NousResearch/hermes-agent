@@ -33,9 +33,18 @@ class SettleReason(str, Enum):
     interrupt = "interrupt"
 
 
-KINDS: Tuple[str, ...] = ("connector", "mcp")
+KINDS: Tuple[str, ...] = ("connector", "mcp", "plugin", "skill")
 
 RESOLVED_STATES = frozenset({TargetState.connected, TargetState.skipped})
+# A failed catalog row is done as well: the host already ran the install and the row carries the
+# reason. Counting it as open held the model's turn until the deadline while nobody clicked. Try
+# again still works while another row keeps the operation open, and the failed row keeps its state
+# and reason when the operation settles.
+_RESOLVED_BY_KIND = {kind: RESOLVED_STATES | {TargetState.failed} for kind in ("plugin", "skill")}
+
+
+def resolves(kind: str, state: TargetState) -> bool:
+    return state in _RESOLVED_BY_KIND.get(kind, RESOLVED_STATES)
 
 _S, _A = TargetState, Actor
 
@@ -53,6 +62,12 @@ TRANSITIONS: Dict[Tuple[str, TargetState], Dict[TargetState, Actor]] = {
     ("mcp", _S.initiated): {_S.connected: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.skipped: _A.user},
     ("mcp", _S.failed): {_S.initiated: _A.user, _S.skipped: _A.user},
 }
+# ``manage_catalog`` rows install like an MCP entry: approve starts the host's install, the install
+# worker witnesses ``connected``, Try again re-runs a failed row.
+for _kind in ("plugin", "skill"):
+    for (_k, _from), _edges in list(TRANSITIONS.items()):
+        if _k == "mcp":
+            TRANSITIONS[(_kind, _from)] = dict(_edges)
 
 
 def allowed(kind: str, current: TargetState, to: TargetState) -> Optional[Actor]:

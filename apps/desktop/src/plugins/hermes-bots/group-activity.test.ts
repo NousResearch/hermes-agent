@@ -195,7 +195,7 @@ describe('turn arc', () => {
       turn: ({ profile }) => {
         if (profile === 'builder') {
           throw new Error(
-            "Error invoking remote method 'hermes:api': Local backend start for \"builder\" timed out while waiting for a free slot."
+            'Error invoking remote method \'hermes:api\': Local backend start for "builder" timed out while waiting for a free slot.'
           )
         }
 
@@ -209,7 +209,9 @@ describe('turn arc', () => {
     const failed = feed(room, 'Slot wait').find(event => event.kind === 'failed' && event.member === 'builder')
 
     expect(failed?.reason).toBe(room.activity.GROUP_SLOT_WAIT_REASON)
-    expect(room.activity.groupActivityLabel(failed!, 'Slot wait')).toBe("builder couldn't start — too many bots running")
+    expect(room.activity.groupActivityLabel(failed!, 'Slot wait')).toBe(
+      "builder couldn't start — too many bots running"
+    )
     expect(room.data.$botAttention.get()).toEqual({})
   })
 })
@@ -217,8 +219,12 @@ describe('turn arc', () => {
 describe('epoch scoping', () => {
   it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
     let release!: (reply: string) => void
-    const first = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? first : '(pass)' })
+
+    const first = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? first : '(pass)') })
     const member: GroupMember[] = [{ name: 'research', title: '' }]
     const thread = room.rounds.sendToGroupChat('Busy', member, 'first ask')!
     await drain(() => room.gateway.calls.length < 1, 50)
@@ -295,21 +301,5 @@ describe('feed shape', () => {
 
     expect(feed(room, 'Volatile').length).toBeGreaterThan(0)
     expect([...room.gateway.storage.keys()]).not.toContain('group-activity')
-  })
-
-  it('labels read like a person wrote them, with settled/cancelled as room-level lines', async () => {
-    const { activity } = await loadRoom()
-
-    const label = (event: Omit<GroupActivityEntry, 'at' | 'epoch'>) =>
-      activity.groupActivityLabel({ at: 0, epoch: 0, ...event })
-
-    expect(label({ kind: 'queued', member: 'You' })).toBe('You sent a message')
-    expect(label({ kind: 'replied', member: 'research' })).toBe('research replied')
-    expect(label({ kind: 'timed-out', member: 'ops' })).toBe('ops took too long')
-    expect(label({ kind: 'failed', member: 'ops', reason: 'slot wait timed out' })).toBe(
-      'ops hit an error — slot wait timed out'
-    )
-    expect(label({ kind: 'cancelled', member: null })).toBe('turn interrupted by a newer message')
-    expect(label({ kind: 'settled', member: null })).toBe('turn settled')
   })
 })

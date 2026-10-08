@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from tools.arg_coercion import coerce_tool_args
+
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
     """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
@@ -56,6 +58,31 @@ def emit_terminal_post_tool_call(
         )
     except Exception:
         pass
+
+
+def apply_transform_tool_result(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    effective_task_id: str,
+    tool_call_id: Optional[str],
+    duration_ms: int = 0,
+) -> Any:
+    """Apply ``transform_tool_result`` to an inline-dispatched tool's result.
+
+    Registry tools get this inside ``handle_function_call``; inline executors never
+    reach it, so the agent paths call the same helper (after the terminal
+    ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
+    try:
+        from model_tools import _CallIds, _apply_transform_tool_result_hook
+        return _apply_transform_tool_result_hook(
+            function_name, function_args, result, duration_ms,
+            _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
+        )
+    except Exception:
+        return result
 
 
 @dataclass
@@ -186,6 +213,17 @@ def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
         agent.enabled_toolsets = [*enabled, *added]
 
 
+def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The card callback lives on the agent; only a desktop chat draws catalog rows.
+    from tools.connectors.catalog_tool import manage_catalog
+
+    return manage_catalog(
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        connection_callback=getattr(agent, "connection_callback", None),
+        card_surface=getattr(agent, "platform", None) == "desktop",
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -196,7 +234,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
-INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+_RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
@@ -210,9 +248,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
-        "tools.clarify_tool", "clarify_tool",
-        ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),
-        ("questions", "questions"),
+        "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
     "read_terminal": _callback_tool(
@@ -236,10 +272,31 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.tour_tool", "tour_tool", "tour_callback",
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
+        ("preset", "preset"),
+    ),
+    # The session id keys the card facts its /initiate-setup turn recorded.
+    "setup_choose": _tool(
+        "tools.setup_choose_tool", "setup_choose_tool",
+        ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
+        ("multi_select", "multi_select"),
+        callback=lambda agent, ctx: getattr(agent, "setup_choose_callback", None),
+        session_id=lambda agent, ctx: getattr(agent, "session_id", None),
     ),
     "manage_connections": _manage_connections,
+    "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+}
+
+
+def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
+    def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        return executor(agent, coerce_tool_args(name, args), ctx)
+    return _exec
+
+
+INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+    name: _coerced(name, executor) for name, executor in _RAW_INLINE_TOOL_EXECUTORS.items()
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three

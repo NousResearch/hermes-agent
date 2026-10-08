@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from tools.connectors.contract import RESOLVED_STATES, Actor, SettleReason, TargetState, allowed
+from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
 OPERATION_DEADLINE_SECONDS = 300.0
@@ -39,13 +39,18 @@ class Target:
     required_env: List[Dict[str, Any]] = field(default_factory=list)
     # Fields a transition passes through to the model (``tools`` on a connected MCP target).
     extra: Dict[str, Any] = field(default_factory=dict)
+    # The install step an ``initiated`` catalog row is in (an ``InstallPhase`` id); drawn only then.
+    phase: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
-        return self.state in RESOLVED_STATES
+        return resolves(self.kind, self.state)
 
     def snapshot(self, *, with_url: bool = True) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value}
+        out: Dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value,
+                               "resolved": self.resolved}
+        if self.phase and self.state == TargetState.initiated:
+            out["phase"] = self.phase
         if self.detail:
             out["detail"] = self.detail
         if self.instructions:
@@ -128,8 +133,10 @@ class ConnectionOperation:
         self._changed(change, snapshot)
         return change
 
-    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
-        """Replace a target's link and detail without a state change (a repeated failure).
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user,
+                phase: Optional[str] = None) -> None:
+        """Replace a target's link, detail and install phase without a state change (a repeated
+        failure, or the next step of an install).
 
         ``actor`` says who produced the new text: a second failure of a backend attempt is the
         backend's report, not the user's move, and the frame must not claim otherwise."""
@@ -139,6 +146,7 @@ class ConnectionOperation:
         with self._lock:
             target.connect_url = connect_url
             target.detail = detail
+            target.phase = phase
             change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": actor.value,
                       "detail": detail}
             snapshot = self._bump_locked()
@@ -209,14 +217,16 @@ class ConnectionOperation:
             return dict(self._settled_snapshot, targets=targets)
         return self._snapshot_locked(with_urls=with_urls)
 
-    def result(self, *, with_urls: bool = True) -> Dict[str, Any]:
-        """The settled model result, or the live snapshot before settlement.
+    def snapshot(self, *, with_urls: bool = True) -> Dict[str, Any]:
+        with self._lock:
+            return self._result_locked(with_urls=with_urls)
 
-        Deferred MCP listings are model-only result data. Change frames and request payloads use
-        the internal snapshots, so renderers never receive the catalog block.
-        """
+    def result(self, *, with_urls: bool = True) -> Dict[str, Any]:
         with self._lock:
             result = self._result_locked(with_urls=with_urls)
+        for target in result["targets"]:
+            target.pop("connection_id", None)
+            target.pop("resolved", None)  # the card's flag; the model reads state
         if result.get("settled_at") is None:
             return result
         from tools.registry import registry
@@ -252,3 +262,8 @@ class ConnectionOperation:
         if self.tool_call_id:
             payload["tool_call_id"] = self.tool_call_id
         return payload
+
+
+class DetachedOperation(ConnectionOperation):
+
+    on_change = None

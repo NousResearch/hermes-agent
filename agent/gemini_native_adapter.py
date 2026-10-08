@@ -25,13 +25,9 @@ from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_
 
 logger = logging.getLogger(__name__)
 
-try:
-    import hermes_cli as _hermes_cli
+from hermes_cli.version_info import get_version_info
 
-    _HERMES_VERSION = str(_hermes_cli.__version__)
-except Exception:
-    _HERMES_VERSION = "0.0.0"
-_API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
+_API_CLIENT = f"hermes-agent/{get_version_info().base_version}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 # A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
@@ -503,19 +499,36 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> Dict[str, Any]:
+    """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
+
+    Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
+    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
+    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    """
+    if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
+        return {}
+    spec = response_format.get("json_schema") if response_format.get("type") == "json_schema" else None
+    # A ``json_schema`` spec with no ``schema`` key has nothing to constrain with (the Anthropic
+    # translator bails the same way) — ask for JSON and let the model shape it.
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if not isinstance(schema, dict):
+        return {"responseMimeType": "application/json"}
+    key, prep = ("responseJsonSchema", prepare_gemini_tool_parameters) if json_schema else ("responseSchema", sanitize_gemini_tool_parameters)
+    return {"responseMimeType": "application/json", key: prep(schema)}
+
+
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "", tools_as_json_schema: bool = False,
+    response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
-    optional = (
-        ("systemInstruction", system_instruction),
-        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
-        ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
-    )
+    gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
+    tool_config = _translate_tool_choice_to_gemini(tool_choice)
+    optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
@@ -523,7 +536,18 @@ def build_gemini_request(
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
-    request["generationConfig"] = {k: v for k, v in generation if v is not None}
+    json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
+    # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
+    # function) is combined with a JSON responseMimeType, and pre-Gemini-3 models reject JSON output
+    # alongside ANY function declarations ("Function calling with a response mime type:
+    # 'application/json' is unsupported"); only Gemini 3+ combines tools with structured output.
+    # The tools win; JSON can come on a later turn, and callers tolerate an unconstrained reply.
+    forced_call = (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY"
+    if json_output and (forced_call or (gemini_tools and not is_gemini3)):
+        logger.debug("Gemini: dropping JSON response_format — %s",
+                     "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
+        json_output = {}
+    request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
     return request
 
 
@@ -551,10 +575,21 @@ def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
 
 
 def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
+    """Gemini ``usageMetadata`` → OpenAI-shaped usage.
+
+    Hidden thinking is reported separately in ``thoughtsTokenCount``:
+    ``candidatesTokenCount`` counts visible output only, while ``totalTokenCount``
+    already includes thoughts. OpenAI's ``completion_tokens`` covers reasoning, so
+    thoughts are folded in (otherwise a thinking turn bills a few percent of its
+    real output and ``prompt + completion != total``) and also surfaced under
+    ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
+    them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
     count = lambda key: int(usage_meta.get(key) or 0)  # noqa: E731
+    reasoning_tokens = count("thoughtsTokenCount")
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
+        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
 
 
@@ -744,7 +779,10 @@ def _error_object(body_text: str) -> Dict[str, Any]:
 
 def gemini_http_error(
     response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "", base_url: str = "",
+    key_guidance: bool = True,
 ) -> GeminiAPIError:
+    """``key_guidance=False`` for OAuth-bearer callers: the API-key fixes (free tier, Standard key, wrong
+    key surface) are wrong advice when the credential is a user's OAuth access token."""
     status = response.status_code
     body_text = (_response_text(response) if body_text is None else body_text) or ""
     err_obj = _error_object(body_text)
@@ -758,11 +796,11 @@ def gemini_http_error(
     # Users who bypassed the setup wizard (raw GOOGLE_API_KEY in .env) still need to learn the free
     # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw
     # 401 asks for OAuth; after Sept 2026 the same AIza key is often a 400 API_KEY_INVALID).
-    if status == 429 and is_free_tier_quota_error(err_message or body_text):
+    if key_guidance and status == 429 and is_free_tier_quota_error(err_message or body_text):
         message += _FREE_TIER_GUIDANCE
-    if is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
+    if key_guidance and is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
         message += _STANDARD_KEY_GUIDANCE
-    if status == 403:
+    if key_guidance and status == 403:
         message += wrong_gemini_surface_guidance(base_url, api_key, err_status)
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
@@ -776,13 +814,17 @@ class GeminiNativeClient:
     # For agent/auxiliary_client.py: a complete client, never re-dispatched through a wire adapter.
     # (No HERMES_SKIP_ASYNC_WRAP — the async path has a real conversion, AsyncGeminiNativeClient.)
     HERMES_SKIP_TRANSPORT_WRAP = True
+    # Seams for a subclass that speaks the same wire under another credential (an OAuth bearer on the
+    # per-user-quota methods): RPC method names, the missing-credential text, and ``_auth_headers``.
+    GENERATE_METHOD, STREAM_METHOD = "generateContent", "streamGenerateContent"
+    MISSING_KEY_ERROR = _MISSING_KEY_ERROR
 
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
         timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
     ) -> None:
         if not (api_key or "").strip():
-            raise RuntimeError(_MISSING_KEY_ERROR)
+            raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
@@ -801,9 +843,15 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _auth_headers(self) -> Dict[str, str]:
+        return {"x-goog-api-key": self.api_key}
+
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+        return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+
+    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> "GeminiAPIError":
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
@@ -813,21 +861,23 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
+        timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
-        response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
+            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
+        response = self._http.post(url + self.GENERATE_METHOD, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response, api_key=self.api_key, base_url=self.base_url)
+            raise self._http_error(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -841,9 +891,7 @@ class GeminiNativeClient:
             headers = {**self._headers(), "Accept": "text/event-stream"}
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise gemini_http_error(
-                        response, body_text=read_streaming_error_body(response), api_key=self.api_key, base_url=self.base_url,
-                    )
+                    raise self._http_error(response, read_streaming_error_body(response))
                 tool_call_indices: Dict[str, Dict[str, Any]] = {}
                 for event in _iter_sse_events(response):
                     yield from translate_stream_event(event, model, tool_call_indices)

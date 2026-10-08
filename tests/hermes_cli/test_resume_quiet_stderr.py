@@ -11,10 +11,11 @@ Interactive mode (tool_progress_mode == "full") still uses ChatConsole.
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 from cli import HermesCLI
+from agent.i18n import t
 
 
 def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):
@@ -31,12 +32,11 @@ def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):
     cli.agent = None
     # We need _init_agent to reach the resume block (line ~4757) but not
     # proceed into actual AIAgent construction. _ensure_runtime_credentials
-    # must return True (False returns early at line 4743). _install_tool_callbacks,
-    # _ensure_tirith_security are stubbed; the resume block will either return
+    # must return True (False returns early at line 4743). _install_tool_callbacks
+    # is stubbed; the resume block will either return
     # False (session-not-found) or reach the eventual AIAgent() call which
     # we'll let raise — we only check stdout/stderr printed BEFORE that.
     cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     return cli
 
@@ -47,15 +47,14 @@ class TestResumeQuietStderr:
         db.get_session.return_value = None
         cli = _make_cli(quiet=True, db=db)
 
-        with patch("cli._prepare_deferred_agent_startup"):
-            result = cli._init_agent()
+        result = cli._init_agent()
 
         captured = capsys.readouterr()
         assert result is False
         # stdout must stay clean
-        assert "Session not found" not in captured.out
+        assert t("cli.resume.session_not_found", session_id=cli.session_id) not in captured.out
         # the resume status goes to stderr
-        assert "Session not found" in captured.err
+        assert t("cli.resume.session_not_found", session_id=cli.session_id) in captured.err
         assert "hermes sessions list" in captured.err
 
     def test_session_not_found_goes_to_stdout_in_full_mode(self, capsys):
@@ -63,13 +62,12 @@ class TestResumeQuietStderr:
         db.get_session.return_value = None
         cli = _make_cli(quiet=False, db=db)
 
-        with patch("cli._prepare_deferred_agent_startup"):
-            result = cli._init_agent()
+        result = cli._init_agent()
 
         captured = capsys.readouterr()
         assert result is False
         # Interactive mode keeps the existing _cprint path → stdout.
-        assert "Session not found" in captured.out
+        assert t("cli.resume.session_not_found", session_id=cli.session_id) in captured.out
 
     def test_resumed_banner_goes_to_stderr_in_quiet_mode(self, capsys):
         db = MagicMock()
@@ -84,19 +82,18 @@ class TestResumeQuietStderr:
         cli = _make_cli(quiet=True, db=db)
         # Stop _init_agent right after the resume banner: prevent it from
         # constructing a real AIAgent (the next code path).
-        with patch("cli._prepare_deferred_agent_startup"):
-            try:
-                cli._init_agent()
-            except Exception:
-                # The post-resume agent-init machinery may fail in this
-                # stubbed context (no API key, no real config) — we only
-                # care about the printed banner that comes earlier.
-                pass
+        try:
+            cli._init_agent()
+        except Exception:
+            # The post-resume agent-init machinery may fail in this
+            # stubbed context (no API key, no real config) — we only
+            # care about the printed banner that comes earlier.
+            pass
 
         captured = capsys.readouterr()
         # Banner on stderr — stdout stays clean for automation.
-        assert "↻ Resumed session" not in captured.out
-        assert "↻ Resumed session" in captured.err
+        assert t("cli.resume.resumed_session") not in captured.out
+        assert t("cli.resume.resumed_session") in captured.err
         assert "20260524_111111_xyz" in captured.err
         assert "demo" in captured.err
 
@@ -108,11 +105,10 @@ class TestResumeQuietStderr:
         db._conn = MagicMock()
 
         cli = _make_cli(quiet=True, db=db)
-        with patch("cli._prepare_deferred_agent_startup"):
-            try:
-                cli._init_agent()
-            except Exception:
-                pass
+        try:
+            cli._init_agent()
+        except Exception:
+            pass
 
         captured = capsys.readouterr()
         assert "has no messages" not in captured.out

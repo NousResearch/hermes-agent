@@ -234,11 +234,19 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     # the default rather than relying on the dict-default, which only applies to a missing key. A null value
     # would otherwise reach `", ".join(None)` and crash the whole listing (#32896).
     deliver = job.get("deliver") or ["local"]
+    if isinstance(deliver, str):
+        deliver = [deliver]
+    # `deliver` can be a comma-separated composite target (e.g. "origin,all") that the
+    # scheduler splits at fire time — flatten it here so the Deliver row and the origin
+    # check below both see the individual tokens.
+    deliver = [token.strip() for item in deliver for token in item.split(",") if token.strip()]
     skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
     monitor_source = job.get("monitor_script") or job.get("monitor_url")
     mon_state = job.get("monitor_state") or {}
     latest_execution = job.get("latest_execution") or {}
     optional = [
+        ("Origin", _origin_row(job, deliver)),
+        ("Toolsets", ", ".join(job["enabled_toolsets"]) if job.get("enabled_toolsets") else ""),
         ("Skills", ", ".join(skills) if skills else ""),
         ("Script", job.get("script")),
         ("Monitor", f"{monitor_source} (agent runs only on output change)" if monitor_source
@@ -258,8 +266,22 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         _next_run_row(job),
-        ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
+        ("Deliver", ", ".join(deliver)),
     ] + [(label, value) for label, value in optional if value]
+
+
+def _origin_row(job: Dict[str, Any], deliver: List[str]) -> str:
+    """``Origin:`` display value when the job delivers back to its origin conversation."""
+    if "origin" not in deliver:
+        return ""
+    origin = job.get("origin")
+    if not origin or not isinstance(origin, dict):
+        return ""
+    platform = origin.get("platform")
+    if not platform:
+        return ""
+    chat_id = origin.get("chat_id")
+    return f"{platform}:{chat_id}" if chat_id else str(platform)
 
 
 def _short_reason(text: Any, limit: int = 120) -> str:

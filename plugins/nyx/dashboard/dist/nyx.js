@@ -597,6 +597,9 @@ const VS_COMUM = `
   varying vec3 vCol;
   // ponto de tamanho 0 vira ponto de 1 px (o WebGL arredonda pro mínimo): pra sumir de verdade, sai da tela
   void esconder() { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0; vCol = vec3(0.0); }
+  // pulsação leve de cada ponto, no ritmo dele (período de ~2,4 a 5 s): brilho ±30% (±45% pensando), tamanho ±12%.
+  // Pensar aumenta a amplitude, não a velocidade: mudar a velocidade com o tempo correndo faria a fase saltar
+  float pulso(float sd) { return 1.0 + (0.3 + 0.15 * uPensa) * sin(uTime * (1.25 + 1.35 * fract(sd * 7.31)) + sd * 83.0); }
   vec3 fimDoPonto(vec3 p, float sd, float b, vec3 cor) {
     p += vec3(sin(uTime * (0.4 + sd * 0.5) + sd * 40.0), cos(uTime * (0.33 + sd * 0.4) + sd * 27.0), sin(uTime * 0.37 + sd * 19.0)) * 0.012;
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -605,10 +608,10 @@ const VS_COMUM = `
     float tw = 1.0 + (0.9 + uPensa * 0.6) * pow(0.5 + 0.5 * sin(uTime * rit + sd * 50.0), 12.0);
     float ouro = step(0.9, cor.r) * step(cor.b, 0.3);
     float boca = 1.0 + ouro * uFala * (0.7 + 0.6 * sin(uTime * 9.0 + sd * 3.0));   // falando: o dourado pulsa
-    vCol = cor * b * mix(0.28, 1.15, k) * tw * boca * 0.42 * uExpo;
+    vCol = cor * b * mix(0.28, 1.15, k) * tw * boca * pulso(sd) * 0.42 * uExpo;
     gl_Position = projectionMatrix * mv;
     float persp = uScale / -mv.z;
-    gl_PointSize = uSize * INF.z * mix(0.7, 1.2, k) * persp * (1.0 + 0.4 * (tw - 1.0));
+    gl_PointSize = uSize * INF.z * mix(0.7, 1.2, k) * persp * (1.0 + 0.4 * (tw - 1.0)) * (1.0 + 0.4 * (pulso(sd) - 1.0));
     return p;
   }`;
 const VS_BUSTO = VS_COMUM + `

@@ -149,7 +149,9 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
       if (fract(q.z * 91.7) > visP) continue;
       vec4 h = hash43(cel);
       float sd = q.x;
-      float r = CEL * (conta ? 0.8 : 0.6 + 0.25 * h.w);
+      // pulsação leve, a mesma das partículas (nyx.js, pulso): brilho ±30% (±45% pensando), raio ±12%
+      float pulso = 1.0 + (0.3 + 0.15 * uPensa) * sin(uTime * (1.25 + 1.35 * fract(sd * 7.31)) + sd * 83.0);
+      float r = CEL * (conta ? 0.8 : 0.6 + 0.25 * h.w) * (1.0 + 0.4 * (pulso - 1.0));
       vec3 c = (cel + 0.25 + 0.5 * h.xyz) * CEL
              + 0.1 * CEL * vec3(sin(uTime * (0.4 + sd * 0.5) + sd * 40.0), cos(uTime * (0.33 + sd * 0.4) + sd * 27.0), sin(uTime * 0.37 + sd * 19.0));
       float aa = min(0.35 * min(pe, 1.5), 1.15 * CEL - r);
@@ -161,7 +163,7 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
       float rit = 0.8 + sd * 2.5 + uPensa * 1.5;         // pensando: cintila mais rápido
       float tw = 1.0 + (0.9 + uPensa * 0.6) * pow(0.5 + 0.5 * sin(uTime * rit + sd * 50.0), 12.0);
       float boca = dourado ? 1.0 + uFala * (0.7 + 0.6 * sin(uTime * 9.0 + sd * 3.0)) : 1.0;   // falando: o dourado pulsa
-      acc += cor * b * (0.7 + 0.5 * visP) * tw * boca * cob;
+      acc += cor * b * (0.7 + 0.5 * visP) * tw * boca * pulso * cob;
     }
     // exposição fixa, calibrada na tela cheia pra dar o mesmo brilho do modo partículas. Lá a exposição muda com a
     // tela (compensa a sobreposição, que cresce quando a figura encolhe); aqui cada px amostra a pele e não muda

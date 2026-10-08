@@ -84,10 +84,15 @@ class ToolsSpec:
     None => all pre-checked (no filter written on failure). ``default_excluded``: exclude-mode
     counterpart written to ``tools.exclude`` — everything NOT matching stays enabled, including tools
     the server adds later (for huge OpenAPI-derived surfaces). Mutually exclusive.
+    ``resources`` / ``prompts`` pass through the runtime utility-family toggles:
+    native include lists alone do not disable generated resource/prompt tools.
+    Unset leaves existing catalog behavior unchanged.
     """
 
     default_enabled: Optional[List[str]] = None
     default_excluded: Optional[List[str]] = None
+    resources: Optional[bool] = None
+    prompts: Optional[bool] = None
 
 
 @dataclass
@@ -240,7 +245,11 @@ def _parse_tools(path: Path, raw: Any) -> ToolsSpec:
             _require_str_list(path, f"tools.{key}", val)
     if default_enabled is not None and default_excluded is not None:
         raise CatalogError(f"{path}: tools.default_enabled and tools.default_excluded are mutually exclusive")
-    return ToolsSpec(default_enabled=default_enabled, default_excluded=default_excluded)
+    utility_flags = {key: tools_raw[key] for key in ("resources", "prompts") if key in tools_raw}
+    for key, value in utility_flags.items():
+        if not isinstance(value, bool):
+            raise CatalogError(f"{path}: tools.{key} must be a boolean")
+    return ToolsSpec(default_enabled=default_enabled, default_excluded=default_excluded, **utility_flags)
 
 
 _MAX_APPLICATIONS = 16
@@ -557,6 +566,10 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
             from hermes_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
+    utility_flags = {key: getattr(entry.tools, key) for key in ("resources", "prompts")
+                     if getattr(entry.tools, key) is not None}
+    if utility_flags:
+        cfg["tools"] = utility_flags
     return cfg
 
 
@@ -600,7 +613,12 @@ def _write_tools_filter(name: str, mode: str, values: Optional[List[str]]) -> No
     servers = cfg.setdefault("mcp_servers", {})
     server_entry = servers.get(name) or {}
     if values is None:
-        server_entry.pop("tools", None)
+        tools_block = server_entry.get("tools") or {}
+        utility_flags = {key: tools_block[key] for key in ("resources", "prompts") if key in tools_block}
+        if utility_flags:
+            server_entry["tools"] = utility_flags
+        else:
+            server_entry.pop("tools", None)
     else:
         tools_block = server_entry.get("tools") or {}
         if not isinstance(tools_block, dict):
@@ -732,6 +750,7 @@ def card_install_config(entry: CatalogEntry) -> dict:
     install_dir = _do_git_install(entry) if entry.install is not None else None
     cfg = _build_server_config(entry, install_dir)
     cfg["enabled"] = True
+    utility_flags = dict(cfg.get("tools") or {})
     prior_include = _read_prior_tool_list(entry.name, "include")
     prior_exclude = _read_prior_tool_list(entry.name, "exclude")
     if prior_include is not None:
@@ -742,6 +761,8 @@ def card_install_config(entry: CatalogEntry) -> dict:
         cfg["tools"] = {"exclude": list(entry.tools.default_excluded)}
     elif entry.tools.default_enabled:
         cfg["tools"] = {"include": list(entry.tools.default_enabled)}
+    if utility_flags:
+        cfg.setdefault("tools", {}).update(utility_flags)
     return cfg
 
 

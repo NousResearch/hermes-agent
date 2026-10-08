@@ -1,0 +1,54 @@
+manifest_version: 1
+
+name: envelopebudget
+description: Read EnvelopeBudget budgets, accounts, envelopes, transactions, debt plans, and upcoming bills.
+source: https://github.com/envelope-budget/envelopebudget-mcp
+
+# Official vendor-hosted remote MCP. Production wire probes verified
+# resource/authorization metadata, public DCR (201, no secret), and the
+# first-party browser-login redirect. Metadata advertises S256 and refresh;
+# authenticated PKCE rejection, consent, exchange and refresh were not
+# exercised. Hermes handles discovery, DCR and PKCE.
+transport:
+  type: http
+  url: https://envelopebudget.com/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: mcp:read
+
+# Explicit allowlist: future tools remain off. No AI jobs, assignment,
+# suggestion resolution, or SDK resource/prompt meta-tools enabled.
+tools:
+  resources: false
+  prompts: false
+  default_enabled:
+    - list_budgets
+    - get_budget_overview
+    - list_accounts
+    - list_envelopes
+    - search_transactions
+    - get_transaction
+    - get_spending_summary
+    - get_cashflow_summary
+    - get_debt_plan
+    - get_debt_payoff_projection
+    - list_scheduled_transactions
+    - get_upcoming_scheduled
+    - get_ai_categorization_disclosure
+    - list_ai_categorization_jobs
+    - get_ai_categorization_review
+
+suggest:
+  keywords:
+    - envelopebudget
+  hosts:
+    - envelopebudget.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with EnvelopeBudget
+  (or run `hermes mcp login envelopebudget`). Sign in and explicitly select
+  the budgets to share. This entry requests only mcp:read; write permissions
+  and AI job execution are not enabled. Restart the session so tools load.
+  Revoke access at https://envelopebudget.com/developer/mcp-connections.

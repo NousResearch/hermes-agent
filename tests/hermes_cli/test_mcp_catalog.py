@@ -92,6 +92,39 @@ def _basic_manifest(name: str = "demo", **overrides) -> dict:
     return body
 
 
+@pytest.mark.parametrize("selection", [None, ["read_budget"]])
+def test_catalog_disables_generated_utilities(catalog_dir, monkeypatch, selection):
+    from hermes_cli.mcp_catalog import (
+        _parse_manifest, _build_server_config, card_install_config, _write_tools_filter,
+    )
+    from hermes_cli.config import load_config, save_config
+    path = _write_manifest(catalog_dir, "demo", _basic_manifest(
+        tools={"default_enabled": ["read_budget"], "resources": False, "prompts": False}))
+    entry = _parse_manifest(path)
+    cfg = _build_server_config(entry, None)
+    assert cfg["tools"] == {"resources": False, "prompts": False}
+    from types import SimpleNamespace
+    from tools.mcp_tool_registration import _select_utility_schemas
+    server = SimpleNamespace(initialize_result=SimpleNamespace(
+        capabilities=SimpleNamespace(resources=object(), prompts=object())))
+    assert _select_utility_schemas("demo", server, cfg) == []
+    card = card_install_config(entry)
+    assert card["tools"] == {"include": ["read_budget"], "resources": False, "prompts": False}
+    save_config({"mcp_servers": {"demo": cfg}})
+    _write_tools_filter("demo", "include", selection)
+    actual = load_config()["mcp_servers"]["demo"]["tools"]
+    assert actual["resources"] is False and actual["prompts"] is False
+    assert actual.get("include") == selection
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_catalog_utility_flags_require_booleans(catalog_dir, value):
+    from hermes_cli.mcp_catalog import _parse_manifest, CatalogError
+    path = _write_manifest(catalog_dir, "demo", _basic_manifest(tools={"resources": value}))
+    with pytest.raises(CatalogError, match="boolean"):
+        _parse_manifest(path)
+
+
 def _entry(name: str):
     """Wrapper that asserts entry exists (satisfies type-checker + nicer failure msg)."""
     from hermes_cli.mcp_catalog import get_entry

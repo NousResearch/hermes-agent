@@ -6,7 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+from hermes_cli.update_cmd_common import _record_stop
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -134,6 +135,7 @@ def _park_detached_head(git_cmd, cwd, branch) -> None:
               f"to {rescue_ref} failed.")
         print(f"  Update stopped so those commits are not orphaned. Keep them with: "
               f"git -C {cwd} branch <name> {sha[:12]}")
+        _record_stop("detached_head")
         sys.exit(1)
     count = (_git_run(git_cmd, ["rev-list", "--count", sha, "--not", "--branches", "--tags", "--remotes"],
                       cwd).stdout or "").strip()
@@ -363,12 +365,25 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     return True
 
 
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None) -> bool:
+class UpstreamTargetBroken(Exception):
+    """The fork sync's upstream target fails the startup syntax check: refused before its move."""
+
+    def __init__(self, sha: str, path: str, error: str) -> None:
+        super().__init__(f"upstream/main ({sha[:10]}) has a syntax error in {path}")
+        self.sha, self.path, self.error = sha, path, error
+
+
+def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None,
+                                  checkout_move=None) -> bool:
     """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
 
     Returns True only when origin/main was actually verified against upstream/main; False when the check never
     happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
-    a bare fetch drags in thousands of auto-generated branches.
+    a bare fetch drags in thousands of auto-generated branches. ``UpstreamTargetBroken`` when the
+    upstream commit fails the startup syntax check: nothing moved, the caller rolls the update back.
+
+    ``checkout_move(target)`` is the caller's context for the one tree write (the merge): the
+    paused gateways' tree gate is bound to *target* before git writes a file.
 
     See #97052.
     """
@@ -404,15 +419,70 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         print("  ✓ Fork is up to date with upstream")
         return True
     print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
+    # A tree move like the pull itself: the marker and the owed tail are armed before git writes,
+    # and the just-fetched ref is merged (a second `git pull` fetch could move past the marker's target).
+    from hermes_cli import update_cmd_commit as _commit
+    from hermes_cli._early_recovery import interrupted_pull_marker, is_object_id
+    pre = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
+    if not is_object_id(pre):
+        # The marker's ``pre`` is what a killed move is restored to: never arm ``pre=``.
+        print("  ✗ Could not resolve HEAD. Skipping upstream sync.")
+        return False
+    target = upstream  # the counted commit is the marker's target and the merge's (m2)
+    # Judged BEFORE the move, like the origin target's preflight: the marker goes on git's exit 0,
+    # so a broken target must never land on the strength of the caller's later guard (review G1).
+    from hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES
+    if broken := _commit.target_syntax_error(git_cmd, cwd, target, _UPDATE_CRITICAL_FILES):
+        raise UpstreamTargetBroken(target, *broken)
+    refused = _commit.arm_commit_point(git_cmd, cwd, _commit.debt_sha_for_move(pre, target), pre=pre,
+                                       target=target, stash=None)
     try:
         # The fetch above already brought upstream/main: a local fast-forward (no network, so no
         # credential helper is started under the checkout lock fd a mutator inherits) to the
         # very commit counted above.
-        run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
+        if refused:
+            raise subprocess.CalledProcessError(1, "merge", stderr=refused)  # no marker, no move
+        with (checkout_move or _no_move)(upstream):
+            run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+    except (OSError, subprocess.SubprocessError) as exc:  # CustodyRefused is an OSError; a timeout too
+        if refused or _commit.settle_failed_tree_move(cwd):
+            # Back at ``pre``; that is still new code when the origin pull moved first, and disarm
+            # then owes the restart for it instead of ``target`` (it hands obligations back only at
+            # the run's start commit).
+            _commit.disarm_commit_obligations()
+        else:
+            _commit.owe_restore_of(cwd, pre)  # torn under its marker: the restore lands on ``pre``
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
+        if detail := (getattr(exc, "stderr", None) or ("" if isinstance(exc, subprocess.CalledProcessError) else str(exc))):
+            print(f"    ({detail})")
         return False
-    print("  ✓ Updated from upstream\n→ Syncing fork...")
+    interrupted_pull_marker(cwd).unlink(missing_ok=True)  # git exited 0: whole at what it landed on
+    if (landed := _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "HEAD"], cwd)) != upstream:
+        # Not the commit the debt was armed for (O3's check, here): owed for the HEAD it is on, or
+        # handed back at the run's start commit; the caller's HEAD check refuses the update.
+        _commit.disarm_commit_obligations()
+        print(f"  ✗ HEAD is on {(landed or '?')[:10]} after the upstream merge, not {upstream[:10]}.")
+        return False
+    print("  ✓ Updated from upstream")
+    # The fork push waits for a validated update: ``_push_synced_fork`` after the syntax guard.
+    return True
+
+
+def _push_synced_fork(git_cmd: list[str], cwd: Path) -> None:
+    """Publish an upstream sync to the fork's main once the update is validated.
+
+    Pushes only when local HEAD is upstream/main and strictly ahead of origin/main, i.e. this run
+    (or an earlier one whose push failed) fast-forwarded main from upstream.
+    """
+    head = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
+    # Full ref names: a local branch called upstream/main or origin/main must not answer (m2).
+    upstream = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "refs/remotes/upstream/main^{commit}"], cwd)
+    origin = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "refs/remotes/origin/main^{commit}"], cwd)
+    if not head or head != upstream or head == origin:
+        return
+    if origin and not _git_ok(git_cmd, ["merge-base", "--is-ancestor", origin, head], cwd):
+        return
+    print("→ Syncing fork...")
     if _sync_fork_with_upstream(git_cmd, cwd):
         print("  ✓ Fork synced with upstream")
     else:
@@ -420,7 +490,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)\n"
             "    Your local repo is updated, but your fork on GitHub may be behind."
         )
-    return True
 
 
 def _has_http_code(stderr: str, *codes: str) -> bool:
@@ -564,7 +633,12 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
     return owners
 
 
-def _discard_lockfile_churn(git_cmd, repo_root):
+def _no_move(*_targets, **_bound):
+    """The ``checkout_move`` of a run with no paused gateways: the step runs unbound."""
+    return nullcontext({})
+
+
+def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
     instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
     lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
@@ -590,11 +664,12 @@ def _discard_lockfile_churn(git_cmd, repo_root):
                 dirty.append(path)
         if not dirty:
             return
-        _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)
+        with (checkout_move or _no_move)(paths=dirty):
+            _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
 
 
-def _normalize_managed_eol(git_cmd, repo_root):
+def _normalize_managed_eol(git_cmd, repo_root, *, checkout_move=None):
     """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
 
     Git for Windows sets ``autocrlf=true`` system-wide, turning LF files CRLF and breaking ``git checkout``
@@ -639,8 +714,9 @@ def _normalize_managed_eol(git_cmd, repo_root):
             return
         if eol_only:
             # Pathspec via stdin: thousands of paths exceed the Windows argv limit.
-            _probe_run("checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--",
-                       input="\0".join(sorted(eol_only)), check=False)
+            with (checkout_move or _no_move)(paths=sorted(eol_only)):
+                _probe_run("checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--",
+                           input="\0".join(sorted(eol_only)), check=False)
             if _eol_only():  # still dirty: pinning would only surface churn we failed to clear
                 return
             print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")

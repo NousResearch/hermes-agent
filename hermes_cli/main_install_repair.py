@@ -186,6 +186,23 @@ def _quarantine_stamp_ms(stale: Path) -> int | None:
         return None
 
 
+def _recover_update_debts_on_startup() -> None:
+    """The startup half of a previous update, run on every launch before dispatch."""
+    # Dependency recovery already ran before imports. Report any fleet restart
+    # still owed by a previous update without restarting services here.
+    if "update" not in sys.argv[1:]:
+        try:
+            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
+
+            _warn_pending_fleet_restart_on_startup()
+        except Exception:  # a startup warning never blocks the launch it warns about
+            logger.debug("pending fleet restart check failed", exc_info=True)
+    from hermes_cli.update_pause_record import recover as _recover_paused_gateways
+    # Unconditional: recover() itself skips the PARSED `update`/`gateway run` commands; a raw argv
+    # value equal to "update" (`--resume update`) is no reason to strand paused gateways.
+    _recover_paused_gateways()  # a killed `hermes update` left gateways paused (Windows)
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep — and where necessary RESCUE — ``hermes.exe.old.*`` from updates.
 

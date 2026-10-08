@@ -357,6 +357,9 @@ UPDATE_STAGE_MARK = UPDATE_STAGE_METRIC = "hermes.update.stage"
 PROCESS_EXIT_MARK = PROCESS_EXIT_METRIC = "hermes.process.exit"
 UPDATE_KINDS = frozenset({"cli", "desktop"})
 UPDATE_OUTCOMES = frozenset({"failed", "noop", "refused", "success"})
+# ``partial``: committed, but interrupted after the commit point or the user's changes stay parked
+# (only `hermes update` receipts; the Desktop RPC keeps UPDATE_OUTCOMES).
+UPDATE_RUN_OUTCOMES = UPDATE_OUTCOMES | {"partial"}
 # `hermes update` pipeline stages, in pipeline order (the receipt's stage marks use these names).
 UPDATE_STAGE_ORDER = ("plan", "snapshot", "apply", "deps", "build", "restart", "verify")
 UPDATE_STAGES = frozenset(UPDATE_STAGE_ORDER)
@@ -399,6 +402,143 @@ FEATURE_DISABLED_SURFACES = frozenset({"cli_config", "cli_slash", "cli_tools", "
 FEATURE_DISABLED_EVENTS = frozenset({"disabled", "re_enabled"})
 FEATURE_DISABLED_NAME_MAX_LENGTH = 64
 # ---- end v5 signals ----
+
+# ---- iuf c1 ----
+# Why an extension install failed, named at each failure exit of the three emitters
+# (hermes_cli/skills_hub.py::_install_skill, hermes_cli/plugins_cmd_install.py::recorded_install,
+# hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
+# A raised exception with no class of its own is classified by its TYPE: network / permission /
+# filesystem_error, anything else ``exception:<Type>``, which keeps only the ``exception`` prefix
+# (as on compression rows). Never the error message.
+EXTENSION_COMMON_FAILURE_CLASSES = frozenset({
+    "exception", "filesystem_error", "network", "none", "other", "permission",
+})
+EXTENSION_SKILL_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "ambiguous",          # a short name matched several skills in different registries
+    "auth_rejected",      # GitHub refused every configured credential (401)
+    "fetch_failed",       # no registry served the files (unreachable, 404, removed)
+    "invalid_bundle",     # unsafe path, symlink or invalid skill name in the bundle
+    "invalid_name",       # a URL skill with no usable name (non-interactive, bad --name, cancelled prompt)
+    "not_found",          # a short name no registry knows, or a pinned registry that does not exist
+    "rate_limited",       # the GitHub API rate limit was exhausted
+    "scan_blocked",       # the security scan refused the bundle
+    "stale_index",        # listed in a registry index whose files no longer exist upstream
+})
+EXTENSION_PLUGIN_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "already_installed",  # the plugin already exists / is pinned and needs --force or --ref
+    "clone_failed",       # git clone / fetch / checkout of the plugin repository failed or timed out
+    "deps_declined",      # the user declined the Python dependency prompt
+    "deps_failed",        # PM could not prepare the plugin's dependencies
+    "git_missing",        # git is not installed
+    "incompatible",       # newer manifest_version, unsupported platform / GPU / runtime version
+    "invalid_source",     # the identifier or subdirectory does not name a usable git source
+    "manifest_invalid",   # unreadable or malformed plugin.yaml / plugin.json / dependency declaration
+    "non_interactive",    # Python dependencies need consent and nobody could answer (no --yes-deps)
+    "removed_from_catalog",  # on the catalog kill list
+    "scan_blocked",       # the security scan refused the plugin
+})
+EXTENSION_MCP_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "auth_required",      # the server refused the sign-in (OAuth error, HTTP 401/403)
+    "bootstrap_failed",   # a catalog entry's bootstrap command exited non-zero
+    "clone_failed",       # git clone / checkout of a catalog entry's repository failed
+    "config_invalid",     # no such catalog entry, undeclared env var, or a manifest that cannot be built
+    "config_rejected",    # Hermes refused a suspicious command/args configuration
+    "connect_failed",     # the probe could not reach or initialize the server
+    "git_missing",        # git is not installed
+    "missing_credentials",  # a required credential was not provided
+    "server_start_failed",  # the stdio server command is missing, or its native module needs another Node
+})
+EXTENSION_KIND_FAILURE_CLASSES = {
+    "mcp_server": EXTENSION_MCP_FAILURE_CLASSES, "plugin": EXTENSION_PLUGIN_FAILURE_CLASSES,
+    "skill": EXTENSION_SKILL_FAILURE_CLASSES,
+}
+EXTENSION_FAILURE_CLASSES = (
+    EXTENSION_SKILL_FAILURE_CLASSES | EXTENSION_PLUGIN_FAILURE_CLASSES | EXTENSION_MCP_FAILURE_CLASSES
+)
+# The skills-hub adapter that resolved or served a skill: every ``SOURCE_ID`` the router in
+# tools/skills_hub_search.py::create_source_router builds. ``none`` = no adapter was involved
+# (bundled restores, plugin and MCP rows), ``unresolved`` = a hub lookup no adapter answered,
+# ``other`` = an adapter id this list does not name.
+EXTENSION_REGISTRY_IDS = frozenset({
+    "browse-sh", "clawhub", "github", "hermes-index", "lobehub", "official", "skills-sh", "url", "well-known",
+})
+EXTENSION_REGISTRIES = EXTENSION_REGISTRY_IDS | frozenset({"none", "other", "unresolved"})
+# Why a `hermes update` run failed or was refused, derived from the FINAL receipt only
+# (shared_metrics_update.update_failure_class); ``none`` unless outcome is failed/refused/partial.
+UPDATE_FAILURE_CLASSES = frozenset({
+    "aborted_before_apply",  # fallback: exited before the checkout moved with no reason recorded
+    "build_failed",          # the build stage reported failure
+    "deps_failed",           # PM dependency preparation failed (no deps mark, or a PM error type)
+    "exception",             # the run ended on an uncaught exception (type name dropped)
+    "fleet_stale",           # post-update verification found a gateway still stale or down
+    "fleet_unverified",      # verification could not prove the fleet current (no rows, unaccounted runtime)
+    "git_failed",            # a git/installer subprocess failed before the checkout moved (stash, pull, merge)
+    "interrupted",           # KeyboardInterrupt / exit 130
+    "lock_held",             # another updater held the update lock (refused, exit 2)
+    "managed_install",       # admission refused: image/package-managed or commit-build install (refused)
+    "none", "other",
+    "os_error",              # the run ended on an OSError (disk full, permission, file in use)
+    "restart_failed",        # the gateway restart failed, or a skipped restart left the fleet owing one
+    "subprocess_failed",     # a subprocess error (CalledProcessError, TimeoutExpired) reached the boundary
+    "unknown",               # the reporter sent no reason (Desktop packaged updaters)
+    "disk_full",             # out of disk space (ENOSPC, or no room to stage the ZIP)
+    "local_changes_parked",  # committed, but the user's stashed changes could not be re-applied (partial)
+    "permission_denied",     # the run ended on a PermissionError
+})
+# The exit that stopped a run before its apply stage mark, recorded at the exit itself as one of
+# these tokens (update_receipt.record_stop_reason -> the receipt's ``stop_class``).
+UPDATE_STOP_CLASSES = frozenset({
+    "branch_missing",         # the target branch exists neither locally nor on origin
+    "branch_unsupported",     # --branch on the Windows ZIP fallback
+    "channel_unresolved",     # the update channel could not be resolved
+    "checkout_move_failed",   # git could not move the checkout (ff refused, reset or switch failed)
+    "commit_point_refused",   # the commit point could not be armed durably; nothing moved
+    "detached_head",          # a detached checkout stayed put, or its commits could not be backed up
+    "disk_full",              # (see above)
+    "download_failed",        # the ZIP fallback download failed
+    "fetch_failed",           # git fetch failed
+    "git_in_progress",        # a merge/rebase/cherry-pick/... was already in progress
+    "git_index_locked",       # git refused: another git process's .git/index.lock exists
+    "git_timeout",            # a network git call hit the updater's time limit
+    "head_moved",             # a ref moved during the update; HEAD is not the selected commit
+    "local_changes_blocked",  # local changes git could not stash, or a dirty tree the ZIP will not overwrite
+    "lock_held",              # (see above)
+    "managed_install",        # (see above): HERMES_MANAGED installs refuse before any receipt
+    "merge_conflict",         # local commits on a custom branch conflict with upstream
+    "not_git_checkout",       # the install is not a git checkout (non-Windows)
+    "old_version_handoff",    # an older updater's hand-off to this version could not finish
+    "parked_branch_blocked",  # the checkout is parked on another branch that is unsafe to switch
+    "permission_denied",      # (see above): git could not write a file it needs (e.g. index.lock's directory)
+    "stash_restore_rejected",  # re-applied local changes broke Hermes; the update stopped
+    "syntax_rollback",        # the pulled code failed the syntax check and was rolled back
+    "target_syntax_error",    # the target failed the syntax check before anything moved
+    "target_unresolved",      # the fetched target ref did not resolve to a commit
+    "unexpected_branch",      # the checkout ended on a branch that is not the target
+    "venv_foreign_owner",     # the venv belongs to another OS user
+    "zip_failed",             # the ZIP fallback swap failed and was rolled back
+})
+UPDATE_FAILURE_CLASSES |= UPDATE_STOP_CLASSES
+# ---- end iuf c1 ----
+# ---- iuf c2 ----
+# One fresh-install run of scripts/install.sh / install.ps1, from the local receipt the installer
+# leaves (the installer itself never sends); counted by a later Hermes start while collection is on.
+INSTALL_RUN_MARK = INSTALL_RUN_METRIC = "hermes.install.run"
+INSTALL_RUN_INSTALLERS = frozenset({"install_ps1", "install_sh", "other"})
+INSTALL_RUN_OUTCOMES = frozenset({"failed", "success"})
+# The installers' stage_names / $Stages ladder (hyphens as underscores).
+INSTALL_RUN_STAGES = frozenset({
+    "complete", "config", "gateway", "prerequisites", "products", "python_deps", "repository", "setup", "venv",
+})
+INSTALL_RUN_FAILED_STAGES = INSTALL_RUN_STAGES | {"none", "other"}
+# The code each installer fail()/Fail call site passes; `none` on success.
+INSTALL_RUN_FAILURE_CLASSES = frozenset({
+    "commit_not_on_branch", "curl_missing", "deps_install_failed", "dir_not_checkout", "download_digest_mismatch",
+    "download_failed", "filesystem_error", "gateway_failed", "git_checkout_failed", "git_clone_failed",
+    "git_extract_failed", "git_fetch_failed", "git_missing", "git_reset_failed", "interrupted",
+    "libstdcxx_missing", "local_changes_blocked", "none", "other", "products_build_failed",
+    "python_install_failed", "setup_failed", "unsupported_platform", "uv_unusable",
+})
+# ---- end iuf c2 ----
 
 
 def update_duration_bucket(duration_ms: Any) -> str:
@@ -538,12 +678,10 @@ DESKTOP_FRICTION_DETAILS: dict[str, frozenset[str]] = {
 DESKTOP_FRICTION_KINDS = frozenset(DESKTOP_FRICTION_DETAILS)
 DESKTOP_FRICTION_DETAIL_VALUES = frozenset().union(*DESKTOP_FRICTION_DETAILS.values())
 # The Desktop first-run flows: the classic provider overlay (store/onboarding.ts), the guided flow
-# (store/onboarding-gate.ts phases + committed guide cards), free-tier sign-in, then the consent
-# answer and the first message.
+# (store/onboarding-gate.ts phases), free-tier sign-in, then the consent answer and the first message.
 DESKTOP_ONBOARDING_STEPS = frozenset({
-    "choose_later", "consent", "first_message", "free_tier_ready", "guide", "guide_connectors",
-    "guide_first_build", "guide_layout", "guide_look", "guide_skip", "model_pick", "provider_api_key",
-    "provider_local", "provider_oauth", "provider_setup", "sign_in",
+    "choose_later", "consent", "first_message", "free_tier_ready", "guide", "guide_skip", "model_pick",
+    "provider_api_key", "provider_local", "provider_oauth", "provider_setup", "sign_in",
 })
 DESKTOP_ONBOARDING_EVENTS = frozenset({"abandoned", "completed", "reached"})
 # Bot Mode (a bot's canonical chat or a bot side-chat in front) vs regular Sessions mode, per day.
@@ -758,6 +896,9 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     EXTENSION_INSTALL_METRIC: {
         "kind": EXTENSION_KINDS, "name": EXTENSION_NAMES, "outcome": EXTENSION_OUTCOMES,
         "source": EXTENSION_SOURCES,
+        # ---- iuf c1 ----
+        "failure_class": EXTENSION_FAILURE_CLASSES, "registry": EXTENSION_REGISTRIES,
+        # ---- end iuf c1 ----
     },
     # ---- v4 loop ----
     MEMORY_OP_METRIC: {
@@ -802,7 +943,10 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     UPDATE_RUN_METRIC: {
         "apply_mode": UPDATE_APPLY_MODES, "duration_bucket": UPDATE_DURATION_BUCKETS,
         "failed_stage": UPDATE_FAILED_STAGES, "from_version_age_bucket": VERSION_AGE_BUCKETS,
-        "kind": UPDATE_KINDS, "outcome": UPDATE_OUTCOMES,
+        "kind": UPDATE_KINDS, "outcome": UPDATE_RUN_OUTCOMES,
+        # ---- iuf c1 ----
+        "failure_class": UPDATE_FAILURE_CLASSES,
+        # ---- end iuf c1 ----
     },
     UPDATE_STAGE_METRIC: {
         "duration_bucket": UPDATE_DURATION_BUCKETS, "outcome": UPDATE_STAGE_OUTCOMES, "stage": UPDATE_STAGES,
@@ -873,6 +1017,13 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "event": FEATURE_DISABLED_EVENTS, "kind": FEATURE_DISABLED_KINDS, "surface": FEATURE_DISABLED_SURFACES,
     },
     # ---- end v5 signals ----
+    # ---- iuf c2 ----
+    INSTALL_RUN_METRIC: {
+        "duration_bucket": UPDATE_DURATION_BUCKETS, "failed_stage": INSTALL_RUN_FAILED_STAGES,
+        "failure_class": INSTALL_RUN_FAILURE_CLASSES, "installer": INSTALL_RUN_INSTALLERS,
+        "outcome": INSTALL_RUN_OUTCOMES,
+    },
+    # ---- end iuf c2 ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -960,6 +1111,13 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
+# ---- iuf c1 ----
+# Rows recorded before the failure_class / registry split drain as they were counted.
+_LEGACY_METRIC_FIELDS[EXTENSION_INSTALL_METRIC] = (
+    _METRIC_FIELDS[EXTENSION_INSTALL_METRIC] - {"failure_class", "registry"},
+)
+_LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - {"failure_class"},)
+# ---- end iuf c1 ----
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
 SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
@@ -1011,6 +1169,9 @@ _DECISION_MARK_METRICS = {
     TOOL_UNAVAILABLE_MARK: TOOL_UNAVAILABLE_METRIC, PROVIDER_SETUP_MARK: PROVIDER_SETUP_METRIC,
     FEATURE_DISABLED_MARK: FEATURE_DISABLED_METRIC,
     # ---- end v5 signals ----
+    # ---- iuf c2 ----
+    INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
+    # ---- end iuf c2 ----
 }
 
 
@@ -1027,7 +1188,22 @@ def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -
             else value in contract[field]
         )
         for field in fields
+    ) and _extension_install_fields_agree(metric_name, dimensions)
+
+
+# ---- iuf c1 ----
+def _extension_install_fields_agree(metric_name: str, dimensions: dict[str, Any]) -> bool:
+    """Cross-field rule the per-field enums cannot state: an install row's ``failure_class`` is in
+    its kind's set and is ``none`` exactly on success; only skill rows name a registry."""
+    if metric_name != EXTENSION_INSTALL_METRIC or "failure_class" not in dimensions:
+        return True  # other metrics, and the pre-split shape without failure_class/registry
+    kind, failure_class = dimensions["kind"], dimensions["failure_class"]
+    return (
+        failure_class in EXTENSION_KIND_FAILURE_CLASSES[kind]
+        and (failure_class == "none") == (dimensions["outcome"] == "success")
+        and (kind == "skill" or dimensions["registry"] == "none")
     )
+# ---- end iuf c1 ----
 
 
 def _relay_metadata(

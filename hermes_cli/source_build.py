@@ -94,6 +94,11 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
 
 
 def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None) -> None:
+    # Bounded build (#63338): the Vite/Rolldown dashboard build saturates small
+    # hosts; cap the V8 heap and the native bundler's rayon thread pool.
+    from hermes_cli.web_build_limits import apply_web_build_limits
+
+    apply_web_build_limits(env)
     # Default-brand icons are committed; installs never render them.
     icons = icons or project_root
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),

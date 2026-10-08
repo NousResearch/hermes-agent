@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -181,6 +181,10 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -1039,6 +1043,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1122,8 +1127,6 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
-  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
-  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1491,7 +1494,7 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  product-default | best-quality-resident | speed-gated-quality | fastest-resident |
    *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
@@ -1819,8 +1822,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1829,7 +1830,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

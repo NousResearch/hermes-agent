@@ -58,3 +58,34 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
 
     assert is_session_yolo_enabled(session_a) is False
     assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+@pytest.mark.asyncio
+async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_path):
+    """/yolo is persisted on the routing entry: a fresh process re-arms it on the next turn, and a
+    conversation boundary (/new, /resume) clears both copies so a restart cannot revive it."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    def _runner():
+        runner = _make_runner()
+        runner.session_store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        runner.session_store._db = None  # JSON routing index: the restart reads it back from disk
+        return runner
+
+    event = _make_event("chat-a")
+    first = _runner()
+    key = first._session_key_for_source(event.source)
+    await first._handle_yolo_command(event)
+    assert is_session_yolo_enabled(key) is True
+
+    disable_session_yolo(key)  # a new process starts with an empty in-memory approval set
+    second = _runner()
+    second._restore_session_yolo(key, second.session_store.get_or_create_session(event.source))
+    assert is_session_yolo_enabled(key) is True
+
+    second._clear_session_boundary_security_state(key)
+    assert is_session_yolo_enabled(key) is False
+    third = _runner()
+    third._restore_session_yolo(key, third.session_store.get_or_create_session(event.source))
+    assert is_session_yolo_enabled(key) is False

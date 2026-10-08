@@ -147,7 +147,7 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 def _check_all_guards(command: str, env_type: str,
                       has_host_access: bool = False) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+    """Delegate to the consolidated command guard with the CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
                                   has_host_access=has_host_access)
@@ -1016,7 +1016,7 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
+    """Run the command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
@@ -1455,7 +1455,7 @@ def terminal_tool(
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))
-        # Pre-exec security checks (tirith + dangerous command detection);
+        # Pre-exec security checks (floors + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
@@ -1553,7 +1553,7 @@ TERMINAL_SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "default": 0,
-                "description": "0 disables. With background=true: also notify every N seconds (positive values are clamped to min 60) with the output produced since the last notice; a tick with no new output is skipped. For bounded jobs you must react to mid-run (merge trains, full suites, deploys) — never for servers or watchers; implies notify=true."
+                "description": "0 disables. With background=true: also notify every N seconds (positive values are clamped to min 60) with the output produced since the last notice; a tick with no new output is skipped. For bounded jobs you must react to mid-run (merge trains, full suites, deploys) — never for servers or watchers; implies notify=true. Ignored on foreground commands.",
             },
             "persist_on_release": {
                 "type": "boolean",
@@ -1582,8 +1582,13 @@ def _handle_terminal(args, **kw):
         )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
-    # with the corrected call instead of being silently ignored.
+    # `notify` wins. Notification INTENT on a foreground call is refused with
+    # the corrected call. A foreground `heartbeat` carries no intent: it has
+    # no execution meaning without a tracked process, and providers that
+    # materialize every schema property (or models copying a background call
+    # shape) send `heartbeat=60` on ordinary commands — refusing it produced
+    # identical-call retry loops (46 subagent sessions, 4 refusals each, 38 of
+    # which never ran a single command), so it is normalized away instead.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
@@ -1592,12 +1597,13 @@ def _handle_terminal(args, **kw):
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        if notify or watch_patterns or notify_on_complete:
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
+                "notify only applies to background commands (foreground "
+                "results return directly). Either drop it, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
+        heartbeat = 0
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "

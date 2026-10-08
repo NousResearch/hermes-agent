@@ -174,17 +174,86 @@ def slash_command_fields(*, command: Any, surface: Any) -> dict[str, str]:
     }
 
 
-def extension_install_fields(*, kind: Any, source: Any, name: Any, outcome: Any) -> dict[str, str] | None:
+def extension_install_fields(
+    *, kind: Any, source: Any, name: Any, outcome: Any,
+    # ---- iuf c1 ----
+    failure_class: Any = None, registry: Any = None, error: Any = None,
+    # ---- end iuf c1 ----
+) -> dict[str, str] | None:
     kind_value = _norm(kind)
     if kind_value not in contract.EXTENSION_KINDS:
         return None
     source_value = _norm(source)
+    outcome_value = "success" if _norm(outcome) in {"success", "ok", "installed"} else "failed"
     return {
         "kind": kind_value,
         "name": catalog.extension_metric_name(kind_value, name),
-        "outcome": "success" if _norm(outcome) in {"success", "ok", "installed"} else "failed",
+        "outcome": outcome_value,
         "source": source_value if source_value in contract.EXTENSION_SOURCES else "other",
+        # ---- iuf c1 ----
+        "failure_class": extension_failure_class(kind_value, outcome_value, failure_class, error),
+        "registry": extension_registry(kind_value, registry),
+        # ---- end iuf c1 ----
     }
+
+
+# ---- iuf c1 ----
+# Exceptions from these top-level packages are transport failures, whatever their class name.
+_NETWORK_MODULES = frozenset({"aiohttp", "h11", "h2", "httpcore", "httpx", "requests", "ssl", "urllib3", "websockets"})
+
+
+def tagged_failure_class(error: object) -> str | None:
+    """The ``failure_class`` a raise site set, read statically: an attribute hook on a third-party
+    exception must not raise from a classifier and replace the user's error."""
+    import inspect
+
+    tagged = inspect.getattr_static(error, "failure_class", None)
+    return tagged if isinstance(tagged, str) and tagged else None
+
+
+def exception_failure_class(error: BaseException) -> str:
+    """Why a raised install failed, from the exception alone: the class its raise site tagged
+    (``failure_class`` attribute), else its TYPE. Never reads the message, and never runs the
+    exception's own attribute hooks (a raising ``__getattr__`` or property reads by type)."""
+    tagged = tagged_failure_class(error)
+    if tagged:
+        return tagged
+    import socket
+    import urllib.error
+
+    if isinstance(error, PermissionError):
+        return "permission"
+    if isinstance(error, (ConnectionError, TimeoutError, socket.gaierror, urllib.error.URLError)) or any(
+            (getattr(cls, "__module__", "") or "").split(".", 1)[0] in _NETWORK_MODULES for cls in type(error).__mro__):
+        return "network"
+    if isinstance(error, OSError):
+        return "filesystem_error"
+    return f"exception:{type(error).__name__}"
+
+
+def extension_failure_class(kind: str, outcome: str, failure_class: Any, error: Any = None) -> str:
+    """``none`` on success; else the caller's class (or the raised error's), collapsed onto the kind's
+    closed set: ``exception:<Type>`` keeps only its prefix, anything unlisted reads ``other``."""
+    if outcome == "success":
+        return "none"
+    value = failure_class if isinstance(failure_class, str) and failure_class else None
+    if value is None and isinstance(error, BaseException):
+        value = exception_failure_class(error)
+    value = _norm(value).split(":", 1)[0]
+    return value if value in contract.EXTENSION_KIND_FAILURE_CLASSES[kind] - {"none"} else "other"
+
+
+def extension_registry(kind: str, registry: Any) -> str:
+    """The skills-hub adapter id for a skill row; plugin and MCP rows are ``none``."""
+    if kind != "skill":
+        return "none"
+    # The hub's own alias table (`--source skills.sh`); already imported by the install it records.
+    from tools.skills_hub_install import _SOURCE_ID_ALIASES
+
+    value = _norm(registry) or "none"
+    value = _SOURCE_ID_ALIASES.get(value, value)
+    return value if value in contract.EXTENSION_REGISTRIES else "other"
+# ---- end iuf c1 ----
 
 
 def _long_session(d: dict[str, str]) -> bool:

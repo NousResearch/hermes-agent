@@ -972,27 +972,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         set_code_prompt_callback(self._vault_code_callback)
         self._tool_callbacks_installed = True
 
-    def _ensure_tirith_security(self) -> None:
-        """Check tirith availability once before tools can run terminal commands."""
-        if self._tirith_security_checked:
-            return
-        self._tirith_security_checked = True
-        try:
-            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
-
-            if (
-                ensure_installed(log_failures=False) is None and is_platform_supported()
-                and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
-            ):
-                # First launch after install downloads tirith in the background;
-                # warning then would report a fault that resolves itself.
-                if missing_is_expected():
-                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
-                else:
-                    _cprint(f"  {_DIM}{_t('cli.startup.tirith_unavailable')}{_RST}")
-        except Exception as exc:
-            logger.debug("tirith availability check failed: %s", exc)
-
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
         try:

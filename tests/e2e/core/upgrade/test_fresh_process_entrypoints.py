@@ -80,7 +80,7 @@ _OPTIONAL_IMPORTS = {
     "faster_whisper": "faster-whisper", "firecrawl": "firecrawl-py", "google": "google-auth",
     "google_auth_oauthlib": "google-auth-oauthlib", "googleapiclient": "google-api-python-client",
     "httplib2": "httplib2", "lark_oapi": "lark-oapi", "mautrix": "mautrix",
-    "mcp": "mcp", "mem0": "mem0ai", "microsoft_teams": "microsoft-teams-apps", "mistralai": "mistralai",
+    "mcp": "mcp", "microsoft_teams": "microsoft-teams-apps", "mistralai": "mistralai",
     "modal": "modal", "numpy": "numpy", "pyopen_wakeword": "pyopen-wakeword",
     "opentelemetry": "opentelemetry-sdk", "parallel": "parallel-web", "pvporcupine": "pvporcupine",
     "pyasn1": "pyasn1", "qrcode": "qrcode", "sentencepiece": "sentencepiece", "sherpa_onnx": "sherpa-onnx",

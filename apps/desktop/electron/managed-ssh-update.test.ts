@@ -12,6 +12,7 @@ import {
   buildRemoteUpdateObservationCommand,
   buildWindowsManagedUpdateLaunch,
   fenceManagedSshBootstrapPublication,
+  joinManagedUpdatesForApply,
   ManagedConnectionUpdateGate,
   managedSshDrainBlocker,
   managedSshRecoveryDisposition,
@@ -608,57 +609,26 @@ test.runIf(process.platform !== 'win32')(
 )
 
 test.runIf(process.platform !== 'win32')(
-  'managed observer judges a v2 claim by its owner and delegate, not as malformed',
-  async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-v2-marker-'))
-    const marker = path.join(home, '.hermes-update-in-progress')
-
-    const target = {
-      ssh: { exec: async () => '' },
-      platform: 'Linux',
-      hermesPath: '/opt/hermes/hermes',
-      hermesHome: home
-    }
-
-    const observe = async () =>
-      parseRemoteUpdateObservation(
-        (await exec(buildRemoteUpdateObservationCommand(target as any, CORRELATION), { shell: 'sh' })).stdout,
-        CORRELATION
-      )
-
-    const exited = (await exec(`sh -c 'echo $$'`)).stdout.trim()
-    // The updater's v2 claim: pid, started_at, creation-time line (A2), then tagged lines.
-    const deadClaim = `${exited}\n${Math.floor(Date.now() / 1000)}\nct:1700000000.125\n`
-    // A delegate is live only at its real creation time (the judge checks pid AND ct, so a reused
-    // pid cannot impersonate it): record the spawn time, well inside the 2 s tolerance.
-    const delegateCt = (Date.now() / 1000).toFixed(3)
-    const delegate = spawn('sleep', ['30'], { stdio: 'ignore' })
-
-    try {
-      await writeFile(marker, deadClaim)
-      assert.equal((await observe()).marker, 'dead', 'a dead v2 claim is dead, never malformed')
-      await writeFile(marker, `${deadClaim}delegate:${delegate.pid} ct:${delegateCt}\n`)
-      const delegated = await observe()
-      assert.equal(delegated.marker, 'live', 'a live delegate keeps the update live')
-      assert.equal(delegated.markerPid, delegate.pid)
-    } finally {
-      delegate.kill()
-      await rm(home, { force: true, recursive: true })
-    }
-  }
-)
-
-test.runIf(process.platform !== 'win32')(
   'managed observer unwraps a named profile home for the install-wide marker',
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
     const profileHome = path.join(root, 'profiles', 'research')
 
+    // A v2 claim whose owner is gone and whose delegate is alive at its creation time.
+    const delegate = spawn('python3', ['-c', 'import time;print(time.time(),flush=True);time.sleep(30)'], {
+      stdio: ['ignore', 'pipe', 'inherit']
+    })
+
     try {
+      const ct = await new Promise<string>(resolve =>
+        delegate.stdout.once('data', chunk => resolve(String(chunk).trim()))
+      )
+
+      const now = Math.floor(Date.now() / 1000)
       await mkdir(profileHome, { recursive: true })
       await writeFile(
         path.join(root, '.hermes-update-in-progress'),
-        `${process.pid}\n${Math.floor(Date.now() / 1000)}\n`
+        `0\n${now}\nct:${ct}\ndelegate:${delegate.pid} ct:${ct}\nrun:desk-1\n`
       )
 
       const command = buildRemoteUpdateObservationCommand(
@@ -675,8 +645,9 @@ test.runIf(process.platform !== 'win32')(
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'live')
-      assert.equal(parsed.markerPid, process.pid)
+      assert.equal(parsed.markerPid, delegate.pid)
     } finally {
+      delegate.kill('SIGKILL')
       await rm(root, { force: true, recursive: true })
     }
   }
@@ -1270,4 +1241,61 @@ test('macOS remotes with no live serve and Linux remotes still update', () => {
   assert.equal(row.skipped, undefined)
   assert.equal(row.ok, false)
   assert.equal(row.error, 'boom')
+})
+
+// Review H3: the join had no bound of its own, so one unresolved (or a
+// late-registered) managed operation parked a local apply forever. A bounded
+// join answers false at its deadline and abandons nothing; unbounded (quit)
+// and an empty or settled set still answer as before.
+test('a bounded managed-operation join answers at its deadline without dropping the operation', async () => {
+  const operations = new Set<Promise<unknown>>()
+  let releaseLate!: () => void
+  const late = new Promise<void>(resolve => (releaseLate = resolve))
+
+  const first = Promise.resolve().then(() => {
+    operations.add(late)
+  })
+
+  operations.add(first)
+  first.finally(() => operations.delete(first))
+
+  const outcome = await Promise.race([
+    waitForManagedUpdateOperations(() => operations, { timeoutMs: 50 }),
+    new Promise(resolve => setTimeout(resolve, 2_000, 'still parked'))
+  ])
+
+  assert.equal(outcome, false)
+  assert.equal(operations.has(late), true, 'the pending operation keeps its registration')
+  releaseLate()
+  late.finally(() => operations.delete(late))
+  await late
+  await Promise.resolve()
+  assert.equal(await waitForManagedUpdateOperations(() => operations, { timeoutMs: 50 }), true)
+})
+
+test('a local apply refuses, without spawning anything, while a managed operation outlives the bounded join', async () => {
+  const pending = new Promise<void>(() => {})
+  const logs: string[] = []
+
+  const refusal = await joinManagedUpdatesForApply(
+    () => [pending],
+    line => logs.push(line),
+    20
+  )
+
+  assert.equal(refusal?.ok, false)
+  assert.equal(refusal?.error, 'managed-update-running')
+  assert.match(logs.join('\n'), /refused until it finishes/)
+  const settling = new Set<Promise<unknown>>()
+  const done = Promise.resolve().then(() => settling.delete(done))
+
+  settling.add(done)
+  assert.equal(
+    await joinManagedUpdatesForApply(
+      () => settling,
+      () => {},
+      1_000
+    ),
+    null
+  )
 })

@@ -332,11 +332,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
         if refused is not None:
             raise RuntimeError("could not join the update's checkout lock "
                                f"({refused.reason or f'held by process {refused.pid}'})")
-    from hermes_cli.venv_sync import (
-        arm_completion, collect_superseded_generations, refuse_foreign_owned_venv,
-    )
+    from hermes_cli.venv_sync import arm_completion, collect_superseded_generations
 
-    refuse_foreign_owned_venv(root)
+    # The foreign-owned-venv refusal runs in the parent BEFORE the swap (update_cmd_commit
+    # .preflight_refusal); the tail was armed there too, so this re-arm is an idempotent backstop.
     arm_completion(root)
     from hermes_cli.gitlock import convert_treeless_checkout_first
     convert_treeless_checkout_first(root)
@@ -408,7 +407,7 @@ def _complete_selected(request: dict) -> bool:
             pre_update_version=request["pre_update_version"],
             completion_message=request.get("completion_message"),
             announce=None if request.get("completion_message") else "\n✓ Code updated!",
-            followups=followups)
+            followups=followups, before_build=lambda: _resume_paused_before_build(request))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- e.g. the shared update lock refused the tail
         reason = str(exc) or type(exc).__name__
         # The tail's steps catch their own failures, so a raise here means the build never ran.
@@ -448,6 +447,23 @@ def _complete_selected(request: dict) -> bool:
         restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"],
         update_complete=bool(runtime_safe) and complete)
     return complete
+
+
+def _resume_paused_before_build(request: dict) -> None:
+    """Restart the gateways the POSIX pause stopped: the dependencies are synced and the launchers
+    published, the product builds (minutes) have not started. A gateway needs nothing later to
+    boot. A failure stays owed: the post-build resume retries it and records the outcome.
+
+    POSIX only: the fleet restart skips what this restarted (``already_restarted``). A Windows set
+    keeps resuming after the fleet restart, which would otherwise drain it a second time."""
+    token = request.get("windows_resume")
+    if not token or not token.get("resume_needed") or token.get("platform") != "posix":
+        return
+    from hermes_cli.update_cmd import _m
+    try:
+        _m()._resume_windows_gateways_after_update(token)
+    except Exception as exc:  # health: allow BLE001 -- retried (and recorded) after the build
+        print(f"  ⚠ Paused gateway restart incomplete ({exc}); retrying after the build")
 
 
 class _ForwardedOutput:

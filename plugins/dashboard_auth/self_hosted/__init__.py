@@ -5,7 +5,9 @@ endpoints from ``{issuer}/.well-known/openid-configuration``, builds the PKCE (S
 URL, exchanges the code, and verifies the **ID token** (the access token is opaque per spec)
 against the discovered ``jwks_uri`` with ``iss``/``aud`` pinned. Public and confidential
 (``client_secret`` layered on top of PKCE, never replacing it) clients both work. Config:
-``dashboard.oauth.self_hosted.{issuer,client_id,scopes,client_secret}`` or ``HERMES_DASHBOARD_OIDC_*``.
+``dashboard.oauth.self_hosted.{issuer,client_id,scopes,client_secret,id_token_leeway}`` or
+``HERMES_DASHBOARD_OIDC_*`` (leeway is config.yaml-only; default 60s of clock-skew tolerance
+for the ID token's time claims, ``0`` restores strict verification).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import httpx
 
 from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
+    DEFAULT_TOKEN_LEEWAY_SECONDS,
     JSON_HEADERS,
     TOKEN_ENDPOINT_TIMEOUT_SEC as _TOKEN_ENDPOINT_TIMEOUT_SEC,
     JwtOAuthProvider,
@@ -28,6 +31,7 @@ from plugins.dashboard_auth._shared import (
     exchange_token,
     load_config_section,
     parse_json_body,
+    parse_leeway,
     pkce_login_start,
     refresh_token_from,
     register_provider,
@@ -79,7 +83,14 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
     name = "self-hosted"
     display_name = "Self-Hosted OIDC"
 
-    def __init__(self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "") -> None:
+    # Class-level default so partially-constructed instances (object.__new__ in
+    # tests) still verify with the standard clock-skew leeway.
+    _id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS
+
+    def __init__(
+        self, *, issuer: str, client_id: str, scopes: str = _DEFAULT_SCOPES, client_secret: str = "",
+        id_token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS,
+    ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
         if not client_id:
@@ -90,6 +101,9 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
         self._scopes = scopes.strip() or _DEFAULT_SCOPES
+        # Clock-skew tolerance (seconds) for the ID token's exp/nbf/iat claims;
+        # the default absorbs unsynced-IDP skew (#47815), 0 restores strict mode.
+        self._id_token_leeway = parse_leeway(id_token_leeway)
         # Empty/whitespace secret ⇒ public client, so a provisioned-but-blank secret
         # can't flip us into a broken confidential mode.
         self._client_secret = (client_secret or "").strip()
@@ -251,7 +265,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         issuer = self._get_discovery()["issuer"]
         return verify_jwt(
             id_token, self._get_jwks_client(), algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
-            audience=self._client_id, issuer=issuer, label="ID token")
+            audience=self._client_id, issuer=issuer, label="ID token", leeway=self._id_token_leeway)
 
     _claims_for = _verify_id_token
 
@@ -299,7 +313,9 @@ def _settings() -> dict:
         "issuer": issuer, "client_id": client_id,
         "scopes": setting("HERMES_DASHBOARD_OIDC_SCOPES", "scopes") or _DEFAULT_SCOPES,
         # Credential: canonical home is the env var / ~/.hermes/.env. Empty ⇒ public client.
-        "client_secret": setting("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "client_secret")}
+        "client_secret": setting("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "client_secret"),
+        # Clock-skew tolerance for ID-token exp/nbf/iat (config.yaml only; default 60s, 0 = strict).
+        "id_token_leeway": parse_leeway(oidc_cfg.get("id_token_leeway"))}
 
 
 def register(ctx) -> None:
@@ -309,5 +325,6 @@ def register(ctx) -> None:
     kw, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, SelfHostedOIDCProvider, _settings)
     if kw is not None:
         logger.info(
-            "dashboard-auth-self-hosted: registered provider (issuer=%s, client_id=%s, scopes=%r, confidential=%s)",
-            kw["issuer"], kw["client_id"], kw["scopes"], bool(kw["client_secret"]))  # never log the secret itself
+            "dashboard-auth-self-hosted: registered provider "
+            "(issuer=%s, client_id=%s, scopes=%r, confidential=%s, id_token_leeway=%ss)",
+            kw["issuer"], kw["client_id"], kw["scopes"], bool(kw["client_secret"]), kw["id_token_leeway"])  # never log the secret itself

@@ -257,6 +257,38 @@ class GatewayAgentCacheMixin:
         # ordinary drift and still evicts.
         return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
+    def _fallback_baseline_model(self, session_key: str, source: Optional[SessionSource], agent: Any) -> str:
+        """The model *agent* was built to run, for the post-turn fallback check: what
+        ``_resolve_session_agent_runtime`` chose (session /model, then channel_overrides on the chat,
+        thread or parent, then the global model), canonicalized as ``AIAgent.__init__`` did on the
+        agent's PRIMARY route. The route a fallback moved it to would make that fallback look primary."""
+        from gateway.run import _resolve_gateway_model
+        primary = getattr(agent, "_primary_runtime", None) or {}
+        provider = primary.get("provider", getattr(agent, "provider", "")) or ""
+        # An override whose provider was unavailable this turn ran on the default route instead.
+        override = self._session_model_override(session_key) or {}
+        if override.get("model") and override.get("provider") in (None, "", provider):
+            model = override["model"]
+        elif source is not None:
+            model = self._resolve_model_for_channel(
+                source.platform, str(source.chat_id) if source.chat_id else "",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+        else:
+            model = _resolve_gateway_model()
+        # Vendor prefix stripped on native providers, else the cached agent is evicted every turn,
+        # destroying prompt caching.
+        with suppress(Exception):
+            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
+            if provider and provider not in _AGGREGATOR_PROVIDERS:
+                model = normalize_model_for_provider(model, provider)
+        # The Nous welcome host runs its one model whatever the chat configured (pin_model_for_route).
+        with suppress(Exception):
+            from hermes_cli.anon_auth import pin_model_for_route
+            model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
+        return model
+
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
     ) -> bool:
@@ -401,6 +433,25 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            try:
+                store.set_session_yolo(session_key, False)
+            except Exception:
+                # Never fails the boundary itself, but a surviving ON would come back after a restart.
+                logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
+
+    @staticmethod
+    def _restore_session_yolo(session_key: str, session_entry) -> None:
+        """Re-arm a persisted /yolo bypass after a gateway restart (the in-memory approval set starts
+        empty). Restore-only: ``_handle_yolo_command`` is the one writer and persists before it flips
+        the live flag, so a turn never sees a stale ON that it would wrongly revive."""
+        if not session_key or getattr(session_entry, "yolo", False) is not True:
+            return
+        from tools.approval import enable_session_yolo, is_session_yolo_enabled
+        if not is_session_yolo_enabled(session_key):
+            enable_session_yolo(session_key)
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result

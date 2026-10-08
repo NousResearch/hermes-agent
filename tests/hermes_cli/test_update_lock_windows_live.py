@@ -345,13 +345,15 @@ def test_a_refused_job_join_never_runs_the_command(tmp_path):
 
 
 
-def test_a_command_that_would_start_outside_the_job_never_runs(tmp_path):
-    """F54: a launcher interpreter that joins while what it starts escapes the job (a Store
-    Python alias) must not run the command. Control: a job with SILENT_BREAKAWAY_OK, which the
-    launcher joins but whose children start outside it."""
+def _escaping_job_launch(tmp_path: Path, *, process_limit: int = 0):
+    """Run the real ``_JOIN_JOB`` launcher in a job with SILENT_BREAKAWAY_OK: the launcher joins,
+    but the command it starts lands outside the job, as under Store Python (a packaged
+    interpreter's desktop-app breakaway through a job that permits breakaway, F54/F80).
+    ``process_limit`` caps the job's active processes so the command cannot be added to it.
+    Returns the launcher's result and the number of processes the job ever held."""
     import ctypes
 
-    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB, _REFUSED_EXIT
+    from hermes_cli.update_custody import _JOIN_JOB
 
     class _Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
         _fields_ = [("user_limits", ctypes.c_int64 * 2), ("LimitFlags", ctypes.c_uint32),
@@ -361,12 +363,19 @@ def test_a_command_that_would_start_outside_the_job_never_runs(tmp_path):
     class _Extended(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION: the breakaway flags need it
         _fields_ = [("basic", _Basic), ("io", ctypes.c_uint64 * 6), ("memory", ctypes.c_size_t * 4)]
 
+    class _Accounting(ctypes.Structure):  # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+        _fields_ = [("times", ctypes.c_int64 * 4), ("faults", ctypes.c_uint32), ("total", ctypes.c_uint32),
+                    ("active", ctypes.c_uint32), ("terminated", ctypes.c_uint32)]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = ctypes.c_void_p
     kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+                                                   ctypes.c_void_p]
     job = kernel32.CreateJobObjectW(None, None)
     limits = _Extended()
-    limits.basic.LimitFlags = 0x1000  # JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+    limits.basic.LimitFlags = 0x1000 | (0x8 if process_limit else 0)  # SILENT_BREAKAWAY_OK | ACTIVE_PROCESS
+    limits.basic.ActiveProcessLimit = process_limit
     assert kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)), \
         ctypes.get_last_error()
     os.set_handle_inheritable(job, True)
@@ -377,6 +386,27 @@ def test_a_command_that_would_start_outside_the_job_never_runs(tmp_path):
     out = subprocess.run([sys.executable, "-I", "-S", str(launcher), str(job), str(tmp_path / "report.txt"),
                           sys.executable, "-c", "print('built')"], startupinfo=info, capture_output=True,
                          text=True, encoding="utf-8", errors="replace", timeout=60)
+    usage = _Accounting()
+    assert kernel32.QueryInformationJobObject(job, 1, ctypes.byref(usage), ctypes.sizeof(usage), None), \
+        ctypes.get_last_error()
+    return out, usage.total
+
+
+def test_a_command_that_starts_outside_the_job_is_put_in_it_and_runs(tmp_path):
+    """F80: Store Python's launcher starts the managed node outside the update job; refusing it
+    failed every Node build of a native Store-Python update. The suspended command is assigned to
+    the job and runs: the build completes and the job held both the launcher and the command."""
+    out, total = _escaping_job_launch(tmp_path)
+    assert out.returncode == 0 and "built" in out.stdout, out
+    assert total >= 2, "the command ran outside the update job"
+
+
+def test_a_command_the_job_will_not_take_never_runs(tmp_path):
+    """F54 kept: a command that starts outside the job and that Windows will not add to it (here
+    the job's one-process limit, held by the launcher) is never run."""
+    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _REFUSED_EXIT
+
+    out, _total = _escaping_job_launch(tmp_path, process_limit=1)
     assert out.returncode == _REFUSED_EXIT, out
     assert "built" not in out.stdout and _CUSTODY_UNAVAILABLE in out.stderr, out
 
@@ -534,3 +564,39 @@ def test_the_old_updater_runs_its_takeover_in_the_job(tmp_path, monkeypatch, cap
         lock.release()
     assert code == 0 and started.exists()
     assert "would not take the takeover" in capsys.readouterr().out
+
+
+
+# --- C3: a normal release never frees the checkout under a build descendant ------------------
+
+# The launcher's own argv says "hermes: update custody", which the live-system guard reads as
+# `hermes update`; this test runs it in-process against a tmp_path checkout, never a real one.
+@pytest.mark.live_system_guard_bypass
+def test_a_build_descendant_left_by_its_leader_never_writes_after_a_normal_release(tmp_path):
+    """C3: npm exits while a builder grandchild it started keeps running. The launcher returns
+    only once that grandchild is gone, so after the owner's ordinary release a contender
+    admitted to the checkout sees no late write. Control: the leader's exit status passes through."""
+    from hermes_cli.update_custody import contained_command
+
+    install = tmp_path / "checkout"
+    install.mkdir()
+    late = tmp_path / "late"
+    writer = f"import pathlib, time; time.sleep(4); pathlib.Path({str(late)!r}).touch()"
+    leader = [sys.executable, "-c",
+              "import subprocess, sys; d = subprocess.DEVNULL; "
+              f"subprocess.Popen([sys.executable, '-c', {writer!r}], stdin=d, stdout=d, stderr=d); sys.exit(3)"]
+    lock = UpdateLock(path=tmp_path / "m", install_root=install)
+    assert lock.acquire()
+    try:
+        with contained_command(leader, root=install) as (argv, custody):
+            done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, **custody)
+    finally:
+        lock.release()
+    assert done.returncode == 3, done
+    contender = UpdateLock(path=tmp_path / "other-home-marker", install_root=install)
+    assert contender.acquire(), "the checkout stayed locked after a normal release"
+    try:
+        time.sleep(6)
+        assert not late.exists(), "a build descendant wrote after the checkout was handed to a contender"
+    finally:
+        contender.release()

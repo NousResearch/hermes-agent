@@ -185,7 +185,7 @@ def check_api_response(
             api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
             error_type="MalformedFunctionCall", error_message=detail, status_code=None,
             retry_count=retry_count, max_retries=max_retries, retryable=False,
-            reason="malformed_function_call",
+            reason=FailoverReason.format_error.value,
         )
         if agent._try_activate_fallback():
             from agent.conversation_loop import _arm_fallback_restart
@@ -197,7 +197,7 @@ def check_api_response(
         agent._flush_status_buffer()
         final_response = (
             "The provider rejected a malformed function call from the model. "
-            "This is not a safety refusal. Try again or switch models."
+            "This is not a safety refusal. Simplify the request or switch models."
         )
         from agent.codex_responses_adapter import _summarize_user_message_for_log
         user_content = messages[current_turn_user_idx].get("content", "") if (
@@ -206,12 +206,12 @@ def check_api_response(
         agent._save_trajectory(messages, _summarize_user_message_for_log(user_content), False)
         agent._cleanup_task_resources(effective_task_id)
         agent._persist_session(messages, conversation_history)
-        return _verdict("return", {
+        return _verdict("return", stamp_failure({
             "final_response": final_response, "messages": messages,
             "api_calls": api_call_count, "completed": False, "failed": True,
             "error": f"malformed_function_call: {detail}",
             "turn_exit_reason": "malformed_function_call",
-        })
+        }, FailoverReason.format_error.value, False))
 
     if finish_reason == "length":
         _tv = recover_from_truncation(

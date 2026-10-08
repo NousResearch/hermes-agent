@@ -8,6 +8,7 @@ import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esProjects } from './es_projects'
+import { esScreenshot } from './es_screenshot'
 import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
@@ -1622,30 +1623,7 @@ export const esOverrides = {
       unsupportedSession:
         'Esta sesión de escritorio no admite pulsaciones globales de teclas modificadoras. Linux requiere X11; Wayland no es compatible.'
     },
-    screenshot: {
-      enabledTitle: 'Atajo de captura de pantalla',
-      enabledDesc:
-        'Pulsa las dos teclas Comando a la vez desde cualquier app para capturar su ventana frontal y adjuntarla a tu borrador actual de Hermes. Nunca se envía automáticamente. Desactivado por defecto; se aplica solo a este Mac. El contenido de la ventana puede ser confidencial: revisa el adjunto antes de enviarlo.',
-      statusTitle: 'Estado del atajo de captura',
-      checking: 'Comprobando el atajo de captura…',
-      disabled: 'El atajo de captura está desactivado.',
-      starting: 'Iniciando la escucha del atajo. Todavía no está listo.',
-      ready: 'El atajo está listo. Las capturas se adjuntan a tu borrador actual sin enviarse.',
-      inputPermission:
-        'El permiso de Monitorización de entrada permite a Hermes detectar las dos teclas Comando mientras otra app está activa. Permite Hermes en Ajustes del Sistema → Privacidad y seguridad → Monitorización de entrada, vuelve aquí y reinténtalo.',
-      screenPermission:
-        'El permiso de Grabación de pantalla permite a Hermes capturar la ventana frontal cuando usas este atajo. Permite Hermes en Ajustes del Sistema → Privacidad y seguridad → Grabación de pantalla, vuelve aquí y reinténtalo. Reinicia Hermes si macOS te lo pide.',
-      openSettings: 'Abrir Ajustes del Sistema',
-      retry: 'Reintentar',
-      unavailable: 'El atajo de captura no está disponible. Reinténtalo o desactívalo.',
-      errorTitle: 'Error del atajo de captura',
-      loadFailed: 'No se pudo leer el estado del atajo. Reinténtalo para comprobar su ajuste actual.',
-      saveFailed: 'No se pudo confirmar el cambio del atajo. Reinténtalo para comprobar su ajuste actual.',
-      permissionFailed:
-        'No se pudieron abrir los Ajustes del Sistema. Abre Privacidad y seguridad manualmente y reinténtalo.',
-      captureFailed: 'No se pudo capturar la ventana frontal. No se adjuntó ni se envió nada.',
-      contextChanged: 'El borrador actual cambió durante la captura. La captura no se adjuntó ni se envió.'
-    },
+    screenshot: esScreenshot,
     quickEntry: {
       enabledTitle: 'Entrada rápida',
       enabledDesc:

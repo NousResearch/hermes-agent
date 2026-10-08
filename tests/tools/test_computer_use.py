@@ -2022,6 +2022,31 @@ class TestElementTokenAttachment:
         _, args = backend._session.call_tool.call_args.args
         assert args["element_token"] == "s00000001:5"
 
+    def test_index_stripped_when_schema_is_token_only(self):
+        """cua-driver 0.32+ strict schemas declare `element_token`, drop `element_index`, and set
+        additionalProperties: false — sending the pair gets the action rejected before it runs
+        (#132876). The wrapper must send the token alone when the live schema names the token
+        but not the index."""
+        backend = self._backend_with_session({})  # no capabilities[] — the modern shape
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
+        assert "element_index" not in args
+
+    def test_index_kept_when_schema_accepts_both(self):
+        """0.21-era schemas keep `element_index` alongside `element_token` and accept both, so
+        the strip must stay scoped to token-only schemas."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, prop: (
+            (tool, prop) in {("click", "element_token"), ("click", "element_index")})
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
+        assert args["element_index"] == 5
+
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a

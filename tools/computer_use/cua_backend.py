@@ -413,6 +413,13 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+            # cua-driver 0.32+ publishes strict token-only schemas (additionalProperties: false) that
+            # drop `element_index` entirely, so sending both gets the action rejected before it runs
+            # (#132876). Older drivers' schemas keep `element_index` and accept both, so only a schema
+            # that names the token but not the index warrants stripping the index.
+            if (self._session.supports_input_property(name, "element_token")
+                    and not self._session.supports_input_property(name, "element_index")):
+                args.pop("element_index", None)
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

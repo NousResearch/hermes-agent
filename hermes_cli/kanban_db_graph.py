@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from typing import Any, Optional
+from hermes_cli.kanban_db_dependencies import parent_succeeded
 
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
@@ -46,7 +47,7 @@ def initial_task_state(
         return "blocked", tenant
     if triage:
         return "triage", tenant
-    if any(row["status"] != "done" for row in rows.values()):
+    if any(not parent_succeeded(row["status"]) for row in rows.values()):
         return "todo", tenant
     return "ready", tenant
 

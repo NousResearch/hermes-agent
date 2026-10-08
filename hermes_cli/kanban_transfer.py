@@ -71,6 +71,17 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
     """Strip machine-local runtime state (claims, PIDs, and above all the
     gateway chat ids subscribed to task events). Caller owns the transaction.
     Run on export and again on import (an archive is untrusted input)."""
+    # Preserve reviewer provenance before clearing current_run_id. Re-gate
+    # runnable snapshots too: import must not revive a stale ready/review row.
+    for row in conn.execute(
+        "SELECT id, status FROM tasks WHERE status IN ('running', 'ready', 'review')"
+    ).fetchall():
+        task_id, status = row
+        resume_status = kb._retry_status_for_run(conn, task_id) if status == "running" else status
+        landing = kb._landing_status_after_parents(conn, task_id, resume_status)
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (landing, task_id))
+        if landing == "todo":
+            kb._append_event(conn, task_id, "dependency_wait", {"source_status": resume_status})
     conn.execute("DELETE FROM kanban_notify_subs")
     conn.execute(
         """
@@ -86,9 +97,6 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
                last_failure_error   = NULL
         """
     )
-    # A task caught mid-run is not running anywhere the importer can see.
-    # Send it back to the queue rather than shipping a phantom claim.
-    conn.execute("UPDATE tasks SET status = 'ready' WHERE status = 'running'")
     conn.execute(
         """
         UPDATE task_runs
@@ -140,6 +148,7 @@ def export_board(
         # The snapshot is a private file with no other writers, so plain
         # commit/close is enough — no need for the board DB's WAL dance.
         with contextlib.closing(sqlite3.connect(str(staged / "kanban.db"))) as snapshot:
+            snapshot.row_factory = sqlite3.Row
             _scrub_local_state(snapshot)
             snapshot.commit()
             counts = _count_rows(snapshot)

@@ -1425,9 +1425,8 @@ def test_create_task_with_open_parent_emits_dependency_wait(kanban_home):
         assert wait[-1].payload["parent"] == parent
 
 
-def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
-    """archived is terminal for recompute_ready, so linking under an archived
-    parent must not demote a ready child (it would only flap back to ready)."""
+def test_link_tasks_archived_parent_is_not_success(kanban_home):
+    """Archival is cleanup, not successful completion of the dependency."""
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="archived parent")
         kb.archive_task(conn, parent)
@@ -1436,9 +1435,10 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
 
         gated = kb.link_tasks(conn, parent, child)
 
-        assert gated is False
-        assert kb.get_task(conn, child).status == "ready"
-        assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
+        assert gated is True
+        assert kb.get_task(conn, child).status == "todo"
+        assert "dependency_wait" in [e.kind for e in kb.list_events(conn, child)]
+        assert kb.recompute_ready(conn) == 0
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):

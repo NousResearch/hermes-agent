@@ -7,12 +7,16 @@ PREVIOUS turn's background prefetch held on the provider instance, so a provider
 re-initialised per request never has anything to inject, and each init re-runs the provider's
 startup (for an embedded daemon: a restart that also kills the retain still in flight).
 
-This registry keeps one initialised ``MemoryManager`` per (profile home, session id): a request
-checks the session's manager out before building its agent (``AIAgent(memory_manager=...)``
-skips provider init) and checks it back in when the turn ends. Check-out is exclusive, so two
-concurrent requests on one session never share a manager; the loser's fresh manager is shut down
-when it checks in behind the winner. Idle entries and LRU overflow are shut down under the owning
-profile's scope, like the gateway agent cache's eviction.
+This registry keeps one initialised ``MemoryManager`` per (profile home, session id, caller
+identity): a request checks the session's manager out before building its agent
+(``AIAgent(memory_manager=...)`` skips provider init) and checks it back in when the turn ends.
+The identity is the gateway scope the providers were initialised with (``X-Hermes-Session-Key``
+and its siblings): a derived chat-completions id is a text fingerprint, so two channels opening
+with the same words share a session id, and an adopted manager would recall and retain under the
+first channel's memory scope. Check-out is exclusive, so two concurrent requests on one session
+never share a manager; the loser's fresh manager is shut down when it checks in behind the winner.
+Idle entries and LRU overflow are shut down under the owning profile's scope, like the gateway
+agent cache's eviction.
 """
 
 from __future__ import annotations
@@ -32,7 +36,8 @@ class ApiServerMemorySessions:
     """Session-keyed ``MemoryManager`` registry with exclusive check-out/check-in."""
 
     def __init__(self, *, max_size: Optional[int] = None, idle_ttl_secs: Optional[float] = None) -> None:
-        self._entries: "OrderedDict[Tuple[str, str], Tuple[Any, Optional[Path], float]]" = OrderedDict()
+        self._entries: "OrderedDict[Tuple[str, str, Tuple[str, ...]], Tuple[Any, Optional[Path], float]]" = (
+            OrderedDict())
         self._lock = threading.Lock()
         self._max_size = max_size
         self._idle_ttl_secs = idle_ttl_secs
@@ -60,15 +65,23 @@ class ApiServerMemorySessions:
         home = Path(get_hermes_home())
         return hermes_home_key(home), home
 
+    @staticmethod
+    def _identity(lookup) -> Tuple[str, ...]:
+        """The gateway identity ``initialize_all`` binds a provider to, read through ``lookup(name)``."""
+        from agent.agent_init import _GATEWAY_IDENTITY_PARAMS
+        return tuple(str(lookup(name) or "") for name in _GATEWAY_IDENTITY_PARAMS)
+
     # -- check-out / check-in ----------------------------------------------------------------
 
-    def checkout(self, session_id: Optional[str]) -> Optional[Any]:
-        """The manager a previous request on ``session_id`` checked in, or None (build a new one)."""
+    def checkout(self, session_id: Optional[str], identity: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+        """The manager a previous request on ``session_id`` with the same gateway ``identity`` (the
+        ``AIAgent`` identity kwargs this request passes) checked in, or None (build a new one)."""
         if not session_id:
             return None
         home_key, _home = self._owner_home()
+        slot = (home_key, session_id, self._identity((identity or {}).get))
         with self._lock:
-            entry = self._entries.pop((home_key, session_id), None)
+            entry = self._entries.pop(slot, None)
         return entry[0] if entry else None
 
     def checkin(self, agent: Any) -> None:
@@ -79,14 +92,15 @@ class ApiServerMemorySessions:
         if manager is None or not session_id:
             return
         home_key, home = self._owner_home()
+        slot = (home_key, session_id, self._identity(lambda name: getattr(agent, f"_{name}", None)))
         max_size, idle_ttl = self._bounds()
         now = time.monotonic()
         doomed: List[Tuple[Any, Optional[Path]]] = []
         with self._lock:
-            displaced = self._entries.pop((home_key, session_id), None)
+            displaced = self._entries.pop(slot, None)
             if displaced is not None and displaced[0] is not manager:
                 doomed.append((displaced[0], displaced[1]))
-            self._entries[(home_key, session_id)] = (manager, home, now)
+            self._entries[slot] = (manager, home, now)
             for key, (mgr, owner, last_used) in list(self._entries.items()):
                 if mgr is manager:
                     continue
@@ -131,6 +145,6 @@ class ApiServerMemorySessions:
 
     # -- introspection (tests) --------------------------------------------------------------------
 
-    def parked(self) -> Dict[Tuple[str, str], Any]:
+    def parked(self) -> Dict[Tuple[str, str, Tuple[str, ...]], Any]:
         with self._lock:
             return {key: entry[0] for key, entry in self._entries.items()}

@@ -167,7 +167,9 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
   requests (exclusive check-out in `_create_agent`, check-in in the turn's `finally`, keyed by profile
-  home + `agent.session_id`; idle/LRU eviction shuts down under the owning home) and
+  home + `agent.session_id` + the gateway identity kwargs (`X-Hermes-Session-Key`), since a derived
+  chat-completions id is a text fingerprint two channels can share; idle/LRU eviction shuts down
+  under the owning home) and
   `AIAgent(memory_manager=...)` adopts it without a second provider init. Without it the previous
   turn's queued recall never reaches the next request (#120116).
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second

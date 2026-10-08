@@ -271,3 +271,22 @@ def test_metadata_preserving_rotation_invalidates_creds_cache(vertex_adapter, mo
     (key2,) = vertex_adapter._creds_cache
     assert key2 != key1, "content change must produce a new cache key"
     assert vertex_adapter._creds_cache[key2][0] is not creds_obj_1
+
+
+def test_build_vertex_base_url_shapes():
+    """Verify that global, multi-regions (eu, us) and regional endpoints map to the correct hosts."""
+    from agent.vertex_adapter import build_vertex_base_url
+
+    assert build_vertex_base_url("p", "global") == (
+        "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    )
+    assert build_vertex_base_url("p", "eu") == (
+        "https://aiplatform.eu.rep.googleapis.com/v1beta1/projects/p/locations/eu/endpoints/openapi"
+    )
+    assert build_vertex_base_url("p", "us") == (
+        "https://aiplatform.us.rep.googleapis.com/v1beta1/projects/p/locations/us/endpoints/openapi"
+    )
+    assert build_vertex_base_url("p", "europe-west3") == (
+        "https://europe-west3-aiplatform.googleapis.com/v1beta1/projects/p/locations/europe-west3/endpoints/openapi"
+    )
+

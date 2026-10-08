@@ -758,8 +758,8 @@ def _model_flow_vertex(config, current_model=""):
 
     # 4. Model selection (curated list — Vertex has no /models listing route).
     model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
-    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
-    base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
+    from agent.vertex_adapter import build_vertex_base_url
+    base_url_preview = build_vertex_base_url("<project>", region)
     selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)
 
     def _finish(cfg, _model):

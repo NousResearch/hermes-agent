@@ -3244,7 +3244,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if isinstance(extra_content, dict) and extra_content.get("google", {}).get("thought"):
                 if not reasoning_text and getattr(delta, "content", None):
                     reasoning_text = delta.content
-                    delta.content = None
+                delta.content = None
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(

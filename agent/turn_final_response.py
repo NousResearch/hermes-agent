@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.turn_context_compaction import _refund_api_call
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
@@ -23,6 +24,42 @@ _REPETITION_STOPPED = repetition_copy(
     "so the repeated output was discarded.",
     "; refusing to return a",
 )
+
+
+def _repetition_fallback(agent: Any, api_messages: Any, active_system_prompt: Any) -> Any:
+    """Stop-path repetition loop → fallback. Returns the re-synced system prompt when the turn
+    should continue on the next provider, else ``None`` (caller keeps its end-the-turn copy).
+
+    The loop is model-specific, not content-deterministic: unlike a content filter, the same
+    prompt usually answers cleanly elsewhere, so escalating beats discarding the turn. A
+    continuation on the looping model would only re-enter the loop, so this is the only
+    recovery that can still produce an answer here.
+
+    No ``_retry`` bookkeeping is needed: the caller returns ``"continue"``, and the outer loop
+    re-issues the turn with a fresh ``TurnRetryState`` against the newly active provider.
+    """
+    from agent.conversation_loop import _sync_failover_system_message
+    from agent.error_classifier import FailoverReason
+
+    if agent._fallback_index >= len(agent._fallback_chain):
+        return None
+    agent._vprint(
+        f"{agent.log_prefix}🔁  Repetition loop detected — activating fallback provider...",
+        force=True, diagnostic=True,
+    )
+    agent._buffer_diagnostic_status("Repetition loop detected; switching to fallback...")
+    if not agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  No fallback provider available — ending the turn "
+            f"(re-sending to the same model would only re-enter the loop).",
+            force=True, diagnostic=True,
+        )
+        return None
+    active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
+    agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} ({agent.provider})")
+    return active_system_prompt
+
+
 logger = logging.getLogger("agent.conversation_loop")
 
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
@@ -262,6 +299,16 @@ def finish_text_response(
         and len(final_response) >= STOP_PATH_MIN_CHARS
         and is_runaway_repetition(final_response)
     ):
+        # The loop is model-specific: hand the turn to the fallback chain before discarding it.
+        # A continuation would only re-enter the loop on the model that produced it, so the
+        # fallback hop is the one recovery that can still answer this turn.
+        _fb_prompt = _repetition_fallback(agent, api_messages, active_system_prompt)
+        if _fb_prompt is not None:
+            active_system_prompt = _fb_prompt
+            # A provider switch, not a model turn: refund the looped call so the hop does not
+            # eat the iteration budget (same refund as the empty-response fallback, #77305).
+            api_call_count = _refund_api_call(agent, api_call_count)
+            return _verdict("continue")
         line, user_response, error = _REPETITION_STOPPED
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         agent._cleanup_task_resources(effective_task_id)

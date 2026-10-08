@@ -420,8 +420,8 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     Stale sidecars are cleared first so the corrupt DB's WAL can't replay over the image.
     Refuses (False) while another process — or a live connection in THIS process — holds the
     DB: copying over a live writer's inode desyncs its page cache and its next checkpoint
-    clobbers pages. Holder scan ``None`` proceeds (gateways drained; refusing on unknown would
-    disable auto-restore on non-Linux). Raises OSError if the copy fails.
+    clobbers pages. An unscannable database reports an unknown holder and also
+    refuses (fail-closed on macOS/Windows, fixes #127010). Raises OSError if the copy fails.
     """
     from hermes_cli.backup import verify_sqlite_integrity
     from hermes_cli.backup_restore import _foreign_db_holder_pids

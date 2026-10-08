@@ -11,7 +11,8 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
-from tools.mcp_tool_common import _sanitize_error, _core
+from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
+from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -153,12 +154,33 @@ def _contains_only_cancellation(exc: BaseException) -> bool:
     return isinstance(exc, asyncio.CancelledError)
 
 
+def _auth_error_detail(exc: BaseException) -> str:
+    """`` <guidance>`` when *exc* (or its group root) is the SDK's ``OAuthRegistrationError``, else ``""``. The DCR
+    guard in ``HermesMCPOAuthProvider`` raises one naming the next step (pre-register an OAuth client), and the
+    generic needs-reauth text alone would hide it from the model (#78190)."""
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return ""
+    root = _unwrap_exception_group(exc)
+    text = str(root).strip() if isinstance(root, OAuthRegistrationError) else ""
+    return f" {_sanitize_error(text)}" if text else ""
+
+
+def _mcp_call_failed_message(exc: BaseException) -> str:
+    """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
+    "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""
+    root = _unwrap_exception_group(exc)
+    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}")
+
+
 def _classify_mcp_failure(exc: BaseException) -> str:
     """``'permanent'`` (``run()`` parks instead of burning the retry ladder: auth 401/403,
-    NonMcpEndpointError, InvalidMcpUrlError, missing stdio command) or ``'transient'`` (backoff retry)."""
+    NonMcpEndpointError, InvalidMcpUrlError, missing stdio command, native addon built for another
+    Node) or ``'transient'`` (backoff retry)."""
     root = _unwrap_exception_group(exc)
     permanent = (_is_auth_error(root)
-                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError))
+                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError, NodeAbiMismatchError))
                  or (isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT)
                  # 401/403 HTTPStatusError that _is_auth_error's type-gate missed (auth types not importable here)
                  or getattr(getattr(root, "response", None), "status_code", None) in (401, 403))
@@ -262,24 +284,43 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
-def _make_redirect_header_stripper(original_url, *, strict: bool = False,
+def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = False,
                                    configured_header_names: "set[str] | frozenset[str]" = frozenset()):
-    """httpx response hook: strips ``Authorization`` when a redirect leaves the original origin;
-    with *strict* (Agent Plugins v1 ``strict_redirect_headers``) every configured header (lowercase
-    names in *configured_header_names*) is stripped too — v1 forbids forwarding them cross-origin."""
+    """Client factory enforcing the redirect credential boundary: on a cross-origin redirect
+    follow-up it strips ``Authorization``; with *strict* (Agent Plugins v1 ``strict_redirect_headers``)
+    every configured header (lowercase names in *configured_header_names*) is stripped too — v1 forbids
+    forwarding them cross-origin.
+
+    The factory builds ``httpx_mod.AsyncClient(**kwargs)`` — resolved at call time, so the proxy
+    ``mounts=`` / ``transport=`` the caller passes reach the SDK's real client class (and anything a
+    caller swapped in for it) unchanged — and installs the boundary on that instance's
+    ``_build_redirect_request``. This MUST live on ``_build_redirect_request``: ``response.next_request``
+    is unset when response event hooks fire (httpx populates it later in the redirect loop), so a
+    response hook can never mutate the follow-up; and a *request* hook would fire on non-redirect traffic
+    too — the OAuth auth flow yields token/metadata/registration requests through the same client, often
+    to a different-origin authorization server whose own credentials must NOT be stripped."""
     origin = (original_url.scheme, original_url.host, original_url.port)
 
-    async def _strip_on_cross_origin_redirect(response):
-        target = response.next_request.url if response.is_redirect and response.next_request else None
-        if target is None or (target.scheme, target.host, target.port) == origin:
-            return
-        headers = response.next_request.headers
-        headers.pop("authorization", None)
-        headers.pop("Authorization", None)
-        for _name in configured_header_names if strict else ():
-            while _name in headers:
-                del headers[_name]
-    return _strip_on_cross_origin_redirect
+    def _build_client(**kwargs):
+        client = httpx_mod.AsyncClient(**kwargs)
+        base_build = getattr(type(client), "_build_redirect_request", None)
+
+        def _build_redirect_request(request, response):
+            next_request = base_build(client, request, response)
+            target = next_request.url
+            if (target.scheme, target.host, target.port) != origin:
+                headers = next_request.headers
+                headers.pop("authorization", None)
+                headers.pop("Authorization", None)
+                for _name in configured_header_names if strict else ():
+                    while _name in headers:
+                        del headers[_name]
+            return next_request
+
+        client._build_redirect_request = _build_redirect_request
+        return client
+
+    return _build_client
 
 
 # Wire-body cap, applied at the httpx transport before the SDK buffers/JSON-parses a response. A
@@ -417,6 +458,9 @@ def _format_connect_error(exc: BaseException) -> str:
                 messages.append(current.__class__.__name__)
         return messages or [exc.__class__.__name__]
 
+    abi = next((node for node in nodes if isinstance(node, NodeAbiMismatchError)), None)
+    if abi is not None:  # already the whole story, remedy included; the SDK's "Connection closed" adds nothing
+        return _sanitize_error(str(abi))
     missing = _find_missing()
     if not missing:
         return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))

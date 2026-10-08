@@ -30,6 +30,7 @@ CRYPTO_AVAILABLE = Cipher is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from agent.i18n import t
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -158,7 +159,8 @@ def _account_dir(hermes_home: str) -> Path:
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        # utf-8-sig (ours): tolerate BOM-persisted JSON files.
+        return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else None
     except Exception:
         return None
 
@@ -195,7 +197,7 @@ class ContextTokenStore:
         if not path.exists():
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             logger.warning("weixin: failed to restore context tokens for %s: %s", _safe_id(account_id), exc)
             return
@@ -725,23 +727,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
-        # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
+        # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
+        self._configure_text_batch_delays()
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
             self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Float from ``config.extra``; fed to ``asyncio.sleep()``, so NaN/Inf/negative/unparseable → default."""
-        import math
-        value = (self.config.extra or {}).get(key)
-        try:
-            parsed = float(value) if value is not None else float(default)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -834,11 +825,15 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     consecutive_failures = await backoff()
                     continue
                 consecutive_failures = 0
-                if response.get("get_updates_buf"):
-                    sync_buf = str(response["get_updates_buf"])
-                    _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
+                # Dispatch before persisting: the off-loop write is an await, and a disconnect that
+                # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
                     asyncio.create_task(self._process_message_safe(message))
+                # atomic_json_write fsyncs + renames: persist off the loop, and only when the cursor
+                # moved (an empty long-poll echoes the same buffer back every cycle).
+                if response.get("get_updates_buf") and str(response["get_updates_buf"]) != sync_buf:
+                    sync_buf = str(response["get_updates_buf"])
+                    await asyncio.to_thread(_save_sync_buf, self._hermes_home, self._account_id, sync_buf)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1122,9 +1117,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to=None, metadata=None) -> SendResult:
         return await self._send_file_result(chat_id, video_path, caption or "", "send_video")
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to=None, metadata=None) -> SendResult:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
         # Native outbound voice bubbles are not proven-working upstream; a file attachment at least plays (even .silk).
-        return await self._send_file_result(chat_id, audio_path, caption or self.warning_text("[voice message as attachment]"), "send_voice", force_file_attachment=True)
+        return await self._send_file_result(chat_id, audio_path, caption or self.warning_text(t("platform.weixin.voice_as_attachment")), "send_voice", force_file_attachment=True)
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
@@ -1246,13 +1241,3 @@ async def send_weixin_direct(
         adapter._send_session = adapter._session = session
         adapter._token_store = token_store
         return await _deliver_direct(adapter, chat_id, message, media_files, context_token)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import struct  # noqa: F401,E402
-
-MSG_TYPE_USER = 1
-# ---- END PLUGIN-COMPAT ----

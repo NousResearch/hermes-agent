@@ -15,13 +15,13 @@ Create, read, edit Excel .xlsx workbooks and CSVs.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\xlsx` |
+| Path | `skills/productivity/xlsx` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `spreadsheet`, `xlsx`, `csv`, `openpyxl`, `productivity` |
-| Related skills | [`docx`](./productivity-docx.md), [`pdf`](./productivity-pdf.md), [`powerpoint`](./productivity-powerpoint.md) |
+| Related skills | [`docx`](../../bundled/productivity/productivity-docx.md), [`pdf`](../../bundled/productivity/productivity-pdf.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
 

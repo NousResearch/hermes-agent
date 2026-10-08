@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
+from hermes_state_errors import is_malformed_db_error
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
@@ -104,6 +105,30 @@ def _quote_fts_tokens(raw_query: str) -> str:
 def _like_params(term: str) -> List[str]:
     """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
     return [f"%{_escape_like(term)}%"] * 3
+
+
+def _strip_cjk_wildcards(raw_query: str) -> str:
+    """Drop the trailing prefix wildcard callers append for ASCII ("nimb" -> "nimb*").
+
+    None of the CJK routes can honour that star: the bigram and trigram routes
+    quote every token before MATCH (so ``*`` matches a literal asterisk) and
+    LIKE has no ``*`` wildcard at all (only ``%``/``_``). Left in place, every
+    CJK search arriving from the web/desktop search box — which appends the
+    star to each unquoted token so partial English words match — searches for
+    a term ending in a literal ``*`` and returns nothing (#90636). Only
+    TRAILING stars go: a star written inside a quoted phrase is the user's
+    own text, and a token that is ALL stars keeps its original form so it
+    cannot degrade to a match-everything empty term.
+    """
+    if "*" not in raw_query:
+        return raw_query
+    stripped: List[str] = []
+    for token in raw_query.split():
+        if token.upper() in _FTS_OPERATORS:
+            stripped.append(token)
+        else:
+            stripped.append(token.rstrip("*") or token)
+    return " ".join(stripped) or raw_query
 
 
 def _flatten_text(decoded: Any) -> str:
@@ -1171,7 +1196,7 @@ class SessionSearchMixin:
         1-char CJK runs (bigrams only exist for runs >=2 — LIKE is broader); then trigram
         (>=3 CJK chars per token); then a LIKE substring scan with one clause per
         non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
-        raw_query = query.strip('"').strip()
+        raw_query = _strip_cjk_wildcards(query).strip('"').strip()
         match_query = _quote_fts_tokens(raw_query)
         if self._fts_cjk_available and not wants_unindexed_rows and not self._has_lone_cjk_run(raw_query):
             matches = self._match_rows(
@@ -1254,14 +1279,16 @@ class SessionSearchMixin:
         handle never issues ``'optimize'``: it rewrites index segments in place and would compound
         structural damage (or a split WAL generation) instead of leaving it diagnosable."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             for tbl in self._present_fts_tables():
                 try:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('optimize')")
                     optimized += 1
-                except sqlite3.OperationalError as exc:
+                except sqlite3.DatabaseError as exc:  # SQLITE_CORRUPT is not an OperationalError
                     logger.warning("FTS optimize failed for %s: %s", tbl, exc)
         return optimized
 
@@ -1285,7 +1312,6 @@ class SessionSearchMixin:
         and at next startup.
         """
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:
@@ -1293,14 +1319,23 @@ class SessionSearchMixin:
                     "Deferred in-place FTS rebuild: another process holds the rebuild authority for this state.db.")
                 return 0
             with self._lock:
+                self._raise_if_db_replaced()
+                if self._conn is None:
+                    self._reopen_after_close_locked(context="write")
                 for tbl in self._present_fts_tables():
                     try:
                         self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
                         self._conn.commit()
                         rebuilt += 1
-                    except sqlite3.OperationalError as exc:
+                    except sqlite3.DatabaseError as exc:  # SQLITE_CORRUPT is not an OperationalError (#133375)
                         self._conn.rollback()
-                        logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
+                        if is_malformed_db_error(exc):
+                            logger.error(
+                                "FTS rebuild failed with a corruption-class error for %s: %s; "
+                                "run 'hermes sessions repair' (or 'hermes doctor --fix') to rebuild the index offline",
+                                tbl, exc)
+                        else:
+                            logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
         return rebuilt
 
     def _merge_fts_incrementally(self, *, max_pages: int, max_commands: Optional[int] = None) -> int:
@@ -1331,12 +1366,3 @@ class SessionSearchMixin:
                         break
             self._fts_usermerge_floor_applied = True
         return executed
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

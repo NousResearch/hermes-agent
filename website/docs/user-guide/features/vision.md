@@ -223,6 +223,8 @@ The `vision_analyze` tool itself follows the same routing. When the active main 
 
 For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
 
+Every other tool that hands the model an image uses this same decision: browser screenshots, `computer_use` captures (which are described by the auxiliary vision model when the main model can't take them natively), and [MCP image results](mcp.md#image-results). `agent.image_input_mode: text` therefore keeps pixels out of all of them.
+
 ### SVG and other non-raster images on Responses backends
 
 Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.

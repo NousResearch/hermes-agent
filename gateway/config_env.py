@@ -44,7 +44,6 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
-    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
     Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
     Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
@@ -316,9 +315,15 @@ def _api_server(config: GatewayConfig) -> None:
 
 
 def _webhook(config: GatewayConfig) -> None:
-    if is_truthy_value(getenv("WEBHOOK_ENABLED")):
-        extra = _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False).extra
-        _env_extras(extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
+    enabled = is_truthy_value(getenv("WEBHOOK_ENABLED"))
+    if not (enabled or Platform.WEBHOOK in config.platforms):
+        return
+    webhook_config = (
+        _enable_from_env(config, Platform.WEBHOOK, pop_marker=True, warn=False)
+        if enabled
+        else config.platforms[Platform.WEBHOOK]
+    )
+    _env_extras(webhook_config.extra, (("port", "WEBHOOK_PORT", _INT), ("secret", "WEBHOOK_SECRET")))
 
 
 def _msgraph_webhook(config: GatewayConfig) -> None:
@@ -549,7 +554,6 @@ _ENV_STEPS: tuple = (
         then=_matrix_e2ee,
     ),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
-    _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
     _Cred(
         Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
         fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),

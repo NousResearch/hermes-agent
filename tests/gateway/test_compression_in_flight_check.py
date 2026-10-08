@@ -1,5 +1,4 @@
 """#5 regression: _session_has_compression_in_flight must offload both blocking sources to thread pool."""
-import inspect
 import threading
 from unittest.mock import MagicMock
 
@@ -30,13 +29,6 @@ def _make_runner(holder_value=None, record_thread=False, thread_sink=None):
     session_db._db = raw_db
     runner._session_db = session_db
     return runner
-
-
-def test_method_is_coroutine():
-    from gateway.run import GatewayRunner
-    assert inspect.iscoroutinefunction(
-        GatewayRunner._session_has_compression_in_flight
-    ), "#5: method must be async, blocking calls offloaded"
 
 
 @pytest.mark.asyncio

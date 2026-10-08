@@ -18,7 +18,7 @@ from tools import browser_tool_session as _session
 # Commands where Chrome can meaningfully produce a different result. Session-management
 # commands (close, record) are tied to the engine's daemon and can't be retried elsewhere.
 _FALLBACK_ELIGIBLE = frozenset({"open", "snapshot", "screenshot", "eval", "click",
-                                "fill", "scroll", "back", "press", "console", "errors"})
+                                "fill", "scroll", "scrollintoview", "back", "press", "console", "errors"})
 
 
 def _using_lightpanda_engine() -> bool:

@@ -61,11 +61,20 @@ def clone_memory_provider_config(source_dir: Path, profile_dir: Path, provider: 
     return copied
 
 
+def _load_config_dict(profile_dir: Path) -> Optional[dict]:
+    """A profile's config.yaml mapping read through the config backend; None when absent or unreadable."""
+    from hermes_yaml import YAMLError
+    from hermes_cli.config_backend import read_config_doc
+    try:
+        data = read_config_doc(profile_dir / "config.yaml") or {}
+    except (YAMLError, OSError, UnicodeError):  # FileNotFoundError included: no config
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def cloned_memory_provider(profile_dir: Path) -> Optional[str]:
     """Name of the external provider whose config *profile_dir* now carries, for the CLI notice."""
-    from hermes_cli.profiles import _load_yaml_dict
-
-    provider = active_memory_provider(_load_yaml_dict(profile_dir / "config.yaml"))
+    provider = active_memory_provider(_load_config_dict(profile_dir))
     if provider and ((profile_dir / provider).is_dir() or (profile_dir / f"{provider}.json").is_file()):
         return provider
     return None

@@ -47,9 +47,13 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
 
     Skips when the file is missing/empty, or when the newest backup for *reason* already holds
     identical bytes. Never raises: a failed backup must not block the write it precedes.
+    Skipped entirely for a config backend without file tooling (no local copies, D2).
     """
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        return None
     try:
-        if not config_path.is_file() or config_path.stat().st_size == 0:
+        if not config_path.is_file() or config_path.stat().st_size == 0:  # config-reader: ok — file tooling, gated above
             return None
         root = backups_dir(config_path)
         root.mkdir(parents=True, exist_ok=True)
@@ -60,7 +64,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
-        shutil.copy2(config_path, dest)
+        shutil.copy2(config_path, dest)  # config-reader: ok — file tooling, gated above
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest
@@ -76,6 +80,9 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
     tried: a backup that fails to parse means the on-disk copy was damaged after the fact, and
     guessing further back would serve a config the user never saw as current.
     """
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        return None
     newest = list_config_backups(config_path, "good")[:1]
     if not newest:
         return None

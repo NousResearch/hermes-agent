@@ -106,6 +106,7 @@ _GUARDS = {
     "shebangs": ["scripts/check_bash_shebangs.py"],
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
+    "config-readers": ["scripts/check_config_yaml_readers.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
     "case-collisions": ["scripts/check-case-collisions.py"],

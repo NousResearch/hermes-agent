@@ -26,20 +26,25 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     An unreadable selection raises rather than shrinking the next dependency generation;
     empty YAML is an explicit empty configuration, as in the CLI loader.
     """
+    from hermes_cli.config_backend import config_version, read_config_doc
+
     config_path = home / "config.yaml"
+    # Stat before the YAML stack: a home without config needs none (PM's own runtime tree has none).
+    # Only a missing file means "no config"; a symlink loop or permission error still refuses.
     try:
-        text = config_path.read_text(encoding="utf-8-sig")
+        config_version(config_path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"could not read plugin selection: {config_path}") from exc
+    # Missing YAML support is a broken runtime, not an empty plugin selection.
+    from ruamel.yaml.error import YAMLError
+    try:
+        config = read_config_doc(config_path)
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"could not read plugin selection: {config_path}") from exc
-
-    # Missing YAML support is a broken runtime, not an empty plugin selection.
-    import utils
-    from ruamel.yaml.error import YAMLError
-
-    try:
-        config = utils.fast_safe_load(text)
     except YAMLError as exc:
         raise ValueError(f"could not parse plugin selection: {config_path}") from exc
     if config is None:

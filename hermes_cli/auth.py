@@ -258,11 +258,11 @@ BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 # a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
 # rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
 from hermes_cli.config import (  # noqa: E402
-    atomic_config_replace, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    atomic_config_replace, config_exists, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
-from hermes_cli.auth_plugin_providers import (  # noqa: E402
+from hermes_cli.auth_plugin_providers import (  # noqa: E402, F401  get_plugin_oauth_auth_status: _STATUS_BY_AUTH_TYPE looks it up in globals()
     get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
@@ -2427,7 +2427,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return config_path
     require_readable_config_before_write(config_path)
     config = read_raw_config()

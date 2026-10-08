@@ -209,7 +209,9 @@ def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``hermes peer``) from config.yaml, read
     directly (no config-loader import; the section is absent on most installs). Never raises."""
     def _names() -> list[str]:
-        peers = (_read_yaml_dict(root / "config.yaml", "bot_peers") or {}).get("bot_peers")
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        peers = doc.get("bot_peers") if isinstance(doc, dict) else None
         return sorted(str(n) for n in peers if str(n).strip()) if isinstance(peers, dict) else []
 
     return _swallow(_names, [])

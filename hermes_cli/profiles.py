@@ -23,6 +23,8 @@ from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
+from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, _config_version_or_none  # noqa: F401  _PROFILE_FILE_CACHE: tests clear it here
 
 logger = logging.getLogger(__name__)
 
@@ -580,7 +582,7 @@ def remove_wrapper_script(name: str) -> bool:
 def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
     """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
     profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    if not (profile_dir / "config.yaml").exists():
+    if not config_exists(profile_dir / "config.yaml"):
         return
     # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
     # the detailed error in the target profile.
@@ -702,43 +704,6 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-# (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
-# files PER PROFILE, and it is the shared body of `GET /api/profiles` and `profiles.list`, which the
-# Bots roster polls every 5s per connection — so an installer-seeded config.yaml (the annotated
-# template, ~119KB) was re-parsed for every bot every five seconds to yield the same two strings.
-# Only DERIVED values are cached, never a document a caller could write back: the raw readers
-# (`read_user_config_raw`, `_load_yaml_dict`) keep their uncached contract. See #117378.
-_PROFILE_FILE_CACHE: Dict[tuple, tuple] = {}
-_PROFILE_FILE_CACHE_MAX = 512
-
-
-def _profile_file_signature(path: Path) -> Optional[tuple]:
-    """``(mtime_ns, size, inode)``, or None when the file is absent. The atomic writers rename a
-    temp file into place, so a rewrite always lands a new inode even within one mtime tick."""
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-
-
-def _cached_profile_read(path: Path, kind: str, compute):
-    """``compute()``'s value, reused while *path* has not changed. A missing file is never cached:
-    reading it costs nothing, and one created later must be picked up."""
-    signature = _profile_file_signature(path)
-    if signature is None:
-        return compute()
-    key = (str(path), kind)
-    cached = _PROFILE_FILE_CACHE.get(key)
-    if cached is not None and cached[0] == signature:
-        return cached[1]
-    value = compute()
-    if len(_PROFILE_FILE_CACHE) >= _PROFILE_FILE_CACHE_MAX:
-        _PROFILE_FILE_CACHE.clear()
-    _PROFILE_FILE_CACHE[key] = (signature, value)
-    return value
-
-
 def _read_distribution_meta(profile_dir: Path) -> tuple:
     """``(name, version, source)`` from ``distribution.yaml``; ``(None, None, None)`` if absent."""
     def _read() -> tuple:
@@ -753,7 +718,7 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
 def _read_config_model(profile_dir: Path) -> tuple:
     """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
     config_path = profile_dir / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return None, None
 
     def _read() -> tuple:
@@ -769,7 +734,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
             pass
         return None, None
 
-    return _cached_profile_read(config_path, "config-model", _read)
+    return _cached_profile_read(config_path, "config-model", _read, _config_version_or_none)
 
 
 def launch_model_seed(source_cfg: dict) -> dict:
@@ -792,13 +757,13 @@ def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
     config_path = profile_dir / "config.yaml"
-    if config_path.exists():
+    if config_exists(config_path):
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
         from hermes_constants import get_hermes_home
         from hermes_cli.config import atomic_config_write, read_user_config_raw
         source = get_hermes_home() / "config.yaml"
-        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
+        seed = launch_model_seed(read_user_config_raw(source)) if config_exists(source) else {}
         if seed:
             atomic_config_write(config_path, seed)
 
@@ -1082,13 +1047,12 @@ def profile_is_standalone(home: Path) -> bool:
     never standalone — it IS the host — and warns once per process if the key is set there."""
     global _STANDALONE_WARNED
     from hermes_yaml import YAMLError
-    from utils import file_signature
 
     home = Path(home)
     cfg_path = home / "config.yaml"
     key = str(home)
     try:
-        signature = file_signature(cfg_path.stat())
+        signature = config_version(cfg_path)
     except FileNotFoundError:
         signature = None
     except OSError as exc:
@@ -1177,6 +1141,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
+    require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
         source_dir = get_hermes_home()
@@ -1366,9 +1331,8 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)
-    from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
-    clone_memory_provider_config(source_dir, profile_dir,
-                                 active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
+    from hermes_cli.profile_memory_config import _load_config_dict, active_memory_provider, clone_memory_provider_config
+    clone_memory_provider_config(source_dir, profile_dir, active_memory_provider(_load_config_dict(source_dir)))
     if sync_imports:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)

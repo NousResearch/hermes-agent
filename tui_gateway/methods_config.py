@@ -244,10 +244,24 @@ def _cfg_get_thinking_mode(params):
     return {"value": raw}
 
 
+def _version_token(version) -> float:
+    """A non-zero number that changes with ``version`` (0 = no config yet, as before)."""
+    if not version:
+        return 0
+    if isinstance(version[0], int):
+        return version[0] / 1_000_000_000
+    import zlib
+    return float(zlib.crc32(repr(version).encode("utf-8")) or 1)
+
+
 def _cfg_get_mtime(params):
+    from hermes_cli.config_backend import config_exists, config_version
     cfg_path = _hermes_home / "config.yaml"
     try:
-        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
+        # The client only compares successive values for change: a numeric token derived from the
+        # backend's opaque version (the file backend's leads with st_mtime_ns, kept as seconds).
+        version = config_version(cfg_path) if config_exists(cfg_path) else None
+        mtime = _version_token(version)
     except Exception:
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when

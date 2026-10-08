@@ -20,8 +20,8 @@ from typing import Any, Dict, Optional, Tuple
 
 from hermes_cli import config as _config
 from hermes_cli import managed_scope
+from hermes_cli.config_backend import read_config_doc
 from hermes_cli.config_read_errors import _warn_config_parse_failure
-from utils import fast_safe_load
 
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
@@ -66,27 +66,27 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        n = len(cache_sig) if cache_sig is not None else 0
+        if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+                return copy.deepcopy(cached[n])
 
         raw: Dict[str, Any] = {}
         recovered = False
-        raw_hit = _config._RAW_CONFIG_CACHE.get(path_key)
-        if user_sig is not None and raw_hit is not None and raw_hit[:4] == user_sig:
-            raw = copy.deepcopy(raw_hit[4])  # one parse per process, shared with read_raw_config()
+        raw_hit = _config._raw_config_cache_hit(path_key, user_sig) if user_sig is not None else None
+        if raw_hit is not None:
+            raw = copy.deepcopy(raw_hit)  # one parse per process, shared with read_raw_config()
             _LAST_GOOD_USER_RAW.setdefault(path_key, copy.deepcopy(raw))
         elif user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8-sig") as f:
-                    loaded = fast_safe_load(f)
+                loaded = read_config_doc(config_path)
             except Exception as exc:
                 if fail_closed:
                     raise
                 raw, recovered = _recover_user_raw(config_path, path_key, exc), True
             else:
                 raw = loaded if isinstance(loaded, dict) else {}
-                _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
+                _config._raw_config_cache_store(path_key, user_sig, copy.deepcopy(raw))
                 _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
                 # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
                 # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)

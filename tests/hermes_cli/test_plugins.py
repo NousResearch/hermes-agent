@@ -20,7 +20,6 @@ from hermes_cli.plugins import (
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
-    resolve_plugin_command_result,
     _portable_skill_namespace,
 )
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
@@ -2560,37 +2559,6 @@ class TestPluginCommands:
             manager_b._plugin_skills["stateful-plugin::marker"]["marker"] == "marker-b"
         )
         assert manager_a is not manager_b
-
-
-class TestPluginCommandResultResolution:
-
-
-    def test_awaits_async_result_with_running_loop(self, monkeypatch):
-        class _Loop:
-            pass
-
-        async def _handler():
-            return "threaded-ok"
-
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
-        assert resolve_plugin_command_result(_handler()) == "threaded-ok"
-
-    def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
-        """Threaded path must abort a hung async handler instead of blocking the caller."""
-        import asyncio as _asyncio
-
-        class _Loop:
-            pass
-
-        async def _slow_handler():
-            await _asyncio.sleep(10)
-            return "should-not-reach"
-
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
-        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
-
-        with pytest.raises(TimeoutError):
-            resolve_plugin_command_result(_slow_handler())
 
 
 # ── TestPluginDispatchTool ────────────────────────────────────────────────

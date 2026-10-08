@@ -856,6 +856,39 @@ def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file,
     assert not dm_file.exists()
 
 
+def test_delivery_runner_forwards_one_substantive_reply_on_stdout(tmp_path, capsys):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("question", encoding="utf-8")
+    child = tmp_path / "reply.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8') == 'question'\n"
+        "print('substantive reply')\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child)], str(dm_file), stdin_file=False
+    )
+
+    captured = capsys.readouterr()
+    assert returncode == 0
+    assert captured.out == "substantive reply\n"
+    assert captured.err == ""
+    assert not dm_file.exists()
+
+
+def test_delivery_runner_unlinks_when_child_launch_raises(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("child launch failed")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(RuntimeError, match="child launch failed"):
+        bot_mode_dm._run_delivery(["hermes"], str(dm_file), stdin_file=False)
+    assert not dm_file.exists()
 
 
 def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):

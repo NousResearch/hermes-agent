@@ -15,6 +15,34 @@ IDENTITY_PREFIX = 'gateway.terminal_identity.v1.'
 WORKER_PREFIX = 'gateway.terminal_worker.v1.'
 
 
+def compact_result(result, *, user_message=None):
+    """Retain replay/accounting and current-turn API output, never cumulative history."""
+    result = dict(result)
+    value = result.get('result')
+    if not isinstance(value, dict):
+        return result
+    value = dict(value)
+    messages = value.get('messages')
+    if isinstance(messages, list):
+        # Agent results include all previous turns. APIs only project this turn's
+        # assistant/tool suffix; previous_response_id stores its own history. Compression
+        # is the exception: its replacement snapshot is the only immutable record of the
+        # rewritten prefix for this turn. A later live transcript may include a successor.
+        if not value.get('_compressed') and not value.get('_messages_are_turn_suffix'):
+            from agent.turn_context import reanchor_current_turn_user_idx
+            anchor = value.get('current_turn_user_idx')
+            if not (type(anchor) is int and 0 <= anchor < len(messages)
+                    and isinstance(messages[anchor], dict) and messages[anchor].get('role') == 'user'):
+                anchor = reanchor_current_turn_user_idx(messages, user_message)
+            value['messages'] = messages[anchor + 1:]
+            # Recovery/verification nudges are later user-role rows within this same turn.
+            # Consumers must not infer a new boundary from them after the real anchor is gone.
+            value['_messages_are_turn_suffix'] = True
+            value.pop('current_turn_user_idx', None)
+    result['result'] = value
+    return result
+
+
 def identity_key(principal_id, session_id, request_id):
     return IDENTITY_PREFIX + admission_fingerprint(canonical_target=session_id,
         payload={'principal': principal_id, 'request': request_id})

@@ -167,7 +167,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                          result: dict | None = None) -> dict:
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
-    encoded = _json(result) if result is not None else None
+    from hermes_state_terminal import compact_result
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
@@ -177,8 +177,9 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
         _retire_admission_workers(conn, row, epoch)
-        if encoded is not None:
+        if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
+            encoded = _json(compact_result(result, user_message=json.loads(row['payload_json']).get('text')))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, encoded))

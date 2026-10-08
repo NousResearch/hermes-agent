@@ -110,9 +110,12 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
-    "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
-    "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
+    # models.dev renamed the Kimi coding-plan providers: the legacy "kimi-for-coding" slug is now
+    # a MODEL id under kimi-code-plan-global/-cn, so the old mapping silently missed the catalog
+    # and kimi-for-coding fell through to the 256K family catch-all (#126224).
+    "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
+    "moonshot": "moonshotai", "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
@@ -141,6 +144,22 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
         for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
             _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(hermes_id)
     return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
+
+
+# models.dev ids this repo used to publish → the Hermes provider ids that pointed at them then.
+# The ``model_overrides`` provider key is a documented contract that accepts either spelling
+# (see ``_provider_override_section``), so a config keyed by a slug the catalog has since
+# renamed must keep resolving — otherwise the entry matches no candidate and the operator's
+# ``context_window`` (or capability patch) is dropped in silence. Consulted only after the
+# current forward/reverse aliases, so it can never shadow a live id (#126224).
+_RETIRED_MODELS_DEV_IDS: Dict[str, Tuple[str, ...]] = {
+    "kimi-for-coding": ("kimi", "kimi-coding", "moonshot", "kimi-coding-cn"),
+}
+
+
+def _retired_models_dev_ids_for(hermes_id: str) -> List[str]:
+    """Retired models.dev slugs that used to map to *hermes_id* (may be [])."""
+    return [slug for slug, ids in _RETIRED_MODELS_DEV_IDS.items() if hermes_id in ids]
 
 
 def _dict_or_empty(value: Any) -> Dict[str, Any]:
@@ -675,8 +694,14 @@ def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]
     provider_key = (provider or "").strip()
     if not overrides or not provider_key:
         return None
-    # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
-    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases,
+    # then slugs the catalog has since renamed: an operator's config may still be keyed by the retired id.
+    candidates = [
+        provider_key,
+        PROVIDER_TO_MODELS_DEV.get(provider_key),
+        *_models_dev_to_hermes_ids(provider_key),
+        *_retired_models_dev_ids_for(provider_key),
+    ]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 

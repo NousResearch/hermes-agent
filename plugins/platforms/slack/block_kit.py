@@ -207,20 +207,23 @@ def _quote_block(lines: List[str]) -> Block:
     return _rich_text_block("rich_text_quote", section_children)
 
 
-def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
+def _list_block(items: List[Tuple[int, bool, str, int]]) -> Block:
     """Build ONE rich_text block from consecutive list items.
-    ``items`` is a list of ``(indent, ordered, text)``. Each contiguous run sharing the same
+    ``items`` is a list of ``(indent, ordered, text, number)``; ``number`` is the source ordinal (0 for bullets). Each contiguous run sharing the same
     (indent, ordered) becomes a ``rich_text_list`` element; indentation changes start a new element,
     which is how Slack renders true nesting."""
     elements: List[Dict[str, Any]] = []
     cur: Optional[Dict[str, Any]] = None
     cur_key: Optional[Tuple[int, bool]] = None
-    for indent, ordered, text in items:
+    for indent, ordered, text, number in items:
         key = (indent, ordered)
         if key != cur_key:
             cur = {
                 "type": "rich_text_list", "style": "ordered" if ordered else "bullet",
                 "indent": indent, "elements": []}
+            if ordered and number > 1:
+                # Keep the author's numbering: "5." after a heading must not render as "1.".
+                cur["offset"] = number - 1
             elements.append(cur)
             cur_key = key
         cur["elements"].append(
@@ -429,20 +432,20 @@ def render_blocks(markdown: str, mrkdwn_fn=None) -> Optional[List[Block]]:
             # List group (bullets + ordered, with nesting)
             if _is_list_line(line):
                 flush_para()
-                items: List[Tuple[int, bool, str]] = []
+                items: List[Tuple[int, bool, str, int]] = []
                 while i < n:
                     bm = _BULLET_RE.match(lines[i])
                     om = _ORDERED_RE.match(lines[i])
                     if bm:
-                        items.append((_indent_level(bm.group(1)), False, bm.group(2)))
+                        items.append((_indent_level(bm.group(1)), False, bm.group(2), 0))
                         i += 1
                     elif om:
-                        items.append((_indent_level(om.group(1)), True, om.group(3)))
+                        items.append((_indent_level(om.group(1)), True, om.group(3), int(om.group(2))))
                         i += 1
                     elif lines[i].strip() and lines[i].startswith((" ", "\t")) and items:
                         # continuation line of the previous item
-                        indent, ordered, txt = items[-1]
-                        items[-1] = (indent, ordered, txt + " " + lines[i].strip())
+                        indent, ordered, txt, number = items[-1]
+                        items[-1] = (indent, ordered, txt + " " + lines[i].strip(), number)
                         i += 1
                     elif not lines[i].strip() and items:
                         # Blank line inside a list run. LLM-authored ordered

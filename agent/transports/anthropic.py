@@ -43,9 +43,18 @@ class AnthropicTransport(ProviderTransport):
         return "anthropic_messages"
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
-        """Convert OpenAI messages to an Anthropic (system, messages) tuple; ``base_url`` affects thinking-signature handling."""
+        """Convert OpenAI messages to an Anthropic (system, messages) tuple; ``base_url`` affects
+        thinking-signature handling. ``preserve_thinking`` resolves like ``build_anthropic_kwargs``
+        (explicit kwarg wins, else the provider entry's opt-in) so callers at this seam get the
+        same keep path instead of silently falling back to the strip default."""
         from agent.anthropic_message_convert import convert_messages_to_anthropic
-        return convert_messages_to_anthropic(messages, base_url=kwargs.get("base_url"))
+        base_url = kwargs.get("base_url")
+        preserve = kwargs.get("preserve_thinking")
+        if preserve is None and base_url:
+            from agent.anthropic_adapter import _custom_provider_preserves_thinking
+            preserve = _custom_provider_preserves_thinking(base_url)
+        return convert_messages_to_anthropic(
+            messages, base_url=base_url, preserve_thinking=bool(preserve))
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""

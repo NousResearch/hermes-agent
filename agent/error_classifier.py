@@ -860,6 +860,15 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
         return _v(_R.thinking_signature)
+    # Proxies paraphrase the same 400 without the canonical wording. Anchor the paraphrase arm
+    # on thinking-block vocabulary (corroborating token, same shape as the arm above): a bare
+    # "invalid signature" stays format_error so request-auth/HMAC rejections keep their verdict,
+    # and other rules' 400s a proxy appended the phrase to (context overflow, reasoning_effort
+    # gating) are not hijacked -- the arm must not own 400s that merely contain the phrase
+    # (#120723/#123021 review follow-up).
+    if status == 400 and "invalid signature" in msg and any(
+            t in msg for t in ("thinking", "assistant")):
+        return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
         return _v(_R.long_context_tier, should_compress=True)

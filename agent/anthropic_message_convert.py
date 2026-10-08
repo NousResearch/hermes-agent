@@ -570,18 +570,24 @@ def _keep_valid_thinking(content: List[Any], signature_dead: bool) -> List[Any]:
     return new_content
 
 
-def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
+def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None,
+                                preserve_thinking: bool | None = False) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
     (400 "Invalid signature in thinking block"). Native preserved-thinking models keep valid signed
     blocks on every assistant turn; older Claude models retain the established latest-turn-only
-    policy. Signatures are proprietary: third-party endpoints strip all thinking. Kimi replays as-is;
-    DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous Portal proxies Claude
-    with sticky sessions and validates the same signatures, so it takes the native path despite not
-    being anthropic.com.
+    policy. Signatures are proprietary: third-party endpoints strip all thinking -- unless the
+    endpoint's provider entry opts in with ``preserve_thinking`` (#120723): a trusted pass-through
+    follows the NATIVE contract, and the model-family prior-turn policy then applies exactly as it
+    does for direct Anthropic (keep-all on models that natively preserve prior turns, latest-turn
+    on older ones). Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects
+    signed ones. Nous Portal proxies Claude with sticky sessions and validates the same
+    signatures, so it takes the native path despite not being anthropic.com.
     """
     route = anthropic_thinking_route(base_url, model)
+    if route == "third_party" and preserve_thinking:
+        route = "native"
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     preserve_prior = model_preserves_prior_thinking(model)
     for idx, m in _assistant_block_lists(result):
@@ -712,7 +718,8 @@ def _convert_system_content(content: Any) -> Any:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict], base_url: str | None = None, model: str | None = None
+    messages: List[Dict], base_url: str | None = None, model: str | None = None,
+    preserve_thinking: bool | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
@@ -734,7 +741,7 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(result, base_url, model, preserve_thinking=bool(preserve_thinking))
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

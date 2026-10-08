@@ -48,6 +48,11 @@ def releases(tmp_path, monkeypatch, request):
     git(checkout, "config", "commit.gpgsign", "false")
     git(checkout, "checkout", "--detach", commits[0])
     monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
+    # The shared test interpreter belongs to a different real install. These
+    # fixtures own the throwaway checkout; never relaunch its command in the
+    # interpreter's owning install (which would receive pytest's arguments).
+    from hermes_cli import update_owning_install
+    monkeypatch.setattr(update_owning_install, "owning_install_root", lambda _root: None)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
 

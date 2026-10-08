@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
 
-
 def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 
@@ -44,6 +43,48 @@ def merge_model_cooldowns(*maps: Any) -> Dict[str, float]:
     return merged
 
 
+# Per-model observation epochs let the persistence boundary order a cooldown against an
+# explicit reset. The map lives in PooledCredential.extra so older rows round-trip unchanged.
+MODEL_COOLDOWN_OBSERVED_AT_KEY = "model_cooldown_observed_at"
+
+
+def merge_model_cooldown_observations(*maps: Any) -> Dict[str, float]:
+    """Latest observation epoch per model across concurrent pool snapshots."""
+    merged: Dict[str, float] = {}
+    for observations in maps:
+        if not isinstance(observations, dict):
+            continue
+        for model, observed_at in observations.items():
+            if isinstance(observed_at, (int, float)):
+                merged[model] = max(float(observed_at), merged.get(model, 0.0))
+    return merged
+
+
+def model_cooldowns_after_clear(
+    cooldowns: Any, observations: Any, cleared_at: Optional[float],
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Cooldown/observation maps that were recorded after *cleared_at*.
+
+    A reset is a tombstone for every model observation that predates it. Legacy cooldown rows
+    have no observation epoch, so they stay untouched until a reset exists; once an operator
+    resets them, the reset wins instead of allowing a stale process to resurrect the old map.
+    """
+    merged_cooldowns = merge_model_cooldowns(cooldowns)
+    merged_observations = merge_model_cooldown_observations(observations)
+    clear_epoch = float(cleared_at or 0.0)
+    if clear_epoch <= 0:
+        return (
+            merged_cooldowns,
+            {model: at for model, at in merged_observations.items() if model in merged_cooldowns},
+        )
+    kept = {
+        model: until
+        for model, until in merged_cooldowns.items()
+        if merged_observations.get(model, 0.0) > clear_epoch
+    }
+    return kept, {model: merged_observations[model] for model in kept if model in merged_observations}
+
+
 class CredentialPoolModelCooldownMixin:
     def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
         """Whether a pool cooldown blocks *token* for *model*.
@@ -57,6 +98,52 @@ class CredentialPoolModelCooldownMixin:
                 entry.runtime_api_key == token and model_cooldown_until(entry, model) is not None
                 for entry in self._entries
             )
+
+    def _resync_model_cooldown_clear(self, entry: "PooledCredential") -> "PooledCredential":
+        """Honor a reset written by another process for a healthy, model-benched entry.
+
+        Credential-wide exhausted/dead rows already resync through CredentialPool's status path.
+        A model-only cooldown leaves last_status healthy, so without this sibling path a long-lived
+        gateway can keep refusing the model after another process successfully ran `hermes auth reset`.
+        """
+        if not entry.model_cooldowns:
+            return entry
+        try:
+            from agent.credential_pool import _parse_absolute_timestamp
+            from hermes_cli.auth import read_credential_pool
+
+            row = next(
+                (item for item in read_credential_pool(self.provider)
+                 if isinstance(item, dict) and item.get("id") == entry.id),
+                None,
+            )
+            cleared_at = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
+        except Exception:
+            return entry
+        if not cleared_at:
+            return entry
+
+        cooldowns, observations = model_cooldowns_after_clear(
+            entry.model_cooldowns,
+            entry.extra.get(MODEL_COOLDOWN_OBSERVED_AT_KEY),
+            cleared_at,
+        )
+        if cooldowns == merge_model_cooldowns(entry.model_cooldowns):
+            return entry
+
+        updated_extra = dict(entry.extra)
+        if observations:
+            updated_extra[MODEL_COOLDOWN_OBSERVED_AT_KEY] = observations
+        else:
+            updated_extra.pop(MODEL_COOLDOWN_OBSERVED_AT_KEY, None)
+        current_clear = _parse_absolute_timestamp(entry.status_cleared_at) or 0.0
+        return self._adopt(
+            entry,
+            persist=False,
+            model_cooldowns=cooldowns or None,
+            status_cleared_at=max(current_clear, cleared_at),
+            extra=updated_extra,
+        )
 
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
@@ -89,18 +176,30 @@ class CredentialPoolModelCooldownMixin:
         """
         from agent.credential_pool import _exhausted_ttl, _normalize_error_context
 
+        observed_at = time.time()
         if failure_reason == "model_entitlement":
-            until = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+            until = observed_at + MODEL_ENTITLEMENT_BENCH_SECONDS
         else:
             until = _normalize_error_context(error_context).get("reset_at") or (
-                time.time() + _exhausted_ttl(429, sole_credential=self._is_sole_credential())
+                observed_at + _exhausted_ttl(429, sole_credential=self._is_sole_credential())
             )
         failed_key = entry.runtime_api_key
         for scoped in list(self._entries):
             if scoped.id != entry.id and not (failed_key and scoped.runtime_api_key == failed_key):
                 continue
             cooldowns = merge_model_cooldowns(scoped.model_cooldowns, {model: until})
-            self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
+            observations = merge_model_cooldown_observations(
+                scoped.extra.get(MODEL_COOLDOWN_OBSERVED_AT_KEY),
+                {model: observed_at},
+            )
+            updated_extra = dict(scoped.extra)
+            updated_extra[MODEL_COOLDOWN_OBSERVED_AT_KEY] = observations
+            self._adopt(
+                scoped,
+                persist=False,
+                model_cooldowns=cooldowns,
+                extra=updated_extra,
+            )
         self._persist()
 
     def limit_state(self, models: Iterable[str]) -> Optional[Dict[str, Any]]:

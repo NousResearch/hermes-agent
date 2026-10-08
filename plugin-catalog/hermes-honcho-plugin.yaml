@@ -2,7 +2,7 @@ name: hermes-honcho-plugin
 title: Honcho Memory
 repo: https://github.com/outpoints/hermes-honcho-plugin
 sha: 4fb2a175981534f38e9356957212350087546d6e
-description: "Desktop workbench for the Honcho memory behind the focused chat: read the newest conclusions, trace their premises, search messages, ask scoped questions, and add confirmed corrections or source files. Uses each profile's existing Honcho provider configuration. Disclosure: reads and confirmed writes go to the Honcho server that profile already uses; Ask runs a reasoning call that may incur Honcho usage. No telemetry and no credentials leave Hermes."
+description: "Desktop workbench for the Honcho memory behind the focused chat: read the newest conclusions, trace their premises, search messages, ask scoped questions, and add confirmed corrections or source files. Uses each profile's existing Honcho provider configuration. Disclosure — talks only to the Honcho server each profile is already configured for, through Hermes's own Honcho client and credentials, and polls it about every 10 seconds for the focused chat while Desktop is open. Ask runs a Honcho reasoning call that may use credits. Add fact/correction and Add to session write to Honcho only after you confirm the target in a dialog; Add to session uploads the text or PDF/JSON/text file you choose. A chat from another local profile is read with that profile's own Honcho configuration, only where this plugin is enabled. It reads the focused chat's title and folder from the profile's session database, read-only. No telemetry."
 maintainer: outpoints
 tier: community
 category: desktop

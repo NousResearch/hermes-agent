@@ -988,7 +988,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     user_id_alt   TEXT,
     chat_type     TEXT,
     notifier_profile TEXT,
-    delivery_mode TEXT NOT NULL DEFAULT 'notify',
+    delivery_mode TEXT NOT NULL DEFAULT 'notify', event_kinds TEXT,
     delivery_metadata TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
@@ -1412,11 +1412,11 @@ def _inherit_notify_subs(
         f"""
         INSERT OR IGNORE INTO kanban_notify_subs
             (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-             chat_type, notifier_profile, delivery_mode, delivery_metadata,
+             chat_type, notifier_profile, delivery_mode, event_kinds, delivery_metadata,
              created_at, last_event_id)
         SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
-               COALESCE(chat_type, 'dm'), notifier_profile,
-               COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
+               COALESCE(chat_type, 'dm'), notifier_profile, COALESCE(delivery_mode, 'notify'),
+               event_kinds, delivery_metadata, ?, ?
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
         """,

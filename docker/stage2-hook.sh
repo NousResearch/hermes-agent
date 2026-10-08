@@ -650,21 +650,48 @@ fi
 # volume, selected by $HERMES_HOME/installs/*/facts.json. An image upgrade
 # replaces uv.lock under that durable selection, so re-resolve it here, before
 # any supervised service boots onto a generation built for the previous image.
-# On failure (e.g. offline) PM falls back to the image's own environment and
-# keeps the extras recorded for the next boot or install. Then collect the
-# generations nothing selects any more: no service holds a lease yet, and
-# collect_generations keeps anything younger than a day.
-s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
+# On extras-only failure (e.g. offline) PM falls back to the image's own
+# environment and keeps extras recorded for the next boot or install. Selected
+# plugin dependency failures stop boot: a gateway without its active provider
+# must not look healthy. Then collect generations nothing selects any more:
+# no service holds a lease yet, and collect_generations keeps recent ones.
+# Keep resolver output and tracebacks out of container logs: uv may echo
+# authenticated index URLs. Only emit the fixed, actionable boot status below.
+if dependency_output=$(s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
 from pathlib import Path
 from hermes_cli.runtime_state import collect_generations
 from pm.environments import install_state_dir
-from pm.recovery import refresh_dependencies
+from pm.recovery import refresh_dependencies, record_boot_dependency_failure
 from pm.runtime import collect_runtime_generations
+from hermes_constants import get_hermes_home
 root = Path("'"$INSTALL_DIR"'")
-print("[stage2] dependency environment:", refresh_dependencies(root))
+try:
+    state = refresh_dependencies(root)
+except Exception as exc:
+    record_boot_dependency_failure(get_hermes_home(), exc)
+    raise
+print("[stage2] dependency environment:", state)
 removed = collect_generations(root) + collect_runtime_generations(install_state_dir(root) / "pm-runtime")
 print("[stage2] collected", len(removed), "unused dependency generations")
-' || echo "[stage2] Warning: dependency refresh failed; continuing"
+' 2>/dev/null); then
+    # The child may have printed arbitrary installer output on stdout. Never
+    # relay it, even on success; only echo one of our known state tokens.
+    case "$dependency_output" in
+        *"[stage2] dependency environment: rebuilt"*) dependency_state=rebuilt ;;
+        *"[stage2] dependency environment: current"*) dependency_state=current ;;
+        *"[stage2] dependency environment: fallback"*) dependency_state=fallback ;;
+        *"[stage2] dependency environment: base"*) dependency_state=base ;;
+        *) echo "[stage2] ERROR: dependency refresh returned no valid state; refusing startup" >&2; exit 1 ;;
+    esac
+    echo "[stage2] dependency environment: $dependency_state"
+    if [ "$dependency_state" = fallback ]; then
+        echo "[stage2] Warning: optional extras could not be refreshed; using image dependencies"
+    fi
+    unset dependency_output dependency_state
+else
+    echo "[stage2] ERROR: dependency refresh failed; refusing startup (check network, index access, plugin requirements and volume permissions)" >&2
+    exit 1
+fi
 
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering

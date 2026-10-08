@@ -76,13 +76,37 @@ def _indent_level(spaces: str) -> int:
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
 # Slack mrkdwn autolink: <scheme:target> or <scheme:target|label>.
-# Mentions (<@U…>, <#C…>, <!here>) have no scheme: and stay as text.
 _SLACK_LINK_RE = re.compile(
     r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
+)
+# Slack mention tokens carry no scheme: <@U…> (user), <#C…> (channel, with an
+# optional |name label), <!subteam^S…> (usergroup) and <!here|!channel|!everyone>
+# (broadcast). rich_text does not interpret mrkdwn, so these must become
+# user/channel/broadcast/usergroup elements — as plain text Slack renders the
+# token literally.
+_SLACK_MENTION_RE = re.compile(
+    r"<(@[A-Z0-9]+|#[A-Z0-9]+|!subteam\^[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
 )
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
+
+
+def _mention_element(body: str) -> Optional[Dict[str, Any]]:
+    """Map a Slack mention token body (without the angle brackets) to a rich_text element.
+
+    ``@U…`` -> user, ``#C…`` -> channel, ``!subteam^S…`` -> usergroup,
+    ``!here``/``!channel``/``!everyone`` -> broadcast.
+    Returns None for anything else, so the caller can emit the raw token as text."""
+    if body.startswith("@"):
+        return {"type": "user", "user_id": body[1:]}
+    if body.startswith("#"):
+        return {"type": "channel", "channel_id": body[1:]}
+    if body.startswith("!subteam^"):
+        return {"type": "usergroup", "usergroup_id": body[len("!subteam^"):]}
+    if body.startswith("!"):
+        return {"type": "broadcast", "range": body[1:]}
+    return None
 
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
@@ -134,6 +158,7 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
             _emit_link(url, m.group(2) or url, style)
             pos = m.end()
         _walk_emphasis(s[pos:], style)
+
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
         if not s:
             return
@@ -147,7 +172,19 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
                 _walk_emphasis(m.group(1), inner_style)
                 _walk_emphasis(s[m.end() :], style)
                 return
-        emit_text(s, dict(style) if style else None)
+        # Base case: split on mention tokens at the leaf so emphasis spans
+        # wrapping a mention are kept intact, while mentions themselves
+        # remain unstyled (Slack rejects styled mention elements).
+        pos = 0
+        for m in _SLACK_MENTION_RE.finditer(s):
+            emit_text(s[pos : m.start()], dict(style) if style else None)
+            element = _mention_element(m.group(1))
+            if element is not None:
+                elements.append(element)
+            else:
+                emit_text(m.group(0), dict(style) if style else None)
+            pos = m.end()
+        emit_text(s[pos:], dict(style) if style else None)
     walk(text, {})
     return elements or [{"type": "text", "text": text}]
 

@@ -1796,6 +1796,7 @@ def cmd_chat(args):
     kwargs = {
         "model": args.model,
         "reasoning": getattr(args, "reasoning", None),
+        "fast": getattr(args, "fast", None),
         "toolsets": args.toolsets,
         "query": args.query,
         "oneshot": bool(getattr(args, "oneshot_exit", False)),

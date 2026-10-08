@@ -170,6 +170,9 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
         "config.yaml for this run only; the persistent level lives there "
         "(or per-model under agent.reasoning_overrides)."))
+    # No top-level --fast: an optional-value flag (nargs="?") greedily takes the next token, so
+    # `hermes --fast chat` would eat `chat` as the tier word — the same misparse --reasoning had
+    # (#93530). -c/--continue is chat-only for the same reason.
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
@@ -252,6 +255,11 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Reasoning effort for this session: none, minimal, low, medium, "
         "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
         "this run only (same levels as the /reasoning slash command)."))
+    inherited(chat_parser, "--fast", default=SUPPRESS, nargs="?", const="fast", metavar="TIER", help=(
+        "Fast mode for this session: fast, auto, cold, ultrafast, or normal; "
+        "bare --fast means fast. Overrides agent.service_tier for this run "
+        "only (same words as the /fast slash command) — the only way to pick "
+        "a tier in -q/--query mode, where /fast is not reachable."))
     inherited(chat_parser, "-s", "--skills", action="append", default=SUPPRESS,
               help="Preload one or more skills for the session (repeat flag or comma-separate)")
     # No `choices=` on --provider: user-defined providers from config.yaml `providers:` are valid

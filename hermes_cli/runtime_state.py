@@ -14,7 +14,7 @@ import shutil
 import time
 import uuid
 
-from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
+from pm.environments import dependency_home_root, install_state_dir, plugin_target_in_home, runtime_facts_path
 # Private aliases: this module calls them through its globals (tests patch ``_atomic_bytes``
 # here) and updaters shipped before PM import them by these names mid-swap
 # (tests/compat/old_updater_surface.json). New code imports the pm.filesystem names.
@@ -63,10 +63,7 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
     from hermes_cli.fs_utils import rmtree_force
 
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
-    home = dependency_home_root().resolve()
-    # Same containment as StagedPlugin: ``plugins`` may be relocated by a link (#134952).
-    if (not target.parent.parent.resolve().is_relative_to(home) or target.parent.name != "plugins"
-            or backup.parent != target.parent or not backup.name.startswith(".previous-")
+    if (not plugin_target_in_home(target) or backup.parent != target.parent or not backup.name.startswith(".previous-")
             or metadata != target.parent / ".install-metadata.json"):
         raise ValueError("plugin publication paths escape their home")
     committed = row.get("committed") or _digest(runtime_facts_path(project)) != row["facts_before"]

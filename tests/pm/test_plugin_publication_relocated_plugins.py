@@ -2,9 +2,10 @@
 
 Regression for #134952: ``StagedPlugin`` and boot recovery required the *resolved* plugin target to
 sit under the Hermes root, so a plugins directory linked to another drive failed every install,
-update and dependency sync with "plugin publication paths escape or overlap their home" — while the
-install-side validator, which resolves both sides, accepted the same target. The home that holds
-``plugins`` must still live in the Hermes root, and the target itself must still not be a link.
+update and dependency sync with "plugin publication paths escape or overlap their home". The
+install side hands publication a target already resolved through that link
+(``_sanitize_plugin_name``, ``update_plugin``), so the target must be judged against the homes'
+resolved ``plugins`` directories — while a ``plugins`` dir owned by no Hermes home stays refused.
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import subprocess
 import sys
 
 import pytest
+
+from hermes_cli.plugins_cmd import _sanitize_plugin_name
 
 _REPO = str(Path(__file__).resolve().parents[2])
 
@@ -59,11 +62,13 @@ def _link_dir(link: Path, real: Path) -> None:
         _winapi.CreateJunction(str(real), str(link))
 
 
-def _plugin_home(tmp_path: Path, *, relocated: bool) -> tuple[Path, Path, Path]:
-    """``(home, real plugins dir, staged clone)`` with an installed ``example`` plugin."""
-    home = tmp_path / "home"
-    home.mkdir()
-    plugins = tmp_path / "elsewhere" / "plugins" if relocated else home / "plugins"
+def _plugin_home(tmp_path: Path, *, profile: bool = False, relocated: bool = True) -> tuple[Path, Path, Path]:
+    """``(HERMES_HOME, real plugins dir, staged clone)`` with an installed ``example`` plugin; the
+    home is the Hermes root itself or a named profile under it."""
+    root = tmp_path / "root"
+    home = root / "profiles" / "work" if profile else root
+    home.mkdir(parents=True)
+    plugins = tmp_path / "other-drive" / "plugin-store" if relocated else home / "plugins"
     (plugins / "example").mkdir(parents=True)
     if relocated:
         _link_dir(home / "plugins", plugins)
@@ -82,11 +87,12 @@ def _run(program: str, *args, home: Path, cwd: Path) -> subprocess.CompletedProc
 
 
 @pytest.mark.parametrize("committed", [False, True])
-def test_relocated_plugins_dir_publishes_and_recovers(tmp_path, committed):
-    home, plugins, staged = _plugin_home(tmp_path, relocated=True)
+def test_installed_target_publishes_and_recovers_through_a_relocated_plugins_dir(tmp_path, committed):
+    home, plugins, staged = _plugin_home(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
-    target = home / "plugins" / "example"  # the literal path the CLI hands over, through the link
+    # The target `hermes plugins install` hands publication: already resolved through the link.
+    target = _sanitize_plugin_name("example", home / "plugins")
 
     published = _run(_PUBLISH, project, staged, target, committed, home=home, cwd=tmp_path)
     assert published.returncode == 17, published.stderr
@@ -99,7 +105,19 @@ def test_relocated_plugins_dir_publishes_and_recovers(tmp_path, committed):
     assert not list(plugins.glob(".previous-*"))
 
 
-def test_plugin_home_outside_the_hermes_root_is_still_refused(tmp_path):
+@pytest.mark.parametrize("profile", [False, True], ids=["root-home", "profile-home"])
+@pytest.mark.parametrize("shape", ["installed", "literal"])
+def test_relocated_plugins_target_is_accepted_in_either_shape(tmp_path, profile, shape):
+    home, _plugins, staged = _plugin_home(tmp_path, profile=profile)
+    target = (_sanitize_plugin_name("example", home / "plugins") if shape == "installed"
+              else home / "plugins" / "example")
+
+    accepted = _run(_PUBLISH, tmp_path, staged, target, "check", home=home, cwd=tmp_path)
+
+    assert accepted.returncode == 0, accepted.stderr
+
+
+def test_plugins_dir_owned_by_no_hermes_home_is_refused(tmp_path):
     home, _plugins, staged = _plugin_home(tmp_path, relocated=False)
     stray = tmp_path / "stray" / "plugins" / "example"
     stray.mkdir(parents=True)

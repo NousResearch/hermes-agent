@@ -772,7 +772,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     result = _session._run_browser_command(nav_session_key, "open", [url],
                                   timeout=_get_open_command_timeout(first_open=is_first_nav))
     if not result.get("success"):
-        return _dumps(_err(result.get("error", "Navigation failed")))
+        return _failed_response(result, "Navigation failed")
 
     data = result.get("data", {})
     title = data.get("title", "")
@@ -853,10 +853,13 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
     return _dumps(_lp._copy_fallback_warning(response, result))
 
 
+def _refusal_code(result: Dict[str, Any]) -> Dict[str, Any]:
+    """``code`` = machine-readable refusal (human_has_control), same shape as computer_use's."""
+    return {"code": result["code"]} if result.get("code") else {}
+
+
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
-    extra = {"code": result["code"]} if result.get("code") else {}
-    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
+    return _json_with_fallback(_err(result.get("error", default_error), **_refusal_code(result)), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:
@@ -910,7 +913,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if result.get("success"):
         response = {"success": True, "typed": display_text, "element": ref}
     else:
-        response = _err(result.get("error", f"Failed to type into {ref}"))
+        response = _err(result.get("error", f"Failed to type into {ref}"), **_refusal_code(result))
     return _dumps(redact_browser_typed_text_for_display(_lp._copy_fallback_warning(response, result), text))
 
 
@@ -995,16 +998,21 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     clear_args = ["--clear"] if clear else []
     console_result = _session._run_browser_command(effective_task_id, "console", clear_args)
+    if not console_result.get("success"):
+        return _failed_response(console_result, "Failed to read console messages")
     errors_result = _session._run_browser_command(effective_task_id, "errors", clear_args)
+    if not errors_result.get("success"):
+        return _failed_response(errors_result, "Failed to read JS errors")
 
     messages = [
         {"type": msg.get("type", "log"), "text": _snapshot._redact_browser_output(msg.get("text", "")), "source": "console"}
         for msg in console_result.get("data", {}).get("messages", [])
-    ] if console_result.get("success") else []
+    ]
     errors = [
-        {"message": _snapshot._redact_browser_output(err.get("message", "")), "source": "exception"}
+        # agent-browser's `errors --json` carries the error under ``text``.
+        {"message": _snapshot._redact_browser_output(err.get("text") or err.get("message", "")), "source": "exception"}
         for err in errors_result.get("data", {}).get("errors", [])
-    ] if errors_result.get("success") else []
+    ]
     response = {
         "success": True, "console_messages": messages, "js_errors": errors,
         "total_messages": len(messages), "total_errors": len(errors),
@@ -1079,7 +1087,7 @@ def _eval_failure_response(result: Dict[str, Any]) -> str:
             "(e.g. .innerText, .href, .src, .value) or use "
             "JSON.stringify() / a snapshot tool instead."
         )
-    return json.dumps(_lp._copy_fallback_warning(_err(err), result))
+    return json.dumps(_lp._copy_fallback_warning(_err(err, **_refusal_code(result)), result))
 
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
@@ -1234,8 +1242,8 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
                 logger.warning("could not fetch the sandbox screenshot %s: %s", remote_path, exc)
     if not result.get("success"):
         return result, screenshot_path, _json_with_fallback(_err(
-            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"
-        ), result)
+            f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}",
+            **_refusal_code(result)), result)
     if result.get("data", {}).get("path"):
         screenshot_path = Path(result["data"]["path"])
     if not screenshot_path.exists():

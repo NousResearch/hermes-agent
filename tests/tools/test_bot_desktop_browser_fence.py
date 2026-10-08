@@ -99,6 +99,23 @@ def test_browser_click_is_fenced_while_human_controls_shared_browser(monkeypatch
     assert result.get("code") == "human_has_control"
 
 
+@pytest.mark.parametrize("call", [
+    lambda browser: browser.browser_console(task_id="review"),
+    lambda browser: browser.browser_type("e1", "hello", task_id="review"),
+], ids=["console", "type"])
+def test_browser_tools_report_the_refusal_while_human_controls_shared_browser(monkeypatch, call):
+    """The refusal must reach the model: an empty ``success: True`` from browser_console reads as
+    "the page logged nothing", and a failure without ``code`` reads as a broken browser."""
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    monkeypatch.setattr(browser, "_blocked_private_page_content", lambda *a: None)
+    lease.acquire("human-viewer")
+    result = json.loads(call(browser))
+    assert commands == [], f"human holds the lease, yet a browser command was dispatched: {commands}"
+    assert result["success"] is False
+    assert result.get("code") == "human_has_control"
+
+
 def test_browser_result_crossing_a_takeover_is_discarded(monkeypatch):
     commands: list = []
     browser, session = _wire(monkeypatch, commands)

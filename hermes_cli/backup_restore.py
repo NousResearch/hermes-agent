@@ -15,6 +15,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -26,6 +27,13 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_RESTORE_STALL_SECONDS = 10.0
+
+
+class _RestoreStalled(RuntimeError):
+    """The live destination prevented the SQLite page restore from advancing."""
+
 
 def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
@@ -196,16 +204,50 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        # Give the best-effort WAL checkpoint its own bounded lock budget.
+        # The backup progress callback below cannot govern this earlier PRAGMA,
+        # so using timeout=0 here would silently turn transient contention into
+        # an immediate busy checkpoint.
+        checkpoint_conn = sqlite3.connect(
+            str(dst), timeout=min(5.0, _RESTORE_STALL_SECONDS)
+        )
         try:
-            # Force a WAL checkpoint so the backup starts from a clean
-            # state rather than writing on top of a deep WAL.
-            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+            row = checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row and row[0]:
+                logger.warning(
+                    "SQLite restore checkpoint remained busy for %s; "
+                    "continuing with bounded page-copy restore",
+                    dst,
+                )
+        except Exception as exc:
+            logger.debug("SQLite restore pre-checkpoint failed for %s: %s", dst, exc)
+        finally:
+            checkpoint_conn.close()
+
+        # sqlite3.backup() does not honor the connection busy timeout for its
+        # retry loop; the progress callback below owns that page-copy budget.
+        dst_conn = sqlite3.connect(str(dst), timeout=0.0)
         src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
-            src_conn.backup(dst_conn)
+            # sqlite3.backup() retries SQLITE_BUSY/LOCKED forever regardless of
+            # connect(timeout=...). A live writer can hold the destination lock
+            # while /snapshot restore or hermes import waits without a deadline.
+            last_progress = time.monotonic()
+            fewest_remaining = None
+
+            def on_progress(status: int, remaining: int, _total: int) -> None:
+                nonlocal last_progress, fewest_remaining
+                if status not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and (
+                    fewest_remaining is None or remaining < fewest_remaining
+                ):
+                    fewest_remaining = remaining
+                    last_progress = time.monotonic()
+                elif time.monotonic() - last_progress >= _RESTORE_STALL_SECONDS:
+                    raise _RestoreStalled(
+                        f"SQLite restore made no progress for {_RESTORE_STALL_SECONDS:g} seconds"
+                    )
+
+            src_conn.backup(dst_conn, pages=256, progress=on_progress, sleep=0.1)
         finally:
             src_conn.close()
         dst_conn.close()
@@ -216,6 +258,15 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         except Exception:
             pass
         return True
+    except _RestoreStalled as exc:
+        logger.warning("SQLite safe restore stalled for %s -> %s: %s", src, dst, exc)
+        if dst_conn is not None:
+            dst_conn.close()
+        # The destination is provably locked by a live writer, so the page-copy
+        # route above is the correct one and there is nothing to gain by
+        # retrying through unlink+move: the fallback has its own holder scan
+        # and would fail closed here anyway. Return the stall as a failure.
+        return False
     except Exception as exc:
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an

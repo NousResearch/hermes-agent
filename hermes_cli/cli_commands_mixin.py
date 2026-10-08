@@ -761,9 +761,18 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None
-        if restore_quick_snapshot(snap_id):
+        failed_paths: list[str] = []
+        if restore_quick_snapshot(snap_id, failed_paths=failed_paths):
             _pr(f"  {_t('snapshot.restored', snapshot_id=snap_id)}",
                 f"  {_t('snapshot.restart_recommended')}")
+        elif failed_paths:
+            # False with failed_paths means specific members were refused/locked;
+            # name them instead of calling an existing snapshot missing.
+            _pr(
+                f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}",
+                f"  Not restored: {', '.join(failed_paths)}",
+                "  Stop processes holding those databases and retry the restore.",
+            )
         elif snap_id in {s.get("id") for s in list_quick_snapshots(limit=10**6)}:
             # False also means the auth.json merge was refused; don't call an existing snapshot missing.
             print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")

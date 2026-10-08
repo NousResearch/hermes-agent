@@ -64,7 +64,8 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
 
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
     home = dependency_home_root().resolve()
-    if (not target.resolve().is_relative_to(home) or target.parent.name != "plugins"
+    # Same containment as StagedPlugin: ``plugins`` may be relocated by a link (#134952).
+    if (not target.parent.parent.resolve().is_relative_to(home) or target.parent.name != "plugins"
             or backup.parent != target.parent or not backup.name.startswith(".previous-")
             or metadata != target.parent / ".install-metadata.json"):
         raise ValueError("plugin publication paths escape their home")

@@ -109,7 +109,9 @@ class StagedPlugin:
         self.configs = selection_snapshot()
         self.target = Path(plugin["target"]).absolute()
         self.staged = Path(plugin["staged"]).resolve()
-        if (not self.target.resolve().is_relative_to(dependency_home_root().resolve())
+        # The home holding ``plugins`` must live in the Hermes root; ``plugins`` itself may be a
+        # symlink/junction to another drive (#134952), the target itself may not.
+        if (not self.target.parent.parent.resolve().is_relative_to(dependency_home_root().resolve())
                 or self.target.parent.name != "plugins" or self.target.is_symlink()
                 or self.staged == self.target.resolve() or self.staged.is_relative_to(self.target.resolve())
                 or self.target.resolve().is_relative_to(self.staged)):

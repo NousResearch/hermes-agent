@@ -60,11 +60,26 @@ def _first_env(*names: str) -> str:
     return next((v for v in (_getenv(n).strip() for n in names) if v), "")
 
 
+# Anthropic credential shapes, matched by positive prefix.
+# OAuth/setup tokens: ``sk-ant-oat…`` (Claude Code OAuth access + setup tokens), a bare JWT
+# (``eyJ…``) and the legacy ``cc-`` family.
+# Console API keys: ``sk-ant-api…`` (classic) plus the newer workspace-scoped ``sk-ant-usr…``
+# and admin ``sk-ant-admin…`` families.
+_OAUTH_TOKEN_PREFIXES: tuple[str, ...] = ("sk-ant-oat", "eyJ", "cc-")
+
+
 def _is_oauth_token(key: str) -> bool:
-    """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
-    if not key or key.startswith("sk-ant-api"):
-        return False
-    return key.startswith(("sk-ant-", "eyJ", "cc-"))
+    """True for Anthropic OAuth/setup tokens; False for Console API keys of any prefix.
+
+    OAuth is classified POSITIVELY (only the known OAuth/setup families above), so every other
+    Console key — ``sk-ant-api…``, the workspace-scoped ``sk-ant-usr…``, admin keys, and future
+    prefixes — is sent as ``x-api-key``. The inverse rule ("any ``sk-ant-`` that is not
+    ``sk-ant-api`` is OAuth") misread workspace keys as OAuth, which made Hermes send them with
+    the Claude Code identity and the ``oauth-2025-04-20`` beta; Anthropic then billed the call
+    against the Claude Code lane and rejected it with a misleading
+    ``HTTP 400: Your credit balance is too low``, so a perfectly valid key could never work.
+    """
+    return bool(key) and key.startswith(_OAUTH_TOKEN_PREFIXES)
 
 
 def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:

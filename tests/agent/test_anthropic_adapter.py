@@ -29,6 +29,27 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
 
+    def test_workspace_scoped_console_key_is_not_oauth(self):
+        """sk-ant-usr… (workspace Console key) is an API key: x-api-key, not Claude Code OAuth."""
+        assert _is_oauth_token("sk-ant-usr-0123456789abcdef") is False
+
+    def test_classic_console_key_is_not_oauth(self):
+        assert _is_oauth_token("sk-ant-api03-0123456789abcdef") is False
+
+    def test_admin_and_unknown_console_prefixes_are_not_oauth(self):
+        """Unknown/future Console prefixes must not fall into the OAuth billing lane."""
+        assert _is_oauth_token("sk-ant-admin01-0123456789abcdef") is False
+        assert _is_oauth_token("sk-ant-future01-0123456789abcdef") is False
+
+    def test_oauth_families_still_detected(self):
+        assert _is_oauth_token("sk-ant-oat01-0123456789abcdef") is True
+        assert _is_oauth_token("eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2ln") is True
+        assert _is_oauth_token("cc-0123456789abcdef") is True
+
+    def test_empty_key_is_not_oauth(self):
+        assert _is_oauth_token("") is False
+
+
 def test_missing_sdk_error_reports_why_the_lazy_install_did_not_land(monkeypatch):
     """A completed install that needs a restart must not tell the user to install it again."""
     import pm

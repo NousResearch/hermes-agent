@@ -12,7 +12,8 @@ allowlists the public ones.
   POST /auth/native/token      loopback code -> bearer tokens
   POST /auth/native/refresh    desktop-held refresh token rotation
   GET  /api/auth/providers     list registered providers (login bootstrap)
-  GET  /api/auth/me            current Session as JSON (auth-required)
+  GET  /api/auth/me            Session as JSON (gated: verified session; loopback:
+                                token-validated synthetic loopback identity)
   POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required)
 """
 from __future__ import annotations
@@ -522,8 +523,31 @@ def _require_session(request: Request):
 
 @router.get("/api/auth/me", name="auth_me")
 async def api_auth_me(request: Request):
-    """Return the verified session as JSON. Auth-required (gate enforces)."""
-    sess = _require_session(request)
+    """Return the verified session as JSON.
+
+    Gated mode: the auth middleware attached a verified Session — return it.
+    Loopback mode (``auth_required`` False): there is no OAuth Session, but the
+    legacy ``_SESSION_TOKEN`` middleware has already validated the bearer
+    token for non-public ``/api/`` routes. Report the loopback identity
+    honestly instead of 401-ing (GH #66223). Belt-and-braces: re-verify the
+    token so the handler stays safe even if this route were ever allowlisted.
+    """
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        if getattr(request.app.state, "auth_required", False):
+            raise _http(401, "Unauthorized")
+        from hermes_cli.web_server import _has_valid_session_token
+
+        if not _has_valid_session_token(request):
+            raise _http(401, "Unauthorized")
+        return {
+            "user_id": "local",
+            "email": "",
+            "display_name": "Local",
+            "org_id": "",
+            "provider": "loopback",
+            "expires_at": 0,
+        }
     return {
         "user_id": sess.user_id, "email": sess.email, "display_name": sess.display_name,
         "org_id": sess.org_id, "provider": sess.provider, "expires_at": sess.expires_at}

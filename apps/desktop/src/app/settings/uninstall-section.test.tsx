@@ -18,7 +18,9 @@ function Surface(): React.JSX.Element {
 function summary(allowed: boolean): DesktopUninstallSummary {
   return {
     code_removal_allowed: allowed,
-    native_removal_instructions: allowed ? null : 'Quit the app and drag Hermes Agent.app from /Applications to the Trash.',
+    native_removal_instructions: allowed
+      ? null
+      : 'Quit the app and drag Hermes Agent.app from /Applications to the Trash.',
     hermes_home: '/test/home',
     agent_installed: true,
     gui_installed: true,

@@ -322,6 +322,9 @@ class TestSignalPhoneRedaction:
         "Tel:+819012345678",
         "(+442071838750)",
         "電話+819012345678",
+        "ref.+14155550100",
+        "id-+14155550100",
+        "contact_+14155550100",
     ])
     def test_real_numbers_still_masked(self, text):
         from agent.redact import redact_sensitive_text
@@ -331,7 +334,6 @@ class TestSignalPhoneRedaction:
         "/home/u/.hermes/tools/python-3.14.7+20260901-darwin-x64/bin/python3",
         "pkg==1.2.3+20260901",
         "build 1.0+1234567",
-        "ver_+1234567",
     ])
     def test_plus_inside_a_word_is_not_a_phone_number(self, text):
         """Version/build suffixes like ``3.14.7+20260901`` must survive intact:

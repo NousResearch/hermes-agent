@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _retry_unparsed_tool_call_text, _start_heartbeat,
+    _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -344,9 +345,12 @@ def _run_single_child(
       status      ∈ {completed, interrupted, failed} — a structured failure
                     (failed=True / non-empty error) or an invalid terminal state
                     is "failed" even when a summary exists.
-      exit_reason ∈ {completed, max_iterations, interrupted, error} —
+      exit_reason ∈ {completed, max_iterations, interrupted, error, unparsed_tool_call} —
                     "max_iterations" only for genuine budget exhaustion
-                    (completed=False with no failure fields), never for errors.
+                    (completed=False with no failure fields), never for errors;
+                    "unparsed_tool_call" when the final answer IS an unparsed
+                    <tool_call>/<function= block even after one correction retry
+                    (#128999) — a parse failure, never a completion.
       truncated   == (exit_reason == "max_iterations").
 
     * ``"completed"``       — normal finish. See #97655.
@@ -374,6 +378,10 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
+        # Unparsed-tool-call retry runs BEFORE the schema check: a rescued reply (prose instead of
+        # a raw <tool_call>/<function= block, #128999) is what the schema should then validate.
+        unparsed_tool_call = _retry_unparsed_tool_call_text(
+            child, result, task_index, run.child_task_id, run.relay_text)
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
@@ -382,7 +390,7 @@ def _run_single_child(
                 child_progress_cb._flush()
 
         duration = run.elapsed()
-        entry = _build_result_entry(child, result, task_index, duration, schema)
+        entry = _build_result_entry(child, result, task_index, duration, schema, unparsed_tool_call=unparsed_tool_call)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)

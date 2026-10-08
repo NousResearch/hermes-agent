@@ -1,18 +1,18 @@
 name: hermes-dreaming
 repo: https://github.com/itpartypattaya/hermes-dreaming
-sha: c729222f75e883cba49483ecf0e605b853c482de
+sha: ba4c25940d0c1b16ac5b170600b1f0be288b4b96
 description: "Nightly deterministic memory consolidation (\"dreaming\"): corroborates candidate facts with what humans actually said on distinct days, proposes the few worth keeping with a verbatim edit anchor, asks whether stale memory entries still hold, and wakes the agent only when there is work — including a memory file close to its char limit. Fact sources: the holographic store, a SQLite or JSONL export, or none. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — scripts make no network or LLM calls and read state.db and the fact store read-only; the user-run installer copies two gate scripts into $HERMES_HOME/scripts, seeds $HERMES_HOME/dreaming.json and creates (or with --rebind re-points) two Hermes cron jobs bound to this plugin's own skill, whose agent runs send recent human messages (up to 200 / 40k chars) and fact snippets to your configured model; state goes to $HERMES_HOME/cache and a diary to $HERMES_HOME/memories/DREAMS.md; memory is changed by the agent through the regular memory tool."
 maintainer: itpartypattaya
 tier: community
 category: memory
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-dreaming/blob/c729222f75e883cba49483ecf0e605b853c482de/README.md
+docs_url: https://github.com/itpartypattaya/hermes-dreaming/blob/ba4c25940d0c1b16ac5b170600b1f0be288b4b96/README.md
 version: "2.2.0"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/c729222f75e883cba49483ecf0e605b853c482de/docs/banner.png"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/ba4c25940d0c1b16ac5b170600b1f0be288b4b96/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/c729222f75e883cba49483ecf0e605b853c482de/docs/overview.png"
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/c729222f75e883cba49483ecf0e605b853c482de/docs/lifecycle.png"
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/c729222f75e883cba49483ecf0e605b853c482de/docs/files.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/ba4c25940d0c1b16ac5b170600b1f0be288b4b96/docs/overview.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/ba4c25940d0c1b16ac5b170600b1f0be288b4b96/docs/lifecycle.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/ba4c25940d0c1b16ac5b170600b1f0be288b4b96/docs/files.png"
 platforms: []
 capabilities:
   provides_tools: []

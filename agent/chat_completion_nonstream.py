@@ -187,7 +187,7 @@ class _NonStreamRequest:
         """No parsed Codex event past the first-event cutoff — kill so the retry loop
         reconnects instead of waiting out the stale timeout."""
         agent, wd = self.agent, self.wd
-        silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
+        silent_hint = h._stale_hang_hint(agent, self.api_kwargs)
         h.logger.warning("Codex stream produced no parsed stream event within TTFB cutoff "
             "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
             "but sent no stream events. Killing connection so the retry loop can reconnect.", elapsed,
@@ -244,7 +244,7 @@ class _NonStreamRequest:
         """No response within the stale timeout: kill and count toward the
         circuit breaker (#58962, see ``_stale_streak``)."""
         agent, wd = self.agent, self.wd
-        silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
+        silent_hint = h._stale_hang_hint(agent, self.api_kwargs)
         h._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
         self._abort_request("stale_call_kill")
         h._bump_stale_streak(agent)

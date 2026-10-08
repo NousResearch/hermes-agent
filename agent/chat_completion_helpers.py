@@ -930,7 +930,8 @@ class _InlineRequest:
         if not self.abort("stale_call_kill"):
             return
         elapsed = time.time() - self.call_start
-        _report_stale_nonstream_kill(self.agent, self.api_kwargs, elapsed, self.stale_timeout, inline=True)
+        _report_stale_nonstream_kill(self.agent, self.api_kwargs, elapsed, self.stale_timeout, inline=True,
+                                 hint=_stale_hang_hint(self.agent, self.api_kwargs))
         _touch_stale_kill_activity(self.agent, elapsed)
 
     def start_watchdogs(self) -> None:
@@ -1286,6 +1287,26 @@ def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
     with contextlib.suppress(Exception):
         if callable(hint_fn):
             return hint_fn(model=api_kwargs.get("model"))
+    return None
+
+
+def _stale_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
+    """Resolve the most actionable stale-hang hint for this request.
+
+    Order: the Codex silent-reject heuristic first (a wrong model on the
+    ChatGPT backend is the sharper diagnosis), then the custom-provider
+    reasoning_effort hint (#100841). Both return None when they don't apply,
+    so this composes without either helper knowing about the other.
+    """
+    hint = _codex_silent_hang_hint(agent, api_kwargs)
+    if isinstance(hint, str) and hint:
+        return hint
+    hint_fn = getattr(agent, "_custom_reasoning_hang_hint", None)
+    with contextlib.suppress(Exception):
+        if callable(hint_fn):
+            hint = hint_fn(api_kwargs)
+            if isinstance(hint, str) and hint:
+                return hint
     return None
 
 

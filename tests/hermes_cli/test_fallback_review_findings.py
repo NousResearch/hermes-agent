@@ -172,9 +172,38 @@ class TestReviewFindings(unittest.TestCase):
 
     # ─── F6 · P2: Carry explicit native intent through provider wire hook ──────
 
+    @staticmethod
+    def _get_provider_fixture(name: str):
+        """Retrieve provider profile via get_provider_profile, falling back to direct repo-relative module spec."""
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(name)
+            if profile is not None:
+                return profile
+        except Exception:
+            pass
+        import importlib.util
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        plugin_init = repo_root / "plugins" / "model-providers" / name / "__init__.py"
+        if plugin_init.exists():
+            spec = importlib.util.spec_from_file_location(
+                f"_hermes_test_{name.replace('-', '_')}",
+                plugin_init,
+                submodule_search_locations=[str(plugin_init.parent)],
+            )
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                return getattr(mod, name.replace("-", "_"), None)
+        return None
+
     def test_f6_nous_wire_hook_omits_reasoning_on_native_intent(self):
         """NousProfile.build_api_kwargs_extras omits reasoning on explicit native intent, but fills medium on None."""
-        from plugins.model_providers.nous import nous
+        nous = self._get_provider_fixture("nous")
+        self.assertIsNotNone(nous, "nous provider profile must load")
 
         # Explicit native default: omits reasoning parameter
         extra, top = nous.build_api_kwargs_extras(reasoning_config={"native": True}, supports_reasoning=True)
@@ -186,7 +215,8 @@ class TestReviewFindings(unittest.TestCase):
 
     def test_f6_openrouter_wire_hook_omits_reasoning_on_native_intent(self):
         """OpenRouterProfile.build_api_kwargs_extras omits reasoning on explicit native intent."""
-        from plugins.model_providers.openrouter import openrouter
+        openrouter = self._get_provider_fixture("openrouter")
+        self.assertIsNotNone(openrouter, "openrouter provider profile must load")
 
         extra, _ = openrouter.build_api_kwargs_extras(
             reasoning_config={"native": True}, supports_reasoning=True, model="openai/gpt-5.6"

@@ -145,13 +145,8 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):
             raise RuntimeStoreError('unknown_execution')
-        # A worker follows its physical transcript (compression publish / local reset target)
-        # while this FIFO stays keyed on the logical owner: scan the whole lineage.
-        from hermes_state_local_lineage import local_physical_target
-        lineage = {*_canonical_chain(conn, session_id), *_canonical_chain(conn, local_physical_target(conn, session_id))}
-        marks = ','.join('?' * len(lineage))
-        workers = {row[0] for row in conn.execute(
-            f"SELECT status FROM worker_executions WHERE session_id IN ({marks}) AND status!='terminal'", tuple(lineage))}
+        from hermes_state_runtime_workers import worker_states
+        workers = worker_states(conn, session_id)
         if 'unknown' in workers:
             raise RuntimeStoreError('unknown_execution')
         if blocked or workers:
@@ -450,11 +445,13 @@ def register_worker_execution(db, *, epoch: int, execution_id: str, session_id: 
             if (old['session_id'], old['generation'], old['kind'], old['owner_epoch'], old['adoption_digest']) != (session_id, generation, kind, epoch, digest):
                 raise RuntimeStoreError('admission_conflict')
             return _worker_public(old)
-        if require_idle and conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'", (session_id,)).fetchone():
+        from hermes_state_runtime_workers import runtime_lineage, worker_states
+        targets = runtime_lineage(conn, session_id)
+        if require_idle and any(conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'", (sid,)).fetchone() for sid in targets):
             raise RuntimeStoreError('stale_generation')
-        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status!='terminal'", (session_id,)).fetchone():
+        if worker_states(conn, session_id):
             raise RuntimeStoreError('stale_generation')
-        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'", (session_id,)).fetchone():
+        if any(conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'", (sid,)).fetchone() for sid in targets):
             raise RuntimeStoreError('unknown_execution')
         conn.execute("""INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest)
             VALUES(?,?,?,?,?,'registered',?)""", (execution_id, session_id, kind, epoch, generation, digest))

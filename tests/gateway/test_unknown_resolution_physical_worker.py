@@ -1,6 +1,7 @@
 """Resolving an unknown admission must also retire its physical worker assignment."""
 from contextlib import closing
 import os
+from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -32,7 +33,7 @@ def _local_reset(db, epoch, logical, child):
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
     now = _now()
     entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
-    policy = build_policy({'source': 'cli', 'cwd': '/', 'model': 'm', 'toolsets': []},
+    policy = build_policy({'source': 'cli', 'cwd': str(Path(db.db_path).parent), 'model': 'm', 'toolsets': []},
                           {'platform_toolsets': {'cli': []}}, private_secrets={})
     commit_local_session(db, epoch=epoch, receipt={
         'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,

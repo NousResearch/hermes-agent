@@ -57,8 +57,8 @@ def codex_backend(monkeypatch):
     and lets a test swap the response via ``state["respond"]``."""
     # Seed the auth.json token below the credential/base resolver so generate() exercises the real
     # (token, base_url) binding; no pool present.
-    from agent import auxiliary_client
-    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+    from agent import auxiliary_client, auxiliary_model_scope
+    monkeypatch.setattr(auxiliary_model_scope, "_select_pool_entry", lambda provider: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
     state = {"requests": [], "respond": None}
 
@@ -204,8 +204,8 @@ class TestGenerate:
         assert request.url.host == "images.example.test"
 
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
-        from agent import auxiliary_client
-        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+        from agent import auxiliary_client, auxiliary_model_scope
+        monkeypatch.setattr(auxiliary_model_scope, "_select_pool_entry", lambda provider: (False, None))
         monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")
         assert result["success"] is False

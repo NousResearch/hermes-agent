@@ -39,10 +39,8 @@ def test_skip_message_distinguishes_unfilled_borrowed_row(caplog):
     """Pool unusable (sole borrowed row unfilled) with no entry in cooldown:
     the candidate is still skipped, but the log must say there is no wait
     information rather than claiming every entry is in cooldown."""
-    from agent.chat_completion_helpers import (
-        _pool_exhaustion_detail,
-        _should_skip_fallback_candidate,
-    )
+    from agent.chat_completion_helpers import _should_skip_fallback_candidate
+    from agent.chat_completion_helpers_pool import _pool_exhaustion_detail
 
     pool = _make_pool("openrouter", [_borrowed_unfilled_entry()])
     agent = _agent_with_pool(pool)
@@ -70,10 +68,8 @@ def test_skip_message_keeps_cooldown_wording_for_real_cooldown(caplog):
     """Companion arm: a genuine exhaustion cooldown (next_available_at() in the
     future, beyond the 600s cap) keeps the original "every entry in cooldown"
     wording, which is accurate there."""
-    from agent.chat_completion_helpers import (
-        _pool_exhaustion_detail,
-        _should_skip_fallback_candidate,
-    )
+    from agent.chat_completion_helpers import _should_skip_fallback_candidate
+    from agent.chat_completion_helpers_pool import _pool_exhaustion_detail
     from agent.credential_pool import PooledCredential
 
     entry = PooledCredential(

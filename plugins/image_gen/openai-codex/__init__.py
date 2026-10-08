@@ -70,7 +70,8 @@ def _read_codex_credential(model: Optional[str] = None) -> Tuple[Optional[str], 
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
     ``(None, None)`` without a usable token."""
     try:
-        from agent.auxiliary_client import _call_scoped_or_unscoped, _resolve_codex_credential_and_base
+        from agent.auxiliary_client import _resolve_codex_credential_and_base
+        from agent.auxiliary_model_scope import _call_scoped_or_unscoped
 
         token, base_url = _call_scoped_or_unscoped(_resolve_codex_credential_and_base, model=model)
         if isinstance(token, str) and token.strip():

@@ -186,6 +186,7 @@ class TestAuthJsonSiblingReaders:
         _write_utf8(hermes_home / "auth.json", store)
 
         import agent.auxiliary_client as aux
+        import agent.auxiliary_model_scope as aux_model_scope
 
         # _AUTH_JSON_PATH is resolved at module import time, so the
         # HERMES_HOME env from the fixture doesn't reach it — point it at
@@ -195,7 +196,7 @@ class TestAuthJsonSiblingReaders:
         # _read_nous_auth consults the credential pool FIRST and returns early
         # when a pool entry exists, never reaching the auth.json read. Force the
         # pool-absent path so the auth.json code under test actually runs.
-        monkeypatch.setattr(aux, "_select_pool_entry", lambda _provider: (False, None))
+        monkeypatch.setattr(aux_model_scope, "_select_pool_entry", lambda _provider: (False, None))
 
         provider = aux._read_nous_auth()
         assert provider is not None

@@ -32,7 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
-from agent.chat_completion_helpers_pool import _pool_exhaustion_detail
+from agent import chat_completion_helpers_pool as _pool_helpers
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -1957,7 +1957,7 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
-    pool_detail = _pool_exhaustion_detail(agent, fb_provider, fb_model)
+    pool_detail = _pool_helpers._pool_exhaustion_detail(agent, fb_provider, fb_model)
     if pool_detail == "cooldown":
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
         return True

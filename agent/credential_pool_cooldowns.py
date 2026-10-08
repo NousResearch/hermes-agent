@@ -9,6 +9,7 @@ point here directly.
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import time
 from typing import Any, Optional
 
@@ -23,6 +24,9 @@ from agent.credential_pool import (
     STATUS_EXHAUSTED,
     PooledCredential,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _is_manual_source(source: str) -> bool:
@@ -133,3 +137,35 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
             )
         return min(reset_at, bench_until)
     return reset_at
+
+
+def read_pool_rows_by_id(provider: str) -> dict:
+    """Persisted *provider* rows keyed by entry id — one store read for a whole selection pass."""
+    from hermes_cli.auth import read_credential_pool
+    try:
+        return {row["id"]: row for row in read_credential_pool(provider)
+                if isinstance(row, dict) and row.get("id")}
+    except Exception:
+        logger.debug("Pool %s: could not read disk rows", provider, exc_info=True)
+        return {}
+
+
+def reset_cleared_after(
+    provider: str, entry: PooledCredential, disk_rows: Optional[dict] = None,
+) -> Optional[float]:
+    """Epoch of a ``hermes auth reset`` persisted by another process AFTER *entry*'s status, else None.
+
+    *disk_rows* (from :func:`read_pool_rows_by_id`) skips the store read when the caller has it.
+    """
+    if disk_rows is None:
+        from hermes_cli.auth import read_credential_pool
+        try:
+            row = next((p for p in read_credential_pool(provider)
+                        if isinstance(p, dict) and p.get("id") == entry.id), None)
+        except Exception as exc:
+            logger.debug("Pool entry %s: could not read reset marker: %s", entry.id, exc, exc_info=True)
+            return None
+    else:
+        row = disk_rows.get(entry.id)
+    cleared = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
+    return cleared if cleared and cleared > (entry.last_status_at or 0.0) else None

@@ -21,6 +21,28 @@ logger = logging.getLogger(__name__)
 # (credential, model) pair until a bounded cooldown expires or an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
 MODEL_ENTITLEMENT_BENCH_SECONDS = 2 * 24 * 60 * 60
 
+# The pre-bound code wrote a full-year entitlement bench. No provider rate-limit window reaches
+# further than a month, so a stored value past this floor is a stale sentinel to clamp on load.
+LEGACY_MODEL_COOLDOWN_SENTINEL_S = 30 * 24 * 60 * 60
+
+
+def bound_rehydrated_model_cooldowns(cooldowns: Any) -> Dict[str, float]:
+    """Cap stale entitlement sentinels on load, leaving real provider windows intact.
+
+    Only a value past ``LEGACY_MODEL_COOLDOWN_SENTINEL_S`` is a pre-bound bench; anything
+    nearer is a genuine provider-stated window and survives untouched.
+    """
+    now = time.time()
+    deadline = now + MODEL_ENTITLEMENT_BENCH_SECONDS
+    return {
+        model: min(float(until), deadline)
+        if float(until) - now > LEGACY_MODEL_COOLDOWN_SENTINEL_S
+        else float(until)
+        for model, until in cooldowns.items()
+        if isinstance(until, (int, float))
+    }
+
+
 def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 
@@ -102,25 +124,29 @@ class CredentialPoolModelCooldownMixin:
                 for entry in self._entries
             )
 
-    def _resync_model_cooldown_clear(self, entry: "PooledCredential") -> "PooledCredential":
+    def _resync_model_cooldown_clear(
+        self, entry: "PooledCredential", disk_rows: Any = None,
+    ) -> "PooledCredential":
         """Honor a reset written by another process for a healthy, model-benched entry.
 
         Credential-wide exhausted/dead rows already resync through CredentialPool's status path.
         A model-only cooldown leaves last_status healthy, so without this sibling path a long-lived
         gateway can keep refusing the model after another process successfully ran `hermes auth reset`.
+        *disk_rows* maps entry id to persisted row when the caller already read the store.
         """
         if not entry.model_cooldowns:
             return entry
         try:
             from agent.credential_pool_cooldowns import _parse_absolute_timestamp
-            from hermes_cli.auth import read_credential_pool
-
-            row = next(
-                (item for item in read_credential_pool(self.provider)
-                 if isinstance(item, dict) and item.get("id") == entry.id),
-                None,
-            )
-            cleared_at = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
+            if disk_rows is None:
+                from hermes_cli.auth import read_credential_pool
+                disk_rows = {
+                    row.get("id"): row
+                    for row in read_credential_pool(self.provider)
+                    if isinstance(row, dict) and row.get("id")
+                }
+            cleared_at = _parse_absolute_timestamp(
+                (disk_rows.get(entry.id) or {}).get("status_cleared_at"))
         except Exception:
             logger.debug("model cooldown resync read failed", exc_info=True)
             return entry
@@ -214,9 +240,9 @@ class CredentialPoolModelCooldownMixin:
         ``{"scope": "account", "resets_at": epoch}`` when every live entry is benched credential-wide
         (the whole login is out; another model won't help), else ``{"scope": "models", "models":
         {model: epoch}}`` for the given *models* no usable entry can serve until a model cooldown
-        ends. Entitlement benches (the plan lacks the model) last the full bounded
-        ``MODEL_ENTITLEMENT_BENCH_SECONDS``, so any window at least half that bound out is
-        treated as one and left out. Read-only: never clears or persists a cooldown.
+        ends. Every active model cooldown is reported: with the bench bounded to
+        ``MODEL_ENTITLEMENT_BENCH_SECONDS`` a long window is a real wait, not a plan
+        property that never resets. Read-only: never clears or persists a cooldown.
         """
         from agent.credential_pool import STATUS_DEAD
         from agent.credential_pool_cooldowns import _exhausted_until
@@ -233,6 +259,6 @@ class CredentialPoolModelCooldownMixin:
             cooled: Dict[str, float] = {}
             for model in models:
                 waits = [model_cooldown_until(entry, model) for entry in usable]
-                if waits and all(waits) and min(waits) - now < MODEL_ENTITLEMENT_BENCH_SECONDS / 2:
+                if waits and all(waits):
                     cooled[model] = min(waits)
         return {"scope": "models", "models": cooled} if cooled else None

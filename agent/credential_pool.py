@@ -5,7 +5,7 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import (
     CredentialPoolModelCooldownMixin,
-    MODEL_ENTITLEMENT_BENCH_SECONDS,
+    bound_rehydrated_model_cooldowns,
     model_cooldown_until,
 )
 
@@ -268,16 +268,11 @@ class PooledCredential:
         # surface for core logic; unknown keys are opaque payload. ``provider`` is the row's owner
         # (excluded from ``field_names`` above), never metadata — sweeping it in would write a
         # stray provider name back over the row on to_dict().
-        # Cooldowns persisted before the bounded entitlement policy may outlive the
-        # new maximum; cap them while rehydrating so old auth.json rows recover too.
+        # Cooldowns persisted before the bounded entitlement policy may outlive the new
+        # maximum; cap those stale sentinels on load without touching provider windows.
         cooldowns = data.get("model_cooldowns")
         if isinstance(cooldowns, dict):
-            deadline = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
-            data["model_cooldowns"] = {
-                model: min(float(until), deadline)
-                for model, until in cooldowns.items()
-                if isinstance(until, (int, float))
-            }
+            data["model_cooldowns"] = bound_rehydrated_model_cooldowns(cooldowns)
         data["extra"] = {
             k: v for k, v in payload.items() if k not in field_names and k != "provider" and v is not None
         }
@@ -1990,19 +1985,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 time.sleep(_REFRESH_SWEEP_SPACING_SECONDS)
             self._refresh_entry(entry, force=False)
 
-    def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
-        """Epoch of a ``hermes auth reset`` persisted by another process AFTER *entry*'s status, else None."""
-        from agent.credential_pool_cooldowns import _parse_absolute_timestamp
-        try:
-            row = next((p for p in read_credential_pool(self.provider)
-                        if isinstance(p, dict) and p.get("id") == entry.id), None)
-            cleared = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
-        except Exception as exc:
-            logger.debug("Pool entry %s: could not read reset marker: %s", entry.id, exc)
-            return None
-        return cleared if cleared and cleared > (entry.last_status_at or 0.0) else None
-
-    def _resync_stale_entry(self, entry: PooledCredential) -> PooledCredential:
+    def _resync_stale_entry(
+        self, entry: PooledCredential, disk_rows: Optional[Dict[str, Any]] = None,
+    ) -> PooledCredential:
         """Re-read an exhausted/DEAD singleton-seeded entry from its token authority.
 
         The user may have re-authed (``hermes model`` / ``hermes auth``, the
@@ -2013,7 +1998,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         if entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
             return entry
-        cleared_at = self._reset_cleared_after(entry)
+        from agent.credential_pool_cooldowns import reset_cleared_after
+        cleared_at = reset_cleared_after(self.provider, entry, disk_rows)
         if cleared_at is not None:
             return self._adopt(entry, persist=False, **_MARK_OK, status_cleared_at=cleared_at)
         if entry.source != _RESYNC_SOURCE.get(self.provider):
@@ -2046,14 +2032,23 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         available: List[PooledCredential] = []
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
-        from agent.credential_pool_cooldowns import _exhausted_until, _is_manual_source
+        from agent.credential_pool_cooldowns import (
+            _exhausted_until, _is_manual_source, read_pool_rows_by_id)
+        disk_rows: Optional[Dict[str, Any]] = None
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
             if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
                 continue
-            synced = self._resync_model_cooldown_clear(self._resync_stale_entry(entry))
+            # Read the store at most once per pass, only when a resync path needs it.
+            rows = None
+            if entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD} or entry.model_cooldowns:
+                if disk_rows is None:
+                    disk_rows = read_pool_rows_by_id(self.provider)
+                rows = disk_rows
+            synced = self._resync_model_cooldown_clear(
+                self._resync_stale_entry(entry, rows), rows)
             if synced is not entry:
                 entry = synced
                 cleared_any = True

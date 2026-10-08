@@ -2892,7 +2892,8 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
         "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
         "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
-        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"]),
+        "checkpoint_exclude_paths": cp_cfg.get("exclude_paths", defaults.get("exclude_paths", [])) or []}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -4355,7 +4356,8 @@ class GatewayRunner(
         ("compression", "proactive_prune_min_reclaim_tokens"),
         ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
-        ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
+        ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"),
+        ("checkpoints", "exclude_paths"))
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

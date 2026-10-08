@@ -505,6 +505,13 @@ DEFAULT_CONFIG = {
         "max_total_size_mb": 500,
         # Skip files larger than this (MB) when staging (datasets, model weights). 0 = no filter.
         "max_file_size_mb": 10,
+        # Never snapshot working directories that equal or live under any of
+        # these path globs (``~`` expanded, ``*``/``**`` cross ``/``).  The
+        # store's info/exclude file matches paths relative to the snapshot
+        # root, so it cannot express "skip this absolute subtree" — use this
+        # for installed games / wine prefixes whose asset trees balloon the
+        # store while every file stays under max_file_size_mb.
+        "exclude_paths": [],
         # Background sweep (CLI helper thread / gateway housekeeping tick, at most once per
         # min_interval_hours; never on the startup path — its git gc can block for tens of seconds):
         # deletes projects whose last_touch is older than retention_days, GCs the shared store when

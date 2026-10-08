@@ -146,13 +146,15 @@ def _profile_list(args):
         print("No profiles found.")
         return
     headers = ("Profile", "Model", "Gateway", "Scope", "Alias", "Distribution")
-    widths = (16, 28, 12, 8, 12, 20)
-    print("\n " + "  ".join(f"{header:<{width}}" for header, width in zip(headers, widths)).rstrip())
-    print(" " + "  ".join("─" * width for width in widths))
+    # Keep complete provider/model IDs: suffixes often distinguish model variants.
+    model_width = max(28, max(len(p.model or "—") for p in profiles))
+    widths = (16, model_width, 12, 8, 12, 20)
+    print("\n  " + "  ".join(f"{header:<{width}}" for header, width in zip(headers, widths)).rstrip())
+    print("  " + "  ".join("─" * width for width in widths))
     for p in profiles:
         marker = " ◆" if _is_active(p, active) else "  "
         name = format_profile_label(p.name, p.display_name)
-        model = (p.model or "—")[:widths[1]]
+        model = p.model or "—"
         gw = "running" if p.gateway_running else "stopped"
         scope = _profile_gateway_scope(p)
         alias = (p.alias_name or p.name) if p.alias_path and not p.is_default else "—"

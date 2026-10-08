@@ -36,9 +36,8 @@ _ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
 _GROUP_CHAT_ENV = {
     Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
-    # WhatsApp observe-unmentioned mode (Telegram parity) strips user_id on triggered group turns
-    # so they share the group session with observed rows; without a chat-scoped grant the
-    # no-user-id guard would drop every such turn (WhatsApp had no entry here by default).
+    # WhatsApp group-level chat grant: admit user-less group principals the same way Telegram
+    # observe-mode does (anonymous senders, adapter flows that deliver without a user id).
     Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_CHATS",
 }
 _ALLOW_BOTS_ENV = {

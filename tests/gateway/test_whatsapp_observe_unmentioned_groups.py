@@ -1,29 +1,27 @@
 """WhatsApp observe-unmentioned group context (Telegram observe-mode parity).
 
-Two behaviors under test:
+Covers the four review contracts for this feature:
 
-1. With ``observe_unmentioned_group_messages`` enabled and an explicit chat allowlist,
-   group messages the ``require_mention`` gate skips are stored as ``observed=True``
-   transcript rows in the group's SHARED session (no per-user split), mirroring
-   ``telegram.observe_unmentioned_group_messages``. Triggered turns in the same chat are
-   re-sourced to that shared session and tagged with the observed-context channel prompt
-   so ``_build_gateway_agent_history`` splits the observed rows out of replayable history.
-
-2. Regression for the user-less trigger turn: because attribution strips ``user_id``
-   from the event source, gateway authorization must admit the turn via a chat-scoped
-   group allowlist — ``_GROUP_CHAT_ENV`` gains ``WHATSAPP_GROUP_ALLOWED_CHATS`` (it only
-   listed Telegram/QQBOT before). Without it, every triggered group turn is dropped by
-   the no-user-id guard in ``_hm_admit_event`` while observed rows keep accumulating.
+- F-001: attributed trigger turns keep the caller identity (``user_id`` survives), so an
+  already-allowed participant stays admitted without any extra chat-grant configuration.
+- F-002: one effective observe scope (feature flag + explicit chat allowlist + mention-gated
+  intake) governs BOTH collection and attribution; normal-processing and free-response chats
+  are never observed nor re-sourced.
+- F-003: text turns, observed chatter, commands and restored origins key the SAME shared
+  session (``SessionSource.shared_session``) while commands keep their sender for access checks.
+- F-004: observed-row timestamps persist through the real SessionDB writer without
+  corrupt-timestamp warnings (datetime object, which ``coerce_epoch`` accepts).
 """
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
 from gateway.run import _uses_telegram_observed_group_context as uses_observed_context  # noqa: E402
+from gateway.session import SessionSource, build_session_key
 
 GROUP_JID = "120363414190214470@g.us"
 OTHER_JID = "120363433018457345@g.us"
@@ -31,6 +29,9 @@ OTHER_JID = "120363433018457345@g.us"
 OBSERVE_EXTRA = {
     "observe_unmentioned_group_messages": True,
     "observe_allowed_chats": f"{GROUP_JID},{OTHER_JID}",
+    # Observe mode only applies to mention-gated intake (F-002 scope); the tests exercise
+    # that posture explicitly.
+    "require_mention": True,
 }
 
 
@@ -44,6 +45,11 @@ def _group_data(body, *, chat=GROUP_JID, sender="447468411310", from_me=False, *
             "senderId": sender, "senderName": "Tester", "messageId": "MSG1"}
     data.update(kw)
     return data
+
+
+def _source(uid="447468411310", chat=GROUP_JID):
+    return SessionSource(platform=Platform.WHATSAPP, chat_id=chat, chat_name="G",
+                         chat_type="group", user_id=uid, user_name="Tester", message_id="MSG1")
 
 
 class TestObserveGating:
@@ -98,30 +104,56 @@ class TestObserveGating:
         assert adapter._whatsapp_should_observe_unmentioned_group_message(_group_data("hi")) is False
 
 
-class TestObserveStorageAndAttribution:
-    def _event(self, body="hello", uid="447468411310"):
-        data = _group_data(body)
-        source = SessionSource(platform=Platform.WHATSAPP, chat_id=GROUP_JID, chat_name="G",
-                               chat_type="group", user_id=uid, user_name="Tester", message_id="MSG1")
-        return MessageEvent(text=body, message_type=MessageType.TEXT, source=source,
-                            raw_message=data, message_id="MSG1"), source
+class TestEffectiveScopeExclusivity:
+    """F-002: one effective scope governs collection AND attribution."""
 
-    def test_observer_writes_observed_row_into_shared_session(self, monkeypatch):
+    def test_require_mention_off_disables_observation(self):
         adapter = _adapter_with_extra(OBSERVE_EXTRA)
-        appended, keys = [], []
+        monkey_free = {"free_response_chats": ""}
+        adapter.config.extra = {**OBSERVE_EXTRA, **monkey_free, "require_mention": False}
+        assert adapter._whatsapp_observe_scope_active(GROUP_JID) is False
+        assert adapter._whatsapp_should_observe_unmentioned_group_message(_group_data("hi")) is False
+
+    def test_free_response_chat_disables_observation_and_attribution(self):
+        adapter = _adapter_with_extra({**OBSERVE_EXTRA, "free_response_chats": GROUP_JID})
+        assert adapter._whatsapp_observe_scope_active(GROUP_JID) is False
+        assert adapter._whatsapp_should_observe_unmentioned_group_message(_group_data("hi")) is False
+        event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=_source(),
+                             raw_message=_group_data("hello"))
+        out = adapter._apply_whatsapp_group_observe_attribution(event)
+        assert out is event  # untouched: original principal/text preserved
+
+    def test_attribution_noop_when_feature_disabled(self):
+        adapter = _adapter_with_extra({})
+        event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=_source(),
+                             raw_message=_group_data("hello"))
+        out = adapter._apply_whatsapp_group_observe_attribution(event)
+        assert out is event
+
+
+class TestSharedSessionRouting:
+    """F-001/F-003: the principal survives; routing is declared via ``shared_session``."""
+
+    def _event(self, body="hello", uid="447468411310", msg_type=MessageType.TEXT):
+        data = _group_data(body)
+        return MessageEvent(text=body, message_type=msg_type, source=_source(uid),
+                            raw_message=data, message_id="MSG1"), data
+
+    def test_observer_keeps_principal_and_declares_shared_session(self, monkeypatch):
+        adapter = _adapter_with_extra(OBSERVE_EXTRA)
+        seen_sources, appended = [], []
 
         async def fake_build(data, *, _skip_policy_gate=False):
-            _, src = self._event(data["body"])
-            return MessageEvent(text=data["body"], message_type=MessageType.TEXT, source=src,
-                                raw_message=data, message_id="MSG1")
+            return MessageEvent(text=data["body"], message_type=MessageType.TEXT,
+                                source=_source(data.get("senderId")), raw_message=data,
+                                message_id=data.get("messageId"))
 
         class FakeEntry:
             session_id = "sess_1"
 
         class FakeStore:
             def get_or_create_session(self, source):
-                from gateway.session import build_session_key
-                keys.append(build_session_key(source, group_sessions_per_user=True, profile="p"))
+                seen_sources.append(source)
                 return FakeEntry()
 
             def append_to_transcript(self, sid, entry):
@@ -132,70 +164,91 @@ class TestObserveStorageAndAttribution:
         asyncio.run(adapter._observe_unmentioned_group_message(_group_data("lunch later?")))
         assert len(appended) == 1
         sid, entry = appended[0]
-        assert sid == "sess_1"
-        assert entry["observed"] is True and entry["role"] == "user"
+        # F-001: principal survives on the observed source
+        assert seen_sources[0].user_id == "447468411310"
+        assert seen_sources[0].shared_session is True
+        # F-003: keys to the SHARED lane (no per-user suffix) even with the sender present
+        assert build_session_key(seen_sources[0], group_sessions_per_user=True, profile="p") == \
+            "agent:p:whatsapp:group:" + GROUP_JID
+        assert entry["observed"] is True
         assert entry["content"].startswith("[Tester|447468411310]")
-        # Shared chat-scoped session: no per-user suffix (observed rows and later
-        # attributed trigger turns must resolve to the SAME session key).
-        assert keys and keys[0].endswith(f"whatsapp:group:{GROUP_JID}")
 
-    def test_triggered_text_turn_is_attributed_and_shared(self):
+    def test_attribution_keeps_user_id_and_shares_session(self):
         adapter = _adapter_with_extra(OBSERVE_EXTRA)
         event, _ = self._event("@bot summarize this")
         out = adapter._apply_whatsapp_group_observe_attribution(event)
+        # F-001: user_id survives admission
+        assert out.source.user_id == "447468411310"
+        assert out.source.shared_session is True
         assert "observed WhatsApp group context" in (out.channel_prompt or "")
-        assert out.source.user_id is None and out.source.chat_id == GROUP_JID
         assert out.text.startswith("[Tester|447468411310]")
 
-    def test_triggered_command_keeps_sender_identity(self):
+    def test_command_keeps_sender_and_shares_session(self):
         adapter = _adapter_with_extra(OBSERVE_EXTRA)
-        event, _ = self._event("/new", uid="971555544440")
-        event = MessageEvent(text="/new", message_type=MessageType.COMMAND, source=event.source,
-                             raw_message=event.raw_message)
+        event, _ = self._event("/new", uid="971555544440", msg_type=MessageType.COMMAND)
         out = adapter._apply_whatsapp_group_observe_attribution(event)
         assert out.source.user_id == "971555544440"
+        assert out.source.shared_session is True
         assert "observed WhatsApp group context" in (out.channel_prompt or "")
 
-    def test_attribution_noop_when_feature_disabled(self):
-        adapter = _adapter_with_extra({})
-        event, source = self._event()
-        out = adapter._apply_whatsapp_group_observe_attribution(event)
-        assert out.source.user_id == source.user_id
-        assert "observed WhatsApp group context" not in (out.channel_prompt or "")
+    def test_text_command_observed_all_key_one_session(self):
+        """F-003 invariant: addressed text, command, observed chatter and a restored command
+        origin resolve to ONE session key at default ``group_sessions_per_user=True``."""
+        adapter = _adapter_with_extra(OBSERVE_EXTRA)
+        text_event, _ = self._event("@bot summarize this")
+        cmd_event, _ = self._event("/new", uid="971555544440", msg_type=MessageType.COMMAND)
+        observed_src = adapter._whatsapp_group_observe_shared_source(_source())
+        text_out = adapter._apply_whatsapp_group_observe_attribution(text_event)
+        cmd_out = adapter._apply_whatsapp_group_observe_attribution(cmd_event)
+        restored_cmd = SessionSource.from_dict(cmd_out.source.to_dict())
+        keys = {
+            build_session_key(text_out.source, group_sessions_per_user=True, profile="p"),
+            build_session_key(cmd_out.source, group_sessions_per_user=True, profile="p"),
+            build_session_key(observed_src, group_sessions_per_user=True, profile="p"),
+            build_session_key(restored_cmd, group_sessions_per_user=True, profile="p"),
+        }
+        assert len(keys) == 1
+        assert keys.pop().endswith(f"whatsapp:group:{GROUP_JID}")
+        # the command STILL carries its sender for access checks
+        assert cmd_out.source.user_id == "971555544440"
 
 
-class TestTriggeredTurnAuthorization:
-    """Attributed trigger turns carry ``user_id=None``; the chat-scoped group allowlist must
-    admit them (mirrors ``TELEGRAM_GROUP_ALLOWED_CHATS``)."""
+class TestDurableTimestamp:
+    """F-004: the observer's timestamp survives the real SessionDB writer."""
 
-    def test_whatsapp_registered_in_group_chat_env(self):
-        from gateway.authz_mixin import _GROUP_CHAT_ENV
-        assert _GROUP_CHAT_ENV.get(Platform.WHATSAPP) == "WHATSAPP_GROUP_ALLOWED_CHATS"
+    def test_datetime_timestamp_round_trips_without_warning(self, tmp_path, monkeypatch):
+        adapter = _adapter_with_extra(OBSERVE_EXTRA)
+        frozen = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr("gateway.platforms.whatsapp_common.datetime", 
+                            type("D", (), {"now": staticmethod(lambda tz=None: frozen)}))
 
-    def test_chat_scoped_grant_admits_userless_group_turn(self, monkeypatch):
-        from gateway.authz_mixin import GatewayAuthorizationMixin
-        source = SessionSource(platform=Platform.WHATSAPP, chat_id=GROUP_JID, chat_type="group",
-                               user_id=None)
-        mixin = GatewayAuthorizationMixin.__new__(GatewayAuthorizationMixin)
-        monkeypatch.setattr("gateway.authz_mixin._auth_env",
-                            lambda name: GROUP_JID if name == "WHATSAPP_GROUP_ALLOWED_CHATS" else "")
-        monkeypatch.setattr(mixin, "_adapter_profile_for_source", lambda s: None, raising=False)
-        monkeypatch.setattr(mixin, "_adapter_extra_for_source", lambda s: {}, raising=False)
-        monkeypatch.setattr(mixin, "_adapter_flag", lambda *a, **k: False, raising=False)
-        assert mixin._chat_scoped_grant(source, None, is_group=True, allow_adapter_delegation=True) is True
+        async def fake_build(data, *, _skip_policy_gate=False):
+            return MessageEvent(text=data["body"], message_type=MessageType.TEXT,
+                                source=_source(data.get("senderId")), raw_message=data,
+                                message_id=data.get("messageId"))
 
-    def test_chat_scoped_grant_rejects_unlisted_chat(self, monkeypatch):
-        from gateway.authz_mixin import GatewayAuthorizationMixin
-        source = SessionSource(platform=Platform.WHATSAPP, chat_id="999999999@g.us", chat_type="group",
-                               user_id=None)
-        mixin = GatewayAuthorizationMixin.__new__(GatewayAuthorizationMixin)
-        monkeypatch.setattr("gateway.authz_mixin._auth_env",
-                            lambda name: GROUP_JID if name == "WHATSAPP_GROUP_ALLOWED_CHATS" else "")
-        monkeypatch.setattr(mixin, "_adapter_profile_for_source", lambda s: None, raising=False)
-        monkeypatch.setattr(mixin, "_adapter_extra_for_source", lambda s: {}, raising=False)
-        monkeypatch.setattr(mixin, "_adapter_flag", lambda *a, **k: False, raising=False)
-        assert mixin._chat_scoped_grant(source, None, is_group=True, allow_adapter_delegation=True) is False
+        monkeypatch.setattr(type(adapter), "_build_message_event", staticmethod(fake_build))
+        from agent import secret_scope as ss
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+        try:
+            from gateway.session import SessionStore
+            from gateway.config import GatewayConfig
+            store = SessionStore(tmp_path / "state", GatewayConfig())
+            adapter._session_store = store
+            asyncio.run(adapter._observe_unmentioned_group_message(_group_data("lunch later?")))
+            session_entry = store._entries[next(iter(store._entries))]
+            rows = store.load_transcript(session_entry.session_id)
+            assert rows and rows[-1]["observed"] is True
+            # exact durable readback, no fallback substitution
+            assert rows[-1]["timestamp"] == pytest.approx(frozen.timestamp())
+        finally:
+            ss.reset_secret_scope(tok)
+            ss.set_multiplex_active(False)
 
+
+class TestHistoryBuilderMarker:
     def test_history_builder_uses_whatsapp_marker(self):
         assert uses_observed_context("You are handling a WhatsApp group chat message.\n- observed WhatsApp group context may be provided") is True
         assert uses_observed_context("observed Telegram group context ...") is True

@@ -483,10 +483,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
         return bridge_env
 
-    def _bridge_died(self, detail: str) -> bool:
+    def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
         print(f"[{self.name}] {detail}")
         print(f"[{self.name}] Check log: {self._bridge_log}")
         self._close_bridge_log()
+        # Named so the reconnect status and connect telemetry say why instead of an unclassified failure.
+        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=True)
         return False
 
     async def _poll_bridge_health(self, died_msg: str) -> tuple[Optional[bool], bool, dict]:
@@ -516,7 +518,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if connected is False:
             return False
         if not http_ready:
-            return self._bridge_died("Bridge HTTP server did not start in 15s")
+            return self._bridge_died("Bridge HTTP server did not start in 15s", "whatsapp_bridge_timeout")
         if data.get("status") != "connected":
             print(f"[{self.name}] Bridge HTTP ready, waiting for WhatsApp connection...")
             connected, _, _ = await self._poll_bridge_health("Bridge process died during connection")
@@ -572,7 +574,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     f"{exc}. Set platforms.whatsapp.extra.bridge_port to a distinct free port; "
                     "or stop the process holding it.", retryable=False)
                 return False
-        if not self._preflight():
+        if not await asyncio.to_thread(self._preflight):
             return False
         bridge_path = Path(self._bridge_script)
         lock_acquired = False

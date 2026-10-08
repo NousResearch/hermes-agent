@@ -284,19 +284,27 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return self._coerce_allow_list(
             _extra_or_wsecret(self.config.extra, "observe_allowed_chats", "WHATSAPP_OBSERVE_ALLOWED_CHATS"))
 
+    def _whatsapp_observe_scope_active(self, chat_id: str) -> bool:
+        """Single effective observe scope used by BOTH collection and attribution (F-002): feature
+        enabled + chat explicitly allowlisted + mention-gated intake (require_mention on, chat not
+        free-response). When normal processing already dispatches every message there is nothing
+        to observe and no attribution may re-source the event."""
+        if not self._whatsapp_observe_unmentioned_group_messages():
+            return False
+        if not self._whatsapp_require_mention():
+            return False
+        if chat_id in self._whatsapp_free_response_chats():
+            return False
+        allowed = self._whatsapp_observe_allowed_chats()
+        return bool(allowed) and chat_id in allowed
+
     def _whatsapp_should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
         """True when a group message skipped by the trigger gate should be stored as observed context."""
         if not data.get("isGroup", False) or data.get("fromMe"):
             return False
-        if not self._whatsapp_observe_unmentioned_group_messages():
-            return False
         chat_id = str(data.get("chatId") or "")
-        # Observed context is shared at chat scope, so require an explicit chat allowlist.
-        allowed = self._whatsapp_observe_allowed_chats()
-        if not allowed or chat_id not in allowed:
-            return False
-        # Free-response chats dispatch every message, so they are never observed.
-        if chat_id in self._whatsapp_free_response_chats():
+        # Single effective scope: mention-gated intake + explicit chat allowlist (F-002).
+        if not self._whatsapp_observe_scope_active(chat_id):
             return False
         # Only observe messages the require_mention gate would skip.
         if (
@@ -310,8 +318,10 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
 
     @staticmethod
     def _whatsapp_group_observe_shared_source(source):
-        """Chat-scoped source so observed rows land in the group's shared session (no per-user split)."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        """Shared-session source: the sender id is KEPT (admission/slash checks still see the
+        principal) but the session is declared shared, so observed chatter, addressed turns and
+        commands all key ONE group lane (F-001/F-003)."""
+        return dataclasses.replace(source, shared_session=True)
 
     @staticmethod
     def _whatsapp_group_observe_attributed_text(event) -> str:
@@ -338,7 +348,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             session_entry = store.get_or_create_session(self._whatsapp_group_observe_shared_source(event.source))
             entry = {
                 "role": "user", "content": self._whatsapp_group_observe_attributed_text(event),
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True}
+                "timestamp": datetime.now(tz=timezone.utc), "observed": True}
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
             store.append_to_transcript(session_entry.session_id, entry)
@@ -350,24 +360,29 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             logger.warning("[%s] Failed to observe WhatsApp group message: %s", getattr(self, "name", "whatsapp"), exc)
 
     def _apply_whatsapp_group_observe_attribution(self, event):
-        """Align triggered group turns with observed-history attribution (adds the channel prompt)."""
-        if not event or not self._whatsapp_observe_unmentioned_group_messages():
+        """Align triggered group turns with observed-history attribution (adds the channel prompt).
+
+        The caller identity survives admission (F-001): the source keeps ``user_id`` and only the
+        routing declaration (``shared_session``) changes, so session controls act on the same
+        shared lane as the observed transcript (F-003)."""
+        if not event:
             return event
         raw = getattr(event, "raw_message", None)
         if not raw or not raw.get("isGroup", False):
             return event
         chat_id = str(raw.get("chatId") or "")
-        allowed = self._whatsapp_observe_allowed_chats()
-        if not allowed or chat_id not in allowed:
+        if not self._whatsapp_observe_scope_active(chat_id):
             return event
         observe_prompt = self._whatsapp_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
+        shared_source = dataclasses.replace(event.source, shared_session=True)
         if str(getattr(event, "text", "") or "").strip().startswith("/"):
-            # Commands keep the original source (user_id) so sender checks can identify the sender.
-            return dataclasses.replace(event, channel_prompt=channel_prompt)
+            # Commands keep the original source (user_id) so sender checks identify the sender,
+            # but route to the shared session (F-003).
+            return dataclasses.replace(event, source=shared_source, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event, text=self._whatsapp_group_observe_attributed_text(event),
-            source=self._whatsapp_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+            source=shared_source, channel_prompt=channel_prompt)
 
     # ------------------------------------------------------------------ formatting
     def format_message(self, content: str) -> str:

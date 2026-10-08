@@ -2848,7 +2848,10 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
 
     @staticmethod
     def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
-        """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""
+        """Raise-only small-context threshold floor: models under 512K trigger at >= 75% for default 0.50,
+        but preserve explicit user thresholds < 0.50 (e.g. 0.40)."""
+        if threshold_percent < 0.50:
+            return threshold_percent
         if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
@@ -2880,7 +2883,15 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         full window lets the session hit a provider 400 before compaction fires (#43547). The percentage and
         the degenerate-window check below both operate on the effective input budget. ``max_tokens=None``
         (provider default) conservatively assumes no reservation (full window).
+
+        Exception: an explicit ``threshold_percent`` below 0.50 is user intent and applies to the raw
+        ``context_length`` with no output deduction and no MINIMUM_CONTEXT_LENGTH floor.
         """
+        if context_length <= 0:
+            return MINIMUM_CONTEXT_LENGTH
+        if threshold_percent < 0.50:
+            pct_value = int(context_length * threshold_percent)
+            return max(1, min(pct_value, context_length - 1))
         effective_window = ContextCompressor._effective_input_window(context_length, max_tokens)
         pct_value = int(effective_window * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)

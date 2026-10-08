@@ -41,6 +41,8 @@ test('desktop development composition restages native inputs only when their rec
   expect(staged()).toBe(false)
   put(join(nativeDeps, 'native/helper-fixture'), 'tampered')
   expect(staged()).toBe(true) // the tree no longer matches its digest
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch, degraded: true })
+  expect(staged()).toBe(true) // a soft-failed component restages until the host can complete it
   recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
   put(join(input.source, 'package-lock.json'), '{"lockfileVersion":3}')
   expect(staged()).toBe(true) // a dependency pin moved

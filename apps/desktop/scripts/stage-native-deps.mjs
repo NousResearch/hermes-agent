@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
 import { recordNativeInputs } from './prepared-native-deps.mjs'
 import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
-import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
+import { buildHudModifierMonitor, hudModifierBinaryRelativePath } from './build-hud-modifier-monitor.mjs'
 import { parseArgs } from 'node:util'
 import { productOutput, withProduct, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 
@@ -728,6 +728,23 @@ export function stageGetWindows(
 }
 
 /**
+ * Whether ``out`` holds every native piece a build on THIS host can stage for the target.
+ * Cross-target packs never build helpers and win32-arm64 has no get-windows prebuild, so neither
+ * counts as missing: nothing a host fix could add.
+ * @param {string} out @param {string} platform @param {string} arch @returns {boolean}
+ */
+export function nativeTreeComplete(out, platform, arch) {
+  const native = platform === process.platform && (platform !== 'linux' || arch === process.arch)
+  const required = ['get-windows/lib/windows.js']
+  if (platform === 'darwin') required.push('get-windows/main')
+  if (platform === 'win32' && arch !== 'arm64') required.push('get-windows/lib/binding')
+  if (native && ['darwin', 'linux', 'win32'].includes(platform)) {
+    required.push(hudModifierBinaryRelativePath(platform, arch))
+  }
+  return required.every(relative => existsSync(join(out, relative)))
+}
+
+/**
  * Preparation may rebuild/download native bindings; compilation only consumes them.
  * @param {{ source: string, out: string, platform?: string, arch?: string, nativeToolchain?: string }} inputs
  * @returns {Promise<{out: string}>}
@@ -741,7 +758,10 @@ export async function prepareDesktopNativeDependencies({ source, out, platform =
     buildCommandScreenshotMonitor({ source, distDir: product, platform })
     buildHudModifierMonitor({ source, distDir: product, platform, arch })
   }, { source })
-  recordNativeInputs({ source, out, platform, arch, nativeToolchain })
+  // Each component fails soft (no get-windows or its win32 binding, no X11 toolchain). Judge the
+  // staged tree, not each builder's return shape: a tree missing a piece this host could produce
+  // is degraded, and build.mjs restages it on every build, so fixing the host repairs the next update.
+  recordNativeInputs({ source, out, platform, arch, nativeToolchain, degraded: !nativeTreeComplete(out, platform, arch) })
   return { out }
 }
 

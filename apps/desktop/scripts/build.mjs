@@ -4,7 +4,7 @@ import { cpSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { isMain, repoRoot } from '../../../scripts/build/frontend-common.mjs'
-import { readNativeInputs } from './prepared-native-deps.mjs'
+import { nativeInputsComplete } from './prepared-native-deps.mjs'
 
 export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSync } = {}) {
   source = resolve(source)
@@ -26,19 +26,11 @@ export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSyn
   // The native inputs carry their own receipt (inputs identity + tree digest): restaging the
   // same sources recompiles two universal helpers for identical bytes on every update.
   const nativeDeps = join(app, 'build/native-deps')
-  if (!nativeCurrent({ source, nativeDeps })) step('apps/desktop/scripts/stage-native-deps.mjs')
+  if (!nativeInputsComplete({ source, nativeDeps })) step('apps/desktop/scripts/stage-native-deps.mjs')
   step('scripts/build/desktop.mjs', ['--source', source, '--icons', icons,
     '--stamp', join(app, 'build/install-stamp.json'), '--native-deps', nativeDeps, '--out', join(app, 'dist')])
 }
 
-function nativeCurrent(inputs) {
-  try {
-    readNativeInputs(inputs)
-    return true
-  } catch {
-    return false
-  }
-}
 
 if (isMain(import.meta.url)) {
   const { values } = parseArgs({ options: { icons: { type: 'string' } } })

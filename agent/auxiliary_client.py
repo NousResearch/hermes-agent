@@ -1028,13 +1028,13 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
     return pool if pool and pool.has_credentials() else None
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+def _select_pool_entry(provider: str, *, model: Optional[str] = None) -> Tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     pool = _load_pool_with_credentials(provider)
     if pool is None:
         return False, None
     try:
-        return True, pool.select()
+        return True, pool.select(model=model) if model else pool.select()
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
         return True, None
@@ -2103,13 +2103,14 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
+def _resolve_codex_credential_and_base(model: Optional[str] = None) -> Tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex")
+    # A cooldown for a different model must not hide an otherwise usable subscription.
+    pool_present, entry = _select_pool_entry("openai-codex", model=model)
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2971,7 +2972,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base()
+    codex_token, base_url = _resolve_codex_credential_and_base(model)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -5054,7 +5055,7 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base()
+        codex_token, base_url = _resolve_codex_credential_and_base(model)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
@@ -7426,12 +7427,14 @@ def _resolve_call_client(
             model=resolved_model or model, base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+        if client is None and resolved_provider != "auto":
+            # An explicit vision provider does not authorize discovery of other paid accounts.
+            client, final_model, fb_label = _try_configured_fallback_for_unavailable_client(
+                task, resolved_provider)
+            if client is not None:
+                if async_mode:
+                    client, final_model = _to_async_client(client, final_model or "", is_vision=True)
+                effective_provider = fb_label
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:

@@ -26,18 +26,11 @@ def _client(slot: str, cls_name: str) -> Any:
         import parallel  # deliberately lazy
         return getattr(parallel, cls_name)(api_key=api_key)
 
-    # Mirrors the lazy-deps pattern used by the legacy implementation.
-    # Swallows benign ImportError from the pm helper itself; if the
-    # SDK is genuinely missing the subsequent ``from parallel import ...``
-    # raises ImportError that the caller can handle.
-    try:
-        from pm import ensure_import as _lazy_ensure
-
-        _lazy_ensure("parallel-web")
-    except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
-        raise ImportError(str(exc))
+    # No eager pm ensure_import here: cached_sdk_client checks the API key FIRST and only
+    # then lazy-ensures the extra. Pre-ensuring inverted that order on hosts where the
+    # optional extra is absent and lazy installs are disabled, surfacing "Parallel SDK
+    # not installed" instead of the missing-key error the keyless-disabled contract
+    # (and exa's identical client builder) promises.
     return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "parallel-web", _factory)
 
 

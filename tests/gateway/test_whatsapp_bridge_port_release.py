@@ -265,6 +265,34 @@ class TestPortReleasedBeforeSpawn:
 
 class TestListenerDiscovery:
     @linux
+    @pytest.mark.asyncio
+    async def test_time_wait_from_old_bridge_does_not_block_respawn(self):
+        """The old bridge closed its keep-alive connections first, so its port sits in TIME_WAIT
+        (up to 60s) with no listener. node's listen (SO_REUSEADDR) succeeds; the wait must too."""
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as libuv does for the bridge
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        cli = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()  # server side closes first -> TIME_WAIT on 127.0.0.1:<port>
+        srv.close()
+        time.sleep(0.1)
+        cli.close()
+
+        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
+        adapter.platform = Platform.WHATSAPP
+        adapter._bridge_port = port
+        adapter._fatal_error_code = adapter._fatal_error_message = None
+        adapter._fatal_error_retryable = True
+        adapter._fatal_error_handler = None
+        assert await adapter._wait_bridge_port_free() is True
+        assert adapter._fatal_error_code is None
+
+    @linux
     def test_psutil_fallback_when_lsof_and_ss_missing(self, monkeypatch):
         """Neither lsof nor ss on PATH (the repo image ships neither): the psutil TCP scan still
         finds the listener, so the port holder can be identified and reaped."""

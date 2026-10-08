@@ -13,6 +13,7 @@ import urllib.parse
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.providers import custom_provider_slug
+from hermes_cli.route_identity import drop_stale_context_pin
 from hermes_cli.model_setup_flows_common import (
     _HTTP, _ask, _commit_model_config, _load_config_model_section,
     _prune_replaced_custom_model_config_credentials, _radiolist, _say)
@@ -203,7 +204,9 @@ def _model_flow_custom(config):
         _caller_model = config.get("model")
         if not isinstance(_caller_model, dict):
             _caller_model = {"default": _caller_model} if _caller_model else {}
+        _prior_model = dict(_caller_model)
         _apply_endpoint(_caller_model)
+        drop_stale_context_pin(_caller_model, _prior_model)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 

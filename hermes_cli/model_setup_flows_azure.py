@@ -254,9 +254,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         model["entra"] = clean_entra
     else:
         model.pop("entra", None)
-    if ctx_len:
-        model["context_length"] = ctx_len
-    _commit_model_config(cfg)
+    _commit_model_config(cfg, context_length=ctx_len)
     config["model"] = dict(model)
 
     # Clear conflicting env vars so auxiliary clients don't pick up a stale OpenAI base URL / key.

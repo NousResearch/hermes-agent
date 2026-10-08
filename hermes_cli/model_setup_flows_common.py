@@ -89,10 +89,18 @@ def _begin_model_config(selected: str, provider: str) -> tuple[dict, dict]:
     return cfg, model
 
 
-def _commit_model_config(cfg: dict) -> None:
-    """Persist *cfg* and deactivate any OAuth provider."""
+def _commit_model_config(cfg: dict, *, context_length: int | None = None) -> None:
+    """Persist *cfg* and deactivate any OAuth provider. A ``model.context_length`` pinned for the
+    route on disk is dropped when *cfg* changes model or route; *context_length* is a window just
+    resolved for the new route, applied after that check."""
     from hermes_cli.auth import deactivate_provider
-    from hermes_cli.config import save_config
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.route_identity import drop_stale_context_pin
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        drop_stale_context_pin(model, load_config().get("model"))
+        if context_length:
+            model["context_length"] = context_length
     save_config(cfg)
     deactivate_provider()
 

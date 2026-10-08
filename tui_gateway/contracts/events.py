@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, TurnStats, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -193,6 +193,7 @@ class MessageCompletePayload(Payload):
 
     text: str | JsonValue = ""
     usage: Usage | None = None
+    turn_stats: TurnStats | None = None
     status: TurnStatus | None = None
     reasoning: str | None = None
     warning: str | None = None

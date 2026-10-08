@@ -2,8 +2,10 @@
 file-serving helpers shared with the local-skill path. Helpers tests patch on the origin module
 (``_is_skill_disabled``, ``_parse_frontmatter``, ``skill_matches_platform``) resolve lazily."""
 
+import copy
 import json
 import logging
+import os
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -42,12 +44,38 @@ def _truncate_description(description: str) -> str:
     return description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
 
+# Path-keyed frontmatter cache. skill_view(name) scans every SKILL.md frontmatter to resolve a
+# name, so without this each call re-parses ~all skills with ruamel (CPU-bound, serializes on the
+# GIL under concurrent calls). Keyed by (path, mtime_ns, size, parser) so an edited file or a
+# test-patched parser is a miss; values are deep-copied so callers cannot mutate the cache.
+_FRONTMATTER_CACHE: Dict[tuple, Dict[str, Any]] = {}
+_FRONTMATTER_CACHE_MAX = 4096
+
+
+def _frontmatter_cache_key(path: Path, parser: Any) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (os.fspath(path), st.st_mtime_ns, st.st_size, id(parser))
+
+
 def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> Dict[str, Any]:
     """Frontmatter of *path* (or of *content*), ``{}`` on any read/parse failure.
-    Parses via ``tools.skills_tool._parse_frontmatter`` so test patches are honored."""
+    Parses via ``tools.skills_tool._parse_frontmatter`` so test patches are honored.
+    Path lookups are memoized on (path, mtime_ns, size, parser identity)."""
     from tools import skills_tool as _st
+    parser = _st._parse_frontmatter
+    key = _frontmatter_cache_key(path, parser) if content is None and path is not None else None
+    if key is not None and (cached := _FRONTMATTER_CACHE.get(key)) is not None:
+        return copy.deepcopy(cached)
     with suppress(Exception):
-        return _st._parse_frontmatter(_read_skill_text(path) if content is None else content)[0]
+        parsed = parser(_read_skill_text(path) if content is None else content)[0]
+        if key is not None and isinstance(parsed, dict):
+            if len(_FRONTMATTER_CACHE) >= _FRONTMATTER_CACHE_MAX:
+                _FRONTMATTER_CACHE.clear()
+            _FRONTMATTER_CACHE[key] = copy.deepcopy(parsed)
+        return parsed
     return {}
 
 

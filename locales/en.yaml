@@ -727,6 +727,8 @@ gateway:
     redirected_tail: ". I'll adjust using your correction."
     subagent_working_head: "⏳ Subagent working"
     compressing_head: "⏳ Compressing context"
+    state_unavailable_head: "⚠️ Session state unavailable"
+    state_unavailable_tail: " — your message is queued until the current task finishes (use /stop to cancel everything)."
     queued_head: "⏳ Queued for the next turn"
     queued_tail: ". I'll respond once the current task finishes."
     interrupting_head: "⚡ Interrupting current task"

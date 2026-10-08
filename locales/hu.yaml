@@ -728,6 +728,8 @@ gateway:
     redirected_tail: ". A javításod alapján igazítok."
     subagent_working_head: "⏳ Az alügynök dolgozik"
     compressing_head: "⏳ Kontextus tömörítése"
+    state_unavailable_head: "⚠️ A munkamenet állapota nem érhető el"
+    state_unavailable_tail: " — az üzeneted sorba került, amíg a jelenlegi feladat befejeződik (a /stop paranccsal mindent megszakíthatsz)."
     queued_head: "⏳ Sorba állítva a következő körre"
     queued_tail: ". Válaszolok, amint a jelenlegi feladat befejeződik."
     interrupting_head: "⚡ A jelenlegi feladat megszakítása"

@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". Düzeltmenize göre ayarlayacağım."
     subagent_working_head: "⏳ Alt ajan çalışıyor"
     compressing_head: "⏳ Bağlam sıkıştırılıyor"
+    state_unavailable_head: "⚠️ Oturum durumu kullanılamıyor"
+    state_unavailable_tail: " — mesajınız mevcut görev bitene kadar sıraya alındı (her şeyi iptal etmek için /stop kullanın)."
     queued_head: "⏳ Sonraki tur için sıraya alındı"
     queued_tail: ". Mevcut görev bitince yanıtlayacağım."
     interrupting_head: "⚡ Mevcut görev kesiliyor"

@@ -733,16 +733,27 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
         # while compression rotates the id away, forking orphaned siblings.
+        # An unreadable compression state (None) queues too, but says so instead of claiming
+        # compression — storage failure, not a running compression, is what the user must know.
+        _reply = None
         if self._agent_has_active_subagents(running_agent):
             _demote = "because the running agent has active subagents (#30170)"
-        elif await self._session_has_compression_in_flight(_quick_key):
-            _demote = "because context compression is in flight (#56391)"
         else:
-            await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
-            return None
+            compression_state = await self._session_has_compression_in_flight(_quick_key)
+            if compression_state is True:
+                _demote = "because context compression is in flight (#56391)"
+            elif compression_state is None:
+                _demote = "because compression state is unavailable"
+                _reply = t(
+                    "gateway.busy.ack", head=t("gateway.busy.state_unavailable_head"),
+                    detail="", tail=t("gateway.busy.state_unavailable_tail"),
+                )
+            else:
+                await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
+                return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
         self._queue_or_replace_pending_event(_quick_key, event)
-        return None
+        return _reply
 
     def _hm_quick_commands(self) -> dict:
         """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""

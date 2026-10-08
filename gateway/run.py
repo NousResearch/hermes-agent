@@ -3973,6 +3973,7 @@ class GatewayRunner(
         effective_mode: str
         demoted_for_subagents: bool
         demoted_for_compression: bool
+        demoted_for_state_unavailable: bool
         steered: bool
         redirected: bool
 

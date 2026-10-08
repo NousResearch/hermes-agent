@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". Ek sal aanpas volgens jou korreksie."
     subagent_working_head: "⏳ Subagent werk"
     compressing_head: "⏳ Konteks word saamgepers"
+    state_unavailable_head: "⚠️ Sessiestatus nie beskikbaar nie"
+    state_unavailable_tail: " — jou boodskap is in die tou totdat die huidige taak klaar is (gebruik /stop om alles te kanselleer)."
     queued_head: "⏳ In die tou vir die volgende beurt"
     queued_tail: ". Ek sal antwoord sodra die huidige taak klaar is."
     interrupting_head: "⚡ Huidige taak word onderbreek"

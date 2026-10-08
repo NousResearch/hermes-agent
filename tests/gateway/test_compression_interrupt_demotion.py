@@ -72,9 +72,11 @@ def _make_runner(*, session_id: str = "parent-session") -> GatewayRunner:
     )
     session_store._ensure_loaded_locked = lambda: None
     runner.session_store = session_store
-    runner._session_db = MagicMock()
-    runner._session_db._db = MagicMock()
-    runner._session_db._db.get_compression_lock_holder.return_value = None
+    raw_db = MagicMock()
+    raw_db.get_compression_lock_holder = MagicMock(return_value=None)
+    session_db = MagicMock()
+    session_db._db = raw_db
+    runner._session_db = session_db
     return runner
 
 def _make_adapter() -> MagicMock:
@@ -97,6 +99,7 @@ def _make_parent_no_subagents() -> MagicMock:
     }
     return parent
 
+
 class TestBusyHandlerDemotesInterruptForCompression:
     @pytest.mark.asyncio
     async def test_does_not_interrupt_when_compression_in_flight(self) -> None:
@@ -114,3 +117,27 @@ class TestBusyHandlerDemotesInterruptForCompression:
         assert handled is True
         parent.interrupt.assert_not_called()
         assert adapter._pending_messages.get(sk) is event
+
+    @pytest.mark.asyncio
+    async def test_lock_probe_error_does_not_interrupt_parent_session(self) -> None:
+        runner = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="follow up while lock state is unavailable")
+        sk = build_session_key(event.source)
+        parent = _make_parent_no_subagents()
+        runner._running_agents[sk] = parent
+        runner.adapters[event.source.platform] = adapter
+        runner._session_db._db.get_compression_lock_holder.side_effect = RuntimeError(
+            "sqlite temporarily unavailable"
+        )
+
+        handled = await runner._handle_active_session_busy_message(event, sk)
+
+        assert handled is True
+        parent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Session state unavailable" in content
+        assert "queued" in content.lower()
+        assert "Compressing context" not in content

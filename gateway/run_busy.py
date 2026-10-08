@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import time
@@ -314,9 +315,12 @@ class GatewayBusySessionMixin:
         accepted = bool(running_agent.steer(text))
         return bool(self._steer_active_subagents(running_agent, text)) or accepted
 
-    async def _session_has_compression_in_flight(self, session_key: str) -> bool:
-        """True when a compression lock is held for this session's id (callers demote interrupt →
-        queue, else a follow-up against the pre-rotation parent orphans compression siblings).
+    async def _session_has_compression_in_flight(self, session_key: str) -> Optional[bool]:
+        """Tri-state compression-lock probe for this session's id: ``True`` = lock held, ``False`` =
+        not held (or the store/DB structurally lacks the lock helpers), ``None`` = state unreadable.
+        Callers must stay conservative on ``None`` (demote interrupt → queue, skip hygiene) so a
+        follow-up never races a possible parent-session rotation, but must not tell the user that
+        compression is running when it is storage that failed.
         Both blocking reads run in a worker thread so a large state.db never freezes the loop.
 
         Context compression is interrupt-protected (#23975) but gateway ``interrupt`` busy-input mode can
@@ -326,35 +330,44 @@ class GatewayBusySessionMixin:
         session_store = getattr(self, "session_store", None)
         if not session_key or session_store is None:
             return False
-        def _assume_active(what: str, ident) -> bool:
+        def _unavailable(what: str, ident) -> None:
             logger.warning(
-                "Compression in-flight check failed while reading %s %s; treating compression as "
-                "active to avoid interrupting a possible parent-session rotation", what, ident, exc_info=True,
+                "Compression in-flight check failed while reading %s %s; compression state is "
+                "unavailable", what, ident, exc_info=True,
             )
-            return True
+            return None
 
+        # Structural absence (a store/DB without the lock plumbing) is "no lock", decided statically
+        # so a raising descriptor or a failing read is never mistaken for it.
+        missing = object()
         try:
+            if any(
+                inspect.getattr_static(session_store, attr, missing) is missing
+                for attr in ("_lock", "_ensure_loaded_locked", "_entries")
+            ):
+                return False
             session_id = await asyncio.to_thread(
                 self._lookup_session_id_under_store_lock, session_store, session_key
             )
-        except (AttributeError, TypeError):
-            return False
         except Exception:
-            return _assume_active("session", session_key)
+            return _unavailable("session", session_key)
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
             return False
         raw_db = getattr(session_db, "_db", session_db)
         try:
-            holder = await asyncio.to_thread(raw_db.get_compression_lock_holder, str(session_id))
-            # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr (or any
-            # unexpected truthy) cannot look like a held lock and skip hygiene.
-            # See #96953.
-            return isinstance(holder, str) and bool(holder)
-        except (AttributeError, TypeError):
-            return False
+            if inspect.getattr_static(raw_db, "get_compression_lock_holder", missing) is missing:
+                return False
+            get_lock_holder = raw_db.get_compression_lock_holder
+            if not callable(get_lock_holder):
+                raise TypeError("compression lock helper is not callable")
+            holder = await asyncio.to_thread(get_lock_holder, str(session_id))
         except Exception:
-            return _assume_active("lock holder for session", session_id)
+            return _unavailable("lock holder for session", session_id)
+        # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr (or any
+        # unexpected truthy) cannot look like a held lock and skip hygiene.
+        # See #96953.
+        return isinstance(holder, str) and bool(holder)
 
     @staticmethod
     def _lookup_session_id_under_store_lock(session_store, session_key: str):
@@ -593,11 +606,15 @@ class GatewayBusySessionMixin:
         )
         if demoted_for_subagents:
             effective_mode = self._demote_interrupt(session_key, "the running agent has active subagents (#30170)")
-        demoted_for_compression = (
-            effective_mode == "interrupt" and await self._session_has_compression_in_flight(session_key)
-        )
+        compression_state: Optional[bool] = False
+        if effective_mode == "interrupt":
+            compression_state = await self._session_has_compression_in_flight(session_key)
+        demoted_for_compression = compression_state is True
+        demoted_for_state_unavailable = compression_state is None
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
+        elif demoted_for_state_unavailable:
+            effective_mode = self._demote_interrupt(session_key, "compression state is unavailable")
         steered = redirected = False
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
@@ -631,7 +648,9 @@ class GatewayBusySessionMixin:
             )
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
-            demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
+            demoted_for_compression=demoted_for_compression,
+            demoted_for_state_unavailable=demoted_for_state_unavailable,
+            steered=steered, redirected=redirected,
         )
 
     @staticmethod
@@ -730,6 +749,7 @@ class GatewayBusySessionMixin:
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
         demoted_for_subagents: bool, demoted_for_compression: bool,
+        demoted_for_state_unavailable: bool,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -776,6 +796,8 @@ class GatewayBusySessionMixin:
             head, tail = t("gateway.busy.subagent_working_head"), self._BUSY_DEMOTED_TAIL
         elif is_queue_mode and demoted_for_compression:
             head, tail = t("gateway.busy.compressing_head"), self._BUSY_DEMOTED_TAIL
+        elif is_queue_mode and demoted_for_state_unavailable:
+            head, tail = t("gateway.busy.state_unavailable_head"), t("gateway.busy.state_unavailable_tail")
         elif is_queue_mode:
             head, tail = t("gateway.busy.queued_head"), t("gateway.busy.queued_tail")
         else:
@@ -900,6 +922,7 @@ class GatewayBusySessionMixin:
             is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
             demoted_for_subagents=_steer.demoted_for_subagents,
             demoted_for_compression=_steer.demoted_for_compression,
+            demoted_for_state_unavailable=_steer.demoted_for_state_unavailable,
         )
         await self._send_busy_ack_reply(event, adapter, message)
         return True

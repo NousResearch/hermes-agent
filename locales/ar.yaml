@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". سأعدّل مساري وفق تصحيحك."
     subagent_working_head: "⏳ الوكيل الفرعي يعمل"
     compressing_head: "⏳ جارٍ ضغط السياق"
+    state_unavailable_head: "⚠️ حالة الجلسة غير متاحة"
+    state_unavailable_tail: " — رسالتك في قائمة الانتظار حتى تنتهي المهمة الحالية (استخدم /stop لإلغاء كل شيء)."
     queued_head: "⏳ في قائمة الانتظار للدور التالي"
     queued_tail: ". سأردّ بعد انتهاء المهمة الحالية."
     interrupting_head: "⚡ جارٍ مقاطعة المهمة الحالية"

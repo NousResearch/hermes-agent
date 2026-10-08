@@ -166,7 +166,9 @@ jobs:
           import os
 
           expected = os.environ["RELEASE_VERSION"]
-          actual = os.environ["ACTUAL_VERSION"].split()[-1].removeprefix("v")
+          # Line one is "Hermes Agent v<version> (...)"; later lines (Python, OpenAI SDK) carry other versions.
+          first = os.environ["ACTUAL_VERSION"].splitlines()[0].split()
+          actual = first[2].removeprefix("v") if first[:2] == ["Hermes", "Agent"] and len(first) > 2 else ""
           if actual != expected:
               raise SystemExit(f"Nix package version mismatch: expected {expected}, got {actual}")
           PY

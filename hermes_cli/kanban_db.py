@@ -1179,6 +1179,32 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def _derive_omitted_workspace(
+    board: Optional[str],
+    project_id: Optional[str],
+    workspace_kind: Optional[str],
+    workspace_path: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Fill in what an omitted workspace inherits from its board.
+
+    A project-scoped board anchors every new task to its project's repo
+    (deterministic worktree + branch) without each surface repeating it.
+    An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
+    it must not be upgraded to a worktree in the board's repo (#106342).
+    With nothing set, the kind is derived from the board's ``default_workdir``
+    instead (#69787; read_board_metadata never raises) — explicit values
+    (``--workspace scratch``, a project link) always win, and scratch never
+    inherits a real path (#28818/#30917).
+    """
+    if project_id is None and workspace_kind != "scratch":
+        project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
+    if workspace_kind is None and workspace_path is None and project_id is None:
+        workspace_kind = derive_board_default_workspace_kind(
+            str(_board_meta_for(board).get("default_workdir") or "").strip()
+        )
+    return project_id, workspace_kind
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1208,6 +1234,9 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    On a board with no project, an omitted kind is derived from the board's
+    ``default_workdir`` instead (git repo → ``worktree``, existing dir → ``dir``,
+    absent/invalid → scratch), matching the dashboard's recommendation.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1220,15 +1249,9 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
-    # A project-scoped board anchors every new task to its project's repo
-    # (deterministic worktree + branch) without each surface repeating it.
-    # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
-    # it must not be upgraded to a worktree in the board's repo (#106342).
-    if project_id is None and workspace_kind != "scratch":
-        try:
-            project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
-        except Exception:
-            pass
+    project_id, workspace_kind = _derive_omitted_workspace(
+        board, project_id, workspace_kind, workspace_path
+    )
     if workspace_kind is None:
         workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:
@@ -2622,10 +2645,6 @@ class EmptyCompletionError(ValueError):
         )
 
 
-class ArtifactPreservationError(RuntimeError):
-    """Raised when a declared scratch deliverable cannot be preserved."""
-
-
 class LiveClaimError(ValueError):
     """``complete_task`` refused: the task is ``running`` under a live claim and
     the caller neither owns its run (``expected_run_id``) nor passed ``force``.
@@ -2931,136 +2950,6 @@ def _merge_completion_prose_artifacts(
             seen.add(path)
     updated["artifacts"] = merged
     return updated
-
-
-def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
-    raw_artifacts = metadata.get("artifacts")
-    if not isinstance(raw_artifacts, (list, tuple)):
-        return
-
-    workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
-
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
-
-    attachment_dir = task_attachments_dir(task_id, board=board)
-    persisted: list[str] = []
-    used_destinations: set[Path] = set()
-    changed = False
-
-    def _discard_copies() -> None:
-        _discard_staged_copies(used_destinations, attachment_dir)
-
-    for item in raw_artifacts:
-        artifact = str(item).strip() if isinstance(item, str) else ""
-        if not artifact:
-            continue
-        src = Path(artifact).expanduser()
-        try:
-            resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
-            continue
-
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
-
-        problem = None
-        if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-        elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
-            problem = (
-                f"declared scratch artifact exceeds the "
-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
-            )
-        if problem:
-            _discard_copies()
-            raise ArtifactPreservationError(problem)
-
-        dest: Optional[Path] = None
-        try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            _copy_capped(resolved_src, dest, artifact)
-        except Exception as exc:
-            if dest is not None:
-                with contextlib.suppress(OSError):
-                    dest.unlink(missing_ok=True)
-            _discard_copies()
-            if isinstance(exc, ArtifactPreservationError):
-                raise
-            raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
-            ) from exc
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
-        changed = True
-
-    if changed:
-        metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
-
-
-def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
-    """Remove staged attachment copies whose DB rows never committed; a leaked
-    copy would make the retry stage ``name_1.ext`` next to an orphan."""
-    for copied in copies:
-        with contextlib.suppress(OSError):
-            Path(copied).unlink(missing_ok=True)
-    with contextlib.suppress(OSError):
-        attachment_dir.rmdir()
-
-
-def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
-    """Chunked copy that aborts if the file grows past the attachment cap mid-copy."""
-    with src.open("rb") as source_file, dest.open("xb") as destination_file:
-        copied = 0
-        while chunk := source_file.read(1024 * 1024):
-            copied += len(chunk)
-            if copied > KANBAN_ATTACHMENT_MAX_BYTES:
-                raise ArtifactPreservationError(
-                    f"declared scratch artifact grew beyond the size limit: {artifact}"
-                )
-            destination_file.write(chunk)
-
-
-def _insert_completion_attachment(
-    conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,
-    created_at: int, uploaded_by: str = "kanban_complete",
-) -> None:
-    """Record a worker-produced artifact in the existing attachment table."""
-    conn.execute(
-        "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, ?, ?)",
-        (task_id, filename, stored_path, size, uploaded_by, created_at),
-    )
-    _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
-
-
-def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
-    """Return a non-conflicting path under ``directory`` for ``filename``."""
-    safe_name = Path(filename).name or "artifact"
-    stem, suffix = Path(safe_name).stem or "artifact", Path(safe_name).suffix
-    candidate = directory / safe_name
-    idx = 1
-    while candidate in used or candidate.exists():
-        candidate = directory / f"{stem}_{idx}{suffix}"
-        idx += 1
-    return candidate
 
 
 def edit_task(
@@ -4430,10 +4319,19 @@ from hermes_cli.kanban_db_connect import (  # noqa: E402
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (  # noqa: E402
+    derive_board_default_workspace_kind,
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_db_attachments import (  # noqa: E402
+    ArtifactPreservationError,
+    _copy_capped,
+    _discard_staged_copies,
+    _insert_completion_attachment,
+    _persist_scratch_completion_artifacts,
+    _unique_attachment_path,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,

@@ -1099,10 +1099,12 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
-    # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
-    # even for a dispatcher-spawned creator (reusing the parent's path would let a child
-    # mutate review evidence or race its checkout). Project identity is the one safe thing
-    # to inherit implicitly (the DB turns it into a fresh per-task worktree).
+    # Workspace sharing is always explicit: omitted fields never reuse the
+    # parent's literal path (that would let a child mutate review evidence or
+    # race its checkout). Project identity is the one safe thing to inherit
+    # implicitly (the DB turns it into a fresh per-task worktree), and a task
+    # created with nothing set still derives the board's default_workdir kind
+    # (#69787), never the parent's checkout.
     workspace_kind, workspace_path = args.get("workspace_kind"), args.get("workspace_path")
     # See #67567. ``project=""`` is an explicit "no project" (no ``or`` collapse, #106342).
     project_id = args["project"] if "project" in args else args.get("project_id")

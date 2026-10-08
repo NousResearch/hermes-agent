@@ -837,6 +837,26 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
     _set_task_column(conn, task_id, "branch_name", str(branch_name))
 
 
+
+def derive_board_default_workspace_kind(board_default: str) -> Optional[str]:
+    """Board ``default_workdir`` inheritance the docs promise (#69787).
+
+    An omitted task kind derives from the board default rather than always
+    scratch — a git toplevel means ``worktree`` (spawn-time resolution anchors
+    ``<repo>/.worktrees/<id>``), an existing plain dir means ``dir``; absent or
+    non-absolute/non-directory defaults keep ``None`` (scratch), and scratch
+    never inherits a real path (#28818/#30917).
+    """
+    if not board_default:
+        return None
+    anchor = Path(board_default).expanduser()
+    if anchor.is_absolute() and anchor.is_dir():
+        if _git_toplevel(anchor) is not None:
+            return "worktree"
+        return "dir"
+    return None
+
+
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402

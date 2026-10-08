@@ -2109,6 +2109,9 @@ def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
+    from hermes_cli.auth import _read_codex_access_token_env
+    if env_token := _read_codex_access_token_env():
+        return env_token, override or _CODEX_AUX_BASE_URL
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)

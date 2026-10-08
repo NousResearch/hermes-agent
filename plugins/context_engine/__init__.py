@@ -74,6 +74,11 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noq
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    from hermes_cli.plugin_isolation import user_plugin_host
+    host = None if is_bundled else user_plugin_host()
+    if host is not None:
+        return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
+                                  base_ref="agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
@@ -119,12 +124,3 @@ class _EngineCollector(_loader.NoopPluginContext):
             logger.debug("Context engine '%s' registered command: /%s", self._engine_name, clean)
         except Exception as exc:
             logger.debug("Context engine '%s' could not register /%s: %s", self._engine_name, clean, exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.util  # noqa: F401,E402
-import sys  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

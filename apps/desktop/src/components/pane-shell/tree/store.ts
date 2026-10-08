@@ -44,6 +44,7 @@ import {
   type SplitNode,
   type TabStripMode
 } from './model'
+import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
 
@@ -937,7 +938,7 @@ export function removeTreePane(paneId: string) {
  *  Usually the root itself (Default, Focus); in a column-root layout (Terminal
  *  deck, Quad) it's the row child that holds sessions/workspace/files. Returns
  *  null when the tree has no row split with side-eligible panes. */
-function rootRow(): SplitNode | null {
+export function rootRow(): SplitNode | null {
   const tree = $layoutTree.get()
 
   if (!tree || tree.type !== 'split') {
@@ -1553,7 +1554,8 @@ export function adoptContributedPanes(): void {
   // turn it into a track that steals width from a zone, which is the whole
   // thing floating exists to avoid.
   const missing = panes.filter(
-    c => !inTree.has(c.id) && !dismissed.has(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
+    c =>
+      !inTree.has(c.id) && !dismissed.has(c.id) && !isTreePaneParked(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
   )
 
   if (missing.length === 0) {

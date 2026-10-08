@@ -12,18 +12,17 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
-    _COMPRESSION_MARKER_PREFIX,
-    _COMPRESSION_MARKER_TEMPLATE,
     _elision_marker,
     elide,
     elide_middle,
 )
 from agent.auxiliary_client import (
+    CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
     _is_connection_error,
@@ -33,6 +32,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -744,16 +744,20 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
+    # #124077: only the Codex aux stream guard's mid-stream stall is a retry-ladder timeout; real
+    # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
+    # network failures (#29559/#94448).
+    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
         or any(m in err for m in ("model_not_found", "does not exist", "no available channel")),
-        timeout=status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
+        timeout=stall or status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        streaming_closed=_is_connection_error(e) and not stall,
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
@@ -860,23 +864,6 @@ def _is_summary_stub(content: str) -> bool:
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
-
-# Sentinel ``user_response`` values from timeout / no-user clarify callbacks;
-# must never be quoted as a user answer.
-_CLARIFY_NON_RESPONSE_PREFIXES = (
-    "The user did not provide a response", "[user did not respond",
-    "[clarify prompt could not be delivered", "[oneshot mode:",
-)
-
-
-def _is_clarify_non_response_sentinel(response: Any) -> bool:
-    """Return True when a clarify ``user_response`` is runtime sentinel prose, not an answer.
-    For lists, ANY sentinel item poisons the whole response: real producers only emit scalar sentinels,
-    so a mixed list is forged/corrupt content — fall back to the generic path (may lose info, never
-    misattributes a user answer)."""
-    items = [response] if isinstance(response, str) else response if isinstance(response, list) else ()
-    return any(isinstance(s, str) and s.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES) for s in items)
-
 
 # Ghost-skill defense: the ONE canonical prune marker; emit sites and presence
 # checks must use the same string so they cannot drift.
@@ -1174,10 +1161,6 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # full protect_last_n would recreate the nothing-compactable large-tool-output case.
 _MAX_TAIL_MESSAGE_FLOOR = 8
 
-# Skip the LLM call when the compressible middle is below this fraction of the
-# threshold (and a prior ineffectiveness strike exists); dropping alone suffices.
-# See #60451.
-_FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 # Under pressure, demote large tool outputs even inside the protected region but
 # keep this many trailing messages verbatim.
 _PRESSURE_KEEP_RECENT_MESSAGES = 3
@@ -1410,6 +1393,39 @@ def _content_text_for_contains(content: Any) -> str:
     return "" if content is None else content if isinstance(content, str) else str(content)
 
 
+# Gateway reply pointer prepended to a user turn (gateway/run_inbound.py
+# ``_prepend_inbound_reply_context``), optionally behind the Discord triggering note.
+# Non-greedy: a quote that itself contains the closing delimiter is only partly
+# stripped, which over-counts the request and keeps the conservative anchor.
+_GATEWAY_REPLY_POINTER_RE = re.compile(
+    r'\A(?:\[Triggering message id: [^\n]*\]\n\n)?'
+    r'\[Replying to(?: your previous message)?: ".*?"\]\n\n',
+    re.DOTALL,
+)
+
+
+def _restated_request_text(content: Any) -> str:
+    """A user turn's text, stripped, after the last in-flight replay header if present.
+
+    A request restated by an earlier compaction carries the replay header (and possibly the
+    old summary) before it; the text after the last header is the request itself, so a task
+    that survives several cycles never stacks headers or drags an old summary along.
+    """
+    text = _content_text_for_contains(content).strip()
+    if _INFLIGHT_TASK_REPLAY_HEADER in text:
+        text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+    return text
+
+
+def _authored_request_text(content: Any) -> str:
+    """Text the user wrote in a turn, without the gateway's reply-to pointer.
+
+    The pointer quotes another message verbatim; it disambiguates which message is being
+    answered but is not part of the request, so it must not count toward request size.
+    """
+    return _GATEWAY_REPLY_POINTER_RE.sub("", _restated_request_text(content), count=1).strip()
+
+
 def _is_text_only_content(content: Any) -> bool:
     """Whether the active request can be restated without losing a content part."""
     if isinstance(content, str):
@@ -1563,53 +1579,6 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
-
-    Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
-    marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
-    """
-    try:
-        parsed = json.loads(args)
-    except (ValueError, TypeError):
-        return args
-
-    changed = False
-
-    def _shrink(obj: Any) -> Any:
-        nonlocal changed
-        if isinstance(obj, str):
-            # Already marked: the compressor writes the head and the marker as the whole tail, so
-            # key on that shape. A substring/prefix test alone would exempt a leaf that merely
-            # quotes the marker — including the imitation #83714 is about — from shrinking forever.
-            marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
-            if len(obj) <= head_chars or marked:
-                return obj
-            marker = _COMPRESSION_MARKER_TEMPLATE.format(
-                omitted=len(obj) - head_chars, total=len(obj)
-            )
-            # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
-            # longer than what it replaces.
-            if head_chars + len(marker) >= len(obj):
-                return obj
-            changed = True
-            return obj[:head_chars] + marker
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
-
-    shrunken = _shrink(parsed)
-    # Re-serialising alone would rewrite the caller's bytes (compact wire JSON gains spaces),
-    # which the callers read as "this message changed" and count as reclaimed pressure.
-    if not changed:
-        return args
-    # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    out = json.dumps(shrunken, ensure_ascii=False)
-    return out if len(out) < len(args) else args
-
-
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
@@ -1729,6 +1698,10 @@ def _sum_terminal(name, args, content, content_len, line_count):
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
+    # A refused write (stale-write guard, sensitive path, I/O error) changed nothing; summarized as
+    # "wrote to" it compresses into a success the post-compaction agent then reports.
+    if failed := _result_failure_suffix(content):
+        return f"[write_file] {args.get('path', '?')}{failed}"
     written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
     return f"[write_file] wrote to {args.get('path', '?')} ({written_lines} lines)"
 
@@ -1744,7 +1717,7 @@ def _sum_search_files(name, args, content, content_len, line_count):
 def _sum_browser(name, args, content, content_len, line_count):
     url, ref = args.get("url", ""), args.get("ref", "")
     detail = f" {url}" if url else (f" ref={ref}" if ref else "")
-    return f"[{name}]{detail} ({content_len:,} chars)"
+    return f"[{name}]{detail} ({content_len:,} chars)" + _result_failure_suffix(content)
 
 
 def _sum_web_extract(name, args, content, content_len, line_count):
@@ -1758,13 +1731,13 @@ def _sum_web_extract(name, args, content, content_len, line_count):
         first = "?"
     if isinstance(urls, list) and len(urls) > 1:
         first += f" (+{len(urls) - 1} more)"
-    return f"[web_extract] {first} ({content_len:,} chars)"
+    return f"[web_extract] {first} ({content_len:,} chars)" + _result_failure_suffix(content)
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
     goal = _str_arg(args, "goal")
     goal = goal if len(goal) <= 60 else goal[:57] + "..."
-    return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
+    return f"[delegate_task] '{goal}' ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
 def _sum_execute_code(name, args, content, content_len, line_count):
@@ -1780,41 +1753,104 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
+# Runtime notices that clarify producers persisted as user_response before per-response
+# status existed. Only status-less (legacy) entries are checked; explicit status wins.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
+    "[user did not respond",  # gateway clarify delivery timeout
+    "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
+    "[oneshot mode:",  # hermes_cli/oneshot.py
+)
+# Matched whole: as a prefix these would also swallow real answers that start the same way.
+_CLARIFY_NON_RESPONSE_TEXTS = (
+    "The user cancelled. Use your best judgement to proceed.",  # classic CLI Ctrl+C
+)
+
+
+# Historical callbacks used repr(question) and repr(list[str]). Quoted fields
+# must close before a suffix counts: user text can contain the suffix itself.
+_CLARIFY_QUOTED_TEXT = r"(?:'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")"
+_CLARIFY_HEADLESS_NOTICE = re.compile(
+    r"\[(?:oneshot mode: no user available\. |"
+    rf"single-query mode: no user available to answer {_CLARIFY_QUOTED_TEXT}\. )"
+    r"(?:Make the most reasonable assumption you can and continue\.|"
+    rf"Pick the best (?:option|subset) from \[{_CLARIFY_QUOTED_TEXT}"
+    rf"(?:,\s*{_CLARIFY_QUOTED_TEXT})*\] using your own judgment and continue\.)\]",
+    re.DOTALL,
+)
+
+
+def _is_clarify_non_response(item) -> bool:
+    if not isinstance(item, str):
+        return False
+    text = item.strip()
+    return (text in _CLARIFY_NON_RESPONSE_TEXTS
+            or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            or _CLARIFY_HEADLESS_NOTICE.fullmatch(text) is not None)
+
+
+def _filter_legacy_clarify_answers(values):
+    """Remove complete notices, including contiguous comma-normalized fragments."""
+    answers = []
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if isinstance(item, str) and item.strip().startswith((
+            "[oneshot mode: no user available.",
+            "[single-query mode: no user available to answer ",
+        )):
+            text = ""
+            notice_end = None
+            for end in range(index, len(values)):
+                if not isinstance(values[end], str):
+                    break
+                text += ("," if end > index else "") + values[end].strip()
+                if _CLARIFY_HEADLESS_NOTICE.fullmatch(text):
+                    notice_end = end
+                    break
+            if notice_end is not None:
+                index = notice_end + 1
+                continue
+        if not _is_clarify_non_response(item):
+            answers.append(item)
+        index += 1
+    return answers
+
+
 def _sum_clarify(name, args, content, content_len, line_count):
     response_prefix = "[clarify] user responded: "
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    parsed = _json_dict(content)
-    response = parsed.get("user_response")
-    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
-    # rather than the top level; without this every batch answer was lost and the summarizer only
-    # saw "asked user a question" (#106077).
-    if response is None:
-        batch_responses = parsed.get("responses")
-        if isinstance(batch_responses, list) and batch_responses:
-            collected = []
-            for entry in batch_responses:
-                if not isinstance(entry, dict):
-                    continue
-                single = entry.get("user_response")
-                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
-                if isinstance(single, str) and single:
-                    collected.append(single)
-                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
-                    collected.extend(single)
-            response = collected if collected else None
-    is_answer_shaped = (isinstance(response, str) and bool(response)) or (
-        isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
-    )
-    # Timeout / no-user sentinel prose must not be quoted as a user answer.
-    if is_answer_shaped and not _is_clarify_non_response_sentinel(response):
-        # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
-        serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
-        summary = response_prefix + serialized.decode("utf-8")
-        summary = elide(summary, max_summary_chars)
-        return summary
-    return "[clarify] asked user a question"
+    payload = _json_dict(content)
+    responses = payload.get("responses")
+    if not isinstance(responses, list) and "user_response" in payload:
+        # Clarify results written before per-response status was introduced used
+        # the response fields directly on the top-level object.
+        responses = [payload]
+    answers: list = []
+    for entry in responses if isinstance(responses, list) else ():
+        if isinstance(entry, dict) and (
+            entry.get("status") == "answered"
+            or ("status" not in entry and "user_response" in entry)
+        ):
+            value = entry.get("user_response")
+            values = value if isinstance(value, list) else [value]
+            # Pre-status sessions also stored timeout/delivery notices as user_response.
+            # Only those legacy records need the old sentinel check; explicit status wins.
+            # Drop just the notice items so other selections in the same entry survive.
+            if "status" not in entry:
+                # Scan complete envelopes, not the whole list: genuine selections
+                # can surround a notice split by the old multi-select normalizer.
+                values = _filter_legacy_clarify_answers(values)
+            answers.extend(values)
+    answers = [answer for answer in answers if isinstance(answer, str) and answer]
+    if not answers:
+        return "[clarify] asked user a question"
+    # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
+    serialized = json.dumps(answers[0] if len(answers) == 1 else answers,
+                            ensure_ascii=False).encode("utf-8", errors="backslashreplace")
+    return elide(response_prefix + serialized.decode("utf-8"), max_summary_chars)
 
 
 def _sum_skill_manage(name, args, content, content_len, line_count):
@@ -1837,7 +1873,7 @@ def _sum_skill_manage(name, args, content, content_len, line_count):
         action = _str_arg(args, "action", "?")
         op_name = _str_arg(args, "name", "?")
         summary = f"[skill_manage] {action} {op_name}"
-    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+    return f"{summary}{_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
 def _sum_skills_list(name, args, content, content_len, line_count):
@@ -1848,27 +1884,89 @@ def _sum_skills_list(name, args, content, content_len, line_count):
     payload = _json_dict(content)
     count = payload.get("count")
     listed = f" {count} skills" if isinstance(count, int) else ""
-    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+    return f"[skills_list]{scope}{listed}{_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
-def _skill_result_failure_suffix(content: str) -> str:
-    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
-    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
-    failed batch compresses into the same line as a success and the post-compaction agent chases the
-    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
-    payload = _json_dict(content)
+def _failure_suffix(reason: Any, label: str = "FAILED") -> str:
+    """`` FAILED: <reason>`` on one line, or `` FAILED`` when the payload carries no message."""
+    preview = " ".join(str(reason).split())[:80] if reason else ""
+    return f" {label}: {preview}" if preview else f" {label}"
+
+
+def _result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for any tool payload with a top-level ``error`` / ``success: false``, else ``""``.
+    Without the outcome in the stub a failed call compresses into the same line as a success and the
+    post-compaction agent reports the success or chases the stub text as the error (#112710,
+    #131244). Bounded to one line so the stub stays a stub."""
+    return _payload_failure_suffix(_json_dict(content))
+
+
+def _payload_failure_suffix(payload: dict) -> str:
+    """``_result_failure_suffix`` for an already-parsed payload."""
     error = payload.get("error")
     if not error and payload.get("success") is not False:
         return ""
-    preview = " ".join(str(error).split())[:80] if error else ""
-    return f" FAILED: {preview}" if preview else " FAILED"
+    return _failure_suffix(error)
+
+
+def _sum_cronjob_manage(name, args, content, content_len, line_count):
+    """``[cronjob] <action>``, plus the outcome of the run it triggered.
+
+    A manual run reports a dead or skipped job inside the job view while the tool call itself
+    succeeded, so the payload is a clean ``{"success": true, "job": {...}}`` and a top-level probe
+    finds nothing to mark. Only this call's own fields decide: ``job`` also carries the job's stored
+    state, including an ``error`` left behind by an earlier run.
+    """
+    stub = f"[cronjob] {args.get('action', '?')}"
+    payload = _json_dict(content)
+    suffix = _payload_failure_suffix(payload)
+    if not suffix:
+        job = payload.get("job")
+        job = job if isinstance(job, dict) else {}
+        error, skipped = job.get("execution_error"), job.get("execution_skipped")
+        if error is not None or (skipped is None and job.get("execution_success") is False):
+            suffix = _failure_suffix(error)
+        elif skipped is not None:
+            # Skipped is not failed: the scheduler may be running this very job right now.
+            suffix = _failure_suffix(skipped, "SKIPPED")
+    return stub + suffix
+
+
+def _sum_process_manage(name, args, content, content_len, line_count):
+    """``[process] <action> session=<id>``, plus how the process itself ended.
+
+    A poll of a finished process reports ``exit_code`` and ``completion_reason`` instead of an
+    ``error``, so a non-zero exit is invisible to a top-level probe. A process still running
+    reports no exit code at all, and that is not a failure.
+    """
+    stub = f"[process] {args.get('action', '?')} session={args.get('session_id', '?')}"
+    payload = _json_dict(content)
+    suffix = _payload_failure_suffix(payload)
+    if not suffix:
+        exit_code = payload.get("exit_code")
+        # A process the agent killed itself exits non-zero by design; that is not a failure.
+        if (
+            isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+            and payload.get("completion_reason") != "killed"
+        ):
+            suffix = _failure_suffix(f"exit code {exit_code}")
+    return stub + suffix
 
 
 def _sum_template(template: str, **defaults):
-    """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus ``content_len``."""
-    return lambda name, args, content, content_len, line_count: template.format_map(
-        {**defaults, **args, "content_len": content_len}
-    )
+    """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus
+    ``content_len`` and the result's outcome.
+
+    Every mutation routed through here lost its outcome, so a refused read, a rate-limited search, a
+    rejected cronjob or a silent ``memory`` write compressed into the same stub as the success it
+    never was, and the post-compaction agent reported the success (#131244).
+    """
+    def summarize(name, args, content, content_len, line_count):
+        return (
+            template.format_map({**defaults, **args, "content_len": content_len})
+            + _result_failure_suffix(content)
+        )
+    return summarize
 
 
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
@@ -1891,13 +1989,14 @@ _TOOL_RESULT_SUMMARIZERS = {
     "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
+        + _result_failure_suffix(content)
     ),
     "memory": _sum_template("[memory] {action} on {target}", action="?", target="?"),
     "todo_list": lambda *a: "[todo] updated task list",
     "clarify": _sum_clarify,
     "text_to_speech": _sum_template("[text_to_speech] generated audio ({content_len:,} chars)"),
-    "cronjob_manage": _sum_template("[cronjob] {action}", action="?"),
-    "process_manage": _sum_template("[process] {action} session={session_id}", action="?", session_id="?"),
+    "cronjob_manage": _sum_cronjob_manage,
+    "process_manage": _sum_process_manage,
 }
 
 
@@ -1912,17 +2011,43 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> "str | None":
+    """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
+    ``blocked``/``pending_approval``), else None. The per-tool summarizers describe the call as done
+    ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
+    drop the "do not retry" instruction. Strictly below _PRUNE_MIN_CHARS, like the clarify summary,
+    so later prune passes keep it."""
+    payload = _json_dict(content)
+    status = payload.get("status")
+    error = payload.get("error") if isinstance(payload.get("error"), str) else ""
+    if not error and content.lstrip().startswith("BLOCKED"):
+        error = content.strip()
+    if status == "pending_approval":
+        outcome = "awaiting the user's approval, not run"
+    elif error and (status == "blocked" or error.lstrip().startswith("BLOCKED")):
+        outcome = "BLOCKED, not run"
+        if "NOT consented" in error:
+            outcome += "; the user did NOT consent, do not retry or reach the same outcome another way"
+    else:
+        return None
+    target = _str_arg(args, "command") or _str_arg(args, "path")
+    target = f" `{target if len(target) <= 60 else target[:57] + '...'}`" if target else ""
+    return f"[{tool_name}]{target} {outcome}"[:_PRUNE_MIN_CHARS - 1]
+
+
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     args = _json_dict(tool_args)
     content = tool_content or ""
+    if (refused := _summarize_refused_tool_result(tool_name, args, content)) is not None:
+        return refused
     content_len = len(content)
     line_count = content.count("\n") + 1 if content.strip() else 0
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
     first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
 def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
@@ -1991,8 +2116,12 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
         ),
-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
+input precisely, but summarize it in your own words rather than copying long
+passages from the transcript. The compressor inserts a bounded, redacted
+snapshot of the real latest user turn after generation, so the model must not
+reproduce it.
+This includes:
 - Explicit task assignments ("<specific user task>")
 - Questions awaiting an answer ("<specific user question>")
 - Decisions awaiting input ("<option A or B?>")
@@ -2004,14 +2133,14 @@ rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
 This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
+"User asked for <specific task and constraints>"
+"User asked <specific question> — needs investigation + answer"
 "User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
+work, describe the reverse signal accurately and DO NOT carry forward the
+cancelled task.
+Example: "User asked to stop the prior task — earlier work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (
@@ -2045,7 +2174,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 }
 
 
-class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngine):
+class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMixin, ContextEngine):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
@@ -2266,6 +2395,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
         self._fallback_compression_streak = 0
+        # Wall-clock time of the next summary-model probe while the fallback streak benches it; 0.0 = unarmed.
+        self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
@@ -2292,12 +2423,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._consecutive_overload_aborts = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
-        self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = self._fallback_probe_at = 0.0
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
         self._load_anti_thrash_recovery_deadline()
+        self._load_fallback_probe_at()
         self._load_consecutive_overload_aborts()
         self._load_proactive_prune_rearm_tokens()
 
@@ -2310,6 +2442,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
         previous_overload_aborts = self._consecutive_overload_aborts
+        previous_probe_at = self._fallback_probe_at
         if boundary_reason == "compression" and old_session_id:
             # Parent row carries the streak/strike state across the rotation.
             def _parent(method: str, label: str, current: int) -> int:
@@ -2329,6 +2462,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
             self._fallback_compression_streak = previous_fallback_streak
+            # The bench probe deadline lives in the model-config blob, which the child row lacks.
+            self._set_fallback_probe_at(previous_probe_at)
             # No later bookkeeping writes the strike counter, so persist it onto the child row now (#54923).
             if self._ineffective_compression_count != previous_ineffective_count:
                 self._ineffective_compression_count = previous_ineffective_count
@@ -2480,14 +2615,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._structural_no_op_backoff_until = 0.0
         self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
-            # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
-            # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
-            # neither extend a fallback streak (two skips would otherwise latch the >= 2 breaker and disable
-            # compression entirely — including the cheap deterministic dropping the skip exists to reach)
+            # A deliberate pre-LLM summary skip (#60451, benched model) is not a summary-quality verdict: it must
+            # neither extend a fallback streak (the streak decides whether the summary model is called)
             # nor reset one (a skip proves nothing about the summary model's health).
             if not self.quiet_mode:
                 logger.info(
-                    "Compaction completed via pre-LLM feasibility skip; fallback_compression_streak unchanged (%d)",
+                    "Compaction completed via pre-LLM summary skip; fallback_compression_streak unchanged (%d)",
                     self._fallback_compression_streak,
                 )
             return
@@ -2680,8 +2813,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
     # Anti-thrash recovery: after this long blocked, allow ONE probe (counters drop to 1 strike).
-    # Anti-thrash recovery window (#14694): once the ineffective/fallback breaker trips, automatic
-    # compaction stays blocked for this long, then ONE probe attempt is allowed (counters drop to 1 strike,
+    # Anti-thrash recovery window (#14694): once the ineffective breaker trips, automatic
+    # compaction stays blocked for this long, then ONE probe attempt is allowed (the count drops to 1 strike,
     # so another ineffective pass re-trips immediately). Long enough that a genuinely incompressible session
     # isn't compacting in a loop; short enough that a session which has since grown real compressible
     # material recovers well before it rides into the provider's hard context limit.
@@ -2979,14 +3112,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
-        """Anti-thrash breaker state: two ineffective compactions or two fallback summaries in a row."""
-        return self._ineffective_compression_count >= 2 or self._fallback_compression_streak >= 2
+        """Only provider-confirmed ineffective compactions trip the breaker.
+
+        A static fallback still reclaims the window, so blocking on it lets the prompt run into the
+        provider's hard limit. The fallback streak instead benches the failing summary model
+        (``_fallback_streak_skip``), which is what stops a paid fallback loop (#63008).
+        """
+        return self._ineffective_compression_count >= 2
 
     def _refresh_durable_guards(self) -> None:
         """Re-read durable cooldown + breaker state; called only when a gate is about to block."""
         for label, refresh in (
             ("cooldown", lambda: self.get_active_compression_failure_cooldown(refresh=True)),
-            ("fallback-streak", self._load_fallback_compression_streak),
             ("ineffective-count", self._load_ineffective_compression_count),
         ):
             try:
@@ -3017,7 +3154,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
-        # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
+        # probe by dropping the ineffective count to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():
             # Wall clock: the deadline is persisted so a rebuilt compressor resumes the SAME window.
             # Wall clock, not monotonic: the deadline is persisted on the session row (#100185) so a fresh
@@ -3038,7 +3175,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # accumulate plenty of compressible material later. Without a recovery path the session
                 # never auto-compacts again and rides into the provider's hard context limit. Recovery is a
                 # probation probe: after _ANTI_THRASH_RECOVERY_SECONDS of continuous block, allow ONE
-                # attempt by dropping the tripped counter(s) to 1 strike (persisted, so sibling agents on
+                # attempt by dropping the ineffective counter to 1 strike (persisted, so sibling agents on
                 # the same session row unblock too). If the probe is ineffective again the very next verdict
                 # re-trips the guard, so the worst case in the truly-incompressible state is one compaction
                 # attempt per recovery window — bounded, not thrash. The clock is armed lazily on the first
@@ -3048,9 +3185,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # already-armed deadline resumes that window instead of restarting it.
                 if self._ineffective_compression_count >= 2:
                     self._record_ineffective_compression_verdict(1)
-                if self._fallback_compression_streak >= 2:
-                    self._fallback_compression_streak = 1
-                    self._persist_fallback_compression_streak()
                 if not self.quiet_mode:
                     logger.info(
                         "Anti-thrashing recovery: %.0fs elapsed since the guard tripped — allowing one "
@@ -3083,17 +3217,25 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         ``cut_at_break``. Only the newest assistant turn's thinking is charged (#73624) unless the route
         echoes stale thinking every turn — must agree with the preflight estimate (#84371)."""
         n = len(messages)
-        newest_asst_idx = _last_assistant_index(messages)
-        charge_all_thinking = self._stale_thinking_on_wire()
+        price = self._tail_row_pricer(messages)
         accumulated = 0
         cut = n  # start from beyond the end
         for i in range(n - 1, head_end - 1, -1):
-            msg_tokens = _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
+            msg_tokens = price(i)
             if accumulated + msg_tokens > ceiling and (n - i) >= min_tail:
                 return (i if cut_at_break else cut), accumulated
             accumulated += msg_tokens
             cut = i
         return cut, accumulated
+
+    def _tail_row_pricer(self, messages: List[Dict[str, Any]]) -> Callable[[int], int]:
+        """Per-row tail price ``index -> tokens``: the walk's accounting, shared by every gate that sizes a tail region."""
+        newest_asst_idx = _last_assistant_index(messages)
+        charge_all_thinking = self._stale_thinking_on_wire()
+        native_budget = self._native_anthropic_budget()
+        if native_budget:
+            return lambda i: native_budget(messages[i])
+        return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
 
     def _prune_boundary(
         self, result: List[Dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,
@@ -3124,22 +3266,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 pruned += 1
             content_hashes.add(h)
         return pruned
-
-    @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
-        msg = result[idx]
-        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
-            return False
-        new_tcs = []
-        for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
-            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
-        modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
-        if modified:
-            result[idx] = {**msg, "tool_calls": new_tcs}
-        return modified
 
     @staticmethod
     def _demote_tool_result_at(
@@ -3186,10 +3312,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
     ) -> int:
-        """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
-        Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides the skill guard
-        (else the dead-end recurs). Returns the number of tool results demoted (arg truncations are logged
-        but not counted)."""
+        """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
+        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
+        the skill guard (else the dead-end recurs). Tool-call arguments stay byte-exact. Returns the number of
+        tool results demoted."""
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
@@ -3197,18 +3323,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
 
-        demoted = pressure_hits = 0
+        demoted = 0
 
         def _shrink_at(i: int) -> None:
-            # Each helper no-ops on the other role, so both may run unconditionally.
-            nonlocal demoted, pressure_hits
+            nonlocal demoted
             if i in spared:
                 return
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
-                pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -3228,12 +3350,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 and _protected_region_tokens() > soft_ceiling
             ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
-        if pressure_hits and not self.quiet_mode:
+        if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "
                 "protected region now ~%s tokens, soft ceiling %s)",
-                pressure_hits, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
+                demoted, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
             )
         return demoted
 
@@ -3252,8 +3373,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Old tool results -> 1-line summaries; dedup, arg truncation, pressure demotion. Returns ``(messages, count)``.
-        Token budget (when given) takes priority over the message-count floor."""
+        """Project old tool-result bodies to bounded summaries without rewriting tool-call arguments.
+        Returns ``(messages, count)``; token budget (when given) takes priority over the
+        message-count floor."""
         if not messages:
             return messages, 0
         result = [m.copy() for m in messages]
@@ -3270,15 +3392,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
         # model still believes its instructions are in context. See #32106.
         protected_skills = _collect_protected_skill_names(result, prune_boundary)
-        # Pass 2: summarize old tool results. Pass 3: shrink large tool_call arguments INSIDE the parsed JSON so
-        # the result stays valid; otherwise providers 400 on every turn until the call leaves the window.
+        # Pass 2: summarize old tool results. Tool-call arguments are canonical execution
+        # records and are never rewritten; summary input is bounded separately by
+        # _render_tool_call_for_summary().
         pruned += sum(
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
-        for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
-        # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
+        # Pass 3: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; unread spared results stay live too. See #92699.
         pruned += _retire_stale_tool_result_images(result, spared=spared)
@@ -3460,6 +3581,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             fn = getattr(tc, "function", None)
             return f"  {getattr(fn, 'name', '?') if fn else '?'}(...)"
         fn = tc.get("function", {})
+        # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
+        # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
         args = _redact_compaction_text(fn.get("arguments", ""))
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -3875,10 +3998,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
-        # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
-        call_kwargs.update(_pinned_summary_call_kwargs())
+        # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
+        self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary
@@ -4436,9 +4557,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
             if not text:
                 continue
+            if len(text) > _ACTIVE_TASK_MAX_CHARS:
+                # Past the cap, drop a gateway reply quote first so elision cannot keep the quote
+                # and cut the request.
+                text = _redact_compaction_text(_authored_request_text(msg.get("content"))) or text
             text = re.sub(r"\s+", " ", text)
             # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
-            # guard. Text within the cap stays whole (the split-turn path relies on that).
+            # guard. Authored text within the cap stays whole; a longer request split out of an
+            # oversized turn is restated verbatim by _reappend_inflight_user_task, not by this snapshot.
             text = repr(text) if len(text) <= _ACTIVE_TASK_MAX_CHARS else elide(repr(text), _ACTIVE_TASK_MAX_CHARS)
             return (
                 f"User asked (deterministic, from compacted turns): {text}\n"
@@ -4877,13 +5003,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             # carrier itself, after the marker. Already actionable.
             return compressed
 
-        task_text = _content_text_for_contains(inflight.get("content")).strip()
-        if _INFLIGHT_TASK_REPLAY_HEADER in task_text:
-            # Already a restatement from an earlier compaction (standalone row
-            # or merged onto a carrier): take the text after the header so a
-            # task that survives >1 cycle never stacks headers or drags the
-            # old summary along.
-            task_text = task_text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
+        # Keep any reply pointer: the restated task still needs its disambiguation.
+        task_text = _restated_request_text(inflight.get("content"))
         if not task_text:
             return compressed
 
@@ -4901,6 +5022,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             replay = _fresh_compaction_message_copy(inflight)
         replay.pop(_COMPACTION_TAIL_MARKER, None)
+        # A restated row is NEW at the compaction boundary: never persist the
+        # in-flight turn's original timestamp, or timestamp-ordered views show
+        # the question after its own answer (#121064). Dropping it lets the
+        # store stamp compaction time (its monotonic now_ts orders it last).
+        replay.pop("timestamp", None)
         if isinstance(replay.get("content"), str):
             # Plain text: rebuild from the header-stripped task text so a
             # task surviving several compactions never stacks headers.
@@ -4913,6 +5039,46 @@ Write only the summary body. Do not include any preamble or prefix."""
                 prepend=True,
             )
         drop_stale_api_content(replay)
+
+        # The replay is a replacement for the in-flight row, not an additional
+        # occurrence of it. When the original survived in the protected head,
+        # retaining it gives the durable transcript two active rows with the
+        # same message_uid and renders the request twice after reload.
+        from agent.message_metadata import MESSAGE_UID, message_uid_or_none, record_absorbed_message
+
+        if replay_uid := message_uid_or_none(replay):
+            before = len(compressed)
+            kept = list(compressed)
+            compressed[:] = [
+                msg
+                for msg in compressed
+                if not (
+                    msg is not carrier
+                    and msg.get("role") == "user"
+                    and msg.get(MESSAGE_UID) == replay_uid
+                )
+            ]
+            # When the removed row opened the window, the head's tool flow
+            # (assistant tool_calls) would now lead; native Gemini rejects a
+            # leading model functionCall turn. Open the window on the carrier.
+            first = next(i for i, msg in enumerate(compressed) if msg.get("role") != "system")
+            if len(compressed) != before and compressed[first].get("role") != "user":
+                if _template_visible_role(carrier) is None:
+                    # Carrier merged into a tail assistant(tool_calls) row:
+                    # moving it would split it from its tool results. Keep
+                    # the head row this cycle (pre-dedup layout).
+                    compressed[:] = kept
+                else:
+                    compressed.insert(first, compressed.pop(compressed.index(carrier)))
+            # The summary role was picked against a head that ended on the row
+            # just removed: an assistant carrier would now open the visible
+            # sequence (or follow an assistant). Use the _force_user_leading
+            # layout instead — carrier role=user, request after its end marker.
+            if len(compressed) != before and _template_visible_role(carrier) == "assistant" and (
+                _last_template_visible_role(compressed[: compressed.index(carrier)]) != "user"
+            ):
+                carrier["role"] = "user"
+                last_visible_role = _last_template_visible_role(compressed)
 
         if last_visible_role == "user":
             # Alternation is judged on template-visible rows only (tool_calls /
@@ -4928,6 +5094,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
             drop_stale_api_content(carrier)
+            # The carrier absorbed a durable user turn: record its uid (merge witness).
+            record_absorbed_message(carrier, inflight)
             return compressed
 
         compressed.append(replay)
@@ -4972,6 +5140,30 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         except Exception:
             return False
+
+    def _native_anthropic_budget(self):
+        """Per-message tail budget on a preserved-thinking native Anthropic route, else None. That route
+        replays exactly the projected carriers minus this session's rejected signatures — what the
+        preflight estimate prices — never the canonical ``reasoning`` keys."""
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+        if (getattr(self, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
+            getattr(self, "base_url", ""), getattr(self, "model", "")
+        ):
+            return None
+        from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
+        from agent.message_sanitization import native_anthropic_accounting_projection
+
+        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
+
+        def budget(msg: Dict[str, Any]) -> int:
+            request_copy = dict(msg)
+            if rejected:
+                strip_rejected_thinking(request_copy, rejected)
+            (projected,), readable = native_anthropic_accounting_projection([request_copy])
+            return _estimate_msg_budget_tokens(projected) + sum(estimate_tokens_rough(text) for text in readable)
+
+        return budget
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int, token_budget: int | None = None,
@@ -5036,8 +5228,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
-            and len(_content_text_for_contains(messages[last_user_idx].get("content")).strip())
-            <= _ACTIVE_TASK_MAX_CHARS
+            # The token ceiling is the only size guard: the request is restated verbatim after the
+            # handoff, so a character cap only pinned long requests (e.g. /goal prompts) in place.
             # Only split when there is real turn body to summarize: if the oversized weight is the
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
@@ -5061,7 +5253,28 @@ Write only the summary body. Do not include any preamble or prefix."""
         # An older visible assistant reply can precede the active user turn; under the split above,
         # pulling back to it would undo the bounded exception.
         if not split_oversized_turn:
-            cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+            asst_anchored_cut = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+            # The assistant anchor needs the same bound the user anchor got in #80449. In a long
+            # agentic turn whose assistant rows only carry tool_calls (no text reply yet), the
+            # newest text-bearing assistant is the PREVIOUS turn's closer: anchoring to it retains
+            # the whole oversized active turn, the middle collapses to nothing, and the session
+            # wedges in no_progress (#131412). When the anchored region holds tool-call bodies and is
+            # over the soft ceiling, keep the walk's tool-group-aligned cut instead.
+            if (
+                asst_anchored_cut < cut_idx
+                and allow_split_turn
+                and any(messages[i].get("tool_calls") for i in range(asst_anchored_cut, cut_idx))
+                # Priced like the walk (#84371): stale thinking the wire never carries must not trip it.
+                and sum(map(self._tail_row_pricer(messages), range(asst_anchored_cut, cut_idx))) > soft_ceiling
+            ):
+                if not self.quiet_mode:
+                    logger.debug(
+                        "Assistant reply anchor would retain an over-ceiling region; keeping "
+                        "tool-group-aligned cut at index %d instead of anchoring to %d (#131412)",
+                        cut_idx, asst_anchored_cut,
+                    )
+            else:
+                cut_idx = asst_anchored_cut
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the
@@ -5204,32 +5417,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             compress_start + 1, compress_end, n_turns, compress_start, tail_msgs,
         )
 
-    def _feasibility_skip(
-        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
-        compress_start: int, compress_end: int,
-    ) -> bool:
-        """Pre-LLM skip after a real-usage ineffectiveness strike (reads the counter, never writes)."""
-        if self._ineffective_compression_count < 1:
-            return False
-        # Reuse the telemetry estimate so log and telemetry agree; None means the regions helper
-        # no-op'd (0 is valid).
-        middle_tokens = telemetry.get("middle_window_tokens")
-        middle_tokens = estimate_messages_tokens_rough(turns_to_summarize) if middle_tokens is None else middle_tokens
-        if middle_tokens >= int(self.threshold_tokens * _FEASIBILITY_SKIP_MIDDLE_FRACTION):
-            return False
-        self._last_feasibility_skip = True
-        self._prellm_skip_count += 1
-        telemetry["prellm_skip_count"] = self._prellm_skip_count
-        if not self.quiet_mode:
-            logger.warning(
-                "Compression: middle section (%d tokens at indices %d-%d) is below %.0f%% of threshold (%d tokens) — "
-                "skipping LLM summarization, proceeding with deterministic message dropping. prellm_skip_count=%d",
-                middle_tokens, compress_start, compress_end,
-                _FEASIBILITY_SKIP_MIDDLE_FRACTION * 100,
-                self.threshold_tokens, self._prellm_skip_count,
-            )
-        return True
-
     def _abort_on_summary_failure(
         self, telemetry: Dict[str, Any], n_skipped: int, previous_summary_before_scan: Optional[str],
     ) -> bool:
@@ -5288,7 +5475,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     ) -> str:
         """Deterministic fallback so the model gets recoverable continuity anchors."""
         if not self.quiet_mode and feasibility_skip:
-            logger.info("Feasibility skip — inserting deterministic fallback context summary")
+            logger.info("Pre-LLM summary skip — inserting deterministic fallback context summary")
         elif not self.quiet_mode:
             logger.warning("Summary generation failed — inserting deterministic fallback context summary")
         self._last_summary_dropped_count = n_dropped
@@ -5299,11 +5486,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["failure_class"] = "summary_overload_degraded" if self._last_summary_overload_degraded else (
             telemetry.get("failure_class") or ("feasibility_skip" if feasibility_skip else "summary_generation_failed")
         )
-        return self._build_static_fallback_summary(
+        summary = self._build_static_fallback_summary(
             turns_to_summarize,
             # A stale error from an earlier failure must not be embedded in a feasibility-skip fallback.
             reason=None if feasibility_skip else self._last_summary_error,
         )
+        # The fallback row replaces the older handoff in the transcript, and the next compaction drops
+        # handoff rows from its window as "already folded into _previous_summary". Publish it like a
+        # real summary so its anchors reach the next summarizer instead of the stale in-memory one.
+        self._previous_summary = self._strip_summary_prefix(summary)
+        return summary
 
     def _assemble_tail(
         self, messages: List[Dict[str, Any]], compress_end: int, tail_start: int, summary_indices: set,
@@ -5439,8 +5631,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Summarize the middle turns: prune tool results and blank echoes (survives an abort), protect head and a
-        token-budget tail, summarize, clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
+        """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
+        token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
         the feasibility skip; ``bypass_cooldown`` runs the summary LLM without clearing the cooldown.
 
         Args: focus_topic: Optional focus string for guided compression. When provided, the summariser will
@@ -5470,6 +5662,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
+        # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
+        # assembled and measured from the pruned copy (#61932).
+        canonical_messages = self._drop_blank_echoes(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -5478,7 +5673,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
         messages = self._drop_blank_echoes(messages)
         n_messages = len(messages)
-        # Phase 2: Determine boundaries
+        # Phase 2: Determine boundaries (on the pruned copy so a pressure-demoted tail can compress, #61932)
         compress_start, compress_end = self._compress_window(messages)
         if compress_start >= compress_end:
             self._record_compression_regions(
@@ -5488,7 +5683,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
-            return messages
+            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5506,7 +5701,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
-            return messages
+            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,
@@ -5519,8 +5714,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
-        feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
-        summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
+        feasibility_skip = not force and (
+            self._fallback_streak_skip(telemetry)
+            or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        )
+        summary = None  # pre-LLM summary skip (feasibility or benched model): no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,
@@ -5528,19 +5726,20 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not summary and self._abort_on_summary_failure(
                 telemetry, compress_end - compress_start, scan.previous_summary_before,
             ):
-                return messages
+                return canonical_messages
         if not summary:
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages, spare_pending_images)
+        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
     ) -> List[Dict[str, Any]]:
-        """Head + summary row (or merged carrier) + tail, with alternation-safe summary placement."""
+        """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
+        head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
@@ -5746,25 +5945,3 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
 def is_user_originated_turn(message: Any) -> bool:
     """True for human-authored user turns (not compaction scaffolding); dispatchers must use this, not a bare role check."""
     return user_originated_turn_view(message) is not None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'tool_result_id_variants': ('agent.message_sanitization', 'tool_result_id_variants'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -35,7 +35,8 @@ from tools.file_tools_write_guards import (
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
-    _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
+    _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
+    _check_not_found_cache, _known_full_content_sha256,
     _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
@@ -575,6 +576,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 complete = complete and not redacted
             if complete:
                 baselines[resolved_str] = version
+                task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
         if not complete:
             baselines.pop(resolved_str, None)
         if not stable or count >= 4:
@@ -913,7 +915,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
-                    # same-task writes stay unblocked. patch never does this.
+                    # same-task writes stay unblocked (patch_tool carries it).
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
@@ -987,6 +989,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
+            # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like
+            # every baseline check it stats the host path, so a sandbox path carries nothing.
+            _known = _known_full_content_sha256(_path_to_resolved.values(), task_id)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -1017,6 +1022,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
                 _note_edited(task_id, _paths_to_check, _path_to_resolved, session_id)
+                _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
         # old_string-not-found hint. Failure escalation is tracked for replace
@@ -1032,9 +1038,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "Stop retrying with variations of the same old_string. "
                     "Either: (1) re-read the file fresh to verify current "
                     "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor.")
+                    "surrounding context lines, or (3) re-read the file in "
+                    "full, then use write_file to replace it if the targeted "
+                    "region is hard to anchor.")
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
@@ -1326,22 +1332,27 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    return write_file_tool(
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
+    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_patch(args, **kw):
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
     tid = kw.get("task_id") or "default"
-    return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+    mode = args.get("mode", "replace")
+    return record_file_edit("patch", mode, lambda: patch_tool(
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_search_files(args, **kw):
@@ -1408,31 +1419,3 @@ def _patch_schema_overrides():
 
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'has_opaque_document_extension': ('tools.binary_extensions', 'has_opaque_document_extension'),
-    'is_pdf_path': ('tools.binary_extensions', 'is_pdf_path'),
-    'notify_other_tool_call': ('tools.file_tools_read_tracking', 'notify_other_tool_call'),
-    'reset_file_dedup': ('tools.file_tools_read_tracking', 'reset_file_dedup'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

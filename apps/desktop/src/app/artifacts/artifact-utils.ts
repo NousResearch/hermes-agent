@@ -1,6 +1,6 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
-import type { SessionInfo, SessionMessage } from '@/types/hermes'
+import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind
@@ -28,9 +28,12 @@ export interface ArtifactLoadResult {
   failures: ArtifactLoadFailure[]
 }
 
+const ARTIFACT_MESSAGE_PAGE_SIZE = 100
+const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
+
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const URL_RE = /https?:\/\/[^\s<>"')]+/g
+const URL_RE = /https?:\/\/[^\s<>"')`]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
@@ -114,7 +117,21 @@ function artifactSessionTitle(session: SessionInfo): string {
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  let trimmed = value.trim()
+
+  for (let i = 0; i < 3; i += 1) {
+    const quote = trimmed[0]
+
+    if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+      trimmed = trimmed.slice(1, -1).trim()
+
+      continue
+    }
+
+    break
+  }
+
+  return trimmed.replace(/[`*]+$/g, '').replace(/[),.;]+$/, '')
 }
 
 // Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
@@ -518,18 +535,49 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 
 export async function loadArtifactsForSessions(
   sessions: SessionInfo[],
-  loadMessages: (session: SessionInfo) => Promise<SessionMessage[]>
+  loadPage: (
+    session: SessionInfo,
+    page: { limit: number; offset: number }
+  ) => Promise<Pick<SessionMessagesResponse, 'messages' | 'pagination'>>,
+  options: { maxPageJsonChars?: number } = {}
 ): Promise<ArtifactLoadResult> {
   const artifacts: ArtifactRecord[] = []
   const failures: ArtifactLoadFailure[] = []
+  const maxPageJsonChars = options.maxPageJsonChars ?? MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS
 
-  // Keep only one transcript resident at a time. Recent sessions can each be
-  // tens of megabytes, so loading the whole page concurrently can exhaust both
-  // the Desktop renderer and a remote dashboard backend.
+  // Keep only one transcript page resident at a time. Recent sessions can each
+  // be tens of megabytes, so retaining complete transcripts exhausts the
+  // Desktop renderer even when transport requests are paginated.
   for (const session of sessions) {
     try {
-      const messages = await loadMessages(session)
-      artifacts.push(...collectArtifactsForSession(session, messages))
+      const sessionArtifacts = new Map<string, ArtifactRecord>()
+      let offset = 0
+
+      while (true) {
+        const page = await loadPage(session, { limit: ARTIFACT_MESSAGE_PAGE_SIZE, offset })
+        const pageJsonChars = (JSON.stringify(page.messages) ?? '').length
+
+        if (pageJsonChars > maxPageJsonChars) {
+          throw new Error(
+            'Session transcript page exceeds the Desktop safe-load limit; use the Web Dashboard export for this session.'
+          )
+        }
+
+        for (const artifact of collectArtifactsForSession(session, page.messages)) {
+          if (!sessionArtifacts.has(artifact.id)) {
+            sessionArtifacts.set(artifact.id, artifact)
+          }
+        }
+
+        // Legacy backends ignore pagination and return the full transcript.
+        if (!page.pagination || page.messages.length === 0 || page.messages.length < page.pagination.limit) {
+          break
+        }
+
+        offset += page.messages.length
+      }
+
+      artifacts.push(...sessionArtifacts.values())
     } catch (error) {
       failures.push({ error, session })
     }

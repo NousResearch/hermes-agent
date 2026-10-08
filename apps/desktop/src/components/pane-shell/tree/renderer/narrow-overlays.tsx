@@ -9,28 +9,48 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { cn } from '@/lib/utils'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
+import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
 import { NO_PANE_GROUP } from '../../pane-visibility'
-import { allPaneIds, findGroupOfPane } from '../model'
+import { allPaneIds, findGroupOfPane, type LayoutNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
-import { paneChrome } from './track-model'
+import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
+
+/** The width a revealed narrow overlay sizes itself to: the SAME resolution
+ *  the pane's zone uses while docked — declared max() refined by the live
+ *  widthOverride of the zone's shown panes (fixedTrackSize) — so the overlay
+ *  and the docked zone can never disagree. Falls back to the pane's declared
+ *  `data.width` (then 18rem) when no zone claims the pane. Pure, so the
+ *  regression test asserts the resolution itself (jsdom's CSSOM drops the
+ *  `min()` wrapper from style.width, hiding the rendered result). */
+export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, revealed: Contribution): string {
+  if (!tree) {
+    return paneChrome(revealed).width ?? '18rem'
+  }
+
+  const zone = findGroupOfPane(tree, revealed.id)
+  const track = zone ? fixedTrackSize(zone, 'row', ctx) : null
+
+  return track ?? paneChrome(revealed).width ?? '18rem'
+}
 
 export function NarrowOverlays() {
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
+  const paneStates = useStore($paneStates)
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
@@ -137,6 +157,18 @@ export function NarrowOverlays() {
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
 
+  // Size the overlay the way the pane's zone is sized while docked: declared
+  // width refined by the user's drag override (fixedTrackSize), so a pane the
+  // user narrowed stays narrowed here too — reading only data.width would
+  // reset the overlay to the declared size on every reveal.
+  const overlayWidth = revealed
+    ? narrowOverlayWidth(
+        { paneFor: id => panes.find(p => p.id === id), paneGone: () => false, overrides: paneStates },
+        tree,
+        revealed
+      )
+    : null
+
   // The revealed pane's ZONE-mates that also left the grid (the sessions zone
   // stacks SESSIONS | BOTS): the overlay mirrors the zone's tab strip so a
   // pane docked into a collapsed zone stays reachable on narrow viewports —
@@ -192,7 +224,7 @@ export function NarrowOverlays() {
           // draggable, mirroring TreeGroup's reservation.
           style={{
             paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
-            width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)`
+            width: `min(${overlayWidth}, 85vw)`
           }}
         >
           {wcOverlap && (

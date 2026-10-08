@@ -284,4 +284,35 @@ describe('repoChangeKindForPath', () => {
 
     unsubscribe()
   })
+
+  it('maps changes across multiple probed CWDs independently of active session ownership', () => {
+    $repoStatusByCwd.set({
+      '/repo-a': {
+        ...sampleStatus,
+        files: [{ path: 'src/file1.ts', untracked: false, conflicted: false } as HermesRepoStatus['files'][number]]
+      },
+      '/repo-b': {
+        ...otherStatus,
+        files: [{ path: 'src/file2.ts', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo-a/src/file1.ts').get()).toBe('modified')
+    expect(repoChangeKindForPath('/repo-b/src/file2.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo-a/src/clean.ts').get()).toBeUndefined()
+  })
+
+  it('inherits added kind for nested files inside untracked directories', () => {
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'brand_new_dir', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo/brand_new_dir').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/brand_new_dir/nested.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/brand_new_dir/deep/nested/sub.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/other_dir/file.ts').get()).toBeUndefined()
+  })
 })

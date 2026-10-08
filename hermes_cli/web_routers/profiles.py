@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 
+from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.profiles import ProfileIdentitySettlementPending
@@ -95,7 +96,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
-        "has_alias": attr("alias_path", None) is not None, "role": attr("role", None)}
+        "has_alias": attr("alias_path", None) is not None}
 
 
 def _profile_setup_command(name: str) -> str:
@@ -475,20 +476,27 @@ def get_profiles_sessions(
         exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
         include_archived=archived == "include", archived_only=archived == "only")
     # Over-fetch per profile so the merged+sorted window is correct for the requested page.
-    # Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    # ``limit`` is already bounded to 500 by FastAPI; the offset is caller-controlled
+    # pagination state, so include it instead of capping the source window at 500.
+    # Otherwise page 3 of a 577-row profile is permanently empty even though ``total``
+    # reports the remaining rows.
+    per_profile = limit + offset
 
     merged: List[Dict[str, Any]] = []
     totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
     for name, home in targets:
-        def _read(db, name=name):
+        def _read(db, name=name, home=home):
+            include_subagents, exclude = subagent_listing_scope(
+                home, source=filters["source"], sources=filters["sources"],
+                exclude_sources=filters["exclude_sources"])
+            scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **filters)
-            totals[name] = db.session_count(exclude_children=True, **filters)
+                compact_rows=not full, include_pinned=True, **scoped)
+            totals[name] = db.session_count(exclude_children=True, **scoped)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
@@ -534,19 +542,22 @@ def get_profiles_sessions_sidebar(
     errors: List[Dict[str, str]] = []
     now = time.time()
 
-    def _slice(db, key):
+    def _slice(db, key, recents_subagents=(False, None)):
         source, exclude = slice_scope[key]
+        # Only recents takes subagent runs (sessions.show_subagents); cron/messaging keep shape.
+        include_subagents, exclude = recents_subagents if key == "recents" else (False, exclude)
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
         return db.list_sessions_rich(
             source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
-            order_by_last_active=True, compact_rows=True, include_pinned=True)
+            order_by_last_active=True, compact_rows=True, include_pinned=True,
+            include_subagents=include_subagents)
 
-    def _build_slices(db, cache_key):
+    def _build_slices(db, cache_key, recents_subagents):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
-        slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
+        slices = {"recents": _slice(db, "recents", recents_subagents), "usage": db.usage_totals(),
                   "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
@@ -560,13 +571,15 @@ def get_profiles_sessions_sidebar(
         db_path = _profile_state_db(home)
         if not db_path.exists():
             continue
+        recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list))
+                             tuple(messaging_exclude_list), recents_subagents[0])
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
-            slices = _read_profile_db(name, home, errors,
-                                      lambda db: _build_slices(db, profile_cache_key))
+            slices = _read_profile_db(
+                name, home, errors,
+                lambda db: _build_slices(db, profile_cache_key, recents_subagents))
             if slices is None:
                 continue
         # Heal already gave up and this read found no rows. That is not "no
@@ -674,7 +687,11 @@ def _merge_profile_tree(
             session["profile"] = profile
             session["is_default_profile"] = profile == "default"
 
-        key = project.get("path") or project["id"]
+        # Same folder-identity notion the per-profile tree builder uses (``_path_key``):
+        # shape-derived — Windows paths case-fold on any host, separators unify, NFC —
+        # so the cross-profile merge agrees by construction with the trees it merges.
+        from tui_gateway.project_tree import _path_key
+        key = _path_key(project.get("path") or project["id"])
         existing = merged.get(key)
         if existing is None:
             merged[key] = project
@@ -871,13 +888,15 @@ async def get_active_profile_endpoint():
 
     def _run():
         # Both reads touch the filesystem; one hop so sidebar polling costs one round-trip.
-        def _or_default(fn):
+        def _or_default(fn, on_error="default"):
             try:
                 return fn() or "default"
             except Exception:
-                return "default"
+                return on_error
+        # A dashboard that cannot name its own home must not read as the machine
+        # dashboard: "default" is exactly what lets the SPA adopt the sticky profile.
         return {"active": _or_default(profiles_mod.get_active_profile),
-                "current": _or_default(profiles_mod.get_active_profile_name)}
+                "current": _or_default(profiles_mod.get_active_profile_name, on_error="custom")}
 
     return await run_in_threadpool(_run)
 

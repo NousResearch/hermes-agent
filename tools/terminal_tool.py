@@ -147,7 +147,7 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
 
 def _check_all_guards(command: str, env_type: str,
                       has_host_access: bool = False) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+    """Delegate to the consolidated command guard with the CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
                                   has_host_access=has_host_access)
@@ -253,10 +253,11 @@ _container_alias_lock = threading.Lock()
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
     command, or on workspace-override registration). None/empty keys collapse
-    to ``"default"``; non-string / empty cwds are ignored."""
+    to ``"default"``; non-string / empty cwds are ignored. Keys are routed-profile
+    qualified (:func:`_qualify_task_key`); the read/clear side qualifies identically."""
     if not isinstance(cwd, str) or not cwd.strip():
         return
-    key = str(session_key or "default")
+    key = _qualify_task_key(str(session_key or "default"))
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
@@ -266,13 +267,13 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
     """Recorded cwd for *session_key*, or None. No fallback chain on purpose:
     callers decide what an absent record means. None/empty keys read ``"default"``."""
     with _session_cwd_lock:
-        return _session_cwd.get(str(session_key or "default"))
+        return _session_cwd.get(_qualify_task_key(str(session_key or "default")))
 
 
 def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
-        _session_cwd.pop(session_key, None)
+        _session_cwd.pop(_qualify_task_key(session_key), None)
 
 
 def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
@@ -286,10 +287,12 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     are already rejected on the creation paths. This write classifies the
     directory mounted at ``/workspace`` as unusable before that prefix
     heuristic, then remaps the match (or a child of it) to its container mount
-    instead of storing the host path. Non-container backends apply the override
-    verbatim (ACP project-root switching must keep working).
+    instead of storing the host path. SSH maps the Hermes subprocess home onto
+    the peer's home, as environment creation already does. Other backends apply
+    the override verbatim (ACP project-root switching must keep working).
     """
     env_type = getattr(env, "env_type", None)
+    new_cwd = coerce_ssh_remote_cwd(new_cwd, env_type)
     if not env_type or not _is_container_backend(env_type):
         return new_cwd
     host_mount = getattr(env, "host_cwd", None)
@@ -321,8 +324,11 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     mid-session via ``session/load``). The session record keeps the RAW path
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
+
+    Keyed like ``_session_cwd`` — routed-profile qualified (:func:`_qualify_task_key`) — so two
+    profiles registering the same task id never read each other's image/cwd (#123989).
     """
-    _task_env_overrides[task_id] = overrides
+    _task_env_overrides[_qualify_task_key(task_id)] = overrides
 
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
@@ -341,7 +347,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
 def clear_task_env_overrides(task_id: str):
     """Drop a task's overrides, cwd record and container alias (rollout cleanup)."""
-    _task_env_overrides.pop(task_id, None)
+    _task_env_overrides.pop(_qualify_task_key(task_id), None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
@@ -377,9 +383,8 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     """True when *task_id* registered image/env_type overrides — the single
     "isolated RL/benchmark rollout" predicate shared by key resolution and
     container creation so the two can't drift."""
-    if not task_id or task_id not in _task_env_overrides:
-        return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
+    return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
 
 
 @dataclass(frozen=True)
@@ -462,6 +467,20 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
         return f"home:{override}"
 
 
+def _qualify_task_key(key: str) -> str:
+    """Prefix a session-derived key with the routed profile/home, or return it unchanged.
+
+    A multiplexed host serves every profile in one process, and session ids are not
+    profile-unique (a header-less API client's ``api-<digest>`` fingerprint, a DM chat id
+    shared by two bots), so raw session keys in ``_active_environments`` / ``_session_cwd``
+    would hand profile B the sandbox and cwd profile A created (#123989). Persistent Docker
+    already keys the profile (branches 3/4); this covers the per-session keys. CLI and
+    single-profile gateways (no routed home) keep the historical raw key.
+    """
+    scope = _routed_home_task_key(profile_scoped=True)
+    return f"{scope}:{key}" if scope else key
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
@@ -471,6 +490,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     2. Per-session isolation (docker + ``container_persistent: false``): each
        session's task_id is its own key (a fresh chat gets a fresh sandbox with only
        ITS mounts); delegate_task children follow the alias registry to the parent.
+       Routed profiles qualify the key (:func:`_qualify_task_key`, #123989).
     3. Session key present (WebUI per-session, gateway per-message): persistent
        Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``,
        with the default profile staying literally ``"default"`` so CLI and
@@ -483,10 +503,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
     if task_id and _has_isolation_overrides(task_id):
-        return task_id
+        return _qualify_task_key(task_id)
     scope = _session_scope()
     if task_id and scope.session_isolated:
-        return _resolve_container_alias(task_id)
+        return _qualify_task_key(_resolve_container_alias(task_id))
     # Per-session isolation: when a session key is present (the WebUI streaming layer sets it per-session,
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
     # a previous profile's SSHEnvironment and silently run commands on the wrong remote host. Subagents
@@ -505,7 +525,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if not session_key:
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
-        return f"session:{session_key}"
+        return _qualify_task_key(f"session:{session_key}")
     profile = _current_session_profile() or "default"
     return "default" if profile == "default" else f"profile:{profile}"
 
@@ -522,7 +542,7 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """
     raw = task_id or "default"
     return (
-        _task_env_overrides.get(raw)
+        _task_env_overrides.get(_qualify_task_key(raw))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
@@ -695,7 +715,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
 
 def _get_env_config() -> Dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
-    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
     _ensure_terminal_env_bridged()
     env_type = _tenv("TERMINAL_ENV", "local")
     mount_docker_cwd = _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
@@ -725,11 +745,13 @@ def _get_env_config() -> Dict[str, Any]:
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(_tenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "docker_image_pinned": _tenv("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "1",
         "docker_forward_env": docker_forward_env,
         "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "vercel_image": _tenv("TERMINAL_VERCEL_IMAGE", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -940,7 +962,7 @@ def _resolve_command_cwd(
             recorded, env_type, default_cwd,
         )
         return _container_visible_default(default_cwd, env_type, env)
-    return recorded or coerce_ssh_remote_cwd(_container_visible_default(default_cwd, env_type, env), env_type)
+    return coerce_ssh_remote_cwd(recorded or _container_visible_default(default_cwd, env_type, env), env_type)
 
 
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
@@ -994,7 +1016,7 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
+    """Run the command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
@@ -1219,8 +1241,11 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    metered: bool = True,
 ) -> str:
-    """Execute in the foreground with retry on transient errors, then finalize."""
+    """Execute in the foreground with retry on transient errors, then finalize. ``metered``
+    is False for Hermes' own control-plane commands (``_host_local``)."""
+    from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
@@ -1250,6 +1275,8 @@ def _run_foreground(
             )
             break
         except Exception as e:
+            # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
+            # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
@@ -1263,12 +1290,14 @@ def _run_foreground(
                          max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
-    if result.get("yielded_session_id"):
+    if result.get("yielded_session_id"):  # handed to the background: no exit status yet
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
             "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
         }, ensure_ascii=False)
+    if metered:
+        record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
@@ -1374,6 +1403,8 @@ def terminal_tool(
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
     """
+    from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
+    plan = None
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
@@ -1419,7 +1450,7 @@ def terminal_tool(
                 "(process-identity probe wedged); the command was not run. Retry the call.",
                 status="error",
             ))
-        # Pre-exec security checks (tirith + dangerous command detection);
+        # Pre-exec security checks (floors + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
@@ -1442,18 +1473,19 @@ def terminal_tool(
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
-            return result
-        return _run_foreground(
+            return _metered(None if _host_local else plan, result)
+        return _metered(None if _host_local else plan, _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-        )
+            metered=not _host_local,
+        ))
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:
-        return _degraded_result(e, task_id)
+        return _metered(None if _host_local else plan, _degraded_result(e, task_id), error_class="tool_error")
     except Exception as e:
-        return _fatal_error_json(e)
+        return _metered(None if _host_local else plan, _fatal_error_json(e), error_class="exception")
 
 
 def check_terminal_requirements() -> bool:
@@ -1509,8 +1541,9 @@ TERMINAL_SCHEMA = {
             },
             "heartbeat": {
                 "type": "integer",
-                "minimum": 60,
-                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+                "minimum": 0,
+                "default": 0,
+                "description": "0 disables. With background=true: also notify every N seconds (positive values are clamped to min 60) with the output produced since the last notice; a tick with no new output is skipped. For bounded jobs you must react to mid-run (merge trains, full suites, deploys) — never for servers or watchers; implies notify=true. Ignored on foreground commands.",
             },
             "persist_on_release": {
                 "type": "boolean",
@@ -1539,22 +1572,28 @@ def _handle_terminal(args, **kw):
         )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
-    # with the corrected call instead of being silently ignored.
+    # `notify` wins. Notification INTENT on a foreground call is refused with
+    # the corrected call. A foreground `heartbeat` carries no intent: it has
+    # no execution meaning without a tracked process, and providers that
+    # materialize every schema property (or models copying a background call
+    # shape) send `heartbeat=60` on ordinary commands — refusing it produced
+    # identical-call retry loops (46 subagent sessions, 4 refusals each, 38 of
+    # which never ran a single command), so it is normalized away instead.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
-        return tool_error("heartbeat must be a whole number of seconds (min 60).")
+        return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        if notify or watch_patterns or notify_on_complete:
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
+                "notify only applies to background commands (foreground "
+                "results return directly). Either drop it, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
+        heartbeat = 0
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
@@ -1606,43 +1645,3 @@ registry.register(
     emoji="💻",
     max_result_size_chars=100_000,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import importlib.util  # noqa: F401,E402
-import platform  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import stat  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'cleanup_vm': ('tools.terminal_tool_lifecycle', 'cleanup_vm'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-    'get_active_env': ('tools.terminal_tool_lifecycle', 'get_active_env'),
-    'has_direct_modal_credentials': ('tools.tool_backend_helpers', 'has_direct_modal_credentials'),
-    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
-    'is_managed_tool_gateway_ready': ('tools.managed_tool_gateway', 'is_managed_tool_gateway_ready'),
-    'is_persistent_env': ('tools.terminal_tool_lifecycle', 'is_persistent_env'),
-    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
-    'resolve_modal_backend_state': ('tools.tool_backend_helpers', 'resolve_modal_backend_state'),
-    'strip_inert_heredoc_bodies': ('tools.shell_heredoc', 'strip_inert_heredoc_bodies'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

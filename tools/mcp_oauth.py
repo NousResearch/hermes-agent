@@ -1195,14 +1195,23 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
 
 def humanize_oauth_registration_error(
     server_name: str, exc: BaseException | str, *, server_url: str | None = None) -> str | None:
-    """Turn a DCR 403/Forbidden or 404 into a useful next step; None for anything else so the caller keeps the
-    original text. Figma gates DCR on exact ``client_name`` (auto-set to ``Claude Code``), so this fires
-    when the user overrode it or an older Hermes is running."""
+    """Turn a DCR 403/Forbidden or 404 (or a protected-resource mismatch) into a useful next step; None for
+    anything else so the caller keeps the original text. Figma gates DCR on exact ``client_name`` (auto-set to
+    ``Claude Code``), so this fires when the user overrode it or an older Hermes is running."""
     msg = str(exc)
     lowered = msg.lower()
     from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
     if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
         return None
+    # The SDK's PRM check rejects a multi-tenant server whose metadata names a canonical application
+    # resource instead of the configured tenant URL — which the authorization server then requires as
+    # the RFC 8707 resource parameter, so no URL satisfies both without the opt-in (#135227).
+    if "does not match expected" in lowered and "protected resource" in lowered:
+        return (
+            f"'{server_name}' publishes protected-resource metadata whose resource does not match the configured "
+            "server URL (typical for multi-tenant MCPs that advertise a canonical application resource while "
+            "serving tenant-specific URLs). If you trust this server, add `trust_prm_resource: true` to its "
+            f"`oauth:` block in config.yaml and re-run:\n  hermes mcp login {server_name}")
     # A 404 on registration (Google's hosted Gmail/Drive MCP servers answer the SDK's guessed /register with
     # one) is the same permanent "no RFC 7591 DCR" class as a 403 refusal (#78190).
     if ("404" in msg and ("not found" in lowered or "/register" in lowered)

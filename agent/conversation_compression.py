@@ -2847,12 +2847,13 @@ def _acquire_compression_lease(
 
 
 def _adopt_if_parent_rotated(
-    agent: Any, lease: _CompressionLease, messages: list, system_message: str
+    agent: Any, lease: _CompressionLease, messages: list, system_message: str, *, started_at: float,
+    approx_tokens: Optional[int],
 ) -> Optional[tuple[list, str]]:
     """Sit out (or adopt the live child) when the parent was already rotated.
     A late contender can take the parent lock after the winner released it and rotated; holding the lock does
     not prove this agent still owns a live parent. Returns the ``compress_context`` result to hand back, or
-    None to proceed."""
+    None to proceed. Each returning exit logs its own attempt record."""
     if lease.db is None or not lease.sid:
         return None
     try:
@@ -2863,11 +2864,18 @@ def _adopt_if_parent_rotated(
             lease.sid, type(_session_err).__name__, _session_err,
         )
         lease.release()
+        _emit_bypassed_attempt_telemetry(
+            agent, started_at, commit_status="aborted", failure_class="session_ownership_unreadable",
+            approx_tokens=approx_tokens,
+        )
         return messages, _existing_system_prompt(agent, system_message)
     if not _parent_already_rotated:
         return None
     recovered_messages = _adopt_live_compression_child(agent, lease.db, lease.sid)
     lease.release()
+    _emit_bypassed_attempt_telemetry(
+        agent, started_at, commit_status="skipped", failure_class="session_ownership_lost", approx_tokens=approx_tokens,
+    )
     _existing_sp = _existing_system_prompt(agent, system_message)
     if recovered_messages is not None:
         logger.warning("compression recovery: stale session=%s adopted live child=%s", lease.sid, agent.session_id)
@@ -4199,12 +4207,10 @@ def compress_context(
         _emit_aborted_attempt_telemetry(agent, attempt.started_at, "snapshot_stale")
         lease.release()
         return messages, _existing_system_prompt(agent, system_message)
-    _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
+    _adopted = _adopt_if_parent_rotated(
+        agent, lease, messages, system_message, started_at=attempt.started_at, approx_tokens=approx_tokens,
+    )
     if _adopted is not None:
-        _emit_bypassed_attempt_telemetry(
-            agent, attempt.started_at, commit_status="skipped", failure_class="session_ownership_lost",
-            approx_tokens=approx_tokens,
-        )
         return _adopted
 
     # Snapshot durable cooldown only once we own the lease. Runs for force=True

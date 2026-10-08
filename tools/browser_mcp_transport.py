@@ -106,7 +106,15 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
         "Mcp-Method": "tools/call",
         "Mcp-Name": tool,
     }
-    resp = requests.post(url, json=body, headers=headers, timeout=timeout or _MCP_TIMEOUT_DEFAULT)
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=timeout or _MCP_TIMEOUT_DEFAULT)
+    except requests.exceptions.Timeout:
+        # Cold-boot warm-up: the first call after an idle server boot can take
+        # up to ~60s. Surface the retry guidance, not a bare timeout.
+        raise RuntimeError(
+            "browser call timed out — likely the hosted browser was warming up after "
+            "an idle period: retry once, steady-state calls are sub-second"
+        ) from None
     if resp.status_code == 401:
         raise PermissionError(f"browser backend rejected the API key (401) — key expired or revoked")
     resp.raise_for_status()

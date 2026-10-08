@@ -1731,17 +1731,22 @@ def unload_plugin_manager_for_home(home: Path) -> bool:
                     manager = _plugin_manager
         if manager is None:
             return False
+        if _plugin_managers_by_home.get(home_key) is manager:
+            _plugin_managers_by_home.pop(home_key, None)
+        if _plugin_manager is manager:
+            _plugin_manager = None
 
-        # Match the test reset's teardown order: evict directory-plugin modules, then dispose
-        # registrations while the manager still owns their inverses.
+    # Evict atomically above, then run potentially blocking disposal without
+    # serializing lookups for unrelated profiles behind the registry lock.
+    host = getattr(manager, "_plugin_host_instance", None)
+    try:
         _clear_plugin_submodules(manager)
+    finally:
         try:
             manager.unload()
         finally:
-            if _plugin_managers_by_home.get(home_key) is manager:
-                _plugin_managers_by_home.pop(home_key, None)
-            if _plugin_manager is manager:
-                _plugin_manager = None
+            if host is not None:
+                host.shutdown()
     return True
 
 

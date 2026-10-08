@@ -1604,3 +1604,59 @@ def test_node_budget_exhausted_tail_is_bounded_by_inspected_cap(monkeypatch, cap
     _assert_inspected_cap_bounds(
         tail, caplog, malformed_pattern="malformed prefetch observation"
     )
+
+
+def test_observation_iterator_failure_keeps_context_and_valid_prefix(monkeypatch, caplog):
+    """A broken tuple-subclass iterator drops only the observation tail."""
+    _disable_hook(monkeypatch)
+
+    class BrokenTuple(tuple):
+        def __iter__(self):
+            yield tuple.__getitem__(self, 0)
+            raise RuntimeError("broken observation iterator")
+
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="usable context",
+                observations=BrokenTuple((_observation({"kept": True}), _observation())),
+            ),
+        )
+    )
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable context"
+    assert [item.payload for item in result.observations] == [{"kept": True}]
+    assert any("observation container" in record.message for record in caplog.records)
+
+
+def test_structured_prefetch_context_subclass_is_normalized_before_spill(
+    monkeypatch, tmp_path
+):
+    """A forged __len__ cannot skip spilling structured external context."""
+    _disable_hook(monkeypatch)
+
+    class LyingString(str):
+        def __len__(self):
+            return 1
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    context = LyingString("x" * 10_100)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="external", result=MemoryPrefetchResult(context=context)
+        )
+    )
+
+    result = manager.prefetch_all_result("question", session_id="lying-length")
+
+    assert type(result.context) is str
+    assert "full content saved to " in result.context
+    saved = Path(result.context.split("full content saved to ", 1)[1].split("]", 1)[0])
+    assert saved.read_text(encoding="utf-8") == str.__str__(context) + "\n"

@@ -690,6 +690,15 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "state (files, config, etc.) may reflect work described here — avoid repeating it:",
 )
 
+# Bracketed head every shipped handoff prefix opens with. When the model re-emits the
+# handoff as an assistant reply it keeps this marker but paraphrases the boilerplate
+# after it (#132934), defeating the byte-exact match; the classifier falls back to a
+# marker + compaction-vocabulary check so those rows still classify as handoffs.
+_HANDOFF_MARKER_PREFIX = "[CONTEXT COMPACTION — REFERENCE ONLY]"
+# Opening window the confirmation tokens must land in, and the tokens themselves.
+_PARAPHRASED_HANDOFF_WINDOW = 400
+_PARAPHRASED_HANDOFF_TOKENS = ("compacted", "handoff")
+
 # Bounded probe: catch the restored head plus a few stacked handoff/ack turns
 # without treating arbitrary summary-looking live-tail rows as proof of a resume.
 _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES = 4
@@ -4375,7 +4384,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Drop merged prior-tail content up to the delimiter so it never leaks into the next prompt.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+        # Exact prefixes first; the bare marker last catches an adopted paraphrased echo (#132934).
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES, _HANDOFF_MARKER_PREFIX):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -4392,26 +4402,49 @@ Write only the summary body. Do not include any preamble or prefix."""
         text = cls._strip_summary_prefix(summary)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
+    @classmethod
+    def _starts_with_summary_prefix(cls, text: str, paraphrased: bool = False) -> bool:
+        """Return True if *text* begins with any known handoff prefix, or (when
+        *paraphrased*) with the bracketed compaction marker followed by compaction
+        vocabulary in the opening window (model-paraphrased handoff, #132934)."""
+        if text.startswith((
+            SUMMARY_PREFIX,
+            LEGACY_SUMMARY_PREFIX,
+            *_HISTORICAL_SUMMARY_PREFIXES,
+        )):
+            return True
+        return paraphrased and cls._is_paraphrased_handoff_head(text)
+
     @staticmethod
-    def _starts_with_summary_prefix(text: str) -> bool:
-        """Return True if *text* begins with any known handoff prefix."""
-        return text.startswith((SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES))
+    def _is_paraphrased_handoff_head(text: str) -> bool:
+        """Recognize a handoff the model paraphrased behind the bracketed marker.
+
+        The marker alone is not enough (a reply could quote it while discussing
+        compaction), so the window AFTER the marker must also carry compaction
+        vocabulary — the marker itself contains "compaction" and would satisfy
+        the token check on its own."""
+        if not text.startswith(_HANDOFF_MARKER_PREFIX):
+            return False
+        head_end = len(_HANDOFF_MARKER_PREFIX)
+        window = text[head_end:head_end + _PARAPHRASED_HANDOFF_WINDOW].lower()
+        return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS)
 
     @classmethod
-    def classify_summary_content(cls, content: Any) -> Optional[str]:
+    def classify_summary_content(cls, content: Any, paraphrased: bool = False) -> Optional[str]:
         """Classify how *content* relates to a compaction summary.
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
-        delimiter + summary body), or None."""
+        delimiter + summary body), or None. *paraphrased* enables the marker+vocabulary fallback;
+        pass it only for rows known to be model output (a user may paste the marker)."""
         text = _content_text_for_contains(content).lstrip()
         # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
         if _MERGED_SUMMARY_DELIMITER in text:
             after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-            return "merged" if cls._starts_with_summary_prefix(after) else None
-        return "standalone" if cls._starts_with_summary_prefix(text) else None
+            return "merged" if cls._starts_with_summary_prefix(after, paraphrased) else None
+        return "standalone" if cls._starts_with_summary_prefix(text, paraphrased) else None
 
     @classmethod
-    def _is_context_summary_content(cls, content: Any) -> bool:
-        return cls.classify_summary_content(content) is not None
+    def _is_context_summary_content(cls, content: Any, paraphrased: bool = False) -> bool:
+        return cls.classify_summary_content(content, paraphrased) is not None
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:
@@ -4470,7 +4503,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Return True for summary handoff messages by metadata or content."""
         if not isinstance(message, dict):
             return False
-        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(message.get("content"))
+        # Paraphrased echoes are model output; a user pasting the marker stays a user turn.
+        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(
+            message.get("content"), paraphrased=message.get("role") == "assistant"
+        )
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:
@@ -5903,43 +5939,6 @@ def retryable_user_text(content: Any) -> str:
     if not text.strip():
         raise ValueError("retry found no text to send")
     return text
-
-
-def _handoff_carries_live_user_content(message: Any) -> bool:
-    """True when a summary-bearing row still carries a live user ask (pre-filter with ``is_compaction_summary_message``)."""
-    return isinstance(message, dict) and ContextCompressor._strip_context_summary_handoff_message(message) is not None
-
-
-def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[str, Any]]]) -> bool:
-    """True when the next model call would be driven only by a handoff; trailing tool rows mean an in-flight exchange."""
-    if not messages:
-        return False
-
-    last_driving_handoff = -1
-    for index, message in enumerate(messages):
-        if not is_compaction_summary_message(message):
-            continue
-        merged_completed_assistant = (
-            isinstance(message, dict) and message.get("role") == "assistant"
-            and ContextCompressor.classify_summary_content(message.get("content")) == "merged"
-            and message.get("finish_reason") == "stop" and not message.get("tool_calls")
-        )
-        # Embedded live ask or pending tool_calls -> not a sole-handoff driver.
-        if not (_handoff_carries_live_user_content(message) and not merged_completed_assistant):
-            last_driving_handoff = index
-    if last_driving_handoff < 0:
-        return False
-    for message in messages[last_driving_handoff + 1 :]:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        if (
-            role == "tool" or (role == "assistant" and message.get("tool_calls"))
-            or ContextCompressor._is_real_user_turn(message)
-            or (is_compaction_summary_message(message) and _handoff_carries_live_user_content(message))
-        ):
-            return False
-    return True
 
 
 def is_user_originated_turn(message: Any) -> bool:

@@ -178,7 +178,7 @@ def _should_skip_model_call_for_reference_handoff(
     messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
-    from agent.context_compressor import reference_handoff_would_drive_next_model_call
+    from agent.context_compressor_handoff_drive import reference_handoff_would_drive_next_model_call
     # A restored ask is an actionable non-synthetic user row appended after the
     # handoff — by construction the handoff no longer drives.
     return reference_handoff_would_drive_next_model_call(messages) and not (

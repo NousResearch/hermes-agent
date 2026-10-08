@@ -348,6 +348,22 @@ class ProviderProfile:
         """
         return None
 
+    def create_messages_client(self, **client_kwargs: Any) -> Any | None:
+        """``create_client`` for the Anthropic Messages wire: a client, or ``None`` for the standard one.
+
+        Consulted by ``agent.anthropic_adapter.build_anthropic_client`` whenever the core builds a
+        Messages-wire client for this provider (main agent, per-request clients, fallback and model
+        switches, auxiliary routes), before it builds ``anthropic.Anthropic`` itself. A returned
+        object must answer the ``anthropic.Anthropic`` surface the core uses (``messages.create`` /
+        ``messages.stream``, ``with_options``, ``close``).
+
+        ``client_kwargs`` carries what the builder would have used — ``api_key`` (a ``str``, or a
+        ``Callable[[], str]`` bearer provider), ``base_url``, ``timeout``, ``drop_context_1m_beta``
+        — and may grow over time, so accept ``**kwargs``. ``None`` (the default) is always safe:
+        the builder carries on exactly as it would without the profile.
+        """
+        return None
+
     def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
         """External-process providers: ``{available, logged_in, plan, detail, login_command}`` from the
         CLI itself so setup can gate on login. ``None`` = nothing to report beyond executable presence."""

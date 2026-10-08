@@ -470,13 +470,44 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False):
+def _profile_messages_client(provider: str, **client_kwargs) -> Any:
+    """``provider``'s registered profile's own Messages-wire client, or ``None``.
+
+    Same registration seam as ``ProviderProfile.create_client`` on the OpenAI wire: a profile
+    can only fail to provide a client — a profile that raises is logged and skipped."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.create_messages_client(**client_kwargs)
+    except Exception:
+        logger.warning("Provider profile %r failed to create a Messages client; building the standard one",
+                       getattr(profile, "name", provider) or "?", exc_info=True)
+        return None
+
+
+def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False,
+                           provider: str | None = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
     (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
-    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
+    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability.
+    ``provider`` (when the caller knows it) lets that provider's profile supply the client first
+    (``ProviderProfile.create_messages_client``)."""
+    if provider:
+        supplied = _profile_messages_client(
+            provider, api_key=api_key, base_url=base_url, timeout=timeout,
+            drop_context_1m_beta=drop_context_1m_beta,
+        )
+        if supplied is not None:
+            logger.info("%s Messages client created from provider profile", provider)
+            return supplied
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(

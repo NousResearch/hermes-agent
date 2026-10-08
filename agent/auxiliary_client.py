@@ -1905,13 +1905,15 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
     Single transport-correction chokepoint at the end of every ``resolve_provider_client`` branch; returns
     ``client_obj`` unchanged for probe stubs/specialized adapters, OpenAI-wire, explicit non-Anthropic
-    ``api_mode``, or missing ``anthropic`` SDK.
+    ``api_mode``, or missing ``anthropic`` SDK. ``provider`` (when known) lets that provider's profile
+    supply the Messages client (``ProviderProfile.create_messages_client``).
     """
     # Anthropic/Bedrock/Codex wrappers, plus any client declaring HERMES_SKIP_TRANSPORT_WRAP
     # (native/ACP shims, in-tree or plugin), must never be re-dispatched through a wire adapter —
@@ -1935,7 +1937,7 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, base_url, provider=provider)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -2218,7 +2220,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if merged:
             extra["default_headers"] = merged
         client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        return _maybe_wrap_anthropic(client, model, api_key, raw_base_url), model
+        return _maybe_wrap_anthropic(client, model, api_key, raw_base_url, provider=provider_id), model
     return None, None
 
 
@@ -3091,7 +3093,7 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
-        real_client = build_anthropic_client(token, base_url)
+        real_client = build_anthropic_client(token, base_url, provider="anthropic")
     except ImportError:
         return None, None  # Adapter imports fine but the anthropic SDK itself is missing.
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
@@ -4965,7 +4967,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+                                 provider=req.provider)
 
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:
@@ -5218,7 +5221,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(custom_key, custom_base, provider=provider)
             if entry_headers:
                 # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
                 # beta/credential-Omit headers the builder installed (#109595).

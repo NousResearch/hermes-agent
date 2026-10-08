@@ -157,17 +157,13 @@ def restore_api_session(authority, session_id):
         if expected != session_id or row['title'] != 'Group: ' + identity[1] or not row['hidden']:
             raise RuntimeStoreError('admission_conflict')
     store = authority.runner.session_store
+    target = authority.physical_target(SessionRef(authority.profile_id, session_id))
+    entry.session_id = target
     with store._lock:
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
-        if current is None:
-            # Compression (``in_place=false``) advances the physical transcript, never this
-            # binding: the root stays the FIFO identity and the route resumes at the live tip.
-            entry.session_id = authority.db.get_compression_tip(session_id) or session_id
-            store._entries[entry.session_key] = entry
-        elif current.session_id == session_id:
-            store._entries[entry.session_key] = entry
-        elif current.session_id not in authority.db.get_compression_lineage(session_id):
+        if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
             raise RuntimeStoreError('admission_conflict')
+        store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
     return SessionRef(authority.profile_id, session_id)

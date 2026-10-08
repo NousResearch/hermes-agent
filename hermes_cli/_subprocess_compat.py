@@ -374,6 +374,19 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     Git. Callers apply their own config/security isolation after selection.
     """
     env = dict(base if base is not None else os.environ)
+    try:
+        from pm.registry import get_package
+        from pm.store import current_target
+
+        # Declared platform gaps are deterministic: POSIX deliberately uses
+        # system Git. Avoid even the first PM worker probe, regardless of
+        # per-call environment changes or the transient-failure cache TTL.
+        if get_package("git").missing_reason(current_target()) is not None:
+            return env
+    except Exception:
+        # A failed metadata probe is not proof of permanent unavailability.
+        # Let normal acquisition and its bounded failure cache handle it.
+        pass
     cache_key = frozenset(env.items())
     cached = _git_fallback_env_cache.get(cache_key)
     if cached is not None:

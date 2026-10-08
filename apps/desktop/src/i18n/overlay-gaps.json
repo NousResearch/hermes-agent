@@ -983,6 +983,8 @@
   "settings.appearance.chatFontReset": ["ar"],
   "settings.appearance.chatFontSample": ["ar"],
   "settings.appearance.chatFontTitle": ["ar"],
+  "settings.appearance.chatLineSpacingDesc": ["ar","ja","ru","zh","zh-hant"],
+  "settings.appearance.chatLineSpacingTitle": ["ar","ja","ru","zh","zh-hant"],
   "settings.appearance.pet.roamDesc": ["ar"],
   "settings.appearance.pet.roamTitle": ["ar"],
   "settings.appearance.sessionDensityComfortable": ["ar"],

@@ -706,6 +706,10 @@ class CLIModelSwitchMixin:
                     setattr(self, _k, _v)
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
                 return False
+        # After the swap succeeded: delegation reads this to give subagents the provider's exec model.
+        self._opusplan_active = bool(getattr(result, "opusplan", False))
+        if self.agent is not None:
+            self.agent.opusplan_active = self._opusplan_active
         return True
 
     def _apply_model_switch_result(

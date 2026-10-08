@@ -1549,11 +1549,13 @@ def _env_model_seed() -> str:
 def _resolve_model() -> str:
     if env := _env_model_seed():
         return env
-    m = _load_cfg().get("model", "")
+    cfg = _load_cfg()
+    m = cfg.get("model", "")
+    from hermes_cli.opusplan import ROLE_PLAN, resolve_model_in_config
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
+        return str(resolve_model_in_config(str(m.get("default", "") or "").strip(), ROLE_PLAN, cfg))
     if isinstance(m, str) and m:
-        return m.strip()
+        return str(resolve_model_in_config(m.strip(), ROLE_PLAN, cfg))
     # No env seed / config preference: the cost-safe silent default (cache-only read), never an unpicked flagship.
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model

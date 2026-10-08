@@ -2454,15 +2454,15 @@ def _read_main_field(field: str, *, readonly: bool, lower: bool = False) -> str:
         value = override.strip()
         return value.lower() if lower else value
     with contextlib.suppress(Exception):
-        from hermes_cli import config as _cfg_mod
+        from hermes_cli import config as _cfg_mod, opusplan as _opusplan
         cfg = (_cfg_mod.load_config_readonly if readonly else _cfg_mod.load_config)()
         model_cfg = cfg.get("model", {})
         if field == "model" and isinstance(model_cfg, str) and model_cfg.strip():
-            return model_cfg.strip()
+            return _opusplan.plan_model(model_cfg.strip(), cfg)
         if isinstance(model_cfg, dict):
             value = model_cfg.get("default" if field == "model" else field, "")
             if isinstance(value, str) and value.strip():
-                value = value.strip()
+                value = _opusplan.plan_model(value.strip(), cfg) if field == "model" else value.strip()
                 return value.lower() if lower else value
     return ""
 

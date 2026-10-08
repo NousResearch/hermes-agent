@@ -1662,6 +1662,14 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
             "default with `hermes model <name>`."
         )
 
+    # opusplan (job pin, cron.model or the main default) is the unattended-work tier: the exec model.
+    from hermes_cli.opusplan import ROLE_EXEC, OpusplanError, resolve_model_in_config
+    try:
+        model = resolve_model_in_config(
+            model, ROLE_EXEC, _cfg, job.get("provider") or _cron_default_provider or None, str(job.get("base_url") or ""))
+    except OpusplanError as exc:
+        raise RuntimeError(f"Cron job '{job_name}': {exc}") from exc
+
     with contextlib.suppress(Exception):
         from hermes_constants import apply_ipv4_preference
         _net_cfg = _cfg.get("network", {})

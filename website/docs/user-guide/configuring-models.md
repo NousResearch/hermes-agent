@@ -346,6 +346,43 @@ Inside any `hermes chat` session:
 A one-turn switch breaks the provider's prompt-cache prefix twice (switching out and back). In a long session on a cached-prefix provider (Anthropic, OpenAI), the next turn re-pays full input cost — `--once` wins for short sessions or cheap→expensive escalation, but a quick side question inside a long expensive session can cost more than it saves.
 :::
 
+### `opusplan`: plan on the big model, delegate to the cheap one
+
+`opusplan` is a special model value, modelled on Claude Code's opusplan (Opus plans, Sonnet executes) but not tied to Anthropic. It works anywhere a model is chosen: `model.default: opusplan` in `config.yaml`, `/model opusplan` in a session, and `hermes chat --model opusplan` at startup.
+
+While `opusplan` is active, the main conversation runs on the active provider's **plan** model (big, reasoning) and everything delegated runs on its **exec** model (cheap, worker): `delegate_task` subagents, cron jobs, and kanban workers. The plan model plans and hands work out; the exec model does it.
+
+Hermes finds a provider's plan/exec pair in this order, and never guesses:
+
+1. **Your config.** Each entry under `providers:` takes an optional `opusplan` block, keyed by the provider's own name. This is the route for custom and local endpoints, which have no built-in opus/sonnet notion.
+2. **The provider plugin's aliases.** If the plugin defines both `opus` and `sonnet` model aliases (as the Claude subscription plugins do), those are used with no extra config.
+3. **Otherwise it fails.** The error names the provider and tells you to add an `opusplan` block for it under `providers:`.
+
+Worked example with an internal LiteLLM router and two local open-weight models:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  default: opusplan
+  provider: ecc-router
+providers:
+  ecc-router:
+    base_url: http://192.168.10.13:4000/v1
+    api_key: ${ECC_ROUTER_KEY}
+    opusplan:
+      plan: GLM-5.3-Flash-850K      # main conversation
+      exec: Qwen3.8FlashNext        # subagents, cron jobs, kanban workers
+```
+
+With that config the chat runs `GLM-5.3-Flash-850K`, and a `delegate_task` child runs `Qwen3.8FlashNext` on the same router, without setting `delegation.model`. Both `plan` and `exec` are required; a block with only one is an error.
+
+Notes:
+
+- `/model opusplan` switches the live session to the plan model and turns on the split for that session. Picking any other model with `/model` ends the split, so subagents go back to inheriting. `--global` writes the keyword (`model.default: opusplan`), not the resolved model id, so the split survives a restart. `--provider <name>` uses that provider's pair.
+- An explicit `delegation.model` always wins over the exec model. `delegation.model: opusplan` forces the exec model even when the main model is something else. A direct `delegation.base_url` endpoint is never second-guessed. See [Delegation](features/delegation.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one).
+- Auxiliary tasks that follow the main model (compression, vision, and so on) use the plan model.
+- Switching to or from `opusplan` mid-conversation changes the model, which resets the prompt cache like any other `/model` switch.
+
 ### Custom aliases
 
 Define your own short names for models you reach for often, then use `/model <alias>` in a running session or `hermes chat --model <alias>` at startup. There are two equivalent formats — pick whichever fits your workflow.

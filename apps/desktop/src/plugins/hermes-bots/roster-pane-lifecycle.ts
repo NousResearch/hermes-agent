@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import type { useRoster } from './data'
 import { displayName } from './labels'
-import { mergeServerMeta, pullServerAvatars } from './profile-ops'
+import { pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
 import { backfillMessagingProtocol } from './soul'
@@ -43,13 +43,8 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       $lastSources.set(data.sources)
     }
 
-    // Every live row, not just the active source's: a bot on another
-    // connection reports its own title too, and skipping it left that bot
-    // named by whatever this Desktop last cached for it.
-    mergeServerMeta(
-      roster.filter(row => !row?.ghost),
-      data?.fetchedAt || 0
-    )
+    // Names were already reconciled when the snapshot was fetched
+    // (data.ts::fetchRosterSnapshot), for every reader, pane open or not.
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)

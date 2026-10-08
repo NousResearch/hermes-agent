@@ -450,10 +450,39 @@ def is_coin_name_only(finding: Finding, line: str) -> bool:
     return bool(hits) and all(_is_standalone_coin_name(line, h.start(), h.end()) for h in hits)
 
 
+# Google mints installed-app (desktop/CLI) OAuth clients with a ``GOCSPX-`` secret that its OAuth
+# docs say cannot be kept confidential: every copy of the app ships it (gcloud does). A plugin is
+# such an app, so the literal identifies a public client rather than leaking a credential; it stays
+# in the report for review (caution) instead of hard-blocking the install.
+_GOOGLE_PUBLIC_CLIENT_SECRET = re.compile(r'["\']GOCSPX-[A-Za-z0-9_-]{20,}["\']')
+
+
+def is_google_installed_app_secret(finding: Finding, line: str) -> bool:
+    """A ``hardcoded_secret`` hit whose literal is a Google installed-app OAuth client secret."""
+    return finding.pattern_id == "hardcoded_secret" and bool(_GOOGLE_PUBLIC_CLIENT_SECRET.search(line))
+
+
 __all__ = [
-    "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
-    "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
-    "is_inert_fixture_line", "is_base64_media",
-    "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
-    "is_hex_in_char_class", "logical_line", "is_loopback_continuation", "is_json_prose_value", "is_coin_name_only",
+    "DOC_PROSE_EXTENSIONS",
+    "LITERAL_INERT_PATTERN_IDS",
+    "STEP_DOWN",
+    "TEST_TREE_DIRS",
+    "is_agent_facing",
+    "is_base64_media",
+    "is_ci_workflow",
+    "is_coin_name_only",
+    "is_data_decode",
+    "is_doc_prose",
+    "is_google_installed_app_secret",
+    "is_hex_in_char_class",
+    "is_inert_fixture_line",
+    "is_json_prose_value",
+    "is_loopback_continuation",
+    "is_loopback_only",
+    "is_pip_install_in_prose_literal",
+    "is_regex_alternation_token",
+    "is_self_uninstall_doc",
+    "is_test_tree",
+    "logical_line",
+    "prose_cap",
 ]

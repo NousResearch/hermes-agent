@@ -53,13 +53,13 @@ _CHAIN_STEP_SQL = f"""
 _TURN_LEASE_SWEEP_GRACE_S = 86400.0
 
 
-def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
+def _cooldown_row(exists: bool, cooldown_until, error) -> dict[str, Any]:
     return {"session_exists": exists,
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
-                     stale) -> Tuple[bool, Optional[str]]:
+                     stale) -> tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
     expires_at)``), INSERT OR IGNORE ours, then SELECT to confirm ownership (INSERT OR
     IGNORE gives no rowcount signal). Returns ``(acquired, reclaimed_holder)``."""
@@ -127,7 +127,7 @@ class SessionCompressionMixin:
                 "compress and a later close is recorded (#106459)", session_id, reason, provenance)
         return reason
 
-    def find_live_compression_child(self, parent_session_id: str) -> Optional[Dict[str, Any]]:
+    def find_live_compression_child(self, parent_session_id: str) -> Optional[dict[str, Any]]:
         """The unique live direct child of a compression-ended session, else None. A stale
         agent whose parent was rotated elsewhere may recover only when the lineage names
         exactly one live continuation; more than one fails closed."""
@@ -226,16 +226,18 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at,
+                   thread_id, display_name, origin_json, pinned, started_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time(),
+                parent["thread_id"], parent["display_name"], parent["origin_json"],
+                # The pin is lineage-wide (set_session_pinned); a segment published after it joins it.
+                int(parent["pinned"] or 0), time.time(),
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 parent["archived"] or 0, parent["auto_archived"] or 0),
@@ -243,18 +245,20 @@ class SessionCompressionMixin:
 
     def publish_compression_child(
         self, *, parent_session_id: str, child_session_id: str, source: str,
-        messages: List[Dict[str, Any]], model: str = None, model_config: Dict[str, Any] = None,
-        system_prompt: str = None, cwd: str = None, profile_name: str = None,
-        compression_lock_holder: str = None, require_compression_lease: bool = True,
+        messages: list[dict[str, Any]], model: str | None = None, model_config: dict[str, Any] | None = None,
+        system_prompt: str | None = None, cwd: str | None = None, profile_name: str | None = None,
+        compression_lock_holder: str | None = None, require_compression_lease: bool = True,
         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
-        ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
-        > watermark`` — appends landed during the slow summary — are column-cloned into the child AFTER the
-        handoff. *watermark_ceiling* bounds the clone: the rotation path flushes its OWN transcript to the
-        parent just before publishing and those rows are already in the handoff, so only ``(watermark,
-        watermark_ceiling]`` is foreign tail (``None`` = unbounded). *require_lease_refresh* +
+        ended parent with a missing/empty child. *watermark* (the parent's highest row already represented
+        in the handoff: its ``get_active_message_watermark`` at compression start, or the newest row of an
+        adopted durable snapshot): parent rows with ``id > watermark`` — appends landed during the slow
+        summary — are column-cloned into the child AFTER the handoff. *watermark_ceiling* bounds the clone:
+        the rotation path flushes its OWN transcript to the parent just before publishing and those rows are
+        already in the handoff, so only ``(watermark, watermark_ceiling]`` is foreign tail (``None`` =
+        unbounded). *require_lease_refresh* +
         *compression_lock_holder* refreshes the lease on the same ``conn`` before the expiry check (no
         TOCTOU window), so a refresher that died on transient DB errors gets one last chance.
 
@@ -279,7 +283,7 @@ class SessionCompressionMixin:
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name, tool_names,
-                          archived, auto_archived
+                          archived, auto_archived, pinned
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -355,7 +359,7 @@ class SessionCompressionMixin:
             "THEN compression_failure_cooldown_until ELSE ? END, compression_failure_error = ? WHERE id = ?",
             (cooldown_until, cooldown_until, error, session_id))
 
-    def get_compression_failure_cooldown(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_compression_failure_cooldown(self, session_id: str) -> Optional[dict[str, Any]]:
         """Return the active (unexpired) compression-failure cooldown, or None."""
         now = time.time()
         row = self._read_one(_COOLDOWN_ROW_SQL, (session_id,)) if session_id else None
@@ -363,13 +367,13 @@ class SessionCompressionMixin:
             return None
         return {"cooldown_until": float(row[0]), "remaining_seconds": float(row[0]) - now, "error": row[1]}
 
-    def get_compression_failure_cooldown_row(self, session_id: str) -> Dict[str, Any]:
+    def get_compression_failure_cooldown_row(self, session_id: str) -> dict[str, Any]:
         """Exact stored cooldown columns, no expiry filtering, so compression cancellation
         can roll back an expired, partially-null, or absent row exactly."""
         row = self._read_one(_COOLDOWN_ROW_SQL, (session_id,)) if session_id else None
         return _cooldown_row(False, None, None) if row is None else _cooldown_row(True, row[0], row[1])
 
-    def restore_compression_failure_cooldown_row(self, session_id: str, snapshot: Dict[str, Any]) -> None:
+    def restore_compression_failure_cooldown_row(self, session_id: str, snapshot: dict[str, Any]) -> None:
         """Restore and verify an exact cooldown-row snapshot. Unlike record/clear this
         rollback API propagates write and verification failures: cancellation must not be
         reported mutation-free when compensation failed. The tolerated exception is a
@@ -653,8 +657,22 @@ class SessionCompressionMixin:
                 last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
-    def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
-        """Extend a turn lease only while ``holder`` still owns it."""
+    def session_turn_lease_expires_at(self, session_id: str, holder: str) -> Optional[float]:
+        """Committed ``expires_at`` of ``holder``'s turn lease, or None when it does not hold it."""
+        if not session_id or not holder:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                (self._session_turn_lease_key_on_conn(conn, session_id), holder),
+            ).fetchone()
+        return float(row[0]) if row else None
+
+    def refresh_session_turn_lease(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
+        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
@@ -664,7 +682,7 @@ class SessionCompressionMixin:
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do))
+        return bool(self._execute_write(_do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""
@@ -717,7 +735,7 @@ class SessionCompressionMixin:
                 (time.time(), cutoff),
         ) or 0
 
-    def get_compression_chain(self, session_id: str) -> List[str]:
+    def get_compression_chain(self, session_id: str) -> list[str]:
         """Walk the compression-continuation chain forward: root-first through the tip (``[session_id]``
         when no continuation); ``get_compression_tip`` is the last element. A continuation is a child of
         a session with ``end_reason='compression'``. The old ``child.started_at >= parent.ended_at`` test
@@ -748,7 +766,7 @@ class SessionCompressionMixin:
         chain = self.get_compression_chain(session_id)
         return chain[-1] if chain else session_id
 
-    def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
+    def _is_compression_child_row(self, child: dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
         # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).
         if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
@@ -756,7 +774,7 @@ class SessionCompressionMixin:
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
 
-    def get_compression_lineage(self, session_id: str) -> List[str]:
+    def get_compression_lineage(self, session_id: str) -> list[str]:
         """Return compression ancestors through tip in chronological order."""
         session = self.get_session(session_id)
         if not session or self._is_explicit_fork_child_row(session):

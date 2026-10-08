@@ -116,7 +116,7 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     approval — it falls through to normal busy handling (design intent:
     'yes' in conversation must not execute a dangerous command)."""
     _clear_approval_state()
-    runner, adapter = _make_runner()
+    runner, _adapter = _make_runner()
     source = _make_source()
     session_key = runner._session_key_for_source(source)
     # No approval registered.

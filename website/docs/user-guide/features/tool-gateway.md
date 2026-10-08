@@ -167,6 +167,18 @@ web:
   backend: firecrawl   # Hermes now uses FIRECRAWL_API_KEY from .env
 ```
 
+### Mixing your own key and the gateway (web only)
+
+Web search and web extract can each choose their own route. In the desktop app, open **Capabilities → Tools → Web Search & Scraping**: **Use for Search** / **Use for Extract** on the **Nous Subscription** row sends that capability through the gateway, and the same buttons on a direct row (e.g. **Firecrawl**) send it through your own key. The **Search:** / **Extract:** pills at the top show which route each one takes right now. In `config.yaml` the managed choice is the value `nous` on the per-capability key:
+
+```yaml
+web:
+  search_backend: firecrawl   # your FIRECRAWL_API_KEY
+  extract_backend: nous       # the Nous Tool Gateway (managed Firecrawl)
+```
+
+Picking **Nous Subscription** for the whole tool (or running `hermes tools`) clears both per-capability keys, so search and extract both go back through the gateway.
+
 ### Legacy `use_gateway` flag (deprecated)
 
 Older Hermes versions used a per-tool `use_gateway: true` boolean to route through the gateway. That flag is **legacy**: it is never written anymore, and the `hermes tools` picker removes it from a category's config when it rewrites the selection. Old configs that still contain `use_gateway: true` are interpreted at read time as the `nous` selection, so existing setups keep working. Don't set `use_gateway` in new configs — select the provider in `hermes tools` instead.

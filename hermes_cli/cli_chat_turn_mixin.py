@@ -30,6 +30,10 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+    # (turn, thread, session_id) of an interrupted turn that outlived the post-interrupt wait.
+    _abandoned_turn = None
+    # How long chat() polls an interrupted agent thread before it stops watching it.
+    _POST_INTERRUPT_WAIT_S = 10.0
 
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
@@ -64,6 +68,8 @@ class CLIChatTurnMixin:
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
+        if getattr(self, "_abandoned_turn", None) is not None:
+            self._chat_wait_for_abandoned_turn()
 
         if not self._ensure_runtime_credentials():
             return None
@@ -471,7 +477,8 @@ class CLIChatTurnMixin:
             # subprocess, persist). Poll instead of a blocking join so another
             # interrupt (Ctrl+C sets _should_exit) or a stuck agent can't freeze
             # us; the thread is daemon and dies on process exit regardless.
-            for _ in range(50):  # 50 * 0.2s = 10s max
+            deadline = time.monotonic() + self._POST_INTERRUPT_WAIT_S
+            while time.monotonic() < deadline:
                 agent_thread.join(timeout=0.2)
                 if not agent_thread.is_alive() or self._should_exit:
                     break
@@ -482,6 +489,7 @@ class CLIChatTurnMixin:
                     "on exit.",
                     agent_thread.ident,
                 )
+                self._abandoned_turn = (turn, agent_thread, self.session_id)
         else:
             agent_thread.join(timeout=30)  # should be done already; guard edge cases
         return interrupt_msg
@@ -512,6 +520,10 @@ class CLIChatTurnMixin:
         # box; the sleep lets the renderer paint before we draw.
         sys.stdout.flush()
         time.sleep(0.15)
+        self._chat_adopt_turn_state(turn)
+
+    def _chat_adopt_turn_state(self, turn):
+        """Take the finished turn's transcript and the agent's live session id."""
         if turn.result:
             self.conversation_history = turn.result.get("messages", self.conversation_history)
         # Mid-turn auto-compression continues in a child session: sync so /status, /resume,
@@ -523,6 +535,32 @@ class CLIChatTurnMixin:
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None
+
+    def _chat_wait_for_abandoned_turn(self):
+        """Let an interrupted turn that outlived the post-interrupt wait stop before a new one starts.
+
+        The worker can be inside interrupt-shielded context compression for far longer than that
+        wait. A new turn on the same agent then waited on the session turn lease, its lease wait
+        aborted on the old turn's interrupt flag and cleared it, and the old turn ran its whole task
+        while the user's message sat behind the lease. Waiting here keeps the flag set, so the old
+        turn stops at its next interrupt check and the new turn starts from its final transcript.
+        """
+        from cli import logger
+        from agent.turn_facade_lease import LEASE_WAIT_SECONDS
+
+        turn, agent_thread, session_id = self._abandoned_turn
+        if agent_thread.is_alive():
+            logger.info("Waiting for interrupted agent thread %s to stop before the next turn", agent_thread.ident)
+            deadline = time.monotonic() + LEASE_WAIT_SECONDS
+            while agent_thread.is_alive() and not self._should_exit and time.monotonic() < deadline:
+                agent_thread.join(timeout=0.2)
+            if agent_thread.is_alive():
+                return  # still wedged: the session turn lease guards the next turn as before
+        self._abandoned_turn = None
+        if self.agent is not None and getattr(self.agent, "_interrupt_requested", False):
+            self.agent.clear_interrupt()
+        if session_id == self.session_id:  # a /new or /resume in between owns the transcript now
+            self._chat_adopt_turn_state(turn)
 
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.

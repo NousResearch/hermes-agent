@@ -152,6 +152,11 @@ class RelayAdapter(BasePlatformAdapter):
         self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: Dict[str, None] = {}
+        # Discord chat labels the text lane carries (connector-resolved) and a forwarded interaction
+        # does not: (scope, chat) -> (chat_name, chat_topic). The second map is what the session
+        # store is known to hold, so a label costs a write only when it is new or changed.
+        self._discord_chat_labels: Dict[tuple, tuple] = {}
+        self._discord_labels_recorded: Dict[tuple, tuple] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -885,16 +890,80 @@ class RelayAdapter(BasePlatformAdapter):
                 return
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
-            return
-        await self._localize_inbound_media(event)
+        try:
+            self._capture_scope(event)
+            await self._remember_discord_labels(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                return
+            await self._localize_inbound_media(event)
+        except asyncio.CancelledError:
+            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
+            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if dedupe_key is not None:
+                self._seen_inbound.pop(dedupe_key, None)
+            raise
         await self.handle_message(event)
 
     _SEEN_INBOUND_MAX = 512
+    _DISCORD_LABELS_MAX = 2048
+
+    async def _remember_discord_labels(self, source) -> None:
+        """Keep the text lane's Discord chat labels for the interaction lane: the pinned
+        session-context prompt renders them, so a slash turn without them re-rendered the cached
+        prefix and the next message rendered it back."""
+        # A message carrying no labels is an observation too (a topic or name removed upstream):
+        # the interaction must render what the text lane last rendered, not an older label.
+        if getattr(source, "platform", None) != Platform.DISCORD or not source.chat_id:
+            return
+        key, labels = (str(source.scope_id or ""), str(source.chat_id)), (source.chat_name, source.chat_topic)
+        self._discord_chat_labels[key] = labels
+        self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        store = getattr(self, "_session_store", None)
+        if store is None or self._discord_labels_recorded.get(key) == labels:
+            return
+        # Recorded when observed, so the interaction lane has them after a restart whatever order
+        # the chat's sessions were created or reset in. Awaited before dispatch (the reader delivers
+        # events one at a time, so records land in observation order) but off the loop: it is a
+        # disk write.
+        try:
+            recorded = await asyncio.to_thread(store.record_chat_labels, source)
+        except Exception:
+            logger.debug("relay: Discord chat labels not recorded", exc_info=True)
+            recorded = False
+        if not recorded:
+            # Not written (store fault, or no database handle right now): leave the key out so the
+            # next message with these labels tries again.
+            self._discord_labels_recorded.pop(key, None)
+            return
+        self._discord_labels_recorded[key] = labels
+        self._evict_oldest(self._discord_labels_recorded, self._DISCORD_LABELS_MAX)
+
+    async def _discord_chat_labels_for(self, scope: str, chat_id: str) -> tuple:
+        """The text lane's last (chat_name, chat_topic) for a chat. After a restart (or eviction) the
+        map is empty until the text lane speaks again, so ask the session store for what that lane
+        last recorded; otherwise a first interaction re-renders the prompt the cache still holds."""
+        key = (scope, chat_id)
+        if key in self._discord_chat_labels:
+            return self._discord_chat_labels[key]
+        store = getattr(self, "_session_store", None)
+        try:
+            # Off the loop: the read takes the database's writer lock, which a write may be holding.
+            recorded = (await asyncio.to_thread(store.chat_labels, Platform.DISCORD, scope, chat_id)
+                        if store is not None else None)
+        except Exception:
+            # Labels only keep the prompt cache warm; a store fault must not drop the interaction.
+            # Not cached either: the next interaction asks the store again.
+            logger.debug("relay: recorded Discord chat labels unreadable", exc_info=True)
+            return (None, None)
+        if recorded is not None:
+            self._discord_labels_recorded[key] = recorded
+            self._evict_oldest(self._discord_labels_recorded, self._DISCORD_LABELS_MAX)
+        self._discord_chat_labels[key] = recorded or (None, None)
+        self._evict_oldest(self._discord_chat_labels, self._DISCORD_LABELS_MAX)
+        return self._discord_chat_labels[key]
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
         """Stable replay identity: (platform, chat, platform message id). The platform
@@ -1133,6 +1202,9 @@ class RelayAdapter(BasePlatformAdapter):
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return
+                    src = event.source
+                    src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
+                        str(src.scope_id or ""), src.chat_id)
                     await self.handle_message(event)
                     return
             logger.info(
@@ -1174,17 +1246,33 @@ class RelayAdapter(BasePlatformAdapter):
         if not isinstance(user, dict):
             user = {}
         guild_id = payload.get("guild_id")
+        # The text lane's user_display_name is the native author.display_name: guild nick, else
+        # global name, else username. The interaction carries all three as of now, so derive the
+        # same name from it; a remembered one would outlive a nickname change.
+        user_name = next(
+            (str(v) for v in ((member.get("nick") if isinstance(member, dict) else None),
+                              user.get("global_name"), user.get("username")) if v), None)
+        chat_id = str(payload.get("channel_id") or "")
+        # The text lane keys a message inside a thread on chat_type "thread" + thread_id (both session-key
+        # fields), so an interaction sent there must carry the same or it lands in a per-user "group"
+        # session beside the thread's. The partial channel object marks a thread by type (10 announcement,
+        # 11 public, 12 private: what discord.py's Thread covers) and names the parent.
+        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
+        is_thread = bool(guild_id) and channel.get("type") in (10, 11, 12)
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the
             # logical platform, and _capture_scope skips the generic "relay".
             platform=Platform.DISCORD,
-            chat_id=str(payload.get("channel_id") or ""),
+            chat_id=chat_id,
             # "group", not "channel": both the connector's capability binding and the
             # native Discord adapter key guild channels as "group".
-            chat_type="group" if guild_id else "dm",
+            chat_type="thread" if is_thread else ("group" if guild_id else "dm"),
+            thread_id=chat_id if is_thread else None,
+            parent_chat_id=str(channel["parent_id"]) if is_thread and channel.get("parent_id") else None,
             user_id=str(user["id"]) if user.get("id") else None,
-            user_name=str(user["username"]) if user.get("username") else None,
+            user_name=user_name,
+            # chat_name / chat_topic: filled by _on_passthrough from what the text lane recorded.
             scope_id=str(guild_id) if guild_id else None,
             message_id=str(payload.get("id")) if payload.get("id") else None,
             # Same upstream-trust marker the relay text lane stamps. Set locally, never

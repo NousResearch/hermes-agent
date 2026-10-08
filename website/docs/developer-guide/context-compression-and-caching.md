@@ -376,7 +376,24 @@ To keep the 85% autoraise but hide only the one-time notice:
 hermes config set compression.codex_gpt55_autoraise_notice false
 ```
 
-### Codex large-context `-900k` picker variants (opt-in)
+### Codex context window policy (opt-in by default)
+
+Set `model.codex_context_policy: large` in your active `config.yaml` to let
+eligible bare Codex OAuth slugs resolve to their verified large window. The
+`-900k` suffix remains a wire-stripped alias for the same window, but disappears
+from `/model` under `large`. The default `advertised` policy preserves the
+existing opt-in behaviour: bare slugs resolve to 272K, and `-900k` selects the
+verified large window. Restore it with
+`hermes config set model.codex_context_policy advertised` (per profile if desired).
+
+The Codex responses endpoint accepted 921,028 input tokens for `gpt-6.1-sol`
+and rejected 921,998 (`context_length_exceeded`) in a 2026-09-30 bisection;
+the inferred ceiling is 922,000, leaving 22K margin at a 900K grant. This
+model's variant is being proposed separately; this setting never creates an
+unverified variant. Long sessions near 900K resend roughly 3.3x the context
+of a 272K-capped session per turn, and tokens above 272K may meter at a higher
+tier. Short sessions do not pay that depth cost.
+
 
 The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4, gpt-5.6
 (Sol/Terra/Luna) and GPT-6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens

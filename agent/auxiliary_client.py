@@ -613,8 +613,8 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
         return False
-    from agent.model_metadata import is_codex_context_variant
-    if is_codex_context_variant(bare):
+    from agent.model_metadata import codex_uses_large_window
+    if codex_uses_large_window(bare):
         return False
     if "astra" in bare:
         return "900k" not in bare

@@ -1771,9 +1771,35 @@ def has_codex_context_variant(model_bare: str) -> bool:
     return is_codex_900k_base(model_bare)
 
 
+# Keep the upstream opt-in default: large windows burn subscription quota
+# disproportionately for long sessions. The suffix stays a wire-stripped alias.
+CODEX_CONTEXT_POLICY_DEFAULT = "advertised"
+
+
+def codex_context_policy() -> str:
+    """Window policy from the active root or profile config.yaml."""
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+        config = read_raw_config_readonly()
+        model = config.get("model") if isinstance(config, dict) else None
+        value = model.get("codex_context_policy") if isinstance(model, dict) else None
+    except Exception:
+        return CODEX_CONTEXT_POLICY_DEFAULT
+    return value.strip().lower() if isinstance(value, str) and value.strip().lower() in ("advertised", "large") else CODEX_CONTEXT_POLICY_DEFAULT
+
+
+def codex_uses_large_window(model: Optional[str]) -> bool:
+    """One predicate for context resolution and compaction thresholds."""
+    return is_codex_context_variant(model) or (
+        codex_context_policy() == "large" and is_codex_900k_base(model)
+    )
+
+
 def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
-    """Live-verified cap for a VALID ``-900k`` variant only; base slugs and ineligible aliases -> None."""
+    """Verified context cap for an alias, or eligible bare slug under large policy."""
     base = _codex_variant_base(model_bare)
+    if base is None and codex_context_policy() == "large" and is_codex_900k_base(model_bare):
+        base = _bare_codex_slug(model_bare)
     if base is None:
         return None
     exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(base)

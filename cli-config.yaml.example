@@ -74,6 +74,15 @@ model:
   # Both "default" and "model" work as the key name here.
   default: "anthropic/claude-opus-4.6"
   
+  # Codex OAuth window: advertised (default; bare eligible slugs use the
+  # advertised 272K window, -900k aliases opt into the verified large window)
+  # or large (eligible bare slugs use the verified window; -900k stays an alias).
+  # A deep 900K session resends up to ~3.3x the context of a 272K session
+  # each turn, potentially burning subscription quota faster; short sessions
+  # are unaffected. Set this per profile to change that agent alone.
+  # Flip back: hermes config set model.codex_context_policy advertised
+  # codex_context_policy: advertised
+
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)

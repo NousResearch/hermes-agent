@@ -1050,6 +1050,19 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is None:
             return None
+        if supervisor._web_page_seen is False:
+            # Not yet on the driver's page (bound at session start, before the driver opened its
+            # tab): one CLI hop for the driver's URL picks the exact tab among several web tabs.
+            # If that tab isn't in the supervisor's browser at all (per-connection backends give
+            # each websocket a private browser), the supervisor would answer from its own
+            # about:blank — remember the miss until the next (re)attach and use the CLI path,
+            # which evaluates in the driver's page, without repeating the hop on every call.
+            if supervisor._driver_bind_failed:
+                return None
+            url = (_session._run_browser_command(effective_task_id, "get", ["url"]).get("data") or {}).get("url")
+            if not (url and supervisor.bind_driver_page(url)):
+                supervisor._driver_bind_failed = True
+                return None
         sup_result = supervisor.evaluate_runtime(expression)
         if sup_result.get("ok"):
             return _eval_result_or_blocked(

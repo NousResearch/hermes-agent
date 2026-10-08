@@ -15,7 +15,7 @@ import re
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +152,18 @@ def _encoded_json_scalar_size(value: Any) -> int:
     fit before asking the encoder to render them.  Values below that bound
     are still tiny compared with the old unbounded container materialization.
     """
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, str):
+        value = str.__str__(value)
+    elif isinstance(value, int) and not isinstance(value, bool) and type(value) is not int:
+        value = int.__int__(value)
+    elif isinstance(value, float) and type(value) is not float:
+        value = float.__float__(value)
+    if type(value) is int:
         # Since 2**4 > 10, a B-bit integer has more than (B - 1) / 4
         # decimal digits. Keep the equality boundary for the exact encoder.
         if int.bit_length(value) > 4 * MAX_MEMORY_OBSERVATION_BYTES + 1:
             raise ValueError("observation payload is too large")
-    if isinstance(value, str) and str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+    if type(value) is str and str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
         raise ValueError("observation payload string is too long")
     encoded = json.dumps(
         value,
@@ -216,16 +222,13 @@ class MemoryPrefetchResult:
             raw_observations = ()
         if not isinstance(raw_observations, (list, tuple)):
             raise TypeError("observations must be a list or tuple")
-        # Exact builtin lists are bounded before copying so a provider cannot
-        # force a full duplicate of a huge candidate list at this public
-        # boundary. Keep one look-ahead item for the manager's deterministic
-        # truncation warning. List subclasses are rejected rather than calling
-        # an overridden iterator; tuple instances (including tuple subclasses)
-        # retain their existing lazy traversal contract.
-        if type(raw_observations) is list:
-            raw_observations = raw_observations[
-                : MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1
-            ]
+        # Exact builtin lists and tuples are bounded before the public result
+        # can cross a plugin-host wire boundary. Keep one look-ahead item for
+        # the manager's deterministic truncation warning. Tuple subclasses stay
+        # intact for in-process manager validation; the host codec reads their
+        # tuple storage without invoking overridden iteration.
+        if type(raw_observations) in (list, tuple):
+            raw_observations = raw_observations[: MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1]
         elif not isinstance(raw_observations, tuple):
             raise TypeError("observations must be a list or tuple")
         object.__setattr__(
@@ -275,23 +278,36 @@ def _freeze_json_value(
         operation_budget[0] -= 1
         if operation_budget[0] < 0:
             raise ValueError("observation operation exhausted node budget")
-    if value is None or isinstance(value, (bool, int, str)):
-        if isinstance(value, str) and str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+    if value is None or type(value) in (bool, int):
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
+        return value
+    if isinstance(value, str):
+        value = str.__str__(value)
+        if str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
             raise ValueError("observation payload string is too long")
         _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
         return value
+    if isinstance(value, int):
+        value = int.__int__(value)
+        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
+        return value
     if isinstance(value, float):
+        value = float.__float__(value)
         if not math.isfinite(value):
             raise ValueError("observation payload contains a non-finite number")
         _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
         return value
     if isinstance(value, dict):
-        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+        item_count = dict.__len__(value)
+        if item_count > MAX_MEMORY_OBSERVATION_ITEMS:
             raise ValueError("observation payload object has too many keys")
         _account_encoded_bytes(budget, 2)  # ``{}``
         frozen = {}
-        for index, (key, child) in enumerate(value.items()):
-            if not isinstance(key, str) or str.__len__(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+        for index, (key, child) in enumerate(dict.items(value)):
+            if not isinstance(key, str):
+                raise ValueError("observation payload object keys must be bounded strings")
+            key = str.__str__(key)
+            if str.__len__(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
                 raise ValueError("observation payload object keys must be bounded strings")
             if index:
                 _account_encoded_bytes(budget, 1)  # ``,``
@@ -303,14 +319,23 @@ def _freeze_json_value(
                 operation_budget=operation_budget,
             )
         return _FrozenDict(frozen)
-    if isinstance(value, list):
-        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+    if isinstance(value, (list, tuple)):
+        if isinstance(value, list):
+            item_count = list.__len__(value)
+        else:
+            item_count = tuple.__len__(value)
+        if item_count > MAX_MEMORY_OBSERVATION_ITEMS:
             raise ValueError("observation payload array has too many items")
         _account_encoded_bytes(budget, 2)  # ``[]``
         frozen = []
-        for index, child in enumerate(value):
+        for index in range(item_count):
             if index:
                 _account_encoded_bytes(budget, 1)  # ``,``
+            child = (
+                list.__getitem__(value, index)
+                if isinstance(value, list)
+                else tuple.__getitem__(value, index)
+            )
             frozen.append(
                 _freeze_json_value(
                     child,
@@ -325,10 +350,13 @@ def _freeze_json_value(
 
 def _thaw_json_value(value: Any) -> Any:
     """Return a JSON-native copy of a frozen observation value for sizing."""
-    if isinstance(value, Mapping):
-        return {key: _thaw_json_value(child) for key, child in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_json_value(child) for child in value]
+    if isinstance(value, dict) and type(value) in (dict, _FrozenDict):
+        return {key: _thaw_json_value(child) for key, child in dict.items(value)}
+    if type(value) is tuple:
+        return [
+            _thaw_json_value(tuple.__getitem__(value, index))
+            for index in range(tuple.__len__(value))
+        ]
     return value
 
 

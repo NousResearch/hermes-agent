@@ -999,3 +999,37 @@ def test_observer_enqueue_does_not_wait_for_manager_lifecycle_lock(monkeypatch, 
         psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
     assert not holder.is_alive()
     assert emitter is not None and not emitter.is_alive()
+
+
+def test_observer_callbacks_keep_signature_and_async_hook_contract(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    narrow_called = threading.Event()
+    async_called = threading.Event()
+    seen = []
+
+    def narrow_observer(delta):
+        seen.append(("narrow", delta))
+        narrow_called.set()
+
+    async def async_observer(**kwargs):
+        import asyncio
+
+        await asyncio.sleep(0)
+        seen.append(("async", kwargs["delta"]))
+        async_called.set()
+
+    _patch_test_callback_manager(
+        monkeypatch, {"on_stream_delta": [narrow_observer, async_observer]}
+    )
+
+    assert enqueue_plugin_observer_hook("on_stream_delta", delta="kept")
+    assert narrow_called.wait(timeout=5.0)
+    assert async_called.wait(timeout=5.0)
+    shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert sorted(seen) == [("async", "kept"), ("narrow", "kept")]

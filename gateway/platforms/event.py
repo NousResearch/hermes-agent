@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.session import SessionSource
 
@@ -44,6 +44,12 @@ class ProcessingOutcome(Enum):
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
+    if TYPE_CHECKING:
+        # In-process delivery state only: deliberately absent from dataclass fields
+        # so event serialization never persists adapter locks or transport receipts.
+        _delivery_retry_suppressed_result: Any = field(default=None, init=False, repr=False)
+        _feishu_topic_delivery: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
     text: str
     message_type: MessageType = MessageType.TEXT
     # Author, mirrored from ``source`` for per-message prompt builders; None for non-IM sources.

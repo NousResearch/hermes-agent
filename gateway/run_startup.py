@@ -480,8 +480,10 @@ class GatewayStartupMixin:
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
                 else:
+                    terminal = getattr(result, "retry_suppressed", False) is True
                     await asyncio.to_thread(
-                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
+                        mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed"),
+                        **({"retry_suppressed": True} if terminal else {}),
                     )
         # Whatever is still waiting on a flood penalty or a retry backoff (adopted at boot, skipped as not
         # yet due, refused again just now) gets a timer, so no rejected reply waits for the next restart.
@@ -634,7 +636,13 @@ class GatewayStartupMixin:
             _resume_state.turn.started_ts = time.time()
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
-            event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            event = MessageEvent(
+                text="", message_type=MessageType.TEXT, source=source, internal=True,
+                # A restored Feishu topic needs its persisted reply anchor, but this is
+                # not a new inbound message for reaction/lifecycle hooks.
+                reply_anchor_override=(source.message_id
+                    if source.platform == Platform.FEISHU and source.thread_id else None),
+            )
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

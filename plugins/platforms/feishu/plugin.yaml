@@ -42,3 +42,7 @@ optional_env:
     description: "Display name for the Feishu home channel"
     prompt: "Home channel display name"
     password: false
+  - name: FEISHU_TOPIC_DELIVERY_FALLBACK
+    description: "Topic delivery fallback: parent_chat (default), parent_then_home, error_notice, or silent; config.yaml platforms.feishu.extra.topic_delivery_fallback is preferred"
+    prompt: "Topic delivery fallback"
+    password: false

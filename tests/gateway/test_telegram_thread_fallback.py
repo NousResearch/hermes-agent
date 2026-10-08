@@ -17,11 +17,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig, Platform
-from gateway.platforms.base import (
-    SendResult,
-    _reply_anchor_for_event,
-    _thread_metadata_for_source,
-)
+from gateway.platforms.base import SendResult
+from gateway.platforms.base_thread_metadata import _reply_anchor_for_event, _thread_metadata_for_source
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 

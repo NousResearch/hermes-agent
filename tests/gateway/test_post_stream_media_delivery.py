@@ -100,10 +100,14 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     media_file = _allowed_media_path(tmp_path, monkeypatch, "chart.png")
     adapter = _adapter()
 
+    event = _event()
+    event.source.user_id = "U-sender"
+    event.source.scope_id = "T-workspace"
+    event.source.parent_chat_id = "C-parent"
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({}),
+        object.__new__(GatewayRunner),
         f"Here is the chart.\nMEDIA:{media_file}",
-        _event(),
+        event,
         adapter,
     )
 
@@ -111,5 +115,10 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
+    # Event-aware Feishu state must not drop runner-only Slack/relay recipient routing.
+    assert images_kwargs["metadata"]["slack_team_id"] == "T-workspace"
+    assert images_kwargs["metadata"]["scope_id"] == "T-workspace"
+    assert images_kwargs["metadata"]["user_id"] == "U-sender"
+    assert images_kwargs["metadata"]["parent_chat_id"] == "C-parent"
 
 

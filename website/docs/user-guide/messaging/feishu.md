@@ -577,6 +577,77 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 
 WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
 
+## Topic delivery fallback
+
+Configure topic-delivery behavior in `config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      topic_delivery_fallback: parent_chat
+```
+
+Hermes first replies to the known message in the topic. If the anchor is missing or
+Feishu explicitly reports it withdrawn/missing (230011 or 231003), Hermes queries
+recent topic messages with `ByCreateTimeDesc`, skips deleted/already-failed anchors,
+and tries at most three replacement anchors. An explicit routing rejection
+(99992402, including audio delivery) follows the same recovery and fallback policy.
+
+If no usable anchor remains, or the bot cannot resolve one because history lookup
+is unavailable (for example missing history-read permission), the configured policy
+uses the known originating parent group. The send API still enforces the bot's access:
+
+
+- `parent_chat` (default, including omitted, null or blank values): send the full
+  original reply/media to the parent group chat on a best-effort basis. Remaining
+  chunks and attachments from that turn follow the same route
+- `parent_then_home`: try the same parent group first. Only Feishu's explicit
+  dissolved-group error (`232009`) permits one redirect to this profile's Feishu
+  `HomeChannel`, configured with `/sethome`. The receiving bot is retained; another
+  profile, another platform, or a conflicting configured bot identity is never used
+- `error_notice`: post one content-free diagnostic in the parent chat. It contains a
+  correlation reference, stage, API code, chat/topic/message/app IDs and message type
+  for administrators to match to backend logs. The original reply is not delivered
+- `silent`: record the failure in backend logs only. The original reply is not delivered
+
+The policy is shared by text, rich posts, progress/stream output, images, files,
+voice/audio and captions. Diagnostics never include original text, captions, file
+paths, credentials or raw exception traces. A failed diagnostic is logged without
+recursive notices. Suppressed deliveries are failures, not successful original
+replies, and are not replayed by the delivery ledger.
+
+Authentication, permission, network and rate-limit failures of an actual message
+send do not establish that its topic anchor is stale and do not redirect that send
+to a broader chat. An ambiguous send timeout may already have delivered content;
+Hermes does not follow it with a new plaintext message. History lookup failures are
+classified separately as `lookup_failed`: no original content was sent by that read.
+Successful anchor recovery remains in the same topic.
+
+For `parent_then_home`, generic invalid-parameter/receiver errors (`230001`,
+`230034`), bot-membership/permission refusal, authentication failure and rate limits
+do not permit Home delivery. Any uncertain transport attempt also prevents the
+redirect, even if a retry later reports a dissolved group. An uncertain failed send
+is terminal for this turn, avoiding a new plaintext send or delivery-ledger replay.
+The dissolved-group code is documented for both
+[sending](https://open.feishu.cn/document/server-docs/im-v1/message/create) and
+[replying](https://open.feishu.cn/document/server-docs/im-v1/message/reply).
+
+Home resolution uses the bound profile's canonical configuration and scoped
+`FEISHU_HOME_CHANNEL` / `FEISHU_HOME_CHANNEL_THREAD_ID` overrides. An environment
+chat override does not inherit a YAML Home topic. A Home topic retains its configured
+`thread_id`, with the same bounded anchor lookup/recovery; it never falls back to
+its own parent chat. Missing, malformed, same-origin or unreachable Home destinations
+stop with a backend diagnostic. Remaining chunks, stream continuations and media
+stay at the selected Home destination. If any content already reached the original
+parent, Hermes does not split the rest of that turn into Home.
+
+`FEISHU_TOPIC_DELIVERY_FALLBACK` is an optional override, read through the owning
+profile's scoped settings with precedence environment → YAML → default. Prefer
+`config.yaml` for this behavioral setting. A secondary profile never borrows the
+launch profile's override. Any other nonempty value, including `main_chat`, rejects
+the adapter configuration; `main_chat` is not a compatibility alias.
+
 ## Troubleshooting
 
 | Problem | Fix |

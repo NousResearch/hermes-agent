@@ -14,6 +14,7 @@ import threading
 import pytest
 
 import cron.scheduler_delivery as sd
+from cron.scheduler_delivery_metadata import _live_route_metadata
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import SendResult
 
@@ -52,7 +53,7 @@ def _target(origin, *, deliver_to=None, adapters=None, loop=None):
 
 def test_origin_discriminators_ride_relay_route_and_media_metadata():
     t = _target({"platform": "slack", "chat_id": "C123", "user_id": DM_USER, "scope_id": "T0AAAA111"})
-    _thread, route_metadata, media_metadata = sd._live_route_metadata(t)
+    _thread, route_metadata, media_metadata = _live_route_metadata(t)
     for metadata in (route_metadata, media_metadata):
         assert (metadata["user_id"], metadata["scope_id"]) == (DM_USER, "T0AAAA111")
 
@@ -65,7 +66,7 @@ def test_no_user_id_off_the_relay_or_for_fan_out_targets(native, deliver_to):
     adapters = {Platform.TELEGRAM: _Native()} if native else None
     t = _target({"platform": "telegram", "chat_id": DM_USER, "user_id": DM_USER}, deliver_to=deliver_to, adapters=adapters)
     assert t.is_relay is not native
-    _thread, route_metadata, media_metadata = sd._live_route_metadata(t)
+    _thread, route_metadata, media_metadata = _live_route_metadata(t)
     assert "user_id" not in route_metadata and "user_id" not in media_metadata
 
 

@@ -673,6 +673,26 @@ class GatewayBusySessionMixin:
         if turn.ctx is not None:
             turn.ctx.event_message_id = anchor
             turn.ctx.inbound_message_id = inbound_id
+        if event.source.platform == Platform.FEISHU and event.source.thread_id:
+            # A redirected answer belongs to the incoming event. The exhausted/recovered
+            # destination of the opening event must not suppress this new reply anchor.
+            metadata = self._event_thread_metadata(event, event.source)
+            if turn.event is not None and turn.event is not event:
+                turn.event._feishu_topic_delivery = metadata["_feishu_topic_delivery"]
+                turn.event._delivery_retry_suppressed_result = None
+            if turn.ctx is not None:
+                ctx = turn.ctx
+                consumer = ctx.stream_consumer_holder[0]
+                if consumer is not None:
+                    # Keep in-flight sends bound to their old metadata and policy state.
+                    # The redirected answer uses the ordinary final-send path; a late old
+                    # terminal receipt cannot suppress it or move old deltas to the new anchor.
+                    consumer._run_still_current = lambda: False
+                    consumer.finish()
+                    ctx.stream_consumer_holder[0] = None
+                for name in ("_progress_metadata", "_status_thread_metadata"):
+                    setattr(ctx, name, {**(getattr(ctx, name) or {}), **metadata})
+                ctx._progress_reply_to = anchor
         return True
 
     def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):

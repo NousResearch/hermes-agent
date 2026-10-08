@@ -13,6 +13,12 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | File | Purpose |
 |------|---------|
 | `gateway/run.py` | `GatewayRunner` facade — composes the `gateway/run_*.py` sibling mixins (startup, adapters, inbound, turn, busy, goals, notifications, shutdown, …) and `gateway/slash_commands_*.py` handlers |
+| `gateway/run_turn_proxy.py` | Proxy request payloads, text-only history and session continuity headers |
+| `gateway/run_turn_display.py` | Per-platform turn display, progress and streaming-surface settings |
+| `gateway/run_notifications_process.py` | Process completion event construction and redacted notification formatting |
+| `gateway/run_turn_runner_review.py` | Background-review callbacks buffered until the main response is delivered |
+| `gateway/run_thread_metadata.py` | `GatewayThreadMetadataMixin` — source/target thread metadata and Telegram DM-topic detection |
+| `gateway/platforms/base_thread_metadata.py` | Shared platform normalization, reply-anchor selection and event/source delivery metadata |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |

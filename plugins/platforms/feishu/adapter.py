@@ -90,6 +90,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
+from plugins.platforms.feishu.adapter_delivery import FeishuTopicDeliveryMixin
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -142,7 +143,6 @@ _FEISHU_DOC_UPLOAD_TYPES = {
 # --- Connection, retry and batching tuning ---
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
-_FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
@@ -185,7 +185,6 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
     return body
 
 
-_FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -320,6 +319,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    topic_delivery_fallback: str = "parent_chat"
 
 
 @dataclass
@@ -1282,7 +1282,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(BasePlatformAdapter):
+class FeishuAdapter(FeishuTopicDeliveryMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1297,6 +1297,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Lifecycle — init / settings / connect / disconnect ---
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
+        self._topic_profile_home = get_hermes_home()
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
@@ -1384,6 +1385,11 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        topic_delivery_fallback = _extra_or_secret(
+            "topic_delivery_fallback", "FEISHU_TOPIC_DELIVERY_FALLBACK", "parent_chat").lower()
+        if topic_delivery_fallback not in {"parent_chat", "parent_then_home", "error_notice", "silent"}:
+            raise ValueError("Feishu topic_delivery_fallback must be parent_chat, parent_then_home, error_notice, or silent")
+
         allow_all_dm = any(
             _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
         )
@@ -1415,6 +1421,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=frozenset(_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
+            topic_delivery_fallback=topic_delivery_fallback,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
         )
 
@@ -1656,6 +1663,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        metadata = metadata if metadata is not None else {}
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
@@ -1665,6 +1673,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
+        delivered_chunks = 0
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1695,11 +1704,20 @@ class FeishuAdapter(BasePlatformAdapter):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)
                 last_response = response
+                if not self._response_succeeded(response):
+                    result = self._finalize_send_result(response, "send failed")
+                    if delivered_chunks:
+                        result.raw_response = {"partial_overflow": True, **(
+                            result.raw_response if isinstance(result.raw_response, dict)
+                            else {"feishu_response": result.raw_response})}
+                    return result
+                delivered_chunks += 1
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}",
+                              raw_response={"partial_overflow": True} if delivered_chunks else None)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
@@ -1727,7 +1745,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot-posted message (used by stream-consumer preview cleanup)."""
@@ -1789,7 +1807,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
     async def _send_interactive_card(
         self, chat_id: str, card: Dict[str, Any], metadata: Optional[Dict[str, Any]], failure_message: str, *,
@@ -1836,7 +1854,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
@@ -1913,6 +1931,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a local image file to Feishu."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        terminal = self._topic_delivery_terminal(chat_id, reply_to, metadata)
+        if terminal is not None:
+            return terminal
         if not os.path.exists(image_path):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         try:
@@ -1937,7 +1958,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(message_response, "image send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send image %s: %s", image_path, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Feishu bot API does not expose a typing indicator."""
@@ -2585,6 +2606,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 return
             self._pending_processing_reactions.pop(message_id, None)
         if outcome is ProcessingOutcome.FAILURE:
+            state = getattr(event, "_feishu_topic_delivery", None)
+            terminal = getattr(event, "_delivery_retry_suppressed_result", None)
+            if terminal is None and isinstance(state, dict):
+                terminal = state.get("terminal")
+            raw = getattr(terminal, "raw_response", None)
+            policy = raw.get("feishu_topic_delivery", {}) if isinstance(raw, dict) else {}
+            if getattr(terminal, "retry_suppressed", False) is True and policy.get("policy") == "silent":
+                # The processing badge is cleaned up above; silent policy exposes failure
+                # only in backend logs, not as a second user-facing CrossMark notice.
+                return
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
 
     # --- Webhook server and security ---
@@ -3659,6 +3690,9 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        terminal = self._topic_delivery_terminal(chat_id, reply_to, metadata)
+        if terminal is not None:
+            return terminal
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
@@ -3687,31 +3721,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 key_msg_type=resolved_message_type, key_payload=key_payload,
                 media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
-            if (not caption
-                    and not self._response_succeeded(message_response)
-                    and getattr(message_response, "code", None) == 99992402
-                    and resolved_message_type == "audio"
-                    and (metadata or {}).get("thread_id")):
-                payload = json.dumps(key_payload, ensure_ascii=False)
-                thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
-                if thread_msg_id:
-                    logger.info("[Feishu] Audio: retrying via reply API in thread")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
-                    )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
     async def _send_uploaded_key(
         self, *, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]], caption: Optional[str],
@@ -3728,48 +3741,10 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
         )
 
-    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
-        """Fetch the last message_id in a thread for reply-based routing."""
-        if not self._client or not thread_id:
-            return None
-        try:
-            from lark_oapi.api.im.v1 import ListMessageRequest
-            request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await self._run_blocking(self._client.im.v1.message.list, request)
-            if self._response_succeeded(response):
-                items = getattr(getattr(response, "data", None), "items", None)
-                if items and len(items) > 0:
-                    return getattr(items[0], "message_id", None)
-        except Exception as exc:
-            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
-        return None
-
-    async def _send_raw_message(
-        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
-    ) -> Any:
-        thread_id = (metadata or {}).get("thread_id")
-        effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
-        if effective_reply_to:
-            body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_reply_message_request(effective_reply_to, body)
-            return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
-            receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
-        else:
-            receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
-        body = self._build_create_message_body(
-            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
-        )
-        request = self._build_create_message_request(receive_id_type, body)
-        return await self._run_blocking(self._client.im.v1.message.create, request)
-
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
+        if isinstance(response, SendResult):
+            return response.success
         return bool(response and getattr(response, "success", lambda: False)())
 
     @staticmethod
@@ -3787,6 +3762,8 @@ class FeishuAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=f"[{code}] {msg}", raw_response=response)
 
     def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
+        if isinstance(response, SendResult):
+            return response
         if not self._response_succeeded(response):
             return self._response_error_result(response, default_message=default_message)
         return SendResult(
@@ -3921,53 +3898,6 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_lark_client(self, domain: Any) -> Any:
         return _build_lark_client(self._app_id, self._app_secret, domain)
-
-    async def _feishu_send_with_retry(
-        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
-    ) -> Any:
-        last_error: Optional[Exception] = None
-        active_reply_to = reply_to
-
-        async def _raw(reply_target: Optional[str]) -> Any:
-            return await self._send_raw_message(
-                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target, metadata=metadata,
-            )
-
-        for attempt in range(_FEISHU_SEND_ATTEMPTS):
-            try:
-                response = await _raw(active_reply_to)
-                # Reply target withdrawn/missing → post a new message to the chat instead.
-                if active_reply_to and not self._response_succeeded(response):
-                    code = getattr(response, "code", None)
-                    if code in _FEISHU_REPLY_FALLBACK_CODES:
-                        if (metadata or {}).get("thread_id"):
-                            logger.warning(
-                                "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "
-                                "skipping top-level fallback to avoid creating a new topic",
-                                active_reply_to, (metadata or {}).get("thread_id"), code,
-                            )
-                            return response
-                        logger.warning(
-                            "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
-                            "falling back to new message in chat %s",
-                            active_reply_to, code, chat_id,
-                        )
-                        active_reply_to = None
-                        response = await _raw(None)
-                return response
-            except Exception as exc:
-                last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
-                    raise
-                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
-                    raise
-                wait_seconds = 2 ** attempt
-                logger.warning(
-                    "[Feishu] Send attempt %d/%d failed for chat %s; retrying in %ds: %s",
-                    attempt + 1, _FEISHU_SEND_ATTEMPTS, chat_id, wait_seconds, exc,
-                )
-                await asyncio.sleep(wait_seconds)
-        raise last_error or RuntimeError("Feishu send failed")
 
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:
@@ -4322,7 +4252,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if message.strip():
             last_result = await adapter.send(chat_id, message, metadata=metadata)
             if not last_result.success:
-                return send_error(f"Feishu send failed: {last_result.error}")
+                return {**send_error(f"Feishu send failed: {last_result.error}"),
+                        "retry_suppressed": last_result.retry_suppressed}
         for media_path, _is_voice in media_files or []:
             if not os.path.exists(media_path):
                 return send_error(f"Media file not found: {media_path}")
@@ -4337,7 +4268,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 sender = adapter.send_document
             last_result = await sender(chat_id, media_path, metadata=metadata)
             if not last_result.success:
-                return send_error(f"Feishu media send failed: {last_result.error}")
+                return {**send_error(f"Feishu media send failed: {last_result.error}"),
+                        "retry_suppressed": last_result.retry_suppressed}
         if last_result is None:
             return send_error("No deliverable text or media remained after processing MEDIA tags")
         return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}

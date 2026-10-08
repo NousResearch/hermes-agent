@@ -9,11 +9,15 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, cast, Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
+
+if TYPE_CHECKING:
+    from gateway.stream_consumer import GatewayStreamConsumer
+
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -28,8 +32,27 @@ class StreamTransportMixin:
 
     _MIN_NEW_MSG_CHARS = 4
 
-    async def _edit_message(self, *, message_id: str, content: str, finalize: bool = False):
+    def _capture_retry_suppressed(self: "GatewayStreamConsumer", result) -> bool:
+        """Keep an explicit failed policy outcome without setting any delivered flag."""
+        if (getattr(result, "retry_suppressed", False) is True
+                and not getattr(result, "success", False)):
+            self.retry_suppressed_result = result
+            self._edit_supported = False
+            return True
+        return False
+
+    async def _send_message(self: "GatewayStreamConsumer", *args, **kwargs):
+        """All consumer sends honor a terminal outcome for this logical turn."""
+        if self.retry_suppressed_result is not None:
+            return self.retry_suppressed_result
+        result = await self.adapter.send(*args, **kwargs)
+        self._capture_retry_suppressed(result)
+        return result
+
+    async def _edit_message(self: "GatewayStreamConsumer", *, message_id: str, content: str, finalize: bool = False):
         """Edit via the adapter, passing routing metadata when supported."""
+        if self.retry_suppressed_result is not None:
+            return self.retry_suppressed_result
         # Contract: adapters must accept finalize= even when False (test-guarded).
         kwargs = dict(chat_id=self.chat_id, message_id=message_id, content=content,
                       finalize=finalize)
@@ -41,7 +64,9 @@ class StreamTransportMixin:
                     kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
                 pass
-        return await self.adapter.edit_message(**kwargs)
+        result = await self.adapter.edit_message(**kwargs)
+        self._capture_retry_suppressed(result)
+        return result
 
     async def _try_seed_frame(self, fail_log: str, *, exc_info: bool = False) -> bool:
         """Open a native stream with an empty seed frame (typing indicator before any token) as a
@@ -163,7 +188,7 @@ class StreamTransportMixin:
             logger.debug("supports_native_streaming probe raised", exc_info=True)
             return False
 
-    async def _send_draft_frame(self, text: str) -> bool:
+    async def _send_draft_frame(self: "GatewayStreamConsumer", text: str) -> bool:
         """Emit one draft frame; any failure permanently disables drafts for this run.
         Drafts have no message_id and clear on the client when the final send lands."""
         if self._draft_id is None:
@@ -177,6 +202,9 @@ class StreamTransportMixin:
         except Exception as e:
             logger.debug("send_draft raised, disabling draft transport for this run: %s", e)
         else:
+            if self._capture_retry_suppressed(result):
+                self._use_draft_streaming = False
+                return False
             if getattr(result, "success", False):
                 self._last_sent_text = text  # parity with the edit-based no-op skip
                 return True
@@ -266,7 +294,7 @@ class StreamTransportMixin:
         # ``is True`` keeps MagicMock auto-children from enabling fresh-final.
         return result is True
 
-    async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
+    async def _try_fresh_final(self: "GatewayStreamConsumer", text: str, *, is_turn_final: bool = True) -> bool:
         """Send ``text`` fresh and best-effort delete the preview(s); False on any failure so
         the caller falls back to edit.  ``is_turn_final=False`` leaves the delivery flag unset.
 
@@ -281,7 +309,7 @@ class StreamTransportMixin:
             return False
         stale_ids = self._stale_preview_ids()
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
@@ -311,10 +339,12 @@ class StreamTransportMixin:
 
     @stops_reply_clock
     async def _send_or_edit(
-        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
+        self: "GatewayStreamConsumer", text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        if self.retry_suppressed_result is not None:
+            return False
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
@@ -425,7 +455,7 @@ class StreamTransportMixin:
                 logger.debug("Native fallback: failed to finalize stream: %s", e)
         return None
 
-    async def _draft_push(self, text: str, pre_fence_text: str, *, finalize: bool,
+    async def _draft_push(self: "GatewayStreamConsumer", text: str, pre_fence_text: str, *, finalize: bool,
                           is_turn_final: bool) -> Optional[bool]:
         """Draft frame while no message_id exists; None = not applicable / drafts just failed.
         Skipped when finalizing (the real send clears the draft), EXCEPT stream-is-the-message
@@ -446,7 +476,7 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(self: "GatewayStreamConsumer", text: str, *, finalize: bool) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
@@ -457,7 +487,7 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
-        result = await self.adapter.send(
+        result = await self._send_message(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
@@ -475,7 +505,7 @@ class StreamTransportMixin:
         self._notify_new_message()
         return True
 
-    async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool) -> bool:
+    async def _edit_existing(self: "GatewayStreamConsumer", text: str, *, finalize: bool, is_turn_final: bool) -> bool:
         """Edit the live preview (or replace it via fresh-final when finalizing)."""
         # REQUIRES_EDIT_FINALIZE adapters need the finalize=True edit even when
         # unchanged; everyone else short-circuits.
@@ -494,7 +524,7 @@ class StreamTransportMixin:
             prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
         ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
             return True
-        result = await self._edit_message(message_id=self._message_id, content=text,
+        result = await self._edit_message(message_id=cast(str, self._message_id), content=text,
                                           finalize=finalize)
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
@@ -529,10 +559,12 @@ class StreamTransportMixin:
         self._edit_supported = False
         self._already_sent = True
 
-    async def _on_edit_failure(self, result, text: str, *, finalize: bool, is_turn_final: bool,
+    async def _on_edit_failure(self: "GatewayStreamConsumer", result, text: str, *, finalize: bool, is_turn_final: bool,
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
         False; the caller's finalize path may still deliver the tail."""
+        if self._capture_retry_suppressed(result):
+            return False
         # P5(b): an AUTHORIZATION decline is terminal for the run. Every branch
         # below treats a failed edit as "editing is unavailable" and hands the
         # unseen tail to the fallback, which SENDS it as a new message to the

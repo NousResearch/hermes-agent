@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import SendResult, _custom_unit_to_cp
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -123,6 +123,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        platform = getattr(adapter, "platform", None)
+        if (getattr(platform, "value", platform) == "feishu"
+                and isinstance(metadata, dict) and metadata.get("thread_id")):
+            # A direct consumer may not come through the runner's event helper.
+            # Keep one policy state across per-send metadata copies; separate consumers
+            # still get separate scopes unless the caller explicitly shares one.
+            self.metadata = dict(metadata)
+            if not isinstance(self.metadata.get("_feishu_topic_delivery"), dict):
+                self.metadata["_feishu_topic_delivery"] = {}
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
         self._on_new_message = on_new_message
@@ -174,6 +183,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
         self._egress_declined = False
+        # A policy terminal is NOT delivery. Retain its actual failure for the final
+        # ledger bracket, across every segment reset, without emitting later ticks.
+        self.retry_suppressed_result: Optional[SendResult] = None
         self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min
@@ -515,7 +527,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
         try:
-            if getattr(await self.adapter.send(self.chat_id, finalize_text), "success", False):
+            if getattr(await self._send_message(self.chat_id, finalize_text), "success", False):
                 return True
         except Exception as send_err:
             logger.warning("%s boundary: fallback send also failed: %s", _reason, send_err)

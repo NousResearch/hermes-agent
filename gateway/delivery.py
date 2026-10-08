@@ -45,6 +45,19 @@ class PartialDeliveryError(RuntimeError):
         self.result = result
 
 
+class DeliveryPolicyError(RuntimeError):
+    """The adapter deliberately stopped delivery; fallback transports must not replay it."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
+
+
+def _retry_suppressed(result: Any) -> bool:
+    return (result.get("retry_suppressed") if isinstance(result, dict)
+            else getattr(result, "retry_suppressed", False)) is True
+
+
 @dataclass(frozen=True)
 class DeliveryTransport:
     """Resolved live transport for one logical delivery platform."""
@@ -198,6 +211,9 @@ class DeliveryRouter:
                     if target.chat_id and _send_result_error(result) is None:
                         self.dead_targets.clear(target.platform.value, target.chat_id)
                 results[target.to_string()] = {"success": True, "result": result}
+            except DeliveryPolicyError as e:
+                # Policy suppression is a failed send, not proof that the whole chat is dead.
+                results[target.to_string()] = {"success": False, "error": str(e), "retry_suppressed": True}
             except Exception as e:
                 # Hard failures raise. Record a whole-chat death so future deliveries short-circuit.
                 dead_kind = classify_dead_error(str(e)) if tracked else None
@@ -321,6 +337,8 @@ class DeliveryRouter:
         for retry in (False, True):
             result = await transport.send(target.platform, target.chat_id, content, metadata=send_metadata or None)
             error = _send_result_error(result)
+            if error is not None and _retry_suppressed(result):
+                raise DeliveryPolicyError(error or f"{target.platform.value} delivery suppressed by policy", result)
             if retry or error is None or not named_topic or "thread not found" not in error.lower():
                 break
             # The named topic vanished under us: recreate it once and resend.

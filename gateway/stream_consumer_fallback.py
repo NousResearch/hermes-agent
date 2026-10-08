@@ -6,10 +6,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, cast, Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+
+if TYPE_CHECKING:
+    from gateway.stream_consumer import GatewayStreamConsumer
+
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -17,14 +21,14 @@ logger = logging.getLogger("gateway.stream_consumer")
 class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
-    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
+    async def _send_new_chunk(self: "GatewayStreamConsumer", text: str, reply_to_id: Optional[str], *,
                               final: bool = False) -> Optional[str]:
         """Send a new chunk threaded to ``reply_to_id``; returns the new message_id."""
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id, content=text, reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=not final))
             if not (result.success and result.message_id):
@@ -93,9 +97,11 @@ class StreamFallbackMixin:
             return self._split_text_chunks(text, limit, len_fn)
         return list(chunks)
 
-    async def _send_fallback_final(self, text: str) -> None:
+    async def _send_fallback_final(self: "GatewayStreamConsumer", text: str) -> None:
         """Send the final continuation after streaming edits stop working (one flood retry
         per chunk)."""
+        if self.retry_suppressed_result is not None:
+            return
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run. The
             # whole point of this path is to deliver the unseen tail as a NEW
@@ -161,7 +167,7 @@ class StreamFallbackMixin:
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
 
-    async def _fallback_when_nothing_unseen(self, final_text: str) -> Optional[str]:
+    async def _fallback_when_nothing_unseen(self: "GatewayStreamConsumer", final_text: str) -> Optional[str]:
         """Fallback entered but the visible prefix already covers ``final_text``: returns the
         continuation to send (the whole final when the prefix is from a *previous* segment)
         or None when the turn is settled here."""
@@ -200,7 +206,7 @@ class StreamFallbackMixin:
                 and self._last_sent_text.endswith(self.cfg.cursor)):
             clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
             with contextlib.suppress(Exception):
-                result = await self._edit_message(message_id=self._message_id, content=clean_text)
+                result = await self._edit_message(message_id=cast(str, self._message_id), content=clean_text)
                 if result.success:
                     self._last_sent_text = clean_text
         self._already_sent = True
@@ -221,7 +227,7 @@ class StreamFallbackMixin:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
 
-    async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
+    async def _send_with_flood_retry(self: "GatewayStreamConsumer", *, content: str, retry_log: str, reply_to=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last
         SendResult.  Exceptions propagate (callers decide whether a raise is "ambiguous")."""
         kwargs = dict(chat_id=self.chat_id, content=content,
@@ -230,8 +236,9 @@ class StreamFallbackMixin:
             kwargs["reply_to"] = reply_to
         result = None
         for attempt in range(2):
-            result = await self.adapter.send(**kwargs)
-            if getattr(result, "success", False):
+            result = await self._send_message(**kwargs)
+            if (getattr(result, "success", False)
+                    or getattr(result, "retry_suppressed", False) is True):
                 break
             retry_delay = self._fallback_flood_retry_delay(result)
             if attempt or retry_delay is None:
@@ -243,7 +250,7 @@ class StreamFallbackMixin:
             await asyncio.sleep(retry_delay)
         return result
 
-    async def _send_empty_fallback_final(self, final_text: str) -> str:
+    async def _send_empty_fallback_final(self: "GatewayStreamConsumer", final_text: str) -> str:
         """Commit a completed answer after Telegram finalization fails: "delivered", "failed"
         (gateway may retry), "ambiguous" (a timeout may have landed) or "preview" (flood
         control; the complete preview is authoritative)."""
@@ -257,6 +264,8 @@ class StreamFallbackMixin:
             logger.debug("Empty fallback final send failed: %s", exc)
             return "ambiguous" if self._send_failure_may_have_delivered(exc) else "failed"
         if not getattr(result, "success", False):
+            if getattr(result, "retry_suppressed", False) is True:
+                return "failed"
             if self._is_flood_error(result):
                 return "preview"
             return "ambiguous" if self._send_failure_may_have_delivered(result) else "failed"
@@ -283,7 +292,8 @@ class StreamFallbackMixin:
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
         """Return True for timeout failures where retrying may duplicate."""
-        if getattr(result_or_exc, "retryable", None) is True:
+        if (getattr(result_or_exc, "retry_suppressed", False) is True
+                or getattr(result_or_exc, "retryable", None) is True):
             return False
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
         name = result_or_exc.__class__.__name__.lower()
@@ -308,9 +318,11 @@ class StreamFallbackMixin:
         err_lower = (getattr(result, "error", "") or "").lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
 
-    async def _flush_segment_tail_on_edit_failure(self) -> None:
+    async def _flush_segment_tail_on_edit_failure(self: "GatewayStreamConsumer") -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort
         strip the stuck cursor from the partial)."""
+        if self.retry_suppressed_result is not None:
+            return
         if getattr(self, "_egress_declined", False):
             return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
@@ -326,23 +338,23 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
-            result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
+            result = await self._send_message(chat_id=self.chat_id, content=tail, metadata=_md)
             if result.success:
                 self._already_sent = True
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
 
-    async def _try_strip_cursor(self) -> None:
+    async def _try_strip_cursor(self: "GatewayStreamConsumer") -> None:
         """Best-effort edit removing a stuck cursor when entering fallback mode."""
         prefix = self._visible_prefix()
         if not self._has_real_preview() or not prefix.strip():
             return
         with contextlib.suppress(Exception):  # never block the fallback path
-            result = await self._edit_message(message_id=self._message_id, content=prefix)
+            result = await self._edit_message(message_id=cast(str, self._message_id), content=prefix)
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
 
-    async def _send_commentary(self, text: str) -> bool:
+    async def _send_commentary(self: "GatewayStreamConsumer", text: str) -> bool:
         """Send a completed interim assistant commentary message."""
         text = self._clean_for_display(text)
         if not text.strip():
@@ -358,7 +370,7 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
+            result = await self._send_message(
                 chat_id=self.chat_id, content=text,
                 reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would

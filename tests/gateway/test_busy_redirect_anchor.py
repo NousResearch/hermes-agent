@@ -9,7 +9,7 @@ busy path and the priority path — must move the anchor; a refused redirect mus
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import _reply_anchor_for_event
+from gateway.platforms.base_thread_metadata import _reply_anchor_for_event
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource

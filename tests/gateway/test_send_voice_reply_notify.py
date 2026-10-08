@@ -96,3 +96,94 @@ async def test_voice_reply_marks_existing_thread_metadata_without_mutation(monke
         event.source, runner._reply_anchor_for_event(event)
     )
     assert "notify" not in fresh
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", [Platform.FEISHU, Platform.TELEGRAM])
+@pytest.mark.parametrize("outcome", ["terminal", "transient", "success"])
+async def test_multipart_voice_stops_only_for_terminal_policy(platform, outcome):
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.base_thread_metadata import _thread_metadata_for_event
+
+    receipt = SendResult(
+        success=outcome == "success", error=None if outcome == "success" else "voice delivery failed",
+        retry_suppressed=outcome == "terminal",
+    )
+    send_voice = AsyncMock(return_value=receipt)
+    runner = _runner_with_adapter(send_voice)
+    adapter = runner.adapters.pop(Platform.TELEGRAM)
+    runner.adapters[platform] = adapter
+    event = _make_event(thread_id="omt_topic" if platform == Platform.FEISHU else "17585")
+    event.source.platform = platform
+    metadata = _thread_metadata_for_event(event)
+    if platform == Platform.FEISHU:
+        metadata["_feishu_topic_delivery"]["destination"] = "parent_chat"
+
+    await runner._deliver_voice_reply(event, ["first.ogg", "second.ogg"])
+
+    assert send_voice.await_count == (1 if outcome == "terminal" else 2)
+    for call in send_voice.await_args_list:
+        assert call.kwargs["metadata"]["notify"] is True
+        if platform == Platform.FEISHU:
+            assert call.kwargs["metadata"]["_feishu_topic_delivery"] is metadata["_feishu_topic_delivery"]
+    if outcome == "terminal":
+        assert event._delivery_retry_suppressed_result is receipt
+        if platform == Platform.FEISHU:
+            assert metadata["_feishu_topic_delivery"]["terminal"] is receipt
+    else:
+        assert not hasattr(event, "_delivery_retry_suppressed_result")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["parent_chat", "error_notice", "silent"])
+@pytest.mark.parametrize("text_first", [False, True])
+async def test_auto_voice_and_final_text_share_feishu_policy_on_the_wire(tmp_path, policy, text_first):
+    from unittest.mock import Mock
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base_thread_metadata import _thread_metadata_for_event
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    pytest.importorskip("lark_oapi")
+    from plugins.platforms.feishu.adapter import _load_lark_oapi
+    assert _load_lark_oapi()
+    adapter = FeishuAdapter(PlatformConfig(extra={"topic_delivery_fallback": policy}))
+    ok = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_sent"))
+    wire = SimpleNamespace(
+        reply=Mock(return_value=SimpleNamespace(success=lambda: False, code=230011, msg="withdrawn")),
+        list=Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[]))),
+        create=Mock(return_value=ok),
+    )
+    upload = Mock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(file_key="file_key")))
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        message=wire, file=SimpleNamespace(create=upload))))
+    async def blocking(func, *args):
+        return func(*args)
+    adapter._run_blocking = blocking
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.FEISHU: adapter}
+    event = _make_event(thread_id="omt_topic")
+    event.source.platform = Platform.FEISHU
+    event.message_id = "om_trigger"
+    metadata = runner._event_thread_metadata(event, event.source)
+    paths = [tmp_path / "first.ogg", tmp_path / "second.ogg"]
+    for path in paths:
+        path.write_bytes(b"OggS fake opus")
+    if text_first:
+        await adapter.send(event.source.chat_id, "Answer", metadata=metadata)
+
+    await runner._deliver_voice_reply(event, [str(path) for path in paths])
+    final = await adapter.send(event.source.chat_id, "Final answer", metadata=_thread_metadata_for_event(event))
+
+    assert wire.reply.call_count == 1
+    assert wire.list.call_count == 1
+    state = metadata["_feishu_topic_delivery"]
+    if policy == "parent_chat":
+        assert final.success
+        assert state["destination"] == "parent_chat"
+        assert upload.call_count == 2
+        assert wire.create.call_count == 3 + int(text_first)
+    else:
+        assert not final.success and final.retry_suppressed
+        assert upload.call_count == (0 if text_first else 1)
+        assert wire.create.call_count == (1 if policy == "error_notice" else 0)
+        assert event._delivery_retry_suppressed_result is state["terminal"]

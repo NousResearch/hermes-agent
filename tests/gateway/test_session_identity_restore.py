@@ -152,3 +152,33 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     assert identity_of(restored) is None
     assert fresh.runner._delivery_adapter_for(restored) is fresh.primary
     assert fresh.runner._session_key_for_source(restored) == "agent:main:telegram:dm:4040"
+
+
+@pytest.mark.parametrize("origin_anchor", [None, "om_current"])
+def test_process_anchor_repair_preserves_restored_transport_and_authorization(mux, origin_anchor):
+    """A legacy anchor repair must retain the persisted receiving bot, not re-route by runtime."""
+    store = SessionStore(sessions_dir=mux.home / "sessions", config=mux.runner.config)
+    source = mux.team_b.build_source(chat_id="555", chat_type="dm", user_id="555")
+    source.message_id = origin_anchor
+    resolve_identity(source, runner=mux.runner, transport_profile="team_b")
+    entry = store.get_or_create_session(source)
+
+    fresh = _runner(mux.home)
+    fresh.runner.session_store = SessionStore(
+        sessions_dir=mux.home / "sessions", config=fresh.runner.config,
+    )
+    repaired = fresh.runner._build_process_event_source({
+        "session_key": entry.session_key, "message_id": "om_captured",
+        "platform": "telegram", "chat_id": "wrong_chat", "profile": "default",
+    })
+    assert repaired.message_id == (origin_anchor or "om_captured")
+    assert repaired.chat_id == source.chat_id
+    assert fresh.runner._delivery_adapter_for(repaired) is fresh.team_b
+    assert fresh.runner._authorization_home_for_source(repaired) == mux.home / "profiles" / "team_b"
+    assert identity_of(repaired).runtime_profile == "ops"
+    persisted = fresh.runner.session_store._entries[entry.session_key].origin
+    assert persisted.message_id == origin_anchor
+    if origin_anchor is None:
+        assert repaired is not persisted
+    fresh.runner._profile_adapters["team_b"] = {}
+    assert fresh.runner._delivery_adapter_for(repaired) is None

@@ -35,6 +35,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.run_turn_display import GatewayTurnDisplayMixin
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayTurnDisplayMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -382,8 +383,43 @@ class GatewayTurnMixin:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
     def _event_thread_metadata(self, event, source):
-        """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        """Thread metadata and shared policy state for replies to one inbound event."""
+        from gateway.platforms.base_thread_metadata import _thread_metadata_for_event
+        metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        event_metadata = (
+            _thread_metadata_for_event(event)
+            if source.platform == Platform.FEISHU and source.thread_id else None
+        )
+        if event_metadata and "_feishu_topic_delivery" in event_metadata:
+            metadata = dict(metadata or {})
+            metadata["_feishu_topic_delivery"] = event_metadata["_feishu_topic_delivery"]
+        return metadata
+
+    @staticmethod
+    def _turn_retry_suppressed_result(*, result=None, response=None, consumer=None, metadata=None):
+        """Return only an explicit terminal policy result, never an ordinary send failure."""
+        state = (metadata or {}).get("_feishu_topic_delivery")
+        candidates = (
+            result,
+            response.get("_delivery_retry_suppressed_result") if isinstance(response, dict) else None,
+            getattr(consumer, "retry_suppressed_result", None),
+            state.get("terminal") if isinstance(state, dict) else None,
+        )
+        return next((result for result in candidates
+                     if getattr(result, "retry_suppressed", False) is True
+                     and getattr(result, "success", None) is False), None)
+
+    @staticmethod
+    def _mark_delivery_retry_suppressed(response, result, *, content_already_delivered=False) -> None:
+        """Carry a policy stop separately from the assertion that content was delivered."""
+        if isinstance(response, dict):
+            response["delivery_retry_suppressed"] = True
+            response["_delivery_retry_suppressed_result"] = result
+            if content_already_delivered:
+                response["already_sent"] = True
+            else:
+                response.pop("already_sent", None)
+            response.pop("media_already_delivered", None)
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -1921,6 +1957,15 @@ class GatewayTurnMixin:
         Returns the text for the adapter to send, or ``None`` when already delivered."""
         if diagnostic_wake_muted(event):
             return None
+        delivery_metadata = self._event_thread_metadata(event, source)
+        terminal = self._turn_retry_suppressed_result(response=agent_result, metadata=delivery_metadata)
+        if terminal is not None:
+            delivered = bool(agent_result.get("already_sent"))
+            self._mark_delivery_retry_suppressed(agent_result, terminal, content_already_delivered=delivered)
+            # Base records undelivered final text as a failed, non-retryable obligation. If
+            # only an attachment failed, keep the delivered body and report processing failure.
+            event._delivery_retry_suppressed_result = terminal
+            return None if delivered else response
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -1935,6 +1980,14 @@ class GatewayTurnMixin:
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
             await self._send_voice_reply(event, response)
+            terminal = self._turn_retry_suppressed_result(
+                result=getattr(event, "_delivery_retry_suppressed_result", None), metadata=delivery_metadata,
+            )
+            if terminal is not None:
+                delivered = bool(agent_result.get("already_sent"))
+                self._mark_delivery_retry_suppressed(agent_result, terminal, content_already_delivered=delivered)
+                event._delivery_retry_suppressed_result = terminal
+                return None if delivered else response
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
@@ -1942,11 +1995,22 @@ class GatewayTurnMixin:
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):
-                await self._deliver_media_from_response(response, event, adapter)
+                media_result = await self._deliver_media_from_response(
+                    response, event, adapter, thread_metadata=delivery_metadata,
+                )
+                terminal = self._turn_retry_suppressed_result(result=media_result, metadata=delivery_metadata)
+                if terminal is not None:
+                    self._mark_delivery_retry_suppressed(agent_result, terminal, content_already_delivered=True)
+                    event._delivery_retry_suppressed_result = terminal
+                    return None
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
                 try:
-                    await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
+                    footer_result = await adapter.send(source.chat_id, _footer_line, metadata=delivery_metadata)
+                    terminal = self._turn_retry_suppressed_result(result=footer_result, metadata=delivery_metadata)
+                    if terminal is not None:
+                        self._mark_delivery_retry_suppressed(agent_result, terminal, content_already_delivered=True)
+                        event._delivery_retry_suppressed_result = terminal
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
@@ -2210,6 +2274,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                delivery_metadata=self._event_thread_metadata(event, _turn_source),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2221,6 +2286,11 @@ class GatewayTurnMixin:
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
                     event.ledger_message_id = str(_terminal_inbound)
+                _terminal_delivery = agent_result.get("_queued_terminal_delivery_metadata")
+                if isinstance(_terminal_delivery, dict) and "_feishu_topic_delivery" in _terminal_delivery:
+                    # The final belongs to the terminal queued event, whose independent policy
+                    # state must replace the opening event's exhausted/recovered destination.
+                    event._feishu_topic_delivery = _terminal_delivery["_feishu_topic_delivery"]
                 if "queued_terminal_notification_category" in agent_result:
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
@@ -2427,6 +2497,8 @@ class GatewayTurnMixin:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
         _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+        if source.platform == Platform.FEISHU and source.thread_id:
+            _thread_metadata = {**(_thread_metadata or {}), "_feishu_topic_delivery": {}}
 
         try:
             user_config = _load_gateway_config()
@@ -2506,17 +2578,22 @@ class GatewayTurnMixin:
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+            sent = None
             if text_content:
-                await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
+                sent = await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
             elif not images and not media_files:
-                await adapter.send(
+                sent = await adapter.send(
                     chat_id=source.chat_id, content=header + t("gateway.background.no_response"), metadata=_thread_metadata,
                 )
+            if getattr(sent, "retry_suppressed", False) is True:
+                return
             for image_url, alt_text in (images or []):
                 with suppress(Exception):
-                    await adapter.send_image(
+                    sent = await adapter.send_image(
                         chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
                     )
+                    if getattr(sent, "retry_suppressed", False) is True:
+                        return
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
@@ -2525,7 +2602,7 @@ class GatewayTurnMixin:
                 _ext = os.path.splitext(media_path)[1].lower()
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
-                        await adapter.send_voice(
+                        sent = await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
                             is_voice=_is_voice,
                         )
@@ -2535,7 +2612,9 @@ class GatewayTurnMixin:
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
                             else (adapter.send_document, "file_path")
                         )
-                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                        sent = await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                    if getattr(sent, "retry_suppressed", False) is True:
+                        return
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
@@ -2754,13 +2833,14 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
-        scheduled_heartbeat: bool = False,
+        scheduled_heartbeat: bool = False, delivery_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
         access to local files, memory, skills, and a unified session store."""
         from gateway.run import _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS
+        from gateway.run_turn_proxy import _proxy_request_payload
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
@@ -2793,23 +2873,12 @@ class GatewayTurnMixin:
                 "history_offset": len(history), "session_id": session_id, "response_previewed": False,
             }
 
-        # OpenAI chat format. The remote keeps continuity via X-Hermes-Session-Id; send the current
-        # message plus a compact text-only history for a remote that has none yet.
-        api_messages: List[Dict[str, str]] = [{"role": "system", "content": context_prompt}] if context_prompt else []
-        api_messages += [
-            {"role": msg.get("role"), "content": msg.get("content")}
-            for msg in history if msg.get("role") in {"user", "assistant"} and msg.get("content")
-        ]
-        api_messages.append({"role": "user", "content": message})
-
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
-        if proxy_key:
-            headers["Authorization"] = f"Bearer {proxy_key}"
-        if session_id:
-            headers["X-Hermes-Session-Id"] = session_id
-        body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
+        body, headers = _proxy_request_payload(message, context_prompt, history, session_id, proxy_key)
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        if source.platform == Platform.FEISHU and source.thread_id:
+            _thread_metadata = dict(_thread_metadata or {})
+            _thread_metadata["_feishu_topic_delivery"] = (delivery_metadata or {}).get("_feishu_topic_delivery", {})
         _stream_consumer = (
             None if scheduled_heartbeat
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
@@ -2912,7 +2981,7 @@ class GatewayTurnMixin:
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
-        return {
+        response = {
             "final_response": full_response or t("gateway.proxy.no_response"),
             "messages": [
                 {"role": "user", "content": message},
@@ -2924,6 +2993,10 @@ class GatewayTurnMixin:
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
+        terminal = self._turn_retry_suppressed_result(consumer=_stream_consumer, metadata=_thread_metadata)
+        if terminal is not None:
+            self._mark_delivery_retry_suppressed(response, terminal)
+        return response
 
     async def _run_agent(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
@@ -2933,122 +3006,6 @@ class GatewayTurnMixin:
         when multiplexing is off)."""
         with self._profile_scope_for_source(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
-
-    def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
-        """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
-        from gateway.run import (
-            _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
-            _platform_config_key,
-        )
-        from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
-        from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
-        enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
-        adapter = self._delivery_adapter_for(source)
-        # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
-        for _setter, _setting, _default, _cast in (
-            ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
-            ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
-        ):
-            with suppress(Exception):
-                from agent import display as _agent_display
-                _val = resolve_display_setting(user_config, platform_key, _setting, _default)
-                getattr(_agent_display, _setter)(_cast(_val))
-
-        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
-        # A raw os.getenv here reads whichever profile's env loaded last under multiplexing
-        # (#116898); get_secret resolves through the active profile's scope instead.
-        progress_mode, _tool_progress_explicit = resolve_tool_progress(
-            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"),
-        )
-        # "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        _generic_status_recent: List[str] = []
-        _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
-
-        def _display_surface_mode(
-            setting: str, *, default: bool = False,
-            require_platform_override_for: set[Any] | None = None, allow_generic: bool = False,
-        ) -> str:
-            """Return off|raw|generic for a gateway visibility surface."""
-            if require_platform_override_for:
-                current_platform = _gateway_platform_value(source.platform)
-                platform_only = {_gateway_platform_value(item) for item in require_platform_override_for}
-                if (
-                    current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
-                ):
-                    return "off"
-            value = resolve_display_setting(user_config, platform_key, setting, default)
-            if isinstance(value, str) and value.strip().lower() == "generic":
-                return "generic" if allow_generic else "off"
-            return "raw" if bool(value) else "off"
-
-        def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
-            try:
-                return choose_status_phrase(
-                    kind, tool_name=tool_name, preview=preview, args=args,
-                    recent=_generic_status_recent, catalog=_generic_status_catalog,
-                )
-            except Exception as _phrase_err:
-                logger.debug("generic status phrase selection failed: %s", _phrase_err)
-                return (t("gateway.progress.status_fallback_long")
-                        if kind in {"heartbeat", "waiting", "long_running", "status"}
-                        else t("gateway.progress.status_fallback_short"))
-
-        # Webhooks can't edit messages, so tool progress / log mode are off there.
-        is_webhook = source.platform == Platform.WEBHOOK
-        tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
-        # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
-        _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
-        _live_status_adapter = (
-            adapter if getattr(adapter, "supports_status_text", False) and _live_status_mode != "off" else None
-        )
-        # "log" mode: tool calls go to ~/.hermes/logs/tool_calls.log instead of the chat. Gateway-only.
-        log_mode_enabled = progress_mode == "log" and not is_webhook
-        # Interim assistant messages and thinking_progress are independent of tool progress (same
-        # queue). Mattermost requires a per-platform opt-in: scratch text leaks into public threads.
-        interim_assistant_messages_mode = _display_surface_mode(
-            "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
-        )
-        interim_assistant_messages_enabled = not is_webhook and interim_assistant_messages_mode != "off"
-        _thinking_enabled = _display_surface_mode(
-            "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
-        ) != "off"
-        # Slack-native task cards need the progress queue even with text tool_progress off.
-        # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
-        # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
-        # ordinary text tool_progress off by default (requiring both flags would silently leave the native
-        # feature inactive).
-        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
-        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
-        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
-        # gets no cards either. Every other explicit mode keeps the card lane.
-        _native_slack_task_cards = False
-        if (
-            source.platform == Platform.SLACK
-            and hasattr(adapter, "native_task_cards_enabled")
-            and not (_tool_progress_explicit and progress_mode == "off")
-        ):
-            try:
-                _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
-            except Exception:
-                logger.debug("Slack native task-card config check failed", exc_info=True)
-        return self._RunAgentDisplay(
-            user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
-            progress_mode=progress_mode, progress_grouping=progress_grouping,
-            _display_surface_mode=_display_surface_mode,
-            tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
-            _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
-            log_queue=queue.Queue() if log_mode_enabled else None,
-            interim_assistant_messages_enabled=interim_assistant_messages_enabled,
-            _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
-            _generic_status_phrase=_generic_status_phrase,
-        )
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
@@ -3795,7 +3752,11 @@ class GatewayTurnMixin:
                 # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
                 # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
                 # the completion send stays the fallback so the user is not left with nothing.
-                if _text_delivered and isinstance(result, dict):
+                if getattr(_text_delivered, "retry_suppressed", False) is True:
+                    _body_delivered = _already_streamed or getattr(_text_delivered, "_text_already_delivered", False) is True
+                    self._mark_delivery_retry_suppressed(result, _text_delivered, content_already_delivered=_body_delivered)
+                    self._mark_delivery_retry_suppressed(response, _text_delivered, content_already_delivered=_body_delivered)
+                elif _text_delivered and isinstance(result, dict):
                     result["already_sent"] = True
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
@@ -3854,6 +3815,7 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        next_delivery_metadata = None
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
@@ -3892,10 +3854,15 @@ class GatewayTurnMixin:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_delivery_metadata = self._event_thread_metadata(pending_event, next_source)
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt
             # of the turn they are recursively following.
             next_channel_prompt = turn_ctx.channel_prompt
+            if source.platform == Platform.FEISHU and source.thread_id:
+                next_delivery_metadata = {
+                    **(self._thread_metadata_for_source(source) or {}), "_feishu_topic_delivery": {},
+                }
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3944,6 +3911,7 @@ class GatewayTurnMixin:
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
+                delivery_metadata=next_delivery_metadata,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
@@ -3970,6 +3938,7 @@ class GatewayTurnMixin:
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
                 "queued_terminal_reply_expected": next_reply_expected,
+                "_queued_terminal_delivery_metadata": next_delivery_metadata,
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
@@ -4035,6 +4004,9 @@ class GatewayTurnMixin:
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
+        if getattr(_res, "retry_suppressed", False) is True:
+            self._mark_delivery_retry_suppressed(response, _res)
+            return
         if not getattr(_res, "success", True):
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
@@ -4049,6 +4021,12 @@ class GatewayTurnMixin:
         payload: a mismatch (False, incl. payload-less split delivery) never suppresses; None (no
         record) keeps legacy trust."""
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
+        terminal = self._turn_retry_suppressed_result(
+            response=response, consumer=_sc, metadata=getattr(turn_ctx, "_status_thread_metadata", None),
+        )
+        if terminal is not None:
+            self._mark_delivery_retry_suppressed(response, terminal)
+            return
         if not isinstance(response, dict) or response.get("failed"):
             return
         _final = response.get("final_response") or ""
@@ -4169,6 +4147,7 @@ class GatewayTurnMixin:
     def _run_agent_bind_turn_wiring(
         self, turn_ctx: TurnContext, turn_runner: TurnRunner, source: SessionSource,
         event_message_id: Optional[str], _native_slack_task_cards: bool,
+        delivery_metadata: Optional[dict] = None,
     ) -> Optional[Dict[str, Any]]:
         """Resolve progress threading, then publish progress metadata and the sync→async bridges onto
         ``turn_ctx`` (the one-slot holders shared with run_sync's executor thread are TurnContext
@@ -4176,6 +4155,12 @@ class GatewayTurnMixin:
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
+        if source.platform == Platform.FEISHU and source.thread_id:
+            # All sends belonging to this inbound event share one destination/policy decision.
+            # Source-only direct runs still get a fresh per-turn state, never a chat-wide cache.
+            state = (delivery_metadata or {}).get("_feishu_topic_delivery", {})
+            turn_ctx._progress_metadata = {**(turn_ctx._progress_metadata or {}), "_feishu_topic_delivery": state}
+            _status_thread_metadata = {**(_status_thread_metadata or {}), "_feishu_topic_delivery": state}
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
         turn_ctx._hooks_ref = self.hooks
@@ -4210,6 +4195,8 @@ class GatewayTurnMixin:
         _heartbeat_msg_id: Optional[str] = None
         while True:
             await asyncio.sleep(_NOTIFY_INTERVAL)
+            # A busy redirect can replace the event's reply anchor and policy scope.
+            _status_thread_metadata = turn_ctx._status_thread_metadata
             if not self._should_emit_long_running_notification(
                 session_key, agent_holder[0], _executor_task_holder[0]
             ):
@@ -4244,6 +4231,8 @@ class GatewayTurnMixin:
                     except Exception as _ee:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
+                if getattr(_notify_res, "retry_suppressed", False) is True:
+                    break
                 if not (_notify_res and getattr(_notify_res, "success", False)):
                     # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
                     # a fresh "Working" bubble after it reads as a contradiction (#10990).
@@ -4255,6 +4244,8 @@ class GatewayTurnMixin:
                         source.chat_id, _heartbeat_text,
                         metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
                     )
+                    if getattr(_notify_res, "retry_suppressed", False) is True:
+                        break
                     if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
                         _heartbeat_msg_id = str(_notify_res.message_id)
                         if turn_ctx._cleanup_progress:
@@ -4274,6 +4265,7 @@ class GatewayTurnMixin:
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        delivery_metadata: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4283,6 +4275,7 @@ class GatewayTurnMixin:
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                delivery_metadata=delivery_metadata,
             )
 
         from run_agent import AIAgent
@@ -4316,6 +4309,7 @@ class GatewayTurnMixin:
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
+            delivery_metadata,
         )
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
         if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):

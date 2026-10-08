@@ -14,6 +14,8 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
+| `cron/scheduler_delivery_metadata.py` | `_live_route_metadata`: shared text/media route metadata and per-fire delivery ledger |
+| `cron/scheduler_delivery_origin.py` | Persisted origin discriminators for cold-cache relay delivery |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |

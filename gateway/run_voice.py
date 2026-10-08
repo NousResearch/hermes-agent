@@ -16,13 +16,16 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
 
@@ -434,7 +437,7 @@ class GatewayVoiceMixin:
                 with suppress(OSError):
                     os.unlink(p)
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
+    async def _deliver_voice_reply(self: "GatewayRunner", event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
@@ -449,8 +452,21 @@ class GatewayVoiceMixin:
         reply_anchor = self._reply_anchor_for_event(event)
         # notify=True mirrors the final-text path in platforms/base.py so notification-gating
         # adapters (Telegram "important" mode) deliver it. Clone: shared w/ typing-indicator state.
-        thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
+        thread_meta = dict(self._event_thread_metadata(event, event.source) or {})
         thread_meta["notify"] = True
+        state = thread_meta.get("_feishu_topic_delivery")
+        terminal = (state.get("terminal") if isinstance(state, dict) else None) or getattr(
+            event, "_delivery_retry_suppressed_result", None)
+        if getattr(terminal, "retry_suppressed", False) is True and getattr(terminal, "success", None) is False:
+            event._delivery_retry_suppressed_result = terminal
+            return
         for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+            result = await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
+                                      metadata=thread_meta)
+            if getattr(result, "retry_suppressed", False) is True and getattr(result, "success", None) is False:
+                # Preserve the failed policy outcome for final-text ledger handling and avoid
+                # uploading another TTS segment after this logical reply has been stopped.
+                event._delivery_retry_suppressed_result = result
+                if isinstance(state, dict):
+                    state["terminal"] = result
+                return

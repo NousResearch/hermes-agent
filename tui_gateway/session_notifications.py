@@ -467,6 +467,44 @@ def _background_notifications_off(session: dict) -> bool:
     return raw is False or str(raw or "").strip().lower() == "off"
 
 
+# Highest heartbeat seq delivered per process session (#135295). Busy requeues can strand a
+# stale beat behind newer ones (snapshot-drain → per-event requeue while the producer keeps
+# enqueueing), so front-to-back delivery would spend a model turn on outdated output. The
+# payload is an output delta a newer beat already supersedes, so a stale beat is dropped at
+# the delivery boundary instead of being delivered late. Grows one key per heartbeat process
+# for the life of the process; bounded by the same lifecycle as the queue itself.
+_heartbeat_last_delivered_seq: dict[str, int] = {}
+
+
+def _heartbeat_seq_gate(evt: dict) -> bool:
+    """False = a stale (or duplicate) heartbeat that must not reach another turn."""
+    if evt.get("type") != "heartbeat":
+        return True
+    sid = str(evt.get("session_id") or "")
+    try:
+        seq = int(evt.get("seq") or 0)
+    except (TypeError, ValueError):
+        return True
+    if not sid or seq <= 0:
+        return True
+    if seq <= _heartbeat_last_delivered_seq.get(sid, 0):
+        return False
+    return True
+
+
+def _heartbeat_seq_gate_advance(evt: dict) -> None:
+    """Record a heartbeat as delivered once its turn has actually been claimed."""
+    if evt.get("type") != "heartbeat":
+        return
+    sid = str(evt.get("session_id") or "")
+    try:
+        seq = int(evt.get("seq") or 0)
+    except (TypeError, ValueError):
+        return
+    if sid and seq > 0 and seq > _heartbeat_last_delivered_seq.get(sid, 0):
+        _heartbeat_last_delivered_seq[sid] = seq
+
+
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
@@ -500,6 +538,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         release_event_delivery(evt, claim)
         return
     complete_event_delivery(evt, claim)
+    _heartbeat_seq_gate_advance(evt)
 
 
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
@@ -536,6 +575,16 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         return True
+    if not _heartbeat_seq_gate(evt):
+        # A newer beat of this process was already delivered: this one is stale (#135295).
+        logger.debug("Dropping stale heartbeat seq=%s for %s (last delivered seq=%s)",
+                     evt.get("seq"), evt.get("session_id"),
+                     _heartbeat_last_delivered_seq.get(str(evt.get("session_id") or "")))
+        return True
+    if evt_type == "completion":
+        # The process is finished: forget its seq space so a future process reusing the
+        # same session id starts fresh.
+        _heartbeat_last_delivered_seq.pop(str(evt.get("session_id") or ""), None)
     text = fmt(evt)
     if not text:
         return True

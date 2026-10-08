@@ -12,7 +12,6 @@ import time
 from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
@@ -599,10 +598,10 @@ def finalize_turn(
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
     _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
-    # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
+    # Automatic exports describe the represented history, not just this turn's query.
     _guarded_cleanup(
         "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
+        lambda: agent._save_trajectory(messages, None, completed),
         _cleanup_errors, logger,
     )
     _guarded_cleanup(

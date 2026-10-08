@@ -520,10 +520,10 @@ class SessionPersistenceMixin:
         return messages.copy()
 
     _format_tools_for_system_message = _forward("agent.system_prompt", "format_tools_for_system_message")
-    _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
+    _convert_to_trajectory_format = _forward("agent.trajectory", "convert_to_trajectory_format")
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
-        """Save conversation trajectory to JSONL file."""
+    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: Optional[str], completed: bool):
+        """Save a trajectory, optionally overriding its first user prompt."""
         if not self.save_trajectories:
             return
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)

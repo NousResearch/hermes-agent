@@ -83,7 +83,7 @@ platforms:
 | `secret`（路由级别） | 该路由的 HMAC secret。如果省略，则回退到 `extra.secret` 全局配置。 |
 | `events` | 要接受的 `X-GitHub-Event` 请求头值列表。空列表 = 接受所有。 |
 | `prompt` | 模板；`{field}` 和 `{nested.field}` 从 GitHub payload 中解析。 |
-| `deliver` | `github_comment` 通过 `gh pr comment` 发布。`log` 仅写入 gateway 日志。 |
+| `deliver` | `github_comment` 通过 `gh issue comment` 发布，除非 `deliver_extra` 指定了其他目标，否则评论到事件自身的 PR 或 issue。`log` 仅写入 gateway 日志。 |
 | `deliver_extra.repo` | 从 payload 中解析为例如 `org/repo`。 |
 | `deliver_extra.pr_number` | 从 payload 中解析为 PR 编号。 |
 

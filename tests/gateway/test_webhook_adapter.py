@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -340,6 +341,102 @@ class TestRenderDeliveryExtra:
         assert result["repo"] == "org/repo"
         assert result["pr_number"] == "7"
         assert result["static"] == 42  # non-string left as-is
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("deliver_only", [False, True])
+    async def test_script_transform_keeps_implicit_github_target_from_ingress(
+            self, tmp_path, monkeypatch, deliver_only):
+        """A route script may replace prompt data without erasing the signed event's reply target."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "reduce.py").write_text(
+            "import json, sys\n"
+            "json.load(sys.stdin)\n"
+            "print(json.dumps({'summary': 'triage me'}))\n",
+            encoding="utf-8",
+        )
+
+        log = tmp_path / "comments.log"
+        gh = tmp_path / "gh"
+        gh.write_text(
+            '#!/usr/bin/env bash\n'
+            'echo "$5#$3" >> "$GH_LOG"\n',
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+        monkeypatch.setenv("GH_LOG", str(log))
+
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "deliver": "github_comment",
+            "script": "reduce.py",
+            "prompt": "Summary: {summary}",
+        }
+        if deliver_only:
+            route["deliver_only"] = True
+        adapter = _make_adapter(routes={"gh": route})
+        replies = []
+
+        async def _agent_replies(event):
+            assert event.raw_message == {"summary": "triage me"}
+            replies.append(await adapter.send(event.source.chat_id, "LGTM"))
+
+        if not deliver_only:
+            adapter.handle_message = _agent_replies
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"issue": {"number": 12}, "repository": {"full_name": "octo/repo"}},
+                headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": f"script-{deliver_only}"},
+            )
+            assert resp.status == (200 if deliver_only else 202)
+            if not deliver_only:
+                for _ in range(200):
+                    if replies:
+                        break
+                    await asyncio.sleep(0.05)
+
+        if not deliver_only:
+            assert replies and replies[0].success, replies[0].error if replies else "agent did not reply"
+        assert log.read_text().strip() == "octo/repo#12"
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.asyncio
+    async def test_github_comment_without_target_replies_on_the_events_pr_or_issue(self, tmp_path, monkeypatch):
+        """A github_comment route as `hermes webhook subscribe` writes it (no deliver_extra) posts the
+        reply on the event's own PR or issue."""
+        log = tmp_path / "comments.log"
+        gh = tmp_path / "gh"
+        # Stand-in for GitHub: octo/repo has PR 7 and issue 12, and `gh pr comment` only resolves PRs.
+        gh.write_text('#!/usr/bin/env bash\n'
+                      'if [ "$1" = pr ] && [ "$3" != 7 ]; then echo "Could not resolve to a PullRequest" >&2; exit 1; fi\n'
+                      'echo "$5#$3" >> "$GH_LOG"\n', encoding="utf-8")
+        gh.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+        monkeypatch.setenv("GH_LOG", str(log))
+        adapter = _make_adapter(routes={"gh": {"secret": _INSECURE_NO_AUTH, "deliver": "github_comment"}})
+        replies = []
+
+        async def _agent_replies(event):
+            replies.append(await adapter.send(event.source.chat_id, "LGTM"))
+
+        adapter.handle_message = _agent_replies
+        repo = {"full_name": "octo/repo"}
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for event, payload in (("pull_request", {"number": 7, "pull_request": {"number": 7}, "repository": repo}),
+                                   ("issues", {"issue": {"number": 12}, "repository": repo})):
+                resp = await cli.post("/webhooks/gh", json=payload, headers={"X-GitHub-Event": event})
+                assert resp.status == 202
+            for _ in range(200):
+                if len(replies) == 2:
+                    break
+                await asyncio.sleep(0.05)
+        assert [r.success for r in replies] == [True, True], [r.error for r in replies]
+        assert sorted(log.read_text().split()) == ["octo/repo#12", "octo/repo#7"]
 
 
 # ===================================================================

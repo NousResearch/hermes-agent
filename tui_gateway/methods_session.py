@@ -132,6 +132,8 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
 
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
+from .methods_session_model_guard import restore_session_yolo as _restore_session_yolo
+
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
 _LISTING_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
 
@@ -615,16 +617,6 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
-def _restore_session_yolo(session_key: str, session_meta: dict | None) -> None:
-    """Re-arm a persisted session /yolo on resume: a new backend process starts with an empty in-memory
-    approval set. Keyed on the stored id (``ctx.target``), the key approvals are checked under, never
-    the freshly minted runtime sid. Mirrors ``cli_session_mixin._restore_session_yolo``."""
-    from hermes_state import SessionDB
-    from tools.approval import enable_session_yolo
-    if session_key and SessionDB.session_yolo_enabled(session_meta):
-        enable_session_yolo(session_key)
-
-
 # ── session.resume ───────────────────────────────────────────────────
 class _Resume:
     """Per-call ``session.resume`` state. ``owns_db``: the DEDICATED profile handle is ours
@@ -971,7 +963,6 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _restore_session_yolo(ctx.target, ctx.found)
     # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
     _schedule_resume_hydration(
         sid, ctx.target, ctx.db, close_db=ctx.owns_db,
@@ -997,7 +988,6 @@ def _resume_cold(ctx: _Resume) -> dict:
                         todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _restore_session_yolo(ctx.target, ctx.found)
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
@@ -1039,7 +1029,6 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if ctx.owns_db:
                     _transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
-            _restore_session_yolo(ctx.target, ctx.found)
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
@@ -1084,11 +1073,11 @@ def _(rid, params: dict) -> dict:
             return resp
         ctx.profile_resume_cwd = (_resumable_stored_cwd(_str_param(ctx.found, "cwd"), ctx.profile_home)
                                   or _profile_workspace_cwd(ctx.profile_home))
-        # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
-        with _session_resume_lock:
+        with _session_resume_lock:  # fast path: reuse a session live IN THIS PROFILE, never another's
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
+        _restore_session_yolo(ctx.target, ctx.found)  # a new backend starts with an empty approval set
         if ctx.lazy:
             return _resume_lazy(ctx)
         if ctx.eager_build:
@@ -2217,8 +2206,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"closed": _teardown_popped_session(session, end_reason="tui_close")})
 
 
-
-
 @_session_method("session.branch", live=True)
 def _(rid, params: dict, session: dict) -> dict:
     return _branch_live(rid, params, session)
@@ -2228,10 +2215,6 @@ def _(rid, params: dict, session: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     """Whole-history ``session.branch`` that doesn't echo the copied transcript back."""
     return _branch_live(rid, params, session, omit_messages=True)
-
-
-
-
 
 
 # ── delegation / spawn trees ─────────────────────────────────────────

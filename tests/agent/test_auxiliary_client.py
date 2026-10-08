@@ -5205,3 +5205,41 @@ def test_all_nous_aliases_require_authorization_before_callback(monkeypatch, tmp
             api_mode="chat_completions", metadata=None,
         )
     assert requests == []
+
+
+@pytest.mark.parametrize("provider", ["nous", "nous-portal", "nousresearch"])
+@pytest.mark.parametrize("local_auxiliary", [False, True])
+def test_auxiliary_sdk_url_binds_actual_endpoint(
+    monkeypatch, tmp_path, provider, local_auxiliary
+):
+    import httpx
+    from openai import OpenAI
+    from agent import auxiliary_client
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = (
+        "http://127.0.0.1:11434/v1" if local_auxiliary
+        else "https://inference-api.nousresearch.com/v1"
+    )
+    request = {
+        "model": "synthetic-model",
+        "messages": [{"role": "user", "content": "token=synthetic-secret"}],
+    }
+    with OpenAI(api_key="synthetic-key", base_url=endpoint) as client:
+        assert isinstance(client.base_url, httpx.URL)
+        callback = MagicMock(return_value="local")
+        monkeypatch.setattr(client.chat.completions, "create", callback)
+        with auxiliary_client.scoped_runtime_main(
+            {"provider": provider, "base_url": "http://127.0.0.1:11434/v1"}
+        ):
+            if local_auxiliary:
+                assert auxiliary_client._relay_sync_completion(
+                    client, request, provider=provider
+                ) == "local"
+                callback.assert_called_once_with(**request)
+            else:
+                with pytest.raises(EgressBlocked):
+                    auxiliary_client._relay_sync_completion(
+                        client, request, provider=provider
+                    )
+                callback.assert_not_called()

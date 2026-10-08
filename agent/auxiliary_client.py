@@ -2473,7 +2473,9 @@ def _auxiliary_egress_binding(
         or raw_runtime.get("llm_egress_policy_digest")
         or DEFAULT_POLICY_DIGEST
     )
-    candidate_base_url = getattr(client, "base_url", "")
+    # SDK clients expose httpx.URL; authorize the auxiliary endpoint before
+    # considering the main runtime's fallback endpoint.
+    candidate_base_url = str(getattr(client, "base_url", "") or "")
     if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
         ("http://", "https://")
     ):

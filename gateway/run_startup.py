@@ -1841,6 +1841,17 @@ class GatewayStartupMixin:
         )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
+        # The conversation's selected route wins over the destination channel's old /model.
+        # Persist only routing metadata; the normal turn resolver rehydrates credentials in scope
+        # and reports its existing fallback notice when that provider is unavailable.
+        from hermes_state import SessionDB
+        runtime = SessionDB.session_gateway_runtime(row)
+        if row.get("model") and runtime.get("provider"):
+            await self.async_session_store.set_model_override(session_key, {
+                "model": row["model"], "provider": runtime["provider"],
+                "base_url": runtime.get("base_url"),
+            })
+            self._session_state(session_key).conversation.model_override = None
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

@@ -1679,6 +1679,17 @@ class GatewayStartupMixin:
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready
         record_process_ready("gateway_boot", background=True)
+        # Start plugin-registered background services (Nextcloud notifications,
+        # file watchers, RSS pollers, etc.). Each entry in
+        # ``config.services.<name>`` whose ``enabled`` flag is set is matched
+        # against an entry in :data:`gateway.service_registry.service_registry`.
+        # Services that fail to start are logged but do not abort gateway
+        # startup — they can be retried after a config fix + restart.
+        try:
+            from gateway.run_services import start_plugin_background_services
+            await start_plugin_background_services(self)
+        except Exception as _e:
+            logger.error("Plugin background services startup error: %s", _e, exc_info=True)
         logger.info("Press Ctrl+C to stop")
         return True
 

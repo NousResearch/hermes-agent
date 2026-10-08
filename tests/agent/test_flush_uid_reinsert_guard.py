@@ -12,9 +12,14 @@ later timestamp with display metadata lost — e.g. session 20261007_121708_c6c6
 held uid 8f651719 as a durable row at 12:37 and again as a fresh insert at 15:18,
 four hours later, from the same logical assistant message.
 
-The fix consults the durable uid set (SessionDB.active_message_uid_exists) in
-``_db_flush_collect``: a candidate whose uid is already an ACTIVE row is stamped
-``_DB_PERSISTED_MARKER`` and skipped — append-only state, no rewrites.
+The fix consults the durable uid set in ``resolve_and_repair_transcript_batch``
+(the append's write transaction): a candidate without a row address or CAS
+snapshot whose uid already names an ACTIVE durable row is stamped
+``_DB_PERSISTED_MARKER`` and skipped — append-only state, no rewrites. Dicts
+that still carry ``DB_ROW_SNAPSHOT`` are excluded (the CAS path rewrites their
+row in place — a live edit must reach the row, never be skipped), and the
+probe runs inside the ``BEGIN IMMEDIATE`` so the active set cannot change
+between the read and the INSERT.
 
 This file reproduces the exact signature end-to-end: restore the history from the
 DB (fresh dicts, uids preserved, no markers), then flush again — the old code
@@ -129,21 +134,42 @@ def test_new_messages_after_restore_still_persist(tmp_path):
     assert len(contents) == 3, f"expected exactly 3 rows, got {len(contents)}: {contents}"
 
 
-def test_active_message_uid_exists_probe(tmp_path):
-    """The SessionDB probe: uid -> exists mapping, empty-input, and no-match
-    behavior."""
+def test_restored_snapshot_rewrite_still_lands(tmp_path):
+    """The reviewer's blocker (134799 review, 2026-10-07): a restored dict that
+    still carries its ``_db_row_snapshot`` is the CAS repair path's client —
+    ``_active_logical_message_row`` finds the active row by (session_id, role,
+    message_uid) and rewrites it in place. The durable-uid re-insert guard must
+    never stamp-and-skip such a dict: a live edit on it would be silently lost.
+    """
     agent, db = _make_agent_with_db(tmp_path)
     sid = agent.session_id
-    agent._flush_messages_to_session_db(
-        [{"role": "user", "content": "probe me", "timestamp": 4000.0}]
-    )
-    live_uid = db._read_one(
-        "SELECT message_uid FROM messages WHERE session_id = ? LIMIT 1", (sid,)
-    )["message_uid"]
 
-    probe = db.active_message_uid_exists(sid, [live_uid, "no-such-uid"])
-    assert probe == {live_uid: True, "no-such-uid": False}
-    assert db.active_message_uid_exists(sid, []) == {}
-    assert db.active_message_uid_exists("no-such-session", [live_uid]) == {
-        live_uid: False
-    }
+    turn_one = [
+        {"role": "user", "content": "q", "timestamp": 5000.0},
+        {"role": "assistant", "content": "old answer", "timestamp": 5001.0},
+    ]
+    agent._flush_messages_to_session_db(turn_one)
+    assert _row_count(db, sid) == 2
+
+    # restore with repair_alternation=True: fresh dicts stamped snapshot + marker
+    restored = db.get_messages_as_conversation(sid, repair_alternation=True)
+    assert len(restored) == 2
+    assert all(isinstance(m.get("_db_row_snapshot"), str) for m in restored), (
+        "repair_alternation=True read-back must stamp the CAS digest for this test to pin the rewrite path"
+    )
+    # strip ONLY the persistence marker (underscore-prefixed; the wire strip) —
+    # the snapshot and uid stay: this dict is still row-addressable by CAS
+    for m in restored:
+        m.pop(_DB_PERSISTED_MARKER, None)
+
+    # the live edit that must reach the durable row
+    restored[-1]["content"] = "new answer"
+    agent._flush_messages_to_session_db(restored)
+
+    final = db.get_messages_as_conversation(sid, repair_alternation=True)
+    contents = [m.get("content") for m in final]
+    assert contents == ["q", "new answer"], (
+        "live edit on a snapshot-carrying restored dict was silently dropped: "
+        f"final contents {contents}"
+    )
+    assert _row_count(db, sid) == 2, "the rewrite must not add rows"

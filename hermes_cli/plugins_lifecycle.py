@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 
@@ -14,7 +15,13 @@ def unload_plugin_manager_for_home(home: Path) -> bool:
     except (OSError, RuntimeError):
         home_key = Path(home).expanduser()
 
-    with plugins._plugin_managers_lock:
+    thread_id = threading.get_ident()
+    with plugins._plugin_manager_teardown_condition:
+        while home_key in plugins._plugin_manager_teardown_owners:
+            owner, _manager = plugins._plugin_manager_teardown_owners[home_key]
+            if owner == thread_id:
+                return False
+            plugins._plugin_manager_teardown_condition.wait()
         manager = plugins._plugin_managers_by_home.get(home_key)
         if manager is None and plugins._plugin_manager is not None:
             manager_home = getattr(plugins._plugin_manager, "home_path", None)
@@ -27,19 +34,26 @@ def unload_plugin_manager_for_home(home: Path) -> bool:
                     manager = plugins._plugin_manager
         if manager is None:
             return False
+        plugins._plugin_manager_teardown_owners[home_key] = (thread_id, manager)
         if plugins._plugin_managers_by_home.get(home_key) is manager:
             plugins._plugin_managers_by_home.pop(home_key, None)
         if plugins._plugin_manager is manager:
             plugins._plugin_manager = None
 
-    # Evict atomically above, then dispose without serializing unrelated profile lookups.
-    host = getattr(manager, "_plugin_host_instance", None)
     try:
-        plugins._clear_plugin_submodules(manager)
-    finally:
+        # Same-home lookups wait on the reservation; unrelated profile lookups
+        # remain free while plugin callbacks and host shutdown run.
+        host = getattr(manager, "_plugin_host_instance", None)
         try:
-            manager.unload()
+            plugins._clear_plugin_submodules(manager)
         finally:
-            if host is not None:
-                host.shutdown()
+            try:
+                manager.unload()
+            finally:
+                if host is not None:
+                    host.shutdown()
+    finally:
+        with plugins._plugin_manager_teardown_condition:
+            plugins._plugin_manager_teardown_owners.pop(home_key, None)
+            plugins._plugin_manager_teardown_condition.notify_all()
     return True

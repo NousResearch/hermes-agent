@@ -2259,11 +2259,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 mark_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
         shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+        if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
+            raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         # Retire the cached manager before moving its home.
         from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
         unload_plugin_manager_for_home(old_dir)
-        if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
-            raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
         renamed = True
     finally:

@@ -1475,7 +1475,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
-            reply_card=_to_boolean(extra.get("reply_card", _get_scoped_secret("FEISHU_REPLY_CARD", "false"))),
+            reply_card=_extra_or_secret("reply_card", "FEISHU_REPLY_CARD", "false").lower() in {"true", "1", "yes", "on"},
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:

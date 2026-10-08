@@ -132,3 +132,12 @@ async def test_rich_clarify_resolution_keeps_question_and_option_context(adapter
     assert "Which &lt;target&gt;?" in text
     assert "alpha" in text and "beta" in text
     wait_for_response(entry.clarify_id, 0.001)
+
+
+def test_compact_selectors_pair_short_actions_without_truncating_long_labels(adapter):
+    labels = ["minimal", "low", "medium", "high", "ultra (sends max on this route)", "reset — clear session override"]
+    buttons = [{"text": label, "callback_data": f"cp:{i}"} for i, label in enumerate(labels)]
+    rows = adapter._selection_rows(buttons)
+    assert [[b["callback_data"] for b in row] for row in rows] == [
+        ["cp:0", "cp:1"], ["cp:2", "cp:3"], ["cp:4"], ["cp:5"]]
+    assert [b["text"] for row in rows for b in row] == labels

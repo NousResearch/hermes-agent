@@ -1,6 +1,7 @@
 """Rich control conversion + send/edit contracts: escaping boundaries, callback passthrough,
 ALL Bot API 10.3 button actions (url/web_app/login_url/switch_inline_query*/copy_text/disabled),
-explicit styles + row alignment, MarkdownV2 preservation, permanent-vs-transient fallback,
+explicit styles + row alignment, MarkdownV2 preservation, native line-break normalization
+(body/row fragments LF → ``<br>``, pre/code untouched), permanent-vs-transient fallback,
 registry lifecycle, query facade (positional + keyword edit calls).
 
 No PTB required: keyboards are fed as ``to_dict()``-shaped dicts; the mixin host is a bare
@@ -345,6 +346,76 @@ def test_html_mode_passes_body_through():
 def test_payload_is_exactly_html_field():
     assert rich_control_payload("t", "MarkdownV2", keyboard((("A", "ea:once:1"),))) == {
         "html": 't\n<tg-button-row><tg-button type="callback_data" data="ea:once:1">A</tg-button></tg-button-row>'}
+
+# --- native line-break normalization -----------------------------------------------------------
+def test_html_body_newlines_become_explicit_br():
+    html = rich_control_html("<b>Header</b>\nfield: value\n\n<b>Footer</b>", "HTML")
+    assert html == "<b>Header</b><br>field: value<br><br><b>Footer</b>"
+
+
+def test_plain_body_newlines_become_explicit_br():
+    assert rich_control_html("a\nb\n\nc", None) == "a<br>b<br><br>c"
+
+
+def test_markdown_body_newlines_become_explicit_br():
+    assert rich_control_html("*A*\nB\n\nC", "MarkdownV2") == "<b>A</b><br>B<br><br>C"
+
+
+def test_crlf_body_newlines_become_single_br():
+    assert rich_control_html("a\r\nb\rc", "HTML") == "a<br>b<br>c"
+
+
+def test_body_linebreaks_leave_pre_and_code_newlines_literal():
+    html = rich_control_html("<pre>fn(x)\n```\n</pre>\nmid\n<code>l1\nl2</code>\ntail", "HTML")
+    assert html == "<pre>fn(x)\n```\n</pre><br>mid<br><code>l1\nl2</code><br>tail"
+
+
+def test_row_contents_newlines_become_explicit_br():
+    markup = _native_markup(
+        [(("1", "cl:1:0"),), (("2", "cl:1:1"),)],
+        row_contents=["1. line one\nline two", "2. second"])
+    html = rich_control_html("Q", "HTML", markup)
+    assert "line one<br>line two" in html
+    assert "line one\nline two" not in html
+    assert "Q<br>" not in html  # single trailing LF stays a separator, not a <br>
+
+
+def test_row_contents_code_region_newlines_stay_literal():
+    markup = _native_markup(
+        [(("1", "cl:1:0"),)],
+        row_contents=["<code>cmd --flag\n  arg</code>"])
+    html = rich_control_html("Q", "HTML", markup)
+    assert "<code>cmd --flag\n  arg</code>" in html
+    assert "<br>" not in html
+
+
+def test_linebreak_normalization_does_not_touch_button_markup():
+    markup = {"inline_keyboard": [[
+        {"text": "L1\nL2", "callback_data": "cp:0"},
+        {"text": "C", "copy_text": {"text": "a\nb"}}]]}
+    html = rich_control_html("body\n", "HTML", markup)
+    assert '<tg-button type="copy_text" text="a\nb">C</tg-button>' in html
+    assert html == ('body<br>\n<tg-button-row><tg-button type="callback_data" data="cp:0">L1\nL2</tg-button>'
+                    '<tg-button type="copy_text" text="a\nb">C</tg-button></tg-button-row>')
+
+
+def test_native_body_headings_and_fields_render_as_separate_lines():
+    """Regression for the cramping report: heading, model and provider must be separated
+    by explicit breaks, and escaped user content must stay inert (no buttons from strings)."""
+    body = ('<b>⚙️ Models</b>\nProvider: <b>OpenAI</b>\nModel: <code>gpt\\-4o</code>\n\n'
+            "&lt;tg-button data=&quot;evil&quot;&gt;\ncmd `x`\n---\nline2")
+    html = rich_control_html(body, "HTML", keyboard((("Pick", "mp:0"),)))
+    assert '<b>⚙️ Models</b><br>Provider: <b>OpenAI</b><br>Model: <code>gpt\\-4o</code><br><br>' in html
+    assert "&lt;tg-button data=&quot;evil&quot;&gt;<br>cmd `x`<br>---<br>line2" in html
+    assert html.count("<tg-button ") == 1  # only the real button; escaped content injects none
+    assert html.endswith('<tg-button-row><tg-button type="callback_data" data="mp:0">Pick</tg-button></tg-button-row>')
+
+
+def test_native_body_code_literal_lines_stay_intact():
+    html = rich_control_html("<pre>line1\nline2</pre>\nafter", "HTML", keyboard((("Go", "cp:0"),)))
+    assert "<pre>line1\nline2</pre><br>after" in html
+    assert "<br>" not in html.split("<pre>")[1].split("</pre>")[0]
+
 
 # --- _try_send_rich_control contract --------------------------------------------------------
 @pytest.mark.asyncio

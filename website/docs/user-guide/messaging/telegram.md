@@ -1126,10 +1126,10 @@ gateway:
 
 **Native menu layout and states:**
 
-- Provider/model and flat-choice selectors use one button per row, keeping long labels readable. Model identifiers are not manually truncated in rich mode. The current provider remains clickable so its models can be opened; the current model and current flat-choice value are marked with `✓`, success-styled and disabled.
-- Pagination controls are centered; the page counter is a disabled button, not a no-op callback. Back/cancel controls are separate from selection rows. Navigation uses link styling, selection uses primary, one-time approval uses success, persistent approval uses primary, and cancel/deny uses danger. Styles come from the action, not translated button text.
+- Provider/model and flat-choice selectors pair short labels (up to 18 characters); longer labels get a separate row without manual truncation in rich mode. The current provider remains clickable so its models can be opened; the current model and current flat-choice value are marked with `✓`, success-styled and disabled. Rich card fields use explicit line breaks so headings and settings do not run together.
+- Pagination and the separate back/cancel row are centered consistently; the page counter is disabled, not a no-op callback. Navigation uses link styling, selection uses primary, one-time approval uses success, persistent approval uses primary, and cancel/deny uses danger. Styles come from the action, not translated button text.
 - Clarification prompts place each escaped option immediately before its own button, with the free-text answer action after the options. Legacy fallback retains the full numbered question and ordinary keyboard.
-- Approval and confirmation actions have their own rows; terminal resolution replaces the same message with its result and removes the controls. Callback identifiers, approval semantics and authorization remain unchanged.
+- Approval and confirmation actions use the same compact short-label layout; terminal resolution replaces the same message with its result and removes the controls. Callback identifiers, approval semantics and authorization remain unchanged.
 
 With the flag off, ordinary inline keyboards remain available. A permanent rich rejection also restores ordinary keyboards with no rich-only fields; an ambiguous failure never triggers a second send. Telegram clients own the final rendering of native styles and alignment.
 

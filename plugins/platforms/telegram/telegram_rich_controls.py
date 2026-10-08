@@ -77,6 +77,27 @@ def esc_text(value: Any) -> str:
     return _html.escape(str(value if value is not None else ""), quote=False)
 
 
+# Native rich HTML renders a raw LF as ordinary whitespace — no line break (the cramping
+# the user reported: headings/fields run together). Ordinary newlines therefore become
+# explicit ``<br>`` elements (blank line → ``<br><br>``); newlines inside ``<pre>``/
+# ``<code>`` are literal content whitespace and pass through unchanged.
+_RICH_LF_RE = re.compile(r"\r\n?|\n")
+_RICH_CODE_REGION_RE = re.compile(r"(<pre>[\s\S]*?</pre>|<code>[\s\S]*?</code>)")
+
+
+def _rich_line_breaks(fragment: str) -> str:
+    """One already-escaped rich-HTML fragment (body or row-content) → explicit ``<br>``
+    line breaks: ``\\n`` → ``<br>``, a blank line → ``<br><br>``. ``<pre>``/``<code>``
+    regions keep their literal newlines. Only body/fragment strings pass through here —
+    button markup and attribute values are built elsewhere and are never transformed."""
+    if "\n" not in fragment and "\r" not in fragment:
+        return fragment
+    parts = _RICH_CODE_REGION_RE.split(fragment)
+    for i in range(0, len(parts), 2):  # odd indices are the captured pre/code regions
+        parts[i] = _RICH_LF_RE.sub("<br>", parts[i])
+    return "".join(parts)
+
+
 # --- MarkdownV2 → rich HTML ---------------------------------------------------------------
 # MarkdownV2 escapes: every special char may carry a protective backslash.
 _MDV2_UNESCAPE_RE = re.compile(r"\\([_*\[\]()~`>#\+\-=|{}.!\\])")
@@ -508,7 +529,12 @@ def rich_control_html(text: str, parse_mode: Any, reply_markup: Any = None) -> s
     rich body (the legacy fallback keeps ``text``); ``row_contents`` — one
     ALREADY-ESCAPED HTML fragment per SOURCE row — renders immediately before that
     row's buttons (the body must not repeat the options when fragments are given;
-    fragments pass through verbatim, never re-escaped)."""
+    fragments pass through verbatim, never re-escaped).
+
+    The rich body and every row fragment are normalized for native rendering: an
+    ordinary LF becomes an explicit ``<br>`` (blank line → ``<br><br>``), because the
+    native client collapses a raw LF to no break at all; ``<pre>``/``<code>`` content
+    keeps its literal newlines. Button markup/attributes are never touched."""
     row_contents, rich_text = _markup_extras(reply_markup)
     body_source = rich_text if rich_text is not None else text
     kind = _parse_mode_kind(parse_mode)
@@ -518,6 +544,8 @@ def rich_control_html(text: str, parse_mode: Any, reply_markup: Any = None) -> s
         body = mdv2_to_html(body_source or "")
     else:
         body = esc_text(body_source or "")
+    # Body LF → explicit <br> (native rich renders raw LF as no break at all).
+    body = _rich_line_breaks(body)
     _, rows, alignments, source_row_ids = _normalize_markup(reply_markup)
     if not rows:
         return body
@@ -533,7 +561,7 @@ def rich_control_html(text: str, parse_mode: Any, reply_markup: Any = None) -> s
         if source_index not in seen_source_rows and source_index < len(row_contents):
             fragment = row_contents[source_index]
             if fragment is not None and str(fragment) != "":
-                parts.append(str(fragment))
+                parts.append(_rich_line_breaks(str(fragment)))
         seen_source_rows.add(source_index)
         align = alignments[row_index] if alignments and row_index < len(alignments) else None
         align_attr = f' align="{esc_attr(align)}"' if align in _ROW_ALIGNMENTS else ""

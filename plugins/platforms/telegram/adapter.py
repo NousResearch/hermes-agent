@@ -4256,7 +4256,24 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
                                    rich_text=rich_text, row_alignments=row_alignments)
 
     def _selection_rows(self, buttons: list) -> list:
-        return [[button] for button in buttons] if self._rich_controls_enabled() else self._rows_of_two(buttons)
+        if not self._rich_controls_enabled():
+            return self._rows_of_two(buttons)
+        rows, compact = [], []
+        for button in buttons:
+            label = button.get("text", "") if isinstance(button, dict) else getattr(button, "text", "")
+            if len(str(label)) <= 18:
+                compact.append(button)
+                if len(compact) == 2:
+                    rows.append(compact)
+                    compact = []
+            else:
+                if compact:
+                    rows.append(compact)
+                    compact = []
+                rows.append([button])
+        if compact:
+            rows.append(compact)
+        return rows
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -4492,7 +4509,7 @@ class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, T
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
             alignments.append("center")
         rows.append(tail_row)
-        alignments.append("right")
+        alignments.append("center")
         return self._native_control_markup(rows, overrides=overrides, row_alignments=alignments), page_meta["page_info"]
 
     def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:

@@ -2485,16 +2485,16 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 1c. Release this process's cached MCP stderr handle into the old home (same as
     # delete_profile): Windows refuses to rename a directory holding an open file, and the
     # handle would otherwise stay cached under the old key after the move.
-    from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-    # Managers are strongly cached by resolved home; retire the old scope before moving its directory.
-    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
-    unload_plugin_manager_for_home(old_dir)
-
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
-    # undo the unroute so the profile is never stranded tombstoned-but-present.
+    # undo the unroute so the profile is never stranded tombstoned-but-present. Teardown is inside
+    # the same rollback boundary: it happens after service/tombstone changes but before the move.
     try:
+        from hermes_constants import hermes_home_key
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+        # Managers are strongly cached by resolved home; retire the old scope before moving its directory.
+        from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+        unload_plugin_manager_for_home(old_dir)
         old_dir.rename(new_dir)
     except Exception:
         if live_mux:

@@ -354,7 +354,10 @@ the oldest pending event. Callback exceptions are logged and isolated. During
 shutdown Hermes places a stop sentinel and waits at most the dispatcher's
 bounded drain timeout (one second by default); a stuck callback is left on its
 daemon worker rather than delaying process teardown. Consumers must therefore
-treat this observer as best-effort and tolerate delay or drop.
+treat this observer as best-effort and tolerate delay or drop. The shared
+dispatcher also drops any event whose estimated retained payload graph exceeds
+16 KiB or contains unsupported values; it drops the whole event and never
+truncates query text, identifiers, digests, or validated observations.
 
 The operation-bound observation tuple and explicit `task_id`/`turn_id` avoid
 query, hash, call-order, mutable provider `last_*`, or session-cache inference

@@ -1603,6 +1603,8 @@ _plugin_manager: Optional[PluginManager] = None
 # into another, and keying by resolved home lets a re-entered profile reuse its imported modules.
 _plugin_managers_by_home: dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
+_plugin_manager_teardown_condition = threading.Condition(_plugin_managers_lock)
+_plugin_manager_teardown_owners: Dict[Path, Tuple[int, PluginManager]] = {}
 
 # Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
 # isolated in per-profile managers, so every manager in this process must see the same live host.
@@ -1715,18 +1717,26 @@ def get_plugin_manager() -> PluginManager:
     profile switch gets its own manager and plugin submodules)."""
     global _plugin_manager
     current_home = _plugin_home_key()
-    with _plugin_managers_lock:
-        # Tests/embedders monkeypatch ``_plugin_manager`` directly: adopt a single-slot manager the
-        # keyed cache doesn't know about at all.
-        if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():
-            _plugin_managers_by_home[current_home] = _plugin_manager
-            manager = _plugin_manager
+    thread_id = threading.get_ident()
+    with _plugin_manager_teardown_condition:
+        while current_home in _plugin_manager_teardown_owners:
+            owner, tearing_down = _plugin_manager_teardown_owners[current_home]
+            if owner == thread_id:
+                manager = tearing_down
+                break
+            _plugin_manager_teardown_condition.wait()
         else:
-            manager = _plugin_managers_by_home.get(current_home)
-            if manager is None:
-                manager = PluginManager(scope_key=hermes_home_key(current_home))
-                _plugin_managers_by_home[current_home] = manager
-            _plugin_manager = manager
+            # Tests/embedders monkeypatch ``_plugin_manager`` directly: adopt a single-slot manager the
+            # keyed cache doesn't know about at all.
+            if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():
+                _plugin_managers_by_home[current_home] = _plugin_manager
+                manager = _plugin_manager
+            else:
+                manager = _plugin_managers_by_home.get(current_home)
+                if manager is None:
+                    manager = PluginManager(scope_key=hermes_home_key(current_home))
+                    _plugin_managers_by_home[current_home] = manager
+                _plugin_manager = manager
     _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager

@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -3378,7 +3379,8 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
     """Surface a failed summary, or a recovered-but-broken aux compression model, once."""
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
-        if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
+        if getattr(agent, "_last_compression_fallback_warning", None) != summary_error:
+            agent._last_compression_fallback_warning = summary_error
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(f"⚠ Compression summary failed: {summary_error}. Inserted a fallback context marker.")
     else:
@@ -3430,6 +3432,10 @@ def _finish_compaction_boundary(
     # boundary notifications attribute prior state to (old id, or same id in-place).
     _old_sid = old_session_id
     _boundary_parent = _old_sid or agent.session_id or ""
+    if session_commit_succeeded and compression_made_progress and not compression_used_fallback:
+        # Candidate acceptance alone is not recovery: failed commits and fallback
+        # markers must not re-arm equivalent retries of the unresolved summary.
+        agent._last_compression_abort_warning_key = None
 
     # The heartbeat's terminal stamp landed on the PARENT before the id re-pointed;
     # clear labels (keep last_activity_at) so the archived row isn't falsely fresh.
@@ -3512,6 +3518,20 @@ def _finish_compaction_boundary(
     return _compressed_est
 
 
+def _compression_abort_warning_key(agent: Any, error: str) -> tuple:
+    """Separate a retry's diagnostic duration from its bounded warning identity."""
+    # Only the known stream-guard suffix is volatile. HTTP codes, configured
+    # deadlines and arbitrary provider messages must remain distinguishable.
+    stable_error = error
+    if error.startswith("Codex auxiliary Responses stream stalled: no new output for "):
+        stable_error = re.sub(r" \([0-9]+(?:\.[0-9]+)?s elapsed\)$", "", error)
+    telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
+    route = (None, None)
+    if isinstance(telemetry, dict) and telemetry.get("attempt_id") == getattr(agent, "_compression_attempt_id", None):
+        route = (telemetry.get("aux_provider"), telemetry.get("aux_model"))
+    return (getattr(agent, "session_id", None), *route, stable_error)
+
+
 def _candidate_rejected(
     agent: Any, compressed: Any, messages: list, messages_before_compression: list, *,
     attempt_generation: Any, attempt_started_at: float,
@@ -3525,8 +3545,11 @@ def _candidate_rejected(
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         _err = _summary_error or "unknown error"
-        if getattr(agent, "_last_compression_summary_warning", None) != _err:
-            agent._last_compression_summary_warning = _err
+        _warning_key = _compression_abort_warning_key(agent, _err)
+        # Keep the raw, latest detail for hygiene diagnostics, even on a quiet retry.
+        agent._last_compression_summary_warning = _err
+        if getattr(agent, "_last_compression_abort_warning_key", None) != _warning_key:
+            agent._last_compression_abort_warning_key = _warning_key
             agent._emit_warning(
                 f"⚠ Compression aborted: {_err}. "
                 "No messages were dropped — conversation continues unchanged. "

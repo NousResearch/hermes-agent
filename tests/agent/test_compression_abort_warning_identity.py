@@ -86,6 +86,19 @@ def test_retries_do_not_key_on_attempt_ids_or_stale_routes(monkeypatch, stale):
     assert len(agent.warnings) == 1
 
 
+@pytest.mark.parametrize("attempt_id", [None, ""])
+def test_missing_attempt_identity_does_not_adopt_unowned_route(monkeypatch, attempt_id):
+    monkeypatch.setattr(cc, "_emit_aborted_attempt_telemetry", lambda *args: None)
+    agent = _agent()
+    agent._compression_attempt_id = attempt_id
+    for provider in ("old-provider", "unattributed-provider"):
+        agent.context_compressor._last_compression_telemetry = {
+            "attempt_id": attempt_id, "aux_provider": provider, "aux_model": "model",
+        }
+        _abort(agent, _error("79.9"))
+    assert len(agent.warnings) == 1
+
+
 @pytest.mark.parametrize("committed,progress,fallback,expected", [
     (True, True, False, 2), (False, True, False, 1),
     (True, False, False, 1), (True, True, True, 1),

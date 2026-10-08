@@ -3527,7 +3527,8 @@ def _compression_abort_warning_key(agent: Any, error: str) -> tuple:
         stable_error = re.sub(r" \([0-9]+(?:\.[0-9]+)?s elapsed\)$", "", error)
     telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
     route = (None, None)
-    if isinstance(telemetry, dict) and telemetry.get("attempt_id") == getattr(agent, "_compression_attempt_id", None):
+    attempt_id = getattr(agent, "_compression_attempt_id", None)
+    if attempt_id and isinstance(telemetry, dict) and telemetry.get("attempt_id") == attempt_id:
         route = (telemetry.get("aux_provider"), telemetry.get("aux_model"))
     return (getattr(agent, "session_id", None), *route, stable_error)
 

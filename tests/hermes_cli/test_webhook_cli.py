@@ -13,6 +13,7 @@ from hermes_cli.webhook import (
     _load_subscriptions,
     _mutate_subscriptions,
     _subscriptions_path,
+    WebhookSubscriptionsError,
 )
 
 @pytest.fixture(autouse=True)
@@ -241,11 +242,30 @@ class TestRemove:
 
 class TestPersistence:
 
-    def test_corrupted_file(self):
+    @pytest.mark.parametrize("content", ['{"a": {"secret": "s"},}', "broken{{{", "[]"])
+    def test_unreadable_store_raises_instead_of_reading_empty(self, content):
+        """Only a MISSING store is empty. An unreadable one (a typo from the documented hand edit
+        for ``toolsets``) must not be read as {} and written back holding just the new route —
+        that silently destroys every other route and its HMAC secret."""
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("broken{{{")
-        assert _load_subscriptions() == {}
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(WebhookSubscriptionsError):
+            _load_subscriptions()
+
+    @pytest.mark.parametrize("content", ['{"github-prs": {"secret": "s"},}', "broken{{{", "[]"])
+    def test_subscribe_refuses_to_overwrite_an_unreadable_store(self, capsys, content):
+        """The CLI create path exits 1 and leaves the file byte-identical instead of reading the
+        store as {} and publishing one that holds only the new route."""
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            webhook_command(_make_args(webhook_action="subscribe", name="todoist"))
+        assert exc.value.code == 1
+        assert path.read_text(encoding="utf-8") == content
+        assert "refusing to overwrite" in capsys.readouterr().out
 
     @pytest.mark.platforms("posix")  # POSIX mode bits are platform-specific
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):

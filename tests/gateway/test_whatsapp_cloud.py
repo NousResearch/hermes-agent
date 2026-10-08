@@ -111,6 +111,20 @@ def _make_adapter(**overrides):
     return adapter
 
 
+def _arm_interactive_callback(
+    adapter, state, *, kind: str, target_id: str, session_key: str,
+    chat_id: str = "15551234567", prompt_wamid: str = "wamid.prompt",
+) -> str:
+    """Mint the same durable, origin-bound callback state as an outbound card."""
+    capability = adapter._callback_store().reserve_callback(
+        kind=kind, target_id=target_id, session_key=session_key,
+        chat_id=chat_id, user_id=chat_id,
+    )
+    assert adapter._callback_store().activate_callback(capability, prompt_wamid)
+    state[capability] = {"kind": kind, "target_id": target_id, "session_key": session_key}
+    return capability
+
+
 @pytest.fixture
 def authorized_interactive_env(monkeypatch):
     """``dm_policy: open`` requires an explicit allow-all opt-in on main."""
@@ -404,8 +418,11 @@ class TestWebhookReplay:
 
     def test_dedup_cache_evicts_oldest(self):
         from gateway.platforms.whatsapp_cloud import WAMID_DEDUP_CACHE_SIZE
+        from gateway.platforms.whatsapp_cloud_state import WhatsAppCloudReplayStore
+
         adapter = _make_adapter()
-        # Fill the cache plus 5 extra
+        adapter._replay_store = WhatsAppCloudReplayStore(":memory:")
+        # Fill the hot cache plus 5 extra; durable retention is tested separately.
         for i in range(WAMID_DEDUP_CACHE_SIZE + 5):
             assert adapter._dedup_wamid(f"wamid_{i}") is True
         assert len(adapter._seen_wamids) == WAMID_DEDUP_CACHE_SIZE
@@ -1057,11 +1074,15 @@ class TestSendClarifyButtons:
         buttons = payload["interactive"]["action"]["buttons"]
         assert len(buttons) == 3
         assert [b["reply"]["title"] for b in buttons] == ["1", "2", "3"]
-        assert buttons[0]["reply"]["id"] == "cl:abc123:0"
-        assert buttons[2]["reply"]["id"] == "cl:abc123:2"
+        ids = [b["reply"]["id"] for b in buttons]
+        capability = ids[0].split(":")[1]
+        assert ids == [f"cl:{capability}:0", f"cl:{capability}:1", f"cl:{capability}:2"]
+        assert capability != "abc123"
         body_text = payload["interactive"]["body"]["text"]
         assert "Alpha" in body_text and "Bravo" in body_text and "Charlie" in body_text
-        assert adapter._clarify_state["abc123"] == "sess-1"
+        assert adapter._clarify_state[capability] == {
+            "session_key": "sess-1", "target_id": "abc123", "kind": "clarify",
+        }
 
 
 class TestSendExecApprovalButtons:
@@ -1098,7 +1119,9 @@ class TestSendExecApprovalButtons:
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
+        assert adapter._exec_approval_state[approval_id] == {
+            "session_key": "sess-app-1", "target_id": "approval", "kind": "approval",
+        }
 
 
 class TestSendSlashConfirmButtons:
@@ -1125,8 +1148,14 @@ class TestSendSlashConfirmButtons:
         assert payload["interactive"]["type"] == "button"
         buttons = payload["interactive"]["action"]["buttons"]
         ids = [b["reply"]["id"] for b in buttons]
-        assert ids == ["sc:once:cf-9", "sc:always:cf-9", "sc:cancel:cf-9"]
-        assert adapter._slash_confirm_state["cf-9"] == "sess-sc-1"
+        capability = ids[0].split(":")[2]
+        assert ids == [
+            f"sc:once:{capability}", f"sc:always:{capability}", f"sc:cancel:{capability}",
+        ]
+        assert capability != "cf-9"
+        assert adapter._slash_confirm_state[capability] == {
+            "session_key": "sess-sc-1", "target_id": "cf-9", "kind": "slash_confirm",
+        }
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1135,16 +1164,14 @@ class TestDispatchInteractiveReplyClarify:
 
 
     @pytest.mark.asyncio
-    async def test_clarify_other_button_keeps_state_and_prompts(self, monkeypatch):
-        """Picking 'Other' should NOT resolve — it should flip the
-        clarify entry into text-capture mode (via mark_awaiting_text)
-        AND keep the state mapping so the gateway's text-intercept can
-        resolve the next typed message. Without the flip,
-        ``get_pending_for_session`` wouldn't return the entry and the
-        user's next message would collide with the still-blocked agent
-        thread, producing an "Interrupting current task" loop."""
+    async def test_clarify_other_button_consumes_capability_and_prompts(self, monkeypatch):
+        """Picking Other flips the clarify waiter into text-capture mode, while
+        the button capability stays one-shot so a new WAMID cannot repeat it."""
         adapter = _make_adapter()
-        adapter._clarify_state["q1"] = "sess-1"
+        capability = _arm_interactive_callback(
+            adapter, adapter._clarify_state, kind="clarify",
+            target_id="q1", session_key="sess-1",
+        )
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1159,26 +1186,24 @@ class TestDispatchInteractiveReplyClarify:
         raw = {
             "from": "15551234567",
             "type": "interactive",
+            "context": {"id": "wamid.prompt"},
             "interactive": {
                 "type": "list_reply",
-                "list_reply": {"id": "cl:q1:other", "title": "Other"},
+                "list_reply": {"id": f"cl:{capability}:other", "title": "Other"},
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        # State stays so text-intercept can resolve the next message
-        assert adapter._clarify_state.get("q1") == "sess-1"
-        # mark_awaiting_text was called with the right clarify_id
+        assert capability not in adapter._clarify_state
         assert flipped_ids == ["q1"]
-        # Follow-up "type your answer" prompt was sent
         adapter._http_client.post.assert_called_once()
 
 
     @pytest.mark.asyncio
-    async def test_stale_clarify_tap_falls_back_to_text(self):
-        """No state entry → return False so caller treats it as text."""
-        adapter = _make_adapter()  # _clarify_state is empty
+    async def test_stale_clarify_tap_is_consumed(self):
+        """A recognized stale capability must not become a fresh chat turn."""
+        adapter = _make_adapter()
 
         raw = {
             "from": "15551234567",
@@ -1189,7 +1214,7 @@ class TestDispatchInteractiveReplyClarify:
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
-        assert handled is False
+        assert handled is True
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1199,7 +1224,10 @@ class TestDispatchInteractiveReplyApproval:
     @pytest.mark.asyncio
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        capability = _arm_interactive_callback(
+            adapter, adapter._exec_approval_state, kind="approval",
+            target_id="approval", session_key="sess-app-1",
+        )
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1214,16 +1242,17 @@ class TestDispatchInteractiveReplyApproval:
         raw = {
             "from": "15551234567",
             "type": "interactive",
+            "context": {"id": "wamid.prompt"},
             "interactive": {
                 "type": "button_reply",
-                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+                "button_reply": {"id": f"appr:{capability}:approve", "title": "Approve"},
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
         assert calls == [("sess-app-1", "approve")]
-        assert "app1" not in adapter._exec_approval_state
+        assert capability not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
         assert "Approved" in confirm_payload["text"]["body"]
@@ -1236,7 +1265,10 @@ class TestDispatchInteractiveReplySlashConfirm:
     @pytest.mark.asyncio
     async def test_once_tap_calls_resolver(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._slash_confirm_state["cf-9"] = "sess-sc-1"
+        capability = _arm_interactive_callback(
+            adapter, adapter._slash_confirm_state, kind="slash_confirm",
+            target_id="cf-9", session_key="sess-sc-1",
+        )
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1256,9 +1288,10 @@ class TestDispatchInteractiveReplySlashConfirm:
         raw = {
             "from": "15551234567",
             "type": "interactive",
+            "context": {"id": "wamid.prompt"},
             "interactive": {
                 "type": "button_reply",
-                "button_reply": {"id": "sc:once:cf-9", "title": "Approve Once"},
+                "button_reply": {"id": f"sc:once:{capability}", "title": "Approve Once"},
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
@@ -1283,7 +1316,10 @@ class TestDispatchInteractiveReplyAuthorization:
             _dm_policy="allowlist",
             _allow_from={"15551234567"},
         )
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        capability = _arm_interactive_callback(
+            adapter, adapter._exec_approval_state, kind="approval",
+            target_id="approval", session_key="sess-app-1",
+        )
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1297,9 +1333,10 @@ class TestDispatchInteractiveReplyAuthorization:
         raw = {
             "from": "15551234567",
             "type": "interactive",
+            "context": {"id": "wamid.prompt"},
             "interactive": {
                 "type": "button_reply",
-                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+                "button_reply": {"id": f"appr:{capability}:approve", "title": "Approve"},
             },
         }
         handled = await adapter._dispatch_interactive_reply(raw, {})
@@ -1317,7 +1354,10 @@ class TestInteractiveReplyEndToEnd:
     @pytest.mark.asyncio
     async def test_recognized_tap_returns_none_no_text_dispatch(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._clarify_state["q1"] = "sess-1"
+        capability = _arm_interactive_callback(
+            adapter, adapter._clarify_state, kind="clarify",
+            target_id="q1", session_key="sess-1",
+        )
         monkeypatch.setattr(
             "tools.clarify_gateway.resolve_gateway_clarify",
             lambda cid, r: True,
@@ -1327,9 +1367,10 @@ class TestInteractiveReplyEndToEnd:
             "from": "15551234567",
             "id": "wamid.tap1",
             "type": "interactive",
+            "context": {"id": "wamid.prompt"},
             "interactive": {
                 "type": "button_reply",
-                "button_reply": {"id": "cl:q1:0", "title": "1"},
+                "button_reply": {"id": f"cl:{capability}:0", "title": "1"},
             },
         }
         event = await adapter._build_message_event_from_cloud(

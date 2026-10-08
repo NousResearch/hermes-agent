@@ -21,10 +21,9 @@ import mimetypes
 import os
 import re
 import shutil
-import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 try:
     from aiohttp import web
@@ -48,6 +47,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
+from gateway.platforms.whatsapp_cloud_state import CallbackClaim, WhatsAppCloudReplayStore
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
@@ -61,8 +61,8 @@ DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
 WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
-# Meta retries failed webhooks for up to 7 days, but the practical duplicate risk is
-# within minutes — 5000 FIFO entries bounds memory and covers that.
+# Keep a bounded in-process hot mirror; the durable ledger retains every WAMID
+# for Meta's full documented retry horizon across adapter/process restarts.
 WAMID_DEDUP_CACHE_SIZE = 5000
 INTERACTIVE_STATE_CACHE_SIZE = 1000  # interactive-button state dicts + per-chat last-wamid cache
 
@@ -204,19 +204,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_CLOUD_GROUP_ALLOW_FROM",), _get_wsecret)
         self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
-        # Webhook dedup state (in-memory, FIFO-evicted) and counters.
+        # The SQLite ledger survives adapter/process reconstruction. Its per-instance
+        # generation fences every capability minted by an older adapter incarnation.
+        self._replay_store = WhatsAppCloudReplayStore()
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
         self._duplicate_count = self._accepted_count = self._rejected_signature_count = 0
         self._warned_no_ffmpeg: bool = False
         # Latest inbound wamid per chat: Meta's typing/read-receipt API needs a
         # message_id to attach to, and the base send_typing contract has none.
         self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
-        # Interactive-button state: short id (in the button payload) → session_key for
-        # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
-        # prompts don't accumulate (an evicted tap degrades to text fallback).
-        self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
-        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
-        self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
+        # Bounded live mirrors keep callback teardown and observability cheap; the
+        # SQLite rows remain authoritative when an entry is evicted from this cache.
+        self._clarify_state: "OrderedDict[str, Any]" = OrderedDict()
+        self._exec_approval_state: "OrderedDict[str, Any]" = OrderedDict()
+        self._slash_confirm_state: "OrderedDict[str, Any]" = OrderedDict()
         self._runner = self._http_client = None
 
     # ------------------------------------------------------------------ helpers
@@ -262,6 +263,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _allow_all_env_names(self) -> tuple[str, ...]:
         """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in."""
         return (*super()._allow_all_env_names(), "WHATSAPP_CLOUD_ALLOW_ALL_USERS")
+
+    def _callback_store(self) -> WhatsAppCloudReplayStore:
+        """Return this adapter generation's durable replay store (lazy for bare test adapters)."""
+        store = getattr(self, "_replay_store", None)
+        if store is None:
+            store = self._replay_store = WhatsAppCloudReplayStore()
+        return store
 
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -416,19 +424,51 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # ------------------------------------------------------------------ interactive messages
     async def _send_interactive(
-        self, chat_id: str, interactive: Dict[str, Any], metadata: Optional[Dict[str, Any]],
-        state: "OrderedDict[str, str]", state_id: str, session_key: str,
+        self, chat_id: str, build_interactive: Callable[[str], Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]], state: "OrderedDict[str, Any]",
+        state_id: str, session_key: str, *, kind: str,
     ) -> SendResult:
-        """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
-        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
-        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
+        """Mint a one-shot capability, send its interactive card, then bind it to
+        the exact outbound message id. WhatsApp Cloud currently supports DMs only,
+        so the destination chat is also the one permitted callback user."""
+        store = self._callback_store()
+        try:
+            capability = store.reserve_callback(
+                kind=kind, target_id=state_id, session_key=session_key,
+                chat_id=chat_id, user_id=chat_id,
+            )
+        except Exception:
+            logger.exception("[whatsapp_cloud] callback capability reservation failed")
+            return SendResult(success=False, error="Callback replay storage unavailable")
+        interactive = build_interactive(capability)
+
+        def discard() -> None:
+            try:
+                store.discard_callback(capability)
+            except Exception:
+                logger.exception("[whatsapp_cloud] callback capability cleanup failed")
+
         result = await self._post_message_result(
             self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
             fail_log="[whatsapp_cloud] interactive send failed",
             reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
         )
-        if result.success:
-            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
+        if not result.success:
+            discard()
+            return result
+        try:
+            active = store.activate_callback(capability, result.message_id)
+        except Exception:
+            logger.exception("[whatsapp_cloud] callback capability activation failed")
+            active = False
+        if not active:
+            discard()
+            return SendResult(success=False, error="Interactive response missing durable message identity")
+        bounded_put(
+            state, capability,
+            {"session_key": session_key, "target_id": state_id, "kind": kind},
+            INTERACTIVE_STATE_CACHE_SIZE,
+        )
         return result
 
     @staticmethod
@@ -456,38 +496,43 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Clarify as native buttons: 1–3 choices → buttons, 4+ → list (+ "Other" row that flips
-        the entry into text-capture mode), 0 → plain text question. Button ``id`` carries
-        ``cl:<clarify_id>:<idx|other>``; inbound dispatches on it."""
+        """Clarify as native buttons: callback ids carry only a random capability;
+        the durable state maps it back to ``clarify_id`` after origin validation."""
         question = (question or "").strip()
         if not choices:
             return await self.send(chat_id, f"❓ {question}", reply_to=_reply_to_from(metadata))
-        # Full choice text goes in the body so long options aren't lost to the
-        # 20-char label cap; labels are just the option number.
         choices_list = [str(c).strip() for c in choices[:10] if str(c).strip()]
-        body_text = self._truncate_body(f"❓ {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list)))
-        if len(choices_list) <= 3:
-            interactive = self._button_interactive(
-                body_text, *((f"cl:{clarify_id}:{idx}", self._truncate_button_label(str(idx + 1))) for idx in range(len(choices_list)))
-            )
-        else:
-            # List rows: id + title (≤24) + description (≤72) with the choice text.
+        body_text = self._truncate_body(
+            f"❓ {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list))
+        )
+
+        def build(capability: str) -> Dict[str, Any]:
+            if len(choices_list) <= 3:
+                return self._button_interactive(
+                    body_text,
+                    *((f"cl:{capability}:{idx}", self._truncate_button_label(str(idx + 1)))
+                      for idx in range(len(choices_list))),
+                )
             rows = [
-                {"id": f"cl:{clarify_id}:{idx}", "title": self._truncate_button_label(f"{idx + 1}", limit=24),
+                {"id": f"cl:{capability}:{idx}",
+                 "title": self._truncate_button_label(f"{idx + 1}", limit=24),
                  "description": self._truncate_button_label(choice_text, limit=72)}
                 for idx, choice_text in enumerate(choices_list)
             ]
             rows.append({
-                "id": f"cl:{clarify_id}:other",
+                "id": f"cl:{capability}:other",
                 "title": self._truncate_button_label(t("platform.whatsapp.clarify_other_title"), limit=24),
                 "description": self._truncate_button_label(t("platform.whatsapp.clarify_other_description"), limit=72),
             })
-            interactive = {
+            return {
                 "type": "list", "body": {"text": body_text},
                 "action": {"button": self._truncate_button_label(t("platform.whatsapp.clarify_list_button")),
                            "sections": [{"title": t("platform.whatsapp.clarify_list_section"), "rows": rows}]},
             }
-        return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
+
+        return await self._send_interactive(
+            chat_id, build, metadata, self._clarify_state, clarify_id, session_key, kind="clarify",
+        )
 
     @property
     def _EA_HEADER(self) -> str:  # noqa: N802 — WhatsApp bold markup around the shared header
@@ -497,27 +542,36 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
-        tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
-        approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(
-            self._truncate_body(prompt.text),
-            (f"appr:{approval_id}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
-            (f"appr:{approval_id}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))))
+        """Approve / Deny buttons backed by a random one-shot capability."""
+        def build(capability: str) -> Dict[str, Any]:
+            return self._button_interactive(
+                self._truncate_body(prompt.text),
+                (f"appr:{capability}:approve", self._truncate_button_label(t("platform.whatsapp.approve_button"))),
+                (f"appr:{capability}:deny", self._truncate_button_label(t("platform.whatsapp.deny_button"))),
+            )
+
         return await self._send_interactive(
-            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+            prompt.chat_id, build, prompt.metadata, self._exec_approval_state,
+            "approval", prompt.session_key, kind="approval",
+        )
 
     async def send_slash_confirm(
-        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Approve Once / Always / Cancel buttons; ``confirm_id`` is caller-supplied."""
-        interactive = self._button_interactive(
-            self._truncate_body(f"*{title}*\n\n{message}"),
-            (f"sc:once:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_once"))),
-            (f"sc:always:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_always"))),
-            (f"sc:cancel:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_cancel"))),
+        """Approve Once / Always / Cancel buttons backed by a random capability."""
+        def build(capability: str) -> Dict[str, Any]:
+            return self._button_interactive(
+                self._truncate_body(f"*{title}*\n\n{message}"),
+                (f"sc:once:{capability}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_once"))),
+                (f"sc:always:{capability}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_always"))),
+                (f"sc:cancel:{capability}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_cancel"))),
+            )
+
+        return await self._send_interactive(
+            chat_id, build, metadata, self._slash_confirm_state,
+            confirm_id, session_key, kind="slash_confirm",
         )
-        return await self._send_interactive(chat_id, interactive, metadata, self._slash_confirm_state, confirm_id, session_key)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # No chat-info endpoint; profile name arrives via webhook contacts[].
@@ -758,11 +812,23 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # ------------------------------------------------------------------ dispatch
     def _dedup_wamid(self, wamid: str) -> bool:
-        """True if this wamid is new; False (and count a duplicate) if already seen."""
+        """Atomically claim a WAMID in the durable ledger; mirror recent ids in memory."""
         if wamid in self._seen_wamids:
             self._duplicate_count += 1
             return False
-        if wamid:  # can't dedup without an id — let it through
+        if wamid:
+            try:
+                is_new = self._callback_store().claim_wamid(wamid)
+            except Exception:
+                # Preserve availability on a transient local-storage fault. The hot cache
+                # still prevents repeats in this process; callbacks independently require
+                # their bound one-shot capability before any resolver can run.
+                logger.exception("[whatsapp_cloud] durable WAMID claim failed")
+                is_new = True
+            if not is_new:
+                self._duplicate_count += 1
+                bounded_put(self._seen_wamids, wamid, True, WAMID_DEDUP_CACHE_SIZE)
+                return False
             bounded_put(self._seen_wamids, wamid, True, WAMID_DEDUP_CACHE_SIZE)
         return True
 
@@ -827,25 +893,23 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.exception("[whatsapp_cloud] handle_message raised for wamid %s", wamid)
 
     async def _dispatch_interactive_reply(self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str]) -> bool:
-        """Route an inbound button tap to its resolver (see ``_INTERACTIVE_HANDLERS``). True = claimed.
-        False (unknown prefix, no live state, or no waiter) makes the caller fall back to text
-        dispatch with the button title — covers stale taps."""
+        """Route a recognized button capability to its resolver. Recognized-but-stale,
+        malformed, replayed, or foreign callbacks are consumed without becoming chat text."""
         inner = _interactive_inner(raw_message)
         button_id = str(inner.get("id") or "").strip()
         sender_id = str(raw_message.get("from") or "").strip()
         if not button_id:
             return False
-        # Taps bypass ``_should_process_message``; re-check the strict DM gate so a stale
-        # prompt can't be answered after the sender leaves the allowlist.
         if not (sender_id and self._is_dm_allowed(sender_id)):
-            logger.warning("[whatsapp_cloud] Rejected unauthorized interactive tap from %s (button_id=%r)", sender_id or "<unknown>", button_id)
-            return True  # claim so the tap isn't re-dispatched as plain text
+            logger.warning("[whatsapp_cloud] rejected unauthorized interactive tap")
+            return True
         parts = button_id.split(":", 2)
         handler = next((h for prefix, h in self._INTERACTIVE_HANDLERS.items() if button_id.startswith(prefix)), None)
-        # Unknown prefix (maybe a plugin-defined adapter's) — text dispatch is the safe default.
-        if handler is None or len(parts) != 3:
+        if handler is None:
             return False
-        return await handler(self, str(raw_message.get("from") or ""), inner, parts)
+        if len(parts) != 3:
+            return True
+        return await handler(self, raw_message, inner, parts)
 
     async def _reply_best_effort(self, to: str, text: str, fail_log: str) -> None:
         try:
@@ -853,107 +917,122 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception:
             logger.exception(fail_log)
 
-    @staticmethod
-    def _pop_tap_state(
-        state: "OrderedDict[str, str]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
-    ) -> Optional[str]:
-        """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live — likely
-        a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""
-        session_key = state.pop(key, None)
-        if not session_key:
-            logger.info(stale_log, key)
-        elif valid and choice not in valid:
-            state[key] = session_key
+    def _claim_tap_state(
+        self, state: "OrderedDict[str, Any]", capability: str, kind: str,
+        raw_message: Dict[str, Any], choice: str, valid: tuple[str, ...],
+    ) -> Optional[CallbackClaim]:
+        """Claim a callback only for its exact adapter generation and origin tuple."""
+        if choice not in valid:
+            logger.warning("[whatsapp_cloud] ignored interactive tap with invalid %s choice", kind)
             return None
-        return session_key
+        sender_id = str(raw_message.get("from") or "").strip()
+        chat_id = str(raw_message.get("chat") or sender_id).strip()
+        message_id = str((raw_message.get("context") or {}).get("id") or "").strip()
+        try:
+            claim = self._callback_store().claim_callback(
+                capability, kind=kind, user_id=sender_id, chat_id=chat_id, message_id=message_id,
+            )
+        except Exception:
+            logger.exception("[whatsapp_cloud] callback capability claim failed")
+            return None
+        if claim.accepted:
+            state.pop(capability, None)
+            return claim
+        logger.info("[whatsapp_cloud] ignored %s callback (%s)", kind, claim.status)
+        return None
 
-    async def _handle_clarify_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
-        _, clarify_id, choice = parts
-        session_key = self._pop_tap_state(
-            self._clarify_state, clarify_id,
-            "[whatsapp_cloud] clarify tap with no matching state (clarify_id=%s) — likely stale; falling back to text",
+    async def _handle_clarify_tap(self, raw_message: Dict[str, Any], inner: Dict[str, Any], parts: list) -> bool:
+        _, capability, choice = parts
+        if choice != "other":
+            try:
+                idx = int(choice)
+            except ValueError:
+                logger.warning("[whatsapp_cloud] clarify tap had non-int choice")
+                return True
+        else:
+            idx = -1
+        claim = self._claim_tap_state(
+            self._clarify_state, capability, "clarify", raw_message,
+            choice, (*tuple(str(i) for i in range(10)), "other"),
         )
-        if not session_key:
-            return False
+        if claim is None:
+            return True
+        clarify_id, to = claim.target_id or "", str(raw_message.get("from") or "")
         clarify_gateway = _optional_module(
-            "tools.clarify_gateway", "[whatsapp_cloud] clarify resolver unavailable; falling back to text dispatch"
+            "tools.clarify_gateway", "[whatsapp_cloud] clarify resolver unavailable"
         )
         if clarify_gateway is None:
-            return False
+            return True
         if choice == "other":
-            # Flip the entry into text-capture mode so the gateway's text intercept resolves the
-            # clarify with the next message; otherwise that text would hit the agent path while
-            # it's still blocked in clarify ("Interrupting current task" loop).
             try:
                 flipped = clarify_gateway.mark_awaiting_text(clarify_id)
             except Exception:
                 logger.exception("[whatsapp_cloud] mark_awaiting_text failed for %s", clarify_id)
                 flipped = False
-            if not flipped:
-                # Entry vanished (timeout, /new, restart) — fall through to text.
-                logger.info("[whatsapp_cloud] clarify 'Other' tap but entry missing (clarify_id=%s); falling back to text", clarify_id)
-                return False
-            # Keep the mapping live for further taps on the same prompt.
-            self._clarify_state[clarify_id] = session_key
-            await self._reply_best_effort(to, t("platform.whatsapp.clarify_type_answer"), "[whatsapp_cloud] clarify other-prompt failed")
+            if flipped:
+                await self._reply_best_effort(
+                    to, t("platform.whatsapp.clarify_type_answer"),
+                    "[whatsapp_cloud] clarify other-prompt failed",
+                )
+            else:
+                logger.info("[whatsapp_cloud] clarify 'Other' tap but entry is no longer pending")
             return True
-        try:
-            idx = int(choice)
-        except ValueError:
-            logger.warning("[whatsapp_cloud] clarify tap had non-int choice: %r", choice)
-            self._clarify_state[clarify_id] = session_key  # a follow-up text can still resolve
-            return False
-        # Title is the numeric label; the agent has the prompt in context to interpret it.
-        if not clarify_gateway.resolve_gateway_clarify(clarify_id, str(inner.get("title") or str(idx + 1))):
-            logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", clarify_id)
-            return False
+        if not clarify_gateway.resolve_gateway_clarify(
+            clarify_id, str(inner.get("title") or str(idx + 1)),
+        ):
+            logger.info("[whatsapp_cloud] clarify resolver reported no waiter")
         return True
 
-    async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
-        _, approval_id, choice = parts
-        session_key = self._pop_tap_state(
-            self._exec_approval_state, approval_id,
-            "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
+    async def _handle_approval_tap(self, raw_message: Dict[str, Any], inner: Dict[str, Any], parts: list) -> bool:
+        _, capability, choice = parts
+        claim = self._claim_tap_state(
+            self._exec_approval_state, capability, "approval", raw_message,
             choice, ("approve", "deny"),
         )
-        if not session_key:
-            return False
+        if claim is None:
+            return True
+        session_key, to = claim.session_key or "", str(raw_message.get("from") or "")
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
-            return False
+            return True
         count = approval.resolve_gateway_approval(session_key, choice)
-        # A tap after the wait timed out (count == 0) must not claim approval:
-        # the command was already denied fail-closed.
         if count:
             confirm_text = t("platform.whatsapp.approved" if choice == "approve" else "platform.whatsapp.denied")
         else:
-            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key)
+            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s)", session_key)
             confirm_text = t("platform.whatsapp.approval_expired")
         await self._reply_best_effort(to, confirm_text, "[whatsapp_cloud] approval confirm failed")
         return True
 
-    async def _handle_slash_confirm_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
-        _, choice, confirm_id = parts
-        session_key = self._pop_tap_state(
-            self._slash_confirm_state, confirm_id,
-            "[whatsapp_cloud] slash_confirm tap with no matching state (confirm_id=%s) — likely stale",
+    async def _handle_slash_confirm_tap(self, raw_message: Dict[str, Any], inner: Dict[str, Any], parts: list) -> bool:
+        _, choice, capability = parts
+        claim = self._claim_tap_state(
+            self._slash_confirm_state, capability, "slash_confirm", raw_message,
             choice, ("once", "always", "cancel"),
         )
-        if not session_key:
-            return False
+        if claim is None:
+            return True
+        session_key, confirm_id = claim.session_key or "", claim.target_id or ""
         slash_confirm = _optional_module("tools.slash_confirm", "[whatsapp_cloud] slash_confirm resolver unavailable")
         if slash_confirm is None:
-            return False
+            return True
         try:
             result_text = await slash_confirm.resolve(session_key, confirm_id, choice)
         except Exception:
             logger.exception("[whatsapp_cloud] slash_confirm.resolve failed")
-            return True  # still claim the tap; surfacing it as text wouldn't help
+            return True
         if result_text:
-            await self._reply_best_effort(to, result_text, "[whatsapp_cloud] slash_confirm reply failed")
+            await self._reply_best_effort(
+                str(raw_message.get("from") or ""), result_text,
+                "[whatsapp_cloud] slash_confirm reply failed",
+            )
         return True
 
-    _INTERACTIVE_HANDLERS = {"cl:": _handle_clarify_tap, "appr:": _handle_approval_tap, "sc:": _handle_slash_confirm_tap}
+    _INTERACTIVE_HANDLERS = {
+        "cl:": _handle_clarify_tap,
+        "appr:": _handle_approval_tap,
+        "sc:": _handle_slash_confirm_tap,
+    }
 
     async def _collect_inbound_media(self, msg_type_str: str, raw_message: Dict[str, Any], body: str) -> tuple[list[str], list[str], str]:
         """Download inbound media by ``media_id``; returns ``(media_urls, media_types, body)``."""

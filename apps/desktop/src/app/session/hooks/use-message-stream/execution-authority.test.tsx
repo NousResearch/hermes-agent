@@ -2,7 +2,24 @@ import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
+import { getQueuedPrompts } from '@/store/composer-queue'
+
 import { renderMessageStream } from './test-harness'
+
+it('refreshes an idle shared queue and does not let a queued cancellation end a running turn', () => {
+  const stream = renderMessageStream('queue-session')
+  const send = (event: Record<string, unknown>) => act(() => stream.handleEvent({ session_id: 'queue-session', ...event } as never))
+  send({ type: 'message.start', authority_epoch: 2, execution_generation: 4 })
+  send({ type: 'message.complete', authority_epoch: 2, execution_generation: 4, payload: { text: 'done' } })
+  const snapshot = { authority_epoch: 2, execution_generation: 4, stored_session_id: 'queue-session', running: false }
+  send({ type: 'session.info', payload: { ...snapshot, pending_submissions: [{ admission_id: 'queued', user: 'later', status: 'queued' }] } })
+  expect(getQueuedPrompts('queue-session').map(row => row.id)).toEqual(['queued'])
+  send({ type: 'session.info', payload: { ...snapshot, pending_submissions: [] } })
+  expect(getQueuedPrompts('queue-session')).toEqual([])
+  send({ type: 'message.start', authority_epoch: 2, execution_generation: 5 })
+  send({ type: 'message.complete', authority_epoch: 2, admission_id: 'queued', payload: { admission_id: 'queued', outcome: 'cancelled' } })
+  expect(stream.state().busy).toBe(true)
+})
 
 afterEach(cleanup)
 

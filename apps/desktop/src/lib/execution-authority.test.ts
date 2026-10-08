@@ -54,6 +54,26 @@ function fence(authorities: Map<string, unknown>, event: GatewayEvent): boolean 
 }
 
 describe('execution authority fence over real owner frames', () => {
+  it('accepts idle owner queue snapshots while rejecting retired owner snapshots', () => {
+    const authorities = new Map()
+    expect(acceptExecutionEvent(authorities, 's', 'message.complete', { authority_epoch: 2, execution_generation: 4 })).toBe(true)
+    const snapshot = { payload: { authority_epoch: 2, execution_generation: 4, running: false, pending: [] } }
+    expect(acceptExecutionEvent(authorities, 's', 'session.info', snapshot)).toBe(true)
+    expect(acceptExecutionEvent(authorities, 's', 'session.info', { payload: { ...snapshot.payload, authority_epoch: 3 } })).toBe(true)
+    expect(acceptExecutionEvent(authorities, 's', 'session.info', snapshot)).toBe(false)
+  })
+
+  it('ignores admission-only cancellations without retiring the current execution', () => {
+    const authorities = new Map()
+    acceptExecutionEvent(authorities, 's', 'message.start', { authority_epoch: 2, execution_generation: 4 })
+    const before = authorities.get('s')
+    expect(acceptExecutionEvent(authorities, 's', 'message.complete', {
+      authority_epoch: 2, admission_id: 'queued', payload: { admission_id: 'queued', outcome: 'cancelled' }
+    })).toBe(false)
+    expect(authorities.get('s')).toBe(before)
+    expect(before.terminal).toBe(false)
+    expect(acceptExecutionEvent(authorities, 's', 'message.complete', {})).toBe(false)
+  })
   it('installs authority from the first claimed frame and fences a retired epoch', () => {
     const { socket, received } = connectedClient()
     const authorities = new Map()

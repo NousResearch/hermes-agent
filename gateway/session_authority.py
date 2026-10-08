@@ -204,7 +204,7 @@ class SessionAuthority:
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.
             live.event_stream.publish(ref.session_id, {
-                'stored_session_id': ref.session_id, 'pending': pending,
+                'stored_session_id': ref.session_id, 'pending': pending, 'authority_epoch': self.epoch,
                 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
                 'running': handle.execution_state == 'running',
                 'execution_generation': handle.execution_generation,

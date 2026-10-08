@@ -72,7 +72,7 @@ export function acceptExecutionEvent(
   const lifecycle = LIFECYCLE_TYPES.includes(type)
   const previous = authorities.get(key)
   const payload = event?.payload as Record<string, unknown> | undefined
-  const stamp = executionStamp(event)
+  const stamp = executionStamp(event) ?? (type === 'session.info' ? executionStamp(payload) : null)
 
   // Output may follow the current owner, but cannot establish another one.
   // Keep legacy unversioned output compatible; fence stamped late frames.

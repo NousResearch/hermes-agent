@@ -36,3 +36,19 @@ def test_inline_shell_subprocess_uses_routed_profile_env(tmp_path, monkeypatch):
     assert child_env is not None, "inline shell must receive an explicit routed child env"
     assert child_env.get("HERMES_HOME") == str(served_home)
     assert "SKILL_INLINE_LAUNCH_ONLY" not in child_env
+
+
+def test_inline_shell_unscoped_secret_scope_returns_error_without_spawning():
+    """Fail closed on missing profile scope without executing the shell snippet."""
+    from agent.secret_scope import UnscopedSecretError
+
+    def reject_unscoped(*, inherit_credentials):
+        assert inherit_credentials is True
+        raise UnscopedSecretError()
+
+    with patch("tools.environments.local.served_profile_child_env", side_effect=reject_unscoped):
+        with patch("agent.skill_preprocessing.subprocess.run") as spawn:
+            result = run_inline_shell("printf should-not-run", None, 5)
+
+    assert result.startswith("[inline-shell error: Hermes could not read ")
+    spawn.assert_not_called()

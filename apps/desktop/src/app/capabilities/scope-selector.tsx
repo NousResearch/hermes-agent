@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopRosterAgent } from '@/global'
@@ -52,7 +53,12 @@ export function useCapabilityScope({
   fixedProfile?: string
 }): CapabilityScope {
   const activeProfile = useStore($activeGatewayProfile)
-  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
+  const { search } = useLocation()
+
+  // A link from a chat names the chat's own profile (and connection), so the page opens on that scope.
+  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(() =>
+    linkedScope(new URLSearchParams(search))
+  )
 
   const scopeProfile: ProfileScope = useMemo(
     () =>
@@ -230,4 +236,17 @@ export function CapabilityScopeSelector({
       </Select>
     </div>
   )
+}
+
+function linkedScope(params: URLSearchParams): null | string | { connectionId: string; profile: string } {
+  const profile = params.get('profile')?.trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = params.get('connection')?.trim()
+
+  // The active connection is the ambient route; only another connection needs a pinned scope.
+  return connectionId && connectionId !== (activeGatewayConnectionId() ?? 'local') ? { connectionId, profile } : profile
 }

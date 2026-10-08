@@ -1,6 +1,7 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
@@ -117,6 +118,38 @@ afterEach(() => {
   _resetSessionOwnerHintsForTests({ storage: true })
   vi.useRealTimers()
   vi.clearAllMocks()
+})
+
+function Where() {
+  const { pathname, search } = useLocation()
+
+  return <output data-testid="where">{`${pathname}${search}`}</output>
+}
+
+describe('ConnectorOffer named-account notice', () => {
+  it('says which name Hermes chose once the account connected, and Rename opens that account on the Connectors tab', () => {
+    const request = { ...REQUEST, settled: true, targets: [{ ...GMAIL, alias: 'work', state: 'connected' as const }] }
+
+    setConnectionRequest(request)
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <MemoryRouter initialEntries={['/chat']}>
+          <Routes>
+            <Route element={<ConnectorOffer owner={PRIMARY_OWNER} request={request} />} path="/chat" />
+            <Route element={<Where />} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>
+    )
+
+    expect(screen.getAllByText('Hermes named this Gmail account work.')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(screen.getByTestId('where').textContent).toBe(
+      '/capabilities?tab=connectors&connector=gmail&profile=default&rename=work'
+    )
+  })
 })
 
 describe('ConnectorTool operation card', () => {

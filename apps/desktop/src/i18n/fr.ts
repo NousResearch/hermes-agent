@@ -3,6 +3,8 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frConnectorAccounts } from './fr_connector_accounts'
+import { frConnectorCard } from './fr_connector_card'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
@@ -14,38 +16,7 @@ import { introFr } from './intro-fr'
 export const frOverrides = {
   sharedMetrics: frSharedMetrics,
   intro: introFr,
-  connectors: {
-    title: 'Connectez vos applications',
-    connect: 'Connecter',
-    skip: 'Pas maintenant',
-    cancel: "Arrêter l'attente",
-    retry: 'Réessayer',
-    grant: 'Reconnecter',
-    connected: 'Connecté',
-    checking: 'Vérification de vos applications…',
-    notConnected: 'Non connecté',
-    skipped: 'Ignoré',
-    disabled: 'Indisponible',
-    failed: 'Connexion impossible',
-    needsAuth: 'Accès expiré',
-    opening: 'Ouverture de la connexion…',
-    waiting: 'Terminez la connexion dans votre navigateur…',
-    timeout: "Toujours en attente de l'autorisation.",
-    refresh: "Actualiser l'état",
-    connectError: "Impossible de démarrer l'autorisation. Réessayez.",
-    connectErrorFor: app => `Impossible de démarrer l'autorisation pour ${app}.`,
-    unavailable: 'Les connecteurs ne sont pas disponibles pour cette session.',
-    ownerMissing: 'Rouvrez cette conversation pour gérer ses connexions.',
-    search: 'Rechercher une application',
-    empty: 'Aucune application correspondante',
-    disclaimer: "La connexion est facultative. N'autorisez que les applications que vous voulez confier à Hermes.",
-    execution: 'Outils des connecteurs',
-    setup: server => `Configurer ${server}`,
-    openInBrowser: 'Ouvrir dans le navigateur',
-    setupCancel: 'Annuler',
-    authorizedToolsUnavailable: 'Autorisé. Outils indisponibles.',
-    required: 'Obligatoire'
-  },
+  connectors: frConnectorCard,
   connectorsPage: {
     title: 'Connecteurs',
     searchPlaceholder: (count: number) => `Rechercher parmi ${count} applications`,
@@ -202,6 +173,9 @@ export const frOverrides = {
       advanced: 'Avancé',
       advancedHint: "l'entrée mcp.json et les journaux"
     },
+
+    accounts: frConnectorAccounts,
+
     tools: {
       title: 'Outils',
       notInstalledBody: "Installez-le sur cet appareil pour voir les outils qu'il apporte.",

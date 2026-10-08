@@ -135,8 +135,27 @@ export const setConnectorPolicy = (
 export const removeConnectorAccount = (scope: ProfileScope, connectionId: string) =>
   call(scope, 'connectors.accounts.remove', { connection_id: connectionId }, 'foreground')
 
-export const connectAccountConnectors = (scope: ProfileScope, connectors: readonly string[], reconnect = false) =>
-  call(scope, 'connectors.connect', { connectors: [...connectors], owner: ACCOUNT_OWNER, reconnect }, 'foreground')
+export const renameConnectorAccount = (scope: ProfileScope, connectionId: string, alias: string) =>
+  call(scope, 'connectors.accounts.rename', { alias, connection_id: connectionId }, 'foreground')
+
+export function connectAccountConnectors(
+  scope: ProfileScope,
+  connectors: readonly string[],
+  reconnect = false,
+  alias?: string
+) {
+  const params: RpcMethods['connectors.connect']['params'] = {
+    connectors: [...connectors],
+    owner: ACCOUNT_OWNER,
+    reconnect
+  }
+
+  if (alias) {
+    params.alias = alias
+  }
+
+  return call(scope, 'connectors.connect', params, 'foreground')
+}
 
 export const wakeAccountOperation = (scope: ProfileScope, opId: string) =>
   call(scope, 'connectors.operation.wake', { op_id: opId, owner: ACCOUNT_OWNER }, 'foreground')

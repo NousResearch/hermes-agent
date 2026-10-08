@@ -1,4 +1,4 @@
-import type { ConnectionAnswer, ConnectorPolicyGetResult } from '@hermes/shared'
+import type { ConnectionAnswer, ConnectorAccountsResult, ConnectorPolicyGetResult } from '@hermes/shared'
 import { useCallback, useRef, useState } from 'react'
 
 import type { ProfileScope } from '@/hermes'
@@ -16,7 +16,7 @@ import {
   startAccountOperation
 } from './account-operations'
 import { memberDisabledTools, memberRevision, readPolicy } from './join'
-import { connectorsPolicyQueryKey, invalidateConnectors } from './keys'
+import { connectorsAccountsQueryKey, connectorsPolicyQueryKey, invalidateConnectors } from './keys'
 import {
   asConnectorError,
   connectAccountConnectors,
@@ -24,6 +24,7 @@ import {
   type ConnectorRpcError,
   isConnectorReason,
   removeConnectorAccount,
+  renameConnectorAccount,
   respondToAccountOperation,
   setConnectorPolicy
 } from './rpc'
@@ -183,10 +184,79 @@ export function useDisconnectAccount(scope: ProfileScope): AccountDisconnect {
   return { disconnect, pending }
 }
 
+export interface AccountRename {
+  pending: null | string
+  rename: (connectionId: string, alias: string) => Promise<WriteOutcome>
+}
+
+function writeAlias(scope: ProfileScope, connectionId: string, alias: null | string | undefined): void {
+  queryClient.setQueryData<ConnectorAccountsResult>(connectorsAccountsQueryKey(scope), data =>
+    data
+      ? {
+          ...data,
+          accounts: data.accounts.map(row => (row.connection_id === connectionId ? { ...row, alias } : row))
+        }
+      : data
+  )
+}
+
+/** Paints the new name in the accounts cache at once; the RPC answer reconciles it, a refusal restores the old one. */
+export function useRenameAccount(scope: ProfileScope): AccountRename {
+  const [pending, setPending] = useState<null | string>(null)
+  // The newest rename per account; an older reply or rollback must not paint over it.
+  const latest = useRef(new Map<string, number>())
+
+  const rename = useCallback(
+    async (connectionId: string, alias: string): Promise<WriteOutcome> => {
+      const key = connectorsAccountsQueryKey(scope)
+
+      const before = queryClient
+        .getQueryData<ConnectorAccountsResult>(key)
+        ?.accounts.find(row => row.connection_id === connectionId)
+
+      const generation = (latest.current.get(connectionId) ?? 0) + 1
+      const current = () => latest.current.get(connectionId) === generation
+
+      latest.current.set(connectionId, generation)
+      setPending(connectionId)
+      await queryClient.cancelQueries({ queryKey: key })
+      writeAlias(scope, connectionId, alias)
+
+      try {
+        const row = await renameConnectorAccount(scope, connectionId, alias)
+
+        if (current()) {
+          writeAlias(scope, connectionId, row.alias)
+        }
+
+        return { ok: true }
+      } catch (error) {
+        if (current()) {
+          writeAlias(scope, connectionId, before?.alias)
+        }
+
+        return failed(asConnectorError(error))
+      } finally {
+        setPending(null)
+        invalidateConnectors(scope, 'accounts')
+      }
+    },
+    [scope]
+  )
+
+  return { pending, rename }
+}
+
 export type ConnectOutcome = { error: ConnectorRpcError; ok: false } | { ok: true; operation: AccountOperation }
 
+export interface ConnectOptions {
+  /** The account's name: a new account takes it; with `reconnect`, only that account is repaired. */
+  alias?: string
+  reconnect?: boolean
+}
+
 export interface ConnectorConnect {
-  connect: (slug: string, options?: { reconnect?: boolean }) => Promise<ConnectOutcome>
+  connect: (slug: string, options?: ConnectOptions) => Promise<ConnectOutcome>
   giveUp: (opId: string) => Promise<WriteOutcome>
   pending: null | string
 }
@@ -195,11 +265,11 @@ export function useConnectConnector(scope: ProfileScope): ConnectorConnect {
   const [pending, setPending] = useState<null | string>(null)
 
   const connect = useCallback(
-    async (slug: string, options?: { reconnect?: boolean }): Promise<ConnectOutcome> => {
+    async (slug: string, options?: ConnectOptions): Promise<ConnectOutcome> => {
       setPending(slug)
 
       try {
-        const snapshot = await connectAccountConnectors(scope, [slug], options?.reconnect ?? false)
+        const snapshot = await connectAccountConnectors(scope, [slug], options?.reconnect ?? false, options?.alias)
 
         return { ok: true, operation: startAccountOperation(scope, [slug], snapshot) }
       } catch (error) {

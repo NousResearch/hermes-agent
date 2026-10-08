@@ -8,6 +8,8 @@ import { atom } from 'nanostores'
 
 import type { ProfileScope } from '@/hermes'
 import { type ConnectionTarget, parseConnectionTarget } from '@/store/connection-request'
+import { activeGatewayConnectionId } from '@/store/gateway'
+import { normalizeProfileKey } from '@/store/profile'
 
 import { invalidateConnectors } from './keys'
 import { accountOperationStatus } from './rpc'
@@ -44,11 +46,29 @@ function resumeConnect(slugs: readonly string[]): void {
 const parseTargets = (targets: ConnectionUpdatePayload['targets']): ConnectionTarget[] =>
   targets.map(parseConnectionTarget).filter((target): target is ConnectionTarget => target !== null)
 
+// A bare profile name rides the active connection, so `'home'` and `{connectionId: <active>, profile: 'home'}` are
+// the same backend and must match.
+function resolvedScopeKey(scope: ProfileScope): string {
+  const active = activeGatewayConnectionId() ?? 'local'
+
+  if (scope instanceof Object) {
+    return `${(scope.connectionId ?? '').trim() || 'local'}::${normalizeProfileKey(scope.profile)}`
+  }
+
+  return `${active}::${normalizeProfileKey(scope)}`
+}
+
+/** The open (else newest) operation for one app in one profile scope; other profiles' sign-ins are not this one's. */
 export function accountOperationFor(
   operations: Readonly<Record<string, AccountOperation>>,
-  slug: string
+  slug: string,
+  scope: ProfileScope
 ): AccountOperation | null {
-  const mine = Object.values(operations).filter(operation => operation.connectors.includes(slug))
+  const key = resolvedScopeKey(scope)
+
+  const mine = Object.values(operations).filter(
+    operation => operation.connectors.includes(slug) && resolvedScopeKey(operation.scope) === key
+  )
 
   return mine.find(operation => !operation.settled) ?? mine[mine.length - 1] ?? null
 }

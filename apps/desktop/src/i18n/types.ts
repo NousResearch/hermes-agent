@@ -13,6 +13,7 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
@@ -92,38 +93,7 @@ export interface Translations extends NoticeTranslations {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
   }
-  connectors: {
-    title: string
-    connect: string
-    skip: string
-    cancel: string
-    retry: string
-    grant: string
-    connected: string
-    checking: string
-    notConnected: string
-    skipped: string
-    disabled: string
-    failed: string
-    needsAuth: string
-    opening: string
-    waiting: string
-    timeout: string
-    refresh: string
-    connectError: string
-    connectErrorFor: (app: string) => string
-    unavailable: string
-    ownerMissing: string
-    search: string
-    empty: string
-    disclaimer: string
-    execution: string
-    setup: (server: string) => string
-    openInBrowser: string
-    setupCancel: string
-    authorizedToolsUnavailable: string
-    required: string
-  }
+  connectors: ConnectorCardTranslations
   connectorsPage: {
     title: string
     searchPlaceholder: (count: number) => string
@@ -277,6 +247,7 @@ export interface Translations extends NoticeTranslations {
       advanced: string
       advancedHint: string
     }
+    accounts: ConnectorAccountsTranslations
     tools: {
       title: string
       notInstalledBody: string

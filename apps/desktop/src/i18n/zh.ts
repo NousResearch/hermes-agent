@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhConnectorCard } from './zh_connector_card'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
@@ -19,37 +20,7 @@ export const zhOverrides = {
   },
   sharedMetrics: zhSharedMetrics,
   intro: introZh,
-  connectors: {
-    title: '连接你的应用',
-    connect: '连接',
-    skip: '暂不连接',
-    cancel: '停止等待',
-    retry: '重试',
-    grant: '重新连接',
-    connected: '已连接',
-    skipped: '已跳过',
-    disabled: '不可用',
-    failed: '连接失败',
-    needsAuth: '授权已过期',
-    opening: '正在打开登录…',
-    waiting: '正在等待浏览器…',
-    notConnected: '未连接',
-    timeout: '仍在等待授权。',
-    refresh: '刷新状态',
-    connectError: '无法开始授权，请重试。',
-    connectErrorFor: app => `无法为 ${app} 开始授权。`,
-    unavailable: '此会话暂时无法使用连接器。',
-    ownerMissing: '请重新打开此对话以管理连接。',
-    search: '查找应用',
-    empty: '没有匹配的应用',
-    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
-    execution: '连接器工具',
-    setup: server => `设置 ${server}`,
-    openInBrowser: '在浏览器中打开',
-    setupCancel: '取消',
-    authorizedToolsUnavailable: '已授权。工具不可用。',
-    required: '必填'
-  },
+  connectors: zhConnectorCard,
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',

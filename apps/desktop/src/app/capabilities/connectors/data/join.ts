@@ -16,6 +16,7 @@ import { type McpServers, serverEnabled } from '@/lib/mcp-servers'
 import { canAuthenticate } from '../../mcp/mcp-status'
 import { toolRows } from '../derive-tools'
 import type {
+  AccountRow,
   BundledEntryInput,
   ConnectorAuthType,
   HostedConnectorInput,
@@ -130,7 +131,7 @@ export function connectorToolRows(
 }
 
 export interface HostedJoinInput {
-  accounts: readonly ConnectorAccountRow[]
+  accounts: readonly AccountRow[]
   catalog: readonly ConnectorCatalogRow[]
   list: readonly ConnectorListRow[]
   policy: ConnectorPolicyView
@@ -140,11 +141,26 @@ export interface HostedJoinInput {
 const text = (value: null | string | undefined): string | undefined =>
   value !== null && value !== undefined && value.trim() !== '' ? value : undefined
 
-export function pickAccount(accounts: readonly ConnectorAccountRow[], slug: string): ConnectorAccountRow | undefined {
-  const mine = accounts.filter(account => account.connector === slug)
-  const rank = (account: ConnectorAccountRow) => (account.active ? 0 : 1)
+export const isRetired = (account: AccountRow): boolean => account.disabled === true
 
-  return [...mine].sort((a, b) => rank(a) - rank(b) || b.created_at.localeCompare(a.created_at))[0]
+export const accountName = (account: ConnectorAccountRow): string => text(account.alias) ?? account.label
+
+const rank = (account: ConnectorAccountRow) => (account.active ? 0 : 1)
+
+/** One app's live accounts, active first, then newest. Retired accounts are left out. */
+export function accountsFor(accounts: readonly AccountRow[], slug: string): AccountRow[] {
+  return accounts
+    .filter(account => account.connector === slug && !isRetired(account))
+    .sort((a, b) => rank(a) - rank(b) || b.created_at.localeCompare(a.created_at))
+}
+
+export function retiredAccountsFor(accounts: readonly AccountRow[], slug: string): AccountRow[] {
+  return accounts.filter(account => account.connector === slug && isRetired(account))
+}
+
+/** The one account the app's summary speaks for. */
+export function pickAccount(accounts: readonly AccountRow[], slug: string): AccountRow | undefined {
+  return accountsFor(accounts, slug)[0]
 }
 
 export function connectorTitles(input: Pick<HostedJoinInput, 'catalog' | 'list'>) {
@@ -179,11 +195,13 @@ export function joinHostedConnectors({
   return hostedSlugs({ catalog, list }).map(slug => {
     const entry = catalog.find(row => row.slug === slug)
     const row = list.find(candidate => candidate.connector === slug)
-    const account = pickAccount(accounts, slug)
+    const mine = accountsFor(accounts, slug)
+    const account = mine[0]
     const off = rulesReadable ? memberDisabledTools(policy, slug) : (row?.gateway_disabled_tools ?? [])
 
     return {
-      accountLabel: account?.label,
+      accountLabel: account ? accountName(account) : undefined,
+      accounts: mine,
       connected: account !== undefined || row?.connected === true,
       connectedAt: account?.created_at,
       connectionStatus: account?.status ?? row?.connection_status ?? undefined,
@@ -192,6 +210,7 @@ export function joinHostedConnectors({
       enabled: memberEnables(policy, slug) && row?.enabled !== false,
       inCatalog: entry !== undefined,
       orgLocked: orgLocks(policy, slug),
+      retiredAccounts: retiredAccountsFor(accounts, slug),
       slug,
       statusReason: text(account?.status_reason) ?? text(row?.status_reason),
       toolsOff: off.length > 0 ? off.length : undefined

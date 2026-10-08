@@ -13,8 +13,10 @@ of skills resolved per LANE at claim time. These tests pin the card contract:
   card's own names keeping their slot on conflict, and the review lane staying a
   SUPERSET of the lane bucket;
 * the ADVISORY contract: an injected name that does not resolve for the lane is
-  RECORDED ON THE CARD and the run still starts -- a missing skill must never
-  kill a run at INIT.
+  RECORDED ON THE CARD, flagged ADVISORY, and the run still starts -- a missing
+  skill must never kill a run at INIT. Only a name that did NOT resolve is
+  advisory: one the probe resolved is a HARD request whose load failure stays
+  loud.
 """
 
 from __future__ import annotations
@@ -157,7 +159,7 @@ def test_ready_card_is_injected_and_keeps_its_own_skills_first(
     assert task_id in [t[0] for t in result.spawned]
     assert captured == [{
         "skills": ["card-skill", "floor-skill", "lane-skill"],
-        "advisory": ["lane-skill", "floor-skill"],
+        "advisory": [],
     }]
 
 
@@ -190,7 +192,7 @@ def test_bogus_injected_name_is_recorded_on_the_card_and_run_still_starts(
     assert task_id in [t[0] for t in result.spawned]
     assert captured == [{
         "skills": ["real-skill"],
-        "advisory": ["real-skill", "bogus-skill"],
+        "advisory": ["bogus-skill"],
     }]
     assert "injected_skill_skipped" in events
     assert any("do not resolve for profile" in body for body in comments)
@@ -220,4 +222,63 @@ def test_review_lane_remains_a_superset_of_the_lane_bucket(
 
     assert task_id in [t[0] for t in result.spawned]
     assert captured == [{"skills": ["floor-skill", "sdlc-review"],
-                         "advisory": ["floor-skill", "sdlc-review"]}]
+                         "advisory": []}]
+
+
+# ---------------------------------------------------------------------------
+# Advisory scoping: a probe-RESOLVED injected name is never advisory
+# ---------------------------------------------------------------------------
+
+
+class _StopSpawn(Exception):
+    """Abort the real spawn once the worker env is built, so no process starts."""
+
+
+def test_probe_resolved_injected_name_is_not_advisory(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name the probe RESOLVED is a HARD request, never advisory.
+
+    Only a name that did NOT resolve for the assignee is advisory. An injected
+    name the probe resolved rides ``--skills`` into the worker, so the harness
+    must NOT pre-flag it advisory -- a load failure for it is drift / a probe
+    defect and has to stay loud (``Unknown skill(s)``, not a warning).
+
+    Also pins the deterministic co-injection case: ``floor-skill`` is BOTH
+    card-requested AND in the lane floor bucket, yet resolves, so it is not
+    advisory merely because the harness also names it.
+    """
+    from agent.skill_commands import ADVISORY_SKILLS_ENV
+    from tools import process_registry
+
+    _patch_config(monkeypatch, {
+        "injected_skills": {"builder": ["lane-skill"], "*": ["floor-skill"]},
+    })
+    _wire_dispatch(monkeypatch, lambda _home, _name: True)  # every name resolves
+    captured: list[dict] = []
+
+    def _capture(env):
+        captured.append(dict(env))
+        raise _StopSpawn
+
+    # The real spawn builds the worker env (and the ADVISORY_SKILLS_ENV inside
+    # it) then hands it to this hook -- capture it instead of launching.
+    monkeypatch.setattr(process_registry, "systemd_user_bus_env", _capture)
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="plain work", assignee="builder",
+            skills=["card-skill", "floor-skill"],
+        )
+        kbd.dispatch_once(conn, spawn_fn=kbd._default_spawn)
+
+    assert task_id
+    assert captured, "_default_spawn never built a worker env"
+    env = captured[0]
+    # Every injected name resolved, so the worker's loader must be told NOTHING
+    # is advisory -- the env var is absent, or at least carries no resolved name.
+    raw = env.get(ADVISORY_SKILLS_ENV, "")
+    advisory = [name.strip() for name in raw.split(",") if name.strip()]
+    assert advisory == [], (
+        f"a probe-resolved injected name must not be advisory, got {advisory!r}"
+    )

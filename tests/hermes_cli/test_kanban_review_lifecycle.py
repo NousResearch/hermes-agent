@@ -650,9 +650,11 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     # for the lane that does NOT own it).
     monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: True)
     captured: list[list[str]] = []
+    advisory_seen: list[tuple[str, ...]] = []
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
         return None
 
     with kbc.connect() as conn:
@@ -687,6 +689,10 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [["domain-specific-review", "sdlc-review"]]
+    # The lane OWNS the review skill, so the probe resolved every injected name:
+    # nothing the harness injected is advisory -- a load failure for any of them
+    # is real drift and stays fatal.
+    assert advisory_seen == [()]
 
 
 def test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card(

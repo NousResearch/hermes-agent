@@ -25,7 +25,7 @@ on:
         type: string
         default: ''
       tag:
-        description: "Exact stable tag (vX.Y.Z) under release. The caller is dispatched on this tag, so github.sha is the release candidate."
+        description: "Attempt ref (rc.N-vX.Y.Z) under release; the versioned images carry this tag. The caller is dispatched on it, so github.sha is the release candidate."
         required: false
         type: string
         default: ''

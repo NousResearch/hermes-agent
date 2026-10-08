@@ -558,8 +558,17 @@
       calc(100% - var(--composer-measured-height) + var(--composer-surface-measured-height))
     );
     --vsq: min(0.5vh, 0.5vw);
-    --image-preview-max-width: 34rem;
-    --image-preview-height: clamp(16.25rem, calc(var(--vsq) * 100), 26.25rem);
+    /* The inline image preview envelope (#74564): agent-generated image SETS
+       arrive stacked in one message, and the old 34rem x ~16-26rem clamp left
+       each landscape image readable only through a small letterbox (the
+       lightbox existed, but inline inspection was impractical). Width now
+       fills most of the ~44rem message column, and the height floor is the
+       old CAP — every viewport gets at least what only tall windows got
+       before, so a 16:9 landscape frame always spans the full preview width
+       (floor 26.25rem × 16/9 ≥ 40rem). Images are never upscaled: the frame
+       width min() still caps at the natural px size. */
+    --image-preview-max-width: 40rem;
+    --image-preview-height: clamp(26.25rem, calc(var(--vsq) * 140), 40rem);
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
@@ -1111,6 +1120,17 @@
    the air back, and only in this thread. */
 [data-slot='aui_thread-content'][data-thread-type='onboarding'] {
   padding-top: calc(var(--titlebar-height) + 1rem);
+}
+
+/* The setup chat is a first conversation read at arm's length in a small
+   window, so its transcript, cards and composer run a size up. It sets the
+   base tokens: the thread and composer scopes derive the final ones from
+   these times the chat text scale. */
+[data-setup-chat] {
+  --conversation-text-base-size: 0.9375rem;
+  --conversation-tool-base-size: 0.75rem;
+  --conversation-caption-base-size: 0.8125rem;
+  --conversation-base-line-height: 1.375rem;
 }
 
 @keyframes arc-border {
@@ -1681,14 +1701,6 @@ body.guest-pointer-lock :is(webview, iframe) {
   font-size: inherit;
 }
 
-/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
-   `overflow-hidden` so wide code/tables don't blow the column; that same clip
-   shears the first pill's left cap. Cards opt the surface out; tables/code keep
-   their own overflow. */
-[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
-  overflow: visible;
-}
-
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
    selector ties our `my-*` utility on specificity and wins on source order, so
    paragraph spacing must be reclaimed here at higher specificity. One tight
@@ -2046,6 +2058,10 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
+}
+
+[data-slot='composer-dock']:is(:hover, :focus-within) [data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

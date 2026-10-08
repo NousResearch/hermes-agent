@@ -1323,10 +1323,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _gateway_is_draining() -> bool:
         """Whether the owning gateway currently refuses new agent turns."""
         try:
+            from gateway.platforms.api_server_fire_startup import runner_is_draining
             from gateway.run import _gateway_runner_ref
             runner = _gateway_runner_ref()
-            return bool(runner and (getattr(runner, "_draining", False)
-                                    or getattr(runner, "_external_drain_active", False)))
+            return bool(runner) and runner_is_draining(runner)
         except Exception:
             return False
 
@@ -4103,6 +4103,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a
         NAS-minted JWT via the pluggable verifier, NOT API_SERVER_KEY. 202 + background run so
         a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
+        # Startup-wait budget starts here so a slow JWKS fetch cannot outlast the forwarder timeout.
+        received_at = asyncio.get_running_loop().time()
         from hermes_cli.config import cfg_get, load_config
         from plugins.cron_providers.chronos.verify import get_fire_verifier
         auth = request.headers.get("Authorization", "")
@@ -4150,14 +4152,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
-            # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms
-            # have no native credential, so without them delivery fails.
-            runner = self.gateway_runner or request.app.get("gateway_runner")
-            if runner is None:
-                with suppress(Exception):
-                    from gateway.run import _gateway_runner_ref
-                    runner = _gateway_runner_ref()
-            adapters = getattr(runner, "adapters", None) or None
+            from gateway.platforms.api_server_fire_startup import live_adapters_once_started
+            refusal, adapters = await live_adapters_once_started(self, request, job_id, received_at=received_at)
+            if refusal is not None:
+                return refusal
 
             def _detach_fire(fire_fn, *fire_args) -> "web.Response":
                 # The done callback owns the reservation once the task is detached.

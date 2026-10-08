@@ -179,14 +179,15 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
     from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
     from hermes_cli.models import (
         partition_nous_models_by_tier,
+        union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
 
     # Free users: union with the Portal's freeRecommendedModels (newly launched free models appear
     # before the curated list catches up), then partition selectable/unavailable by Portal pricing.
-    # Paid users: paidRecommendedModels, no partition. Org policy narrows BEFORE the tier split so a
-    # rescued id still has to pass the free/paid predicate.
+    # Paid users: paidRecommendedModels plus every model on sale right now, no partition. Org policy
+    # narrows BEFORE the tier split so a rescued id still has to pass the free/paid predicate.
     unavailable_models: list[str] = []
     unavailable_message = ""
     _policy_allowed = nous_policy_allowed_ids()
@@ -200,6 +201,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
         model_ids, pricing = union_with_portal_free_recommendations(model_ids, pricing, portal_url)
     else:
         model_ids, pricing = union_with_portal_paid_recommendations(model_ids, pricing, portal_url)
+        model_ids = union_with_nous_on_sale_models(model_ids, pricing)
     _before_policy = model_ids
     model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
     _policy_narrowed = model_ids != _before_policy
@@ -669,7 +671,7 @@ def _model_flow_stepfun(config, current_model=""):
     from hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -699,7 +701,9 @@ def _model_flow_stepfun(config, current_model=""):
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 
-    model_list = fetch_api_models(existing_key, effective_base)
+    # Same live+curated merge as the picker (``_stepfun_catalog``): Step Plan /models omits
+    # Standard-API-only models, so the wizard must offer the same list /model shows (#41147).
+    model_list = provider_model_ids(provider_id) or fetch_api_models(existing_key, effective_base)
     if model_list:
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:

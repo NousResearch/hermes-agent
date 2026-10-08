@@ -35,6 +35,7 @@ class ChatGPTIdP:
         self.fault = None
         self.reject_code_once = False
         self.refresh_error = None
+        self.metadata_outage = None
         self.scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
         idp = self
 
@@ -52,6 +53,8 @@ class ChatGPTIdP:
 
             def do_GET(self):
                 path = urlparse(self.path)
+                if path.path == idp.metadata_outage:
+                    return self.respond(503, {"error": "temporarily_unavailable"})
                 if path.path == "/.well-known/openid-configuration":
                     return self.respond(200, {"issuer": idp.base, "jwks_uri": idp.base + "/jwks",
                         "revocation_endpoint": idp.base + "/revoke", "id_token_signing_alg_values_supported": ["RS256"]})
@@ -65,16 +68,14 @@ class ChatGPTIdP:
                 code = secrets.token_hex(12)
                 idp.codes[code] = params
                 result = {"code": code, "state": params["state"], "client_id": idp.client_id}
-                if idp.fault == "state":
-                    result["state"] = "wrong"
-                elif idp.fault == "missing_client":
-                    result.pop("client_id")
-                elif idp.fault == "dynamic_client":
-                    result["client_id"] = "dynamic_agent_client"
-                elif idp.fault == "denied_state":
-                    result = {"error": "access_denied", "state": "wrong"}
-                elif idp.fault == "denied":
-                    result = {"error": "access_denied", "state": params["state"]}
+                faults = {
+                    "state": {**result, "state": "wrong"},
+                    "missing_client": {k: v for k, v in result.items() if k != "client_id"},
+                    "dynamic_client": {**result, "client_id": "dynamic_agent_client"},
+                    "denied_state": {"error": "access_denied", "state": "wrong"},
+                    "denied": {"error": "access_denied", "state": params["state"]},
+                }
+                result = faults.get(idp.fault, result)
                 self.send_response(302)
                 self.send_header("Location", params["redirect_uri"] + "?" + urlencode(result))
                 self.end_headers()
@@ -387,3 +388,64 @@ def test_cached_client_cannot_send_after_logout_or_account_change(idp):
     with pytest.raises(AuthError, match="session"):
         chatgpt.assert_active_access_token(old_token)
     chatgpt.assert_active_access_token(_rows()[0]["access_token"])
+
+
+@pytest.mark.parametrize("outage", ["/.well-known/openid-configuration", "/jwks"])
+def test_rotated_grant_survives_identity_service_outage_without_another_refresh(idp, outage):
+    from unittest.mock import Mock
+    from agent.codex_runtime import run_codex_stream
+    from agent.credential_pool import load_pool
+
+    chatgpt.auth_handler("add", _args())
+    before = _rows()[0]
+    pool, peer = load_pool(chatgpt.PROVIDER), load_pool(chatgpt.PROVIDER)
+    chatgpt._jwks_client.cache_clear()
+    idp.metadata_outage = outage
+    posts = len(idp.token_requests)
+    assert pool.try_refresh_matching(credential_id=before["id"]) is None
+    pending = _rows()[0]
+    assert pending["refresh_token"] != before["refresh_token"]
+    assert before["refresh_token"] not in idp.grants
+    assert pending["chatgpt"]["pending_refresh"]
+    client = Mock(base_url="https://api.openai.com/v1", api_key=before["access_token"])
+    with pytest.raises(AuthError):
+        run_codex_stream(SimpleNamespace(provider=chatgpt.PROVIDER, _interrupt_requested=False),
+                         {"model": "test", "input": []}, client=client)
+    client.responses.create.assert_not_called()
+    assert peer.try_refresh_matching(credential_id=before["id"]) is None
+    assert load_pool(chatgpt.PROVIDER).select() is None
+    assert len(idp.token_requests) == posts + 1
+
+    idp.metadata_outage = None
+    recovered = load_pool(chatgpt.PROVIDER).select()
+    assert recovered is not None
+    assert recovered.refresh_token == pending["refresh_token"]
+    assert recovered.access_token != before["access_token"]
+    assert "pending_refresh" not in recovered.extra["chatgpt"]
+    expected_expiry = pending["chatgpt"]["pending_refresh"]["received_at_ms"] + 3600_000
+    assert recovered.expires_at_ms == expected_expiry
+    assert len(idp.token_requests) == posts + 1
+    chatgpt.assert_active_access_token(recovered.access_token)
+
+
+@pytest.mark.parametrize("pending_first", [False, True])
+def test_rotated_grant_with_another_identity_is_never_released(idp, pending_first):
+    from agent.credential_pool import load_pool
+
+    chatgpt.auth_handler("add", _args())
+    before = _rows()[0]
+    idp.fault = "sub"
+    if pending_first:
+        idp.metadata_outage = "/.well-known/openid-configuration"
+    posts = len(idp.token_requests)
+    assert load_pool(chatgpt.PROVIDER).try_refresh_matching(credential_id=before["id"]) is None
+    idp.metadata_outage = None
+    assert load_pool(chatgpt.PROVIDER).select() is None
+    after = _rows()[0]
+    assert not after.get("access_token") and not after.get("refresh_token")
+    assert "pending_refresh" not in after["chatgpt"]
+    assert after["chatgpt"]["subject"] == before["chatgpt"]["subject"]
+    assert after["chatgpt"]["client_id"] == before["chatgpt"]["client_id"]
+    assert len(idp.token_requests) == posts + 1
+    with pytest.raises(AuthError):
+        chatgpt.assert_active_access_token(before["access_token"])

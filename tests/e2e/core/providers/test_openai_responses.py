@@ -14,8 +14,9 @@ Proven here:
 * parallel ``function_call`` items round-trip: every call gets exactly one
   ``function_call_output`` with its own ``call_id`` and its own result, persisted once;
 * a stale encrypted blob rejected with HTTP 400 ``invalid_encrypted_content`` is
-  stripped and the SAME primary is retried (no fallback, no give-up) — and the HTTP-200
-  soft-failure twin of that rejection must behave the same (#120399);
+  stripped and the SAME primary is retried (no fallback, no give-up), and the blobs the
+  retry mints keep replaying — and the HTTP-200 soft-failure twin of that rejection must
+  behave the same (#120399);
 * a stream that dies mid-``function_call`` (arguments half streamed, no terminal event) is
   retried without running the half call, and the completed call runs EXACTLY once;
 * a 429 carrying ``Retry-After`` is retried after the advertised wait, and answers once.
@@ -146,9 +147,14 @@ def _stale_blob_session(h: Home, srv: FakeResponsesServer, fallback: FakeLLMServ
 ])
 def test_rejected_encrypted_replay_is_stripped_and_primary_retried(tmp_path, rejection) -> None:
     h = Home(tmp_path)
-    script = [Turn([Reasoning("ENC-STALE"), Message("FIRST")]), rejection, Turn([Message("RECOVERED-ON-PRIMARY")])]
+    script = [
+        Turn([Reasoning("ENC-STALE"), Message("FIRST")]), rejection,
+        Turn([Reasoning("ENC-FRESH"), FunctionCall(READ_TOOL, {"path": "notes.txt"})]),
+        Turn([Message("RECOVERED-ON-PRIMARY")]),
+    ]
     with FakeResponsesServer(script) as srv, FakeLLMServer(default_text="FROM-FALLBACK") as fallback:
         sid = _stale_blob_session(h, srv, fallback)
+        (h.project / "notes.txt").write_text("CANARY-RESP-2\n", encoding="utf-8")
         run = oneshot(h, "second question", resume=sid)
         mains = srv.main_requests()
         fallback_mains = fallback.main_requests()
@@ -157,8 +163,11 @@ def test_rejected_encrypted_replay_is_stripped_and_primary_retried(tmp_path, rej
     scenario = "soft_failure_recovers_on_primary" if isinstance(rejection, SoftFail) else "http_400"
     with bug_assertions(KNOWN, scenario):
         assert fallback_mains == [], f"fallback engaged instead of replay recovery: {run.describe()}"
-        assert len(mains) == 3, [m.get("input") for m in mains]
+        assert len(mains) == 4, [m.get("input") for m in mains]
         assert _encs(mains[2]) == [], "the retry must drop the rejected blob"
+        # One stale blob must not end continuity: the retry's fresh blob replays on the next call.
+        assert "reasoning.encrypted_content" in (mains[3].get("include") or []), mains[3]
+        assert _encs(mains[3]) == ["ENC-FRESH"], mains[3]["input"]
         assert run.proc.returncode == 0 and _answer(run) == "RECOVERED-ON-PRIMARY", run.describe()
 
 
@@ -209,7 +218,7 @@ def test_stream_drop_mid_function_call_runs_the_call_once(tmp_path) -> None:
     assert invalid == [], invalid
     count = h.project / "count.txt"
     assert count.exists(), f"tool never ran: {run.describe()}"
-    assert count.read_text(encoding="utf-8").splitlines() == ["ran"], "side effect ran more than once"
+    assert count.read_text(encoding="utf-8-sig").splitlines() == ["ran"], "side effect ran more than once"
     # The half call never reaches the wire: the retry resends exactly the first request's input.
     assert mains[1]["input"] == mains[0]["input"], (mains[0]["input"], mains[1]["input"])
     # The final request replays exactly one call and its one result.

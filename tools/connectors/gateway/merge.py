@@ -70,7 +70,7 @@ def partition_calls(calls: Sequence[Any]) -> Partition:
                     code="TOOL_NOT_FOUND",
                     message=(
                         "Malformed connector tool name; expected "
-                        "connectors__<connector>__<tool>."
+                        "connectors__<connector>__{tool}."
                     ),
                 )
             )

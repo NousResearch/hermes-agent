@@ -1,15 +1,14 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { JsonRpcGatewayError } from '@hermes/shared'
-import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
-import { pathLabel } from '@/lib/chat-runtime'
+import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -39,7 +38,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates, isSessionRemote } from '@/store/session-states'
+import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -62,7 +61,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeUserInterruptedMessages,
+  finalizeStoppedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -245,6 +244,11 @@ interface RestoreMessageTarget {
   text?: string
   userOrdinal?: number | null
 }
+
+const isStaleTargetError = (err: unknown) =>
+  /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
+
+export { isStaleTargetError }
 
 export function usePromptActions({
   activeSessionId,
@@ -627,7 +631,17 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
+      if (isSlashCommandText(visibleText)) {
+        if (attachments.length) {
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+
+          return false
+        }
+
         triggerHaptic('selection')
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
@@ -642,7 +656,7 @@ export function usePromptActions({
   )
 
   const transcribeVoiceAudio = useCallback(
-    async (audio: Blob) => {
+    async (audio: Blob, owner?: ResolvedOwner) => {
       if (!sttEnabled) {
         throw new Error(copy.sttDisabled)
       }
@@ -652,15 +666,17 @@ export function usePromptActions({
       // the desktop→gateway audio hop. `null` = provider not client-callable
       // (local whisper, command providers, older backend) → relay unchanged.
       // Provider REJECTIONS surface — re-running the same request through
-      // the relay would fail identically, just slower.
-      const direct = await transcribeAudioClientDirect(audio)
+      // the relay would fail identically, just slower. `owner` is the
+      // recording's owner, resolved when the mic opened: the config lookup and
+      // the relay decode on the backend its STT warm-up targeted.
+      const direct = await transcribeAudioClientDirect(audio, owner)
 
       if (direct !== null) {
         return direct
       }
 
       const dataUrl = await blobToDataUrl(audio)
-      const result = await transcribeAudio(dataUrl, audio.type)
+      const result = await transcribeAudio(dataUrl, audio.type, owner)
 
       return result.transcript
     },
@@ -689,7 +705,7 @@ export function usePromptActions({
 
     if (!sessionId) {
       releaseBusy()
-      setMessages(finalizeUserInterruptedMessages($messages.get()))
+      setMessages(finalizeStoppedMessages($messages.get()))
 
       return
     }
@@ -700,7 +716,7 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-      const messages = finalizeUserInterruptedMessages(state.messages, streamId)
+      const messages = finalizeStoppedMessages(state.messages, streamId)
 
       return {
         ...state,
@@ -773,6 +789,23 @@ export function usePromptActions({
       })
 
       if (!text || !target) {
+        return false
+      }
+
+      // #105176: a steer reaches here on the composer's own busy belief, and
+      // the composer keeps that belief one effect tick past the busy→false
+      // settle. When it lags, the turn has already ended: redirecting would
+      // echo the bubble into a chat the user never typed in and RPC an idle
+      // session whose text the backend can cross-deliver into another
+      // session's live run. The slice is authoritative, so refuse before the
+      // optimistic insert and the caller queues the text for the conversation
+      // whose run is actually live. Without a stale belief there is nothing
+      // stale to catch: the caller deliberately asked for a correction (a
+      // rotation gap, a recovery retry) and the gateway authoritatively
+      // rejects an idle redirect.
+      const liveTurn = $sessionStates.get()[target.sessionId]
+
+      if (busyRef.current && liveTurn && !isLiveTurnAwaitingEvents(liveTurn)) {
         return false
       }
 
@@ -852,6 +885,7 @@ export function usePromptActions({
     [
       activeSessionIdRef,
       appendSessionTextMessage,
+      busyRef,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
@@ -966,7 +1000,10 @@ export function usePromptActions({
         return
       }
 
-      const messages = $messages.get()
+      // Active sessions publish their transcript into $sessionStates[runtimeId];
+      // the global $messages mirror is empty/divergent for them (#68734).
+      const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = planReload(messages, parentId)
 
       if (!plan) {
@@ -1026,7 +1063,9 @@ export function usePromptActions({
         throw new Error('No active session to restore.')
       }
 
-      const messages = $messages.get()
+      // Same dual-store read as reloadFromMessage (#68734).
+      const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = planRestore(messages, messageId, target)
 
       // The turns we're discarding may have spawned todos and background
@@ -1063,6 +1102,49 @@ export function usePromptActions({
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
+        let surfaced: unknown = err
+
+        // A restore target can be addressed by a cached durable row id that
+        // went stale after optimistic sends, resume drift, or session.branch
+        // row-id remapping. Mirror edit's recovery: reload the selected stored
+        // session, recompute the restore plan against fresh history, and retry
+        // once instead of leaving Restore uniquely fail-closed (#107593).
+        if ((plan.truncateMessageId || plan.truncateRowId !== undefined) && isStaleTargetError(err)) {
+          try {
+            const storedId = selectedStoredSessionIdRef.current
+
+            if (storedId) {
+              await resumeStoredSession(storedId)
+            }
+
+            const refreshed = $messages.get()
+
+            const retryPlan = planRestore(refreshed, messageId, {
+              text: target?.text ?? plan.sourceText,
+              userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal
+            })
+
+            if (retryPlan.truncateMessageId || retryPlan.truncateRowId !== undefined) {
+              const survivorRowIds = await submitRewindPrompt(
+                sessionId,
+                retryPlan.text,
+                retryPlan.truncateOrdinal,
+                retryPlan.truncateMessageId,
+                false,
+                retryPlan.truncateRowId,
+                retryPlan.sourceText,
+                durableRowIdsForRebind(refreshed)
+              )
+
+              applySurvivorRowIds(sessionId, survivorRowIds)
+
+              return
+            }
+          } catch (retryErr) {
+            surfaced = retryErr
+          }
+        }
+
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
         // history so the UI doesn't desync from what's persisted — leaving it
@@ -1078,10 +1160,18 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
-        throw err
+        throw surfaced
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, busyRef, submitRewindPrompt, updateSessionState]
+    [
+      activeSessionIdRef,
+      applySurvivorRowIds,
+      busyRef,
+      resumeStoredSession,
+      selectedStoredSessionIdRef,
+      submitRewindPrompt,
+      updateSessionState
+    ]
   )
 
   const editMessage = useCallback(
@@ -1089,7 +1179,10 @@ export function usePromptActions({
       // Ref, not the closure-captured prop — an edit rewinds and resubmits, so
       // a stale target rewrites the wrong session's history.
       const sessionId = activeSessionIdRef.current
-      const messages = $messages.get()
+
+      // Same dual-store read as reloadFromMessage (#68734).
+      const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+
       const plan = sessionId ? planEdit(messages, edited) : null
 
       if (!sessionId || !plan) {
@@ -1115,9 +1208,6 @@ export function usePromptActions({
       setBusy(true)
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
-
-      const isStaleTargetError = (err: unknown) =>
-        /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       const isCompressedAwayError = (err: unknown) => {
         if (!(err instanceof JsonRpcGatewayError) || err.code !== 4018) {

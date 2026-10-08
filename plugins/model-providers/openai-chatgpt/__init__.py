@@ -65,7 +65,7 @@ class ChatGPTProfile(ProviderProfile):
             return [item for item in payload.get("models", [])
                     if isinstance(item, dict) and item.get("visibility") == "list"
                     and isinstance(item.get("slug"), str) and item["slug"]]
-        except Exception as exc:
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             logger.debug("ChatGPT model catalog unavailable: %s", type(exc).__name__)
             return None
 

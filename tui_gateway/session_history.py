@@ -249,7 +249,7 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
         return text
     try:
         from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
-        cmd_key = resolve_skill_command_key(head.lstrip("/"))
+        cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
         return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
     except Exception:  # a skill that no longer resolves must not break the rewind
         logger.debug("skill re-expansion failed for replay", exc_info=True)
@@ -305,7 +305,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A setup handoff's first message carries the first-task skill after what the user sees.
+            from agent.first_task_prompt import visible_text
+            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")

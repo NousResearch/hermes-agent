@@ -54,6 +54,34 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
 
+
+def test_cancel_queued_delivery_fences_claim_and_preserves_terminal_result(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "first", delivery_id="3" * 32)
+    cancelled = mailbox.cancel_queued_delivery(
+        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline")
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error"] == "owner closed"
+    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert mailbox.deliver_to_live_owner(tmp_path, owner, "first", delivery_id="3" * 32) == cancelled
+    assert mailbox.cancel_queued_delivery(
+        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == cancelled
+
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="4" * 32)
+    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
+    assert claimed is not None
+    assert claimed["delivery_id"] == queued["delivery_id"]
+    assert mailbox.cancel_queued_delivery(
+        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == claimed
+    settled = mailbox.complete_delivery(tmp_path, queued["delivery_id"], status="settled", reply="PONG")
+    assert mailbox.cancel_queued_delivery(
+        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == settled
+
+
 @pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
 def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, intent_state):
     from pathlib import Path

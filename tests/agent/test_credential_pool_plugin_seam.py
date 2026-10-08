@@ -130,7 +130,8 @@ def test_plugin_refresh_adopts_peer_rotation_without_spending_token(plugin_profi
 
     def hook(entry):
         calls.append(entry.refresh_token)
-        return {"access_token": f"tok-{len(calls) + 1}", "refresh_token": f"rt-{len(calls) + 1}"}
+        return {"access_token": f"tok-{len(calls) + 1}", "refresh_token": f"rt-{len(calls) + 1}",
+                "expires_at_ms": 4102444800000}
 
     _register_hook(hook)
     first = CredentialPool("example-oauth", [_entry(expires_at_ms=1)])

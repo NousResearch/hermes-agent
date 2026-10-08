@@ -91,6 +91,8 @@ def _validate_identity(id_token: str, client_id: str, *, nonce: str | None,
         identity = jwt.decode(id_token, signing_key.key, algorithms=["RS256"], issuer=ISSUER,
                               audience=client_id, leeway=5,
                               options={"require": ["iss", "aud", "sub", "exp", "iat"]})
+    except jwt.PyJWKClientConnectionError as exc:
+        raise _error("Could not load OpenAI's identity verification keys.", "chatgpt_discovery_failed") from exc
     except (jwt.PyJWTError, ValueError) as exc:
         raise _error("OpenAI's ID token could not be verified.", "chatgpt_invalid_identity") from exc
     if nonce is not None and not hmac.compare_digest(str(identity.get("nonce") or ""), nonce):
@@ -130,7 +132,7 @@ def _post_token(form: dict[str, str]) -> dict:
 
 
 def _token_fields(payload: dict, metadata: dict, *, nonce: str | None = None,
-                  initial: bool = False) -> dict:
+                  initial: bool = False, received_at_ms: int | None = None) -> dict:
     from hermes_cli.auth import _utc_now_z
     if (not isinstance(payload.get("access_token"), str) or not payload["access_token"]
             or str(payload.get("token_type", "")).lower() != "bearer"):
@@ -147,6 +149,7 @@ def _token_fields(payload: dict, metadata: dict, *, nonce: str | None = None,
         raise _error("OpenAI did not return token expiry and granted scopes.", "chatgpt_token_response_invalid")
     updated = {**metadata, "scopes": scope.split(), "token_type": "Bearer",
                "earliest_refresh_at": payload.get("earliest_refresh_at")}
+    updated.pop("pending_refresh", None)
     if "offline_access" in updated["scopes"] and not payload.get("refresh_token"):
         raise _error("OpenAI did not return the renewable session token.", "chatgpt_token_response_invalid")
     id_token = payload.get("id_token")
@@ -157,8 +160,9 @@ def _token_fields(payload: dict, metadata: dict, *, nonce: str | None = None,
                                       subject=metadata.get("subject"))
         updated.update(issuer=identity["iss"], subject=identity["sub"], email=identity.get("email", ""),
                        id_token=id_token)
+    received_at_ms = int(time.time() * 1000) if received_at_ms is None else received_at_ms
     return {"access_token": payload["access_token"], "refresh_token": payload.get("refresh_token"),
-            "expires_at_ms": int(time.time() * 1000) + ttl * 1000, "last_refresh": _utc_now_z(),
+            "expires_at_ms": received_at_ms + ttl * 1000, "last_refresh": _utc_now_z(),
             "chatgpt": updated}
 
 
@@ -199,7 +203,7 @@ def login(args: Any, registration: dict | None = None, *, _retry: bool = False) 
     if not getattr(args, "no_browser", False) and _can_open_graphical_browser():
         try:
             webbrowser.open(browser_url)
-        except Exception:
+        except (OSError, webbrowser.Error):
             print("Could not open the browser; use the URL above.")
     try:
         callback = _serve_loopback_callback(server, result, timeout_seconds=float(getattr(args, "timeout", None) or 300),
@@ -238,9 +242,23 @@ def refresh_credential(entry: Any) -> dict:
     client_id = metadata.get("client_id")
     if not client_id or client_id == "dynamic_agent_client" or not metadata.get("subject"):
         raise _error("ChatGPT registration is incomplete; sign in again.", "chatgpt_registration_incomplete", relogin=True)
-    payload = _post_token({"grant_type": "refresh_token", "client_id": client_id,
-                           "refresh_token": entry.refresh_token, "resource": RESOURCE})
-    return _token_fields(payload, metadata)
+    pending = metadata.get("pending_refresh")
+    if pending is None:
+        payload = _post_token({"grant_type": "refresh_token", "client_id": client_id,
+                               "refresh_token": entry.refresh_token, "resource": RESOURCE})
+        pending = {"response": payload, "received_at_ms": int(time.time() * 1000)}
+    try:
+        return _token_fields(pending["response"], metadata, received_at_ms=pending["received_at_ms"])
+    except AuthError as exc:
+        if exc.code != "chatgpt_discovery_failed":
+            # The old refresh token is already spent; a permanently invalid replacement
+            # cannot safely fund inference or recover through another refresh POST.
+            raise _error(str(exc), exc.code, relogin=True) from exc
+        # Persist through the pool's existing locked refresh transaction. Keep the old
+        # verified identity, but mark it expired until this same response is verified.
+        return {"access_token": entry.access_token,
+                "refresh_token": pending["response"].get("refresh_token"), "expires_at_ms": 0,
+                "chatgpt": {**metadata, "pending_refresh": pending}}
 
 
 def clear_credential(entry: Any) -> dict:
@@ -248,6 +266,7 @@ def clear_credential(entry: Any) -> dict:
     metadata = dict(entry.extra.get("chatgpt") or {})
     metadata.pop("id_token", None)
     metadata.pop("earliest_refresh_at", None)
+    metadata.pop("pending_refresh", None)
     return {"access_token": "", "refresh_token": None, "expires_at_ms": None, "chatgpt": metadata}
 
 
@@ -269,6 +288,7 @@ def assert_active_access_token(access_token: str) -> None:
     stored = current.get("access_token")
     if (not isinstance(access_token, str) or not access_token or not isinstance(stored, str)
             or not hmac.compare_digest(access_token.encode(), stored.encode())
+            or current.get("chatgpt", {}).get("pending_refresh") is not None
             or DIRECT_SCOPE not in current.get("chatgpt", {}).get("scopes", [])):
         raise _error("The selected ChatGPT account or session changed. Reinitialize this session before sending another request.",
                      "chatgpt_session_changed")
@@ -371,6 +391,7 @@ def _logout(registration: dict) -> None:
         current.update(access_token="", refresh_token=None, expires_at_ms=None)
         current["chatgpt"].pop("id_token", None)
         current["chatgpt"].pop("earliest_refresh_at", None)
+        current["chatgpt"].pop("pending_refresh", None)
         _save_auth_store(store)
     print(f"Signed out of ChatGPT account {registration['label']}.")
     if not confirmed:

@@ -162,6 +162,7 @@ _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
+_OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # OpenAI GPT-5.6 (Sol/Terra/Luna). Cache write = 1.25x input, cache read =
     # 0.10x input. "-pro" high-effort modes bill at the same per-token rates
@@ -193,7 +194,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
         "claude-opus-5": _OPUS,
-        "claude-opus-5-5": ("4.00", "20.00", "0.20", "5.00"),
+        "claude-opus-5-5": _OPUS_5_5,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -223,6 +224,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Price List API had not published these SKUs machine-readably).
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
         ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
+    }),
+    ("bedrock", _BEDROCK_URL, "anthropic-list-2026-09", {
+        "anthropic.claude-opus-5": _OPUS, "anthropic.claude-opus-5-5": _OPUS_5_5,
     }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
@@ -330,7 +334,7 @@ _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
     )
     for _model in _models
 }
-del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
+del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET, _OPUS_5_5
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
 # rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
@@ -339,9 +343,8 @@ del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 # by both the documented stable name and the emitted ID.
 for _provider, _alias, _canonical in (
     *((("openai", f"{m}-{suffix}", m)
-       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
+       for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol")
        for suffix in ("pro", "900k"))),
-    ("openai", "gpt-6.1-sol-pro", "gpt-6.1-sol"),  # no -900k: not verified above 272K on Codex
     ("google", "gemini-3.1-pro-preview", "gemini-3.1-pro"),
     ("google", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"),
 ):

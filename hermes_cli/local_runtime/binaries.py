@@ -153,8 +153,12 @@ def _legacy_installs(backend: str) -> list[tuple[str, Path, dict]]:
 
 
 def _legacy_artifacts(package, version: str, target: str, assets: dict) -> list[str] | None:
-    """The manifest's archive digests in PM's archive order, or None when one is missing."""
-    shas = [assets.get(url.rsplit("/", 1)[-1]) for url in package.fetch_urls(version, target)]
+    """The manifest's archive digests in PM's archive order, or None when one is missing.
+
+    The pre-PM installer fetched only llama.cpp's own release assets. On Linux PM also pins the
+    libgomp .deb, so an adopted engine there records fewer archives than the lock and counts as
+    outdated: usable now (its manifest proves it ran against the host's libgomp), update offered."""
+    shas = [assets.get(name) for name in package._asset_names(version, target)]
     if not shas or not all(isinstance(sha, str) and _SHA256.fullmatch(sha) for sha in shas):
         return None
     return shas

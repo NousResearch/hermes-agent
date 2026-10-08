@@ -132,3 +132,20 @@ def test_no_relay_session_skips_quietly(relay):
 def test_no_relay_host_skips_quietly(monkeypatch):
     monkeypatch.setattr(relay_runtime, "HOST_REGISTRY", _Registry(None))
     assert emit_compaction_mark("s1", "compaction", _committed("s1")) is False
+
+
+def test_a_turn_relay_does_not_instrument_records_no_mark(relay):
+    """A second concurrent turn on a live session (a background-review fork, or a concurrent gateway turn) runs
+    with Relay instrumentation off. Its compaction must not mark the live session or reset its freshness."""
+    fake, runtime, coordinator = relay
+    lease = coordinator.acquire_conversation(profile_key=runtime.profile_key, session_id="s1", platform="cli")
+    live = coordinator.begin_turn(lease, turn_id="live", task_id="task")
+    fork = coordinator.begin_turn(lease, turn_id="fork", task_id="task")
+    try:
+        assert fork.relay_enabled is False
+        assert emit_compaction_mark("s1", "compaction", _committed("s1")) is False
+    finally:
+        coordinator.end_turn(fork, outcome="success")
+        coordinator.end_turn(live, outcome="success")
+
+    assert fake.scope.events == []

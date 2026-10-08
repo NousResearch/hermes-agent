@@ -410,11 +410,11 @@ class TestRepoRootSkillLayout:
             elif "/git/trees/main" in url:
                 resp.status_code = 200
                 resp.json = lambda: {"sha": "b" * 40, "truncated": False, "tree": tree}
-            elif url.endswith("/contents/SKILL.md"):
+            elif url.endswith("/contents/SKILL.md") or url.endswith(f"/{'b' * 40}/SKILL.md"):
                 resp.status_code, resp.content = 200, self.SKILL_MD.encode()
-            elif url.endswith("/contents/references/free_tools.md"):
+            elif url.endswith("/contents/references/free_tools.md") or url.endswith(f"/{'b' * 40}/references/free_tools.md"):
                 resp.status_code, resp.content = 200, b"# Free tools\n"
-            elif url.endswith("/contents/LICENSE") or url.endswith("/contents/README.md"):
+            elif url.endswith("/contents/LICENSE") or url.endswith("/contents/README.md") or url.endswith(f"/{'b' * 40}/LICENSE") or url.endswith(f"/{'b' * 40}/README.md"):
                 # Every blob in the pinned tree must fetch, or the bundle is "incomplete" and
                 # deliberately left unpinned (empty revision) for the next update check to fill.
                 resp.status_code, resp.content = 200, b"root-level file\n"
@@ -1144,7 +1144,8 @@ class TestOptionalSkillSourceLiveRepoFallback:
             contents[rel_path] = data
         fake = MagicMock()
         fake._get_repo_tree.return_value = ("main", entries)
-        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        fake._tree_revisions = {"NousResearch/hermes-agent": "deadbeef"}
+        fake._fetch_file_bytes.side_effect = lambda repo, path, ref=None: contents.get(path)
         return fake
 
     def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):

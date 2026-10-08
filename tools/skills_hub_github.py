@@ -3,6 +3,7 @@
 import json
 import logging
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -68,6 +69,22 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
     return resp.status_code == 429 or (
         resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining", "") == "0"
     )
+
+
+def _stderr_is_tty() -> bool:
+    try:
+        return sys.stderr.isatty()
+    except Exception:
+        return False
+
+
+def _report_tree_fetch_progress(fetched: int, total: int) -> None:
+    if not total:
+        return
+    if _stderr_is_tty():
+        print(f"\r  fetched {fetched}/{total}", file=sys.stderr, end="\n" if fetched == total else "", flush=True)
+    elif fetched == total or fetched % 25 == 0:
+        print(f"  fetched {fetched}/{total}", file=sys.stderr, flush=True)
 
 
 class GitHubAuth:
@@ -346,9 +363,12 @@ class GitHubSource(SkillSource):
         False when a blob fetch failed (installed with a gap the next update check must be able to fill).
         An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
         prefix = f"{skill_path}/" if skill_path else ""
+        members = list(_tree_members(entries, prefix))
+        total = sum(1 for rel_path, _, regular in members if regular and rel_path != "SKILL.md" and not _skip_bundle_file(rel_path))
+        fetched = 0
         symlinked: set = set()
         complete = True
-        for rel_path, item_path, regular in _tree_members(entries, prefix):
+        for rel_path, item_path, regular in members:
             if not regular:
                 symlinked.add(rel_path)
                 continue
@@ -360,6 +380,8 @@ class GitHubSource(SkillSource):
                 logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                 return None
             complete &= self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
+            fetched += 1
+            _report_tree_fetch_progress(fetched, total)
         for rel_path in sorted(referenced):
             # A SKILL.md-linked support path that isn't in the tree is a dangling link — a repo-only dev
             # tool, prose over-match, or a file the author forgot to push. Warn and install without it
@@ -563,10 +585,14 @@ class GitHubSource(SkillSource):
     def _fetch_file_bytes(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[bytes]:
         """Fetch exact file bytes. ``ref`` pins to a tree SHA (see ``fetch`` on
         the TOCTOU); None keeps the legacy unpinned behavior."""
-        resp = self._github_get(
-            f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
+        quoted = quote(path, safe="/")
+        if ref:
+            resp = self._github_get(f"https://raw.githubusercontent.com/{repo}/{ref}/{quoted}")
+        else:
+            resp = self._github_get(
+                f"{_API}/{repo}/contents/{quoted}",
+                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+            )
         return resp.content if resp is not None and resp.status_code == 200 else None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:

@@ -7,6 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $hideCodeDiffs, $toolDisclosureStates } from '@/store/tool-view'
 
+import { fileEditPath, toolPreviewOutcome } from './fallback-model'
+
 vi.mock('@assistant-ui/react', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useAuiState: (select: (state: unknown) => unknown) =>
@@ -18,7 +20,7 @@ const diff = '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after'
 const writeClipboard = vi.fn(async (_text: string) => {})
 let originalDesktop: typeof window.hermesDesktop
 
-function show(toolName: string, args: Record<string, unknown> | string, result: Record<string, unknown>) {
+function show(toolName: string, args: Record<string, unknown> | string, result: Record<string, unknown> | string) {
   render(
     <ToolFallback
       {...({ args, result, toolCallId: 'copy-path-call', toolName } as ComponentProps<typeof ToolFallback>)}
@@ -104,4 +106,48 @@ it('keeps path copy available with hidden diffs and failures, but never copies p
     expect(screen.queryByRole('button', { name: 'Copy path' })).toBeNull()
     cleanup()
   }
+})
+
+it('never offers a diff-content path as Copy path while preserving preview inference and diff copy', async () => {
+  const commentDiff = diff.replace('+after', '+// See docs/index.html for details')
+
+  for (const field of ['diff', 'inline_diff']) {
+    const args = { path: '', file: null, filepath: 42 }
+    const result = { success: true, path: [], file: false, filepath: ' ', resolved_path: {}, [field]: commentDiff }
+
+    // Preview/display inference is an existing, separate contract, not a clipboard source.
+    expect(fileEditPath(args, result)).toBe('docs/index.html')
+    const preview = toolPreviewOutcome({ args, result, toolCallId: 'preview-call', toolName: 'patch' })
+    expect(preview.previewTarget).toBe('docs/index.html')
+    show('patch', args, result)
+    expect(screen.queryByRole('button', { name: 'Copy path' })).toBeNull()
+    expect(writeClipboard).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy file' }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenLastCalledWith(commentDiff))
+    cleanup()
+    writeClipboard.mockClear()
+  }
+})
+
+it('copies only explicit string path fields with argument precedence and result fallback', async () => {
+  const argumentPath = '../source/文档 with spaces.txt'
+  const resultPath = 'C:\\work\\resolved file.txt'
+  const commentDiff = diff.replace('+after', '+// See docs/index.html for details')
+
+  for (const field of ['path', 'file', 'filepath']) {
+    show('patch', { [field]: argumentPath }, { path: resultPath, diff: commentDiff })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenLastCalledWith(argumentPath))
+    cleanup()
+  }
+
+  for (const field of ['path', 'file', 'filepath', 'resolved_path']) {
+    show('patch', { path: null, file: ' ', filepath: 42 }, JSON.stringify({ [field]: resultPath, diff: commentDiff }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenLastCalledWith(resultPath))
+    cleanup()
+  }
+
+  show('terminal', { path: argumentPath }, { resolved_path: resultPath, diff: commentDiff })
+  expect(screen.queryByRole('button', { name: 'Copy path' })).toBeNull()
 })

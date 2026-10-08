@@ -375,11 +375,20 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
-def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
-    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
+# Telegram caps a message at 4096 characters; the title and fixed text stay well under the rest.
+_DISPLAY_LIMIT = 1500
+
+
+def _shorten(text: str, limit: int = _DISPLAY_LIMIT) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _clip(ev: Any, key: str, msg_key: str, limit: int = _DISPLAY_LIMIT) -> str:
+    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the shortened payload
     value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return t(msg_key, value=str(value)[:limit]) if value else ""
+    return t(msg_key, value=_shorten(str(value), limit)) if value else ""
 
 
 _NL = "\n{}"
@@ -392,13 +401,17 @@ def _first_line(text: str, limit: int) -> str:
 
 def _fmt_completed(ev, n) -> tuple:
     # Prefer the run summary from the event payload; fall back to task.result for legacy rows.
+    # The wake handoff stays one short line; the message shows the whole summary.
     wake_handoff = None
+    shown = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
         wake_handoff = _first_line(str(payload_summary), 200)
+        shown = _shorten(str(payload_summary))
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
-    handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
+        shown = _shorten(n.task.result)
+    handoff = f"\n{shown}" if shown else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
@@ -410,7 +423,7 @@ def _fmt_review_requested(ev, n) -> tuple:
     summary = _payload(ev, "summary")
     if summary:
         summary = str(summary)
-        handoff = f"\n{summary[:200]}"
+        handoff = f"\n{_shorten(summary)}"
         wake_handoff = _first_line(summary, 200)
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
@@ -445,7 +458,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
         "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
         recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
-        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix"),
     )
     return msg, None, None
 
@@ -456,7 +469,7 @@ def _fmt_gave_up(ev, n) -> tuple:
     failures = _payload(ev, "failures")
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
-    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 600)
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
@@ -473,7 +486,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
-        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix")),
         None, None,
     ),
     "gave_up": _fmt_gave_up,

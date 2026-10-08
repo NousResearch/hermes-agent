@@ -12,10 +12,19 @@ from __future__ import annotations
 
 from typing import Any
 
+# Default seconds between elapsed-timer bubble re-edits (#4885). Also the floor: a configured
+# interval below the ~1.5s progress-edit throttle would buy no extra updates, so it clamps up.
+_DEFAULT_PROGRESS_TIMER_INTERVAL_S = 5.0
+_PROGRESS_TIMER_MIN_INTERVAL_S = 2.0
+
 # Settings configurable per-platform; other display settings are CLI-only.
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # Elapsed timer line under the edited tool-progress bubble (#4885). Opt-in: it re-edits the bubble
+    # on a fixed cadence, which is only worth the API calls on an operator who asked for it.
+    "progress_timer": False,
+    "progress_timer_interval": _DEFAULT_PROGRESS_TIMER_INTERVAL_S,
     "show_reasoning": False,
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
     "tool_preview_length": 0,
@@ -183,6 +192,21 @@ def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
 
+def _norm_progress_timer_interval(value: Any) -> float:
+    """Seconds between timer ticks, floored at the progress-edit throttle (never 0 = never fires).
+
+    ponytail: a float interval renders a fractional second at the first tick ("0.5s"); the floor
+    keeps whole-second values on the common path and the formatter still reads fine if not.
+    """
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_PROGRESS_TIMER_INTERVAL_S
+    if seconds != seconds:  # NaN
+        return _DEFAULT_PROGRESS_TIMER_INTERVAL_S
+    return max(seconds, _PROGRESS_TIMER_MIN_INTERVAL_S)
+
+
 def _norm_choice(choices: tuple[str, ...]) -> Any:
     def norm(value: Any) -> str:
         val = str(value).lower()
@@ -211,6 +235,8 @@ _NORMALISERS: dict[str, Any] = {
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
+    "progress_timer": _norm_bool,
+    "progress_timer_interval": _norm_progress_timer_interval,
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
 }

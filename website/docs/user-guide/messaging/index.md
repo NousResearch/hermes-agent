@@ -479,7 +479,18 @@ display:
   #   separate             — send one message per tool (pre-v0.9 style; noisier)
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
+  # Elapsed-timer line under the edited progress bubble (opt-in):
+  #   ⏱️ 5s / ⏱️ 10s / ⏱️ 15s ...
+  # The value is wall clock since THAT bubble's first progress event, in whole multiples of
+  # progress_timer_interval — a tool line landing between ticks leaves the number alone, and a
+  # content message resets the baseline. Each tick is one extra message edit, so it is off by
+  # default. Needs tool_progress enabled and tool_progress_grouping: accumulate; ignored under
+  # `separate` (one immutable message per tool) and on platforms without message editing.
+  progress_timer: false
+  progress_timer_interval: 5   # seconds between timer updates (floored at 2)
 ```
+
+Per-platform overrides work as usual (`display.platforms.<platform>.progress_timer`).
 
 ### `log` mode — audit file instead of chat messages
 

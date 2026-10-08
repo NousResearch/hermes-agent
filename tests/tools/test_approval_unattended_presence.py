@@ -27,14 +27,18 @@ def unattended_session(monkeypatch):
     approval_mod.unregister_gateway_notify(SESSION)
 
 
+@pytest.mark.parametrize("unattended_mode", ["deny", "approve"])
 @pytest.mark.parametrize("platform", ["webhook", "msgraph_webhook"])
-def test_webhook_denies_instantly_even_with_turn_runner_notifier(unattended_session, platform):
+def test_webhook_resolves_from_unattended_mode_even_with_turn_runner_notifier(
+        unattended_session, monkeypatch, platform, unattended_mode):
     # The generic TurnRunner lane registers a notifier on every turn; these adapters still cannot answer it.
     unattended_session(platform)
+    monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: unattended_mode)
     approval_mod.register_gateway_notify(SESSION, lambda data: pytest.fail("card sent to a platform nobody answers"))
     result = approval_mod.check_all_command_guards("sudo systemctl restart nginx", "local")
-    assert result["approved"] is False
-    assert "approvals.unattended_mode" in result["message"]
+    assert result["approved"] is (unattended_mode == "approve")
+    if unattended_mode == "deny":
+        assert "approvals.unattended_mode" in result["message"]
 
 
 def test_api_server_asks_only_when_a_client_bridge_is_registered(unattended_session):

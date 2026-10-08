@@ -2060,6 +2060,10 @@ body.guest-pointer-lock :is(webview, iframe) {
   --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
+[data-slot='composer-dock']:is(:hover, :focus-within) [data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
+}
+
 /* Tool/thinking blocks now live at message-text alignment (no leading
    chevron column to escape into), so their headers and bodies share a
    common left edge with the model's text. */

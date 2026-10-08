@@ -656,7 +656,7 @@ import {
   registerUpdateRelaunch,
   type RelaunchRegistration
 } from './updater/relaunch'
-import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
+import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -3856,12 +3856,7 @@ function createNativePackagedStrategy(
           // script is staged to a temp dir and resolved absolutely so
           // nothing inherited from the package holds the swap open.
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
-              scriptPath: relaunchWaiterScript(process.resourcesPath)
-            })
+            startUpdateRelaunchWaiter(PRODUCT_IDENTITY.msixAppIdWithOrg, process.resourcesPath, rememberLog)
         })
     }
 
@@ -3887,13 +3882,12 @@ function createNativePackagedStrategy(
       registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
         registerUpdateRelaunch(app, fromVersion, {
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
-              scriptPath: relaunchWaiterScript(process.resourcesPath),
-              timeoutSeconds: 1860
-            })
+            startUpdateRelaunchWaiter(
+              PRODUCT_IDENTITY.storeMsix!.identityName,
+              process.resourcesPath,
+              rememberLog,
+              1860
+            )
         })
     })
   }

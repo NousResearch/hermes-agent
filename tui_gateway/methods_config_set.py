@@ -81,7 +81,11 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        # A bare pick resolves against the live provider at turn start; guard on that same provider
+        # here, or a provider-keyed price check passes now and drops the queued pick later.
+        agent = session.get("agent")
+        guard_provider = pending_provider or (getattr(agent, "provider", "") or "").strip()
+        pending_warning = _pending_switch_selection_warning(pending_model, guard_provider, agent)
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -285,6 +289,15 @@ def _set_yolo(rid, params, key, value, session):
         skey = session["session_key"]
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
+        # Persist like the CLI's /yolo so a resume in a new backend restores it. Row id prefers the agent's
+        # session_id: after compression the key can still name the ended parent (#20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or skey
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    db.set_session_yolo(row_id, enable)
+        except Exception:
+            logger.warning("failed to persist session yolo flag for %s", row_id, exc_info=True)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

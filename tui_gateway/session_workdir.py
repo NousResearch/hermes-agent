@@ -475,6 +475,10 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    # A /yolo toggled before the first message had no row to persist to (rows are created lazily here).
+    from tools.approval import is_session_yolo_enabled
+    if is_session_yolo_enabled(session.get("session_key") or ""):
+        model_config["yolo_mode"] = True
     return row_model, model_config
 
 

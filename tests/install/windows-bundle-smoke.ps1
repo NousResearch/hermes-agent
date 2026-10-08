@@ -78,11 +78,11 @@ try {
     $displayVersion = (Run-Node (@($Metadata, 'stamp', '--platform', 'win32', '--stamp', $stampPath) + $identityArgs)) | ConvertFrom-Json
     if ($ChannelRequest) {
         if ($pkg.Version.ToString() -cne $displayVersion) { throw 'Package version disagrees with channel request' }
-    } else {
-        $semverBase = ($displayVersion -split '-')[0]
-        if (-not $pkg.Version.ToString().StartsWith($semverBase + '.', [StringComparison]::Ordinal)) { throw 'Package version disagrees with stamped semver' }
-        if (-not $Tag -and $pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
+    } elseif (-not $Tag) {
+        if ($pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
     }
+    # A tagged package carries the release-time native quad (msix-shared.mjs nativeQuad), not its semver.
+    # Stable admission checks that quad against the claim epoch; here it must only match the input manifest (above).
     @{ packageFullName=$pkg.PackageFullName; publisher=$pkg.Publisher; architecture=$pkg.Architecture.ToString();
         version=$pkg.Version.ToString(); exe=$exe; root=$root; stamp=$stamp } |
         ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Out 'installed-identity.json')

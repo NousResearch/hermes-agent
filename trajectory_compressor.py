@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from agent.compression_marker import elide_middle
+from agent.redact import redact_sensitive_text
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -456,7 +457,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     def _generate_summary(self, content: str, metrics: TrajectoryMetrics) -> str:
         """Summarize ``content`` with retries; returns a fallback summary after the last failure."""
-        prompt = self._summary_prompt(content)
+        # Turns are raw tool output. The summariser is a third-party endpoint,
+        # so credentials must be scrubbed before they leave the process.
+        safe_content = redact_sensitive_text(content, force=True)
+        prompt = self._summary_prompt(safe_content)
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1
@@ -475,7 +479,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
         """Async twin of ``_generate_summary``."""
-        prompt = self._summary_prompt(content)
+        safe_content = redact_sensitive_text(content, force=True)
+        prompt = self._summary_prompt(safe_content)
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1

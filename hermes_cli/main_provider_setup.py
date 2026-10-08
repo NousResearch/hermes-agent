@@ -59,6 +59,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("review", "Review", "/review reviewer subagent"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
+    ("voice_chat", "Voice chat", "spoken voice-mode replies"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
@@ -198,7 +199,10 @@ def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
 def _reset_aux_to_auto() -> int:
     """Reset every known aux task (built-in + plugin) back to auto/empty. Returns number reset."""
     from hermes_cli.config import load_config, save_config
-    def _clear(entry: dict, auto: str) -> bool:
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG.get("auxiliary") or {}
+
+    def _clear(entry: dict, auto: str, task: str = "") -> bool:
         # Only the routing fields; timeout/download_timeout (aux) and max_concurrent_children
         # etc. (delegation) are user-tuned and preserved. *auto* is the reset provider value
         # ("auto" for aux tasks, "" for delegation); anything else counts as a change.
@@ -207,14 +211,16 @@ def _reset_aux_to_auto() -> int:
             entry["provider"] = auto
             changed = True
         for field in ("model", "base_url", "api_key", "reasoning_effort"):
-            if entry.get(field) or entry.get(field) is False:
-                entry[field] = ""
+            # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
+            default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""
+            if (entry.get(field) or entry.get(field) is False or default) and entry.get(field) != default:
+                entry[field] = default
                 changed = True
         return changed
 
     cfg = load_config()
     aux = _ensure_dict_section(cfg, "auxiliary")
-    count = sum(_clear(_ensure_dict_section(aux, task), "auto") for task, _name, _desc in _all_aux_tasks())
+    count = sum(_clear(_ensure_dict_section(aux, task), "auto", task) for task, _name, _desc in _all_aux_tasks())
     dele = cfg.get("delegation")
     if isinstance(dele, dict):
         count += _clear(dele, "")

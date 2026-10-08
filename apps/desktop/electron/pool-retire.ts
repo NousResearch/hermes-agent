@@ -4,13 +4,6 @@ export interface PoolRetireEntry {
   /** An early veto only; backend admission owns the proof. */
   activeTurn?: boolean
   lastActiveAt?: null | number
-  /**
-   * Last prompt turn that leased this backend (#105239): a keepalive touch
-   * only proves the chat is open, while this stamp proves streamed activity.
-   * The idle reaper reads it for the pinned-tier TTL; absent means the entry
-   * predates the stamp and keeps the legacy lastActiveAt clock.
-   */
-  lastStreamedAt?: null | number
   process?: unknown
 }
 
@@ -154,23 +147,6 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
         throw new Error(`Backend for "${key}" was retired; open it explicitly to reconnect.`)
       }
     },
-    retireIdle: (key: string, idleMs: number, idleEligibility?: (entry: E) => boolean) =>
-      enqueue(async () => {
-        const entry = deps.pool.get(key)
-
-        if (!entry) {
-          return false
-        }
-
-        // The default clock is the keepalive-touched lastActiveAt; the reaper
-        // passes an override that also honours the pinned-tier TTL
-        // (lastStreamedAt) so a keepalive-fresh but stream-idle entry can
-        // still be retired (#105239). The retirer keeps every other
-        // safeguard: identity, admission permit, activeTurn veto, proof probe.
-        return retire(key, entry, () =>
-          idleEligibility ? idleEligibility(entry) : Date.now() - (entry.lastActiveAt || 0) > idleMs
-        )
-      }),
     evictTo: (keep: number, freshMs: number) =>
       enqueue(async () => {
         const retired: string[] = []

@@ -1,0 +1,26 @@
+name: hermes-honcho-plugin
+title: Honcho Memory
+repo: https://github.com/outpoints/hermes-honcho-plugin
+sha: 4fb2a175981534f38e9356957212350087546d6e
+description: "Desktop workbench for the Honcho memory behind the focused chat: read the newest conclusions, trace their premises, search messages, ask scoped questions, and add confirmed corrections or source files. Uses each profile's existing Honcho provider configuration. Disclosure — talks only to the Honcho server each profile is already configured for, through Hermes's own Honcho client and credentials, and polls it about every 10 seconds for the focused chat while Desktop is open. Ask runs a Honcho reasoning call that may use credits. Add fact/correction and Add to session write to Honcho only after you confirm the target in a dialog; Add to session uploads the text or PDF/JSON/text file you choose. A chat from another local profile is read with that profile's own Honcho configuration, only where this plugin is enabled. It reads the focused chat's title and folder from the profile's session database, read-only. No telemetry."
+maintainer: outpoints
+tier: community
+category: desktop
+version: "0.4.0"
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/outpoints/hermes-honcho-plugin
+image: https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-memory.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-ask.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-correct.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-pane.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-messages.png
+  - https://raw.githubusercontent.com/outpoints/hermes-honcho-plugin/4fb2a175981534f38e9356957212350087546d6e/docs/catalog/gallery-status.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

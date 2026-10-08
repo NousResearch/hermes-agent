@@ -88,6 +88,19 @@ def claude_tree(profile_env):
         "mcpServers": {
             "settings-server": {"command": "uvx", "args": ["settings-mcp"]},
         },
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": "~/.claude/hooks/validate-shell.sh", "timeout": 10}]},
+                {"matcher": "Edit|Write|NotebookEdit", "hooks": [
+                    {"type": "command", "command": "~/.claude/hooks/guard.sh"}]},
+            ],
+            "PostToolUse": [{"matcher": ".*", "hooks": [
+                {"type": "command", "command": "./hooks/audit.sh"},
+                {"type": "prompt", "prompt": "Judge whether the edit was safe"},  # LLM-judged → skipped
+            ]}],
+            "PreCompact": [{"hooks": [{"type": "command", "command": "echo compact"}]}],  # no Hermes event
+        },
     }), encoding="utf-8")
     # mcpServers in the sibling ~/.claude.json (Claude's primary MCP store)
     (profile_env / ".claude.json").write_text(json.dumps({
@@ -273,6 +286,28 @@ class TestClaudeCodeImport:
     def test_slash_commands_reported_skipped(self, report):
         items = {i["kind"]: i for i in report["items"]}
         assert items["slash-commands"]["status"] == "skipped"
+
+    def test_hooks_land_as_shell_hooks_without_consent(self, report, claude_tree, hermes_home):
+        """settings.json hooks become ``hooks:`` entries the real shell-hook parser accepts, with
+        Claude events/tool names renamed; prompt hooks and PreCompact are reported, not imported;
+        the consent allowlist is never written; a second import adds nothing."""
+        from agent.shell_hooks import iter_configured_hooks
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        specs = {(s.event, s.matcher, s.command, s.timeout) for s in iter_configured_hooks(config)}
+        assert specs == {
+            ("pre_tool_call", "terminal", "~/.claude/hooks/validate-shell.sh", 10),
+            ("pre_tool_call", "patch|write_file|NotebookEdit", "~/.claude/hooks/guard.sh", 60),
+            ("post_tool_call", None, "./hooks/audit.sh", 60),
+        }
+        hooks = [i for i in report["items"] if i["kind"] == "hooks"]
+        skipped = {i["source"]: i["reason"] for i in hooks if i["status"] == "skipped"}
+        assert "'prompt' hooks are not shell commands" in skipped["hooks.PostToolUse[.*] prompt"]
+        assert skipped["hooks.PreCompact"] == "PreCompact has no Hermes shell-hook event"
+        assert [i["unmapped_tools"] for i in hooks if "unmapped_tools" in i] == [["NotebookEdit"]]
+        assert not (hermes_home / "shell-hooks-allowlist.json").exists()
+        again = run_import("claude-code", claude_tree, hermes_home, execute=True)
+        assert all(i["status"] == "skipped" for i in again["items"] if i["kind"] == "hooks")
+        assert yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))["hooks"] == config["hooks"]
 
 
 # ---------------------------------------------------------------------------

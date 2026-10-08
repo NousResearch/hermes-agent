@@ -1774,7 +1774,7 @@ Use shell hooks when you want a drop-in, single-file script (Bash, Python, anyth
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
 
-Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
+Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher. Already running hook scripts under Claude Code? [`hermes import-agent claude-code`](../import-from-other-agents.md) translates the `hooks` block of `settings.json` into this one; the scripts themselves need no changes.
 
 ### Comparison at a glance
 
@@ -1845,7 +1845,15 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 // are optional). Claude-Code's `{"decision": "approve"}` means auto-allow and is NOT mapped here:
 {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 
-// Inject context for pre_llm_call:
+// Claude Code's nested reply is read too — the same directives, one level down. `deny` blocks,
+// `ask` escalates to the approval gate (as above), `updatedInput` modifies, `allow` alone is a no-op:
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                        "permissionDecisionReason": "Forbidden: rm -rf"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                        "permissionDecisionReason": "Writes outside the repo need a human"}}
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {"command": "npm ci"}}}
+
+// Inject context for pre_llm_call (`additionalContext` inside `hookSpecificOutput` is the same thing):
 {"context": "Today is Friday, 2026-04-17"}
 
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:

@@ -246,3 +246,96 @@ class TestCommandCodeBaseUrlOverride:
             )
         assert result == ["m1"]
         assert captured["url"] == cc_mod._COMMANDCODE_MODELS_URL
+
+
+# ── Wire-protocol filtering ──────────────────────────────────────────────────
+
+class TestCommandCodeWireProtocolFiltering:
+    """Each profile advertises only the models it can actually serve.
+
+    CommandCode serves every claude-* model on /messages ONLY; the rest of the
+    catalog is served on /chat/completions or /responses. Selecting a
+    /messages-only model from the chat-completions profile is a hard 400, not a
+    fallback::
+
+        400 Model "claude-sonnet-5-5" must be called via /provider/v1/messages
+            (Anthropic Messages shape).   [code: unsupported_model]
+
+    so the chat profile must not offer them, and the messages profile must not
+    offer anything else.
+    """
+
+    CATALOG = [
+        {"id": "claude-sonnet-5-5", "supported_endpoints": ["/messages"]},
+        {"id": "claude-haiku-4-5-20251001", "supported_endpoints": ["/messages"]},
+        {
+            "id": "deepseek/deepseek-v4-pro",
+            "supported_endpoints": ["/chat/completions", "/responses"],
+        },
+        {
+            "id": "gpt-5.6-luna",
+            "supported_endpoints": ["/chat/completions", "/responses"],
+        },
+        # No advertisement at all — kept (fail open).
+        {"id": "legacy/unlabelled-model"},
+        # Inverse case: a claude-* id served on the OpenAI wire.
+        {"id": "claude-on-chat-wire", "supported_endpoints": ["/chat/completions"]},
+    ]
+
+    def _fetch_via_local_catalog(self, profile):
+        import json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+
+        catalog = self.CATALOG
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"data": catalog}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), H)
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            return profile.fetch_models(
+                api_key="k", base_url=f"http://127.0.0.1:{server.server_address[1]}"
+            )
+        finally:
+            server.shutdown()
+
+    def test_chat_profile_hides_messages_only_models(self, commandcode_profile):
+        result = self._fetch_via_local_catalog(commandcode_profile)
+        assert result is not None
+        assert "claude-sonnet-5-5" not in result
+        assert "claude-haiku-4-5-20251001" not in result
+        assert "deepseek/deepseek-v4-pro" in result
+        assert "gpt-5.6-luna" in result
+        assert "legacy/unlabelled-model" in result
+        assert "claude-on-chat-wire" in result
+
+    def test_messages_profile_hides_chat_only_models(
+        self, commandcode_anthropic_profile
+    ):
+        result = self._fetch_via_local_catalog(commandcode_anthropic_profile)
+        assert result is not None
+        assert "claude-sonnet-5-5" in result
+        assert "claude-haiku-4-5-20251001" in result
+        assert "claude-on-chat-wire" not in result
+        assert "deepseek/deepseek-v4-pro" not in result
+        assert "gpt-5.6-luna" not in result
+
+    def test_the_two_profiles_never_overlap(
+        self, commandcode_profile, commandcode_anthropic_profile
+    ):
+        chat = set(self._fetch_via_local_catalog(commandcode_profile))
+        messages = set(self._fetch_via_local_catalog(commandcode_anthropic_profile))
+        assert not (chat & messages), (
+            "a model offered by both profiles would be selectable on the wrong "
+            f"wire: {sorted(chat & messages)}"
+        )

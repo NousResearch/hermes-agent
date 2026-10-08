@@ -19,9 +19,35 @@ _COMMANDCODE_MODELS_URL = f"{_COMMANDCODE_BASE}/models"
 class CommandCodeProfile(ProviderProfile):
     """CommandCode — OpenAI-compatible chat completions endpoint."""
 
+    # CommandCode fronts many vendors from one base URL and each /models entry lists
+    # the endpoints it is served on. Every claude-* model is /messages ONLY; calling it
+    # on the OpenAI wire is a hard 400 (``must be called via /provider/v1/messages``),
+    # not a fallback. Each profile therefore advertises only what it can actually serve.
+    _wire_endpoints: tuple[str, ...] = ("/chat/completions", "/responses")
+
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:
+        """Public /models ids served on this profile's wire (see ``_wire_endpoints``).
+
+        A record that advertises no ``supported_endpoints`` is kept: the field is advisory,
+        and dropping those would empty the picker behind a proxy or an older catalog. Only
+        models that positively declare another wire are removed."""
+        records = self._fetch_model_records(base_url=base_url, timeout=timeout)
+        if records is None:
+            return None
+        wanted = {e.lower() for e in self._wire_endpoints}
+        ids = []
+        for record in records:
+            advertised = record.get("supported_endpoints")
+            if isinstance(advertised, list) and advertised:
+                served = {str(e).strip().lower() for e in advertised if str(e).strip()}
+                if not served & wanted:
+                    continue
+            ids.append(record["id"])
+        return ids
+
+    def _fetch_model_records(self, *, base_url: str | None, timeout: float) -> list[dict] | None:
         """Public (unauthenticated) /models endpoint. The picker passes base_url
         unconditionally, so only a value differing from the default is a custom endpoint."""
         caller_base = (base_url or "").strip().rstrip("/")
@@ -33,7 +59,7 @@ class CommandCodeProfile(ProviderProfile):
             req.add_header("User-Agent", _profile_user_agent())
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
-            return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
+            return [m for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
         except Exception as exc:
             logger.debug("fetch_models(commandcode): %s", exc)
             return None
@@ -61,6 +87,8 @@ class CommandCodeProfile(ProviderProfile):
 
 class CommandCodeAnthropicProfile(CommandCodeProfile):
     """CommandCode — Anthropic Messages API-compatible endpoint."""
+
+    _wire_endpoints = ("/messages",)
 
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0

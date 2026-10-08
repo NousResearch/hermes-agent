@@ -158,7 +158,7 @@ def _projected_tip_source_sql(session_alias: str = "s") -> str:
                     tip.visited || child.child_id || ','
                 FROM tip
                 JOIN ranked_children child ON child.parent_id = tip.id
-                WHERE tip.depth < 100
+                WHERE tip.depth < {_CHAIN_CAP}
                   AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
             )
             SELECT leaf.source

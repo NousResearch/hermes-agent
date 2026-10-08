@@ -155,12 +155,14 @@ def _prompt_model_selection(
     pricing: Optional[dict[str, dict[str, str]]] = None,
     unavailable_models: Optional[list[str]] = None, portal_url: str = "",
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
-    confirm_api_key: str = "", notes: Optional[dict[str, str]] = None,
+    confirm_api_key: str = "", notes: Optional[dict[str, str]] = None, skip_by_default: bool = False,
 ) -> Optional[str]:
     """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
 
     With *pricing* (``{model_id: {prompt, completion}}``) a compact price column is shown; models in
     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.
+    With *skip_by_default* the cursor starts on "Skip (keep current)" unless *current_model* is
+    listed, so a bare Enter keeps the existing setup instead of picking the first row.
     """
     from hermes_cli.cli_output import line_input
     _unavailable = unavailable_models or []
@@ -202,6 +204,9 @@ def _prompt_model_selection(
     try:
         from hermes_cli.curses_ui import curses_radiolist
         choices = [rows.segments(mid) for mid in ordered] + [_CUSTOM_LABEL, _SKIP_LABEL]
+        # Cursor on the current model (index 0 once reordered to top), else row 0 or Skip.
+        current_listed = bool(current_model) and current_model in model_ids
+        initial = choices.index(_SKIP_LABEL) if skip_by_default and not current_listed else 0
 
         unavailable_footer = unavailable_message.strip()
         if not unavailable_footer and _unavailable:
@@ -225,7 +230,7 @@ def _prompt_model_selection(
         idx = curses_radiolist(
             "Select default model:",
             choices,
-            selected=0,  # cursor on the current model (index 0 if it was reordered to top)
+            selected=initial,
             cancel_returns=-1,
             description="\n".join(desc_lines) if desc_lines else None,
             searchable=True,

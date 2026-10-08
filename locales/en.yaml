@@ -3815,7 +3815,7 @@ tips:
   t214: "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed."
   t215: "hermes status --deep runs deeper diagnostic checks across all components."
   t216: "Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context."
-  t217: "Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines."
+  t217: "Cron scripts live in the active profile's scripts/ dir ($HERMES_HOME/scripts/) and run before the agent — perfect for data collection pipelines."
   t218: "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history."
   t219: "SOUL.md completely replaces the agent's default identity — rewrite it to make Hermes your own."
   t220: "SOUL.md is auto-seeded with a default personality on first run. Edit it to customize."

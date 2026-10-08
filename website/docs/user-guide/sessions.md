@@ -350,6 +350,34 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Recover Blocked Model Context
+
+When a provider repeatedly rejects a session's saved context, write a short UTF-8
+continuation summary containing the decisions and unfinished tasks you want to
+retain. Review it yourself and omit the rejected excerpt. Recovery uses this file
+without sending the blocked transcript to a summarizer.
+
+```bash
+# Preview the target session and summary without changing its transcript.
+hermes sessions recover-context SESSION_ID --summary-file continuation.txt
+
+# Stop clients using this profile, then apply the reviewed summary.
+hermes sessions recover-context SESSION_ID --summary-file continuation.txt --apply
+hermes --resume SESSION_ID
+```
+
+The command accepts a full ID or unique prefix and follows its current
+continuation. Check the resolved ID printed in the preview. Before applying,
+stop the profile's gateway, quit its Desktop/TUI/CLI clients, and pause its cron
+work. A live database holder, turn lease, compression lease, or changed active
+transcript causes recovery to refuse the write.
+
+Applying replaces the entire active model context with the summary and preserves
+the session ID and stored system prompt. Original messages remain in display and
+search history. Searching that archive can bring the rejected excerpt back into
+context, so review it before reusing it. Keep the summary substantially shorter
+than the original context and free of the content that caused the rejection.
+
 ### Export Sessions
 
 `hermes sessions export` is one surface for every export format, selected with `--format`:

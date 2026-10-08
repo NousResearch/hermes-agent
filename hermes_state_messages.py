@@ -987,7 +987,8 @@ class SessionMessagesMixin:
         lock_holder: Optional[str] = None, tail_count: int = 0,
         carried_messages: Optional[List[Dict[str, Any]]] = None,
         covered_ids: Optional[List[int]] = None,
-        unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
+        unresolved_held: Optional[List[Dict[str, Any]]] = None,
+        expected_active_ids: Optional[List[int]] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -1004,6 +1005,8 @@ class SessionMessagesMixin:
         timestamp. Those originals and the clones' originals are superseded duplicates and get rewind flags
         (``active=0, compacted=0``) so search doesn't return each carried message once per compaction.
         ``model_config_patch`` merges in the same txn (``None`` removes a key).
+        `expected_active_ids` opts operator recovery into the in-transaction turn/compression lease
+        fence and an exact active-row check, refusing a changed transcript before any archival.
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
@@ -1015,6 +1018,13 @@ class SessionMessagesMixin:
         """
         from hermes_state import SessionCompressionInProgressError
         def _do(conn):
+            if expected_active_ids is not None:
+                self._check_transcript_write_guards(
+                    conn, session_id, lock_holder,
+                    reject_active_turn_lease=True, reject_active_compression_lock=True)
+                active_ids = [int(row[0]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()]
+                if active_ids != expected_active_ids:
+                    raise RuntimeError("active transcript changed before context recovery could be persisted")
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
                 if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():

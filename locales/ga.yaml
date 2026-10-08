@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
     help_channels: "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ Aistriú STT: theip ar {fallback_from}, mar sin d'úsáid Hermes {provider_used} / faster-whisper."
     channel_unsupported: "Ní thacaítear le cainéil ghutha ar an ardán seo."
     channel_guild_only: "Ní oibríonn an t-ordú seo ach i bhfreastalaí Discord."
     channel_not_in_voice: "Caithfidh tú a bheith i gcainéal gutha ar dtús."

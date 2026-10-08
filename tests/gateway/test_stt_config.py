@@ -96,9 +96,10 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
 
 
 @pytest.mark.asyncio
-async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning():
+async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning(monkeypatch):
     from gateway.run import GatewayRunner
 
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
     runner._has_setup_skill = lambda: False
@@ -157,10 +158,11 @@ async def test_failed_command_fallback_is_not_retried_by_gateway(monkeypatch):
     gateway_local_fallback.assert_not_called()
 
 
-def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
+def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text(monkeypatch):
     from gateway.run import GatewayRunner
     from gateway.run_inbound import _STTTranscript
 
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
     fallback_transcript = _STTTranscript(
         "fallback transcript",
         fallback_from="parakeet",
@@ -174,6 +176,35 @@ def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
     assert fallback_transcript == "fallback transcript"
     assert GatewayRunner._format_stt_echo("plain transcript") == '🎙️ "plain transcript"'
     assert GatewayRunner._format_stt_echo(fallback_transcript) == fallback_notice
+
+
+def test_format_stt_echo_uses_i18n_for_fallback_notice(monkeypatch):
+    import gateway.run_inbound as run_inbound
+    from gateway.run import GatewayRunner
+    from gateway.run_inbound import _STTTranscript
+
+    fallback_transcript = _STTTranscript(
+        "fallback transcript",
+        fallback_from="parakeet",
+        provider_used="local",
+    )
+    original_t = run_inbound.t
+    calls = []
+
+    def translate_in_french(key, **kwargs):
+        calls.append((key, kwargs))
+        return original_t(key, lang="fr", **kwargs)
+
+    monkeypatch.setattr(run_inbound, "t", translate_in_french)
+
+    assert GatewayRunner._format_stt_echo(fallback_transcript) == (
+        '🎙️ "fallback transcript"\n\n'
+        "⚠️ Repli STT : parakeet a échoué ; Hermes a donc utilisé local / faster-whisper."
+    )
+    assert (
+        "gateway.voice.stt_fallback_notice",
+        {"fallback_from": "parakeet", "provider_used": "local"},
+    ) in calls
 
 
 @pytest.mark.asyncio
@@ -223,10 +254,11 @@ async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
 
 
 @pytest.mark.asyncio
-async def test_pending_echo_preserves_fallback_notice():
+async def test_pending_echo_preserves_fallback_notice(monkeypatch):
     from gateway.run import GatewayRunner
     from gateway.run_inbound import _STTTranscript
 
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._should_echo_stt_transcripts = lambda: True
     fallback_transcript = _STTTranscript(

@@ -575,6 +575,7 @@ gateway:
     help: "{toggle}\n\n**Как работает /voice**\n• `/voice on` — голосовой ответ, когда вы отправляете голосовое сообщение\n• `/voice tts` — голосовой ответ на *каждое* сообщение\n• `/voice off` — вернуться к ответам только текстом\n• `/voice status` — показать текущий режим\n• `/voice` (без аргумента) — быстрое переключение между вкл и выкл{channels}"
     help_channels: "\n\n**Живые голосовые каналы (Discord)**\n• Сначала зайдите в голосовой канал, затем `/voice channel` — я подключусь, буду слушать и отвечать голосом\n• `/voice leave` — отключиться от голосового канала"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ Резервный STT: {fallback_from} завершился с ошибкой, поэтому Hermes использовал {provider_used} / faster-whisper."
     channel_unsupported: "Голосовые каналы на этой платформе не поддерживаются."
     channel_guild_only: "Эта команда работает только на сервере Discord."
     channel_not_in_voice: "Сначала нужно зайти в голосовой канал."

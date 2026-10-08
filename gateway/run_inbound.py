@@ -1533,11 +1533,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         transcript_echo = t("gateway.voice.transcript_echo_short", text=transcript)
         if fallback_from:
             provider_used = getattr(transcript, "provider_used", None) or "local"
-            return (
-                f"{transcript_echo}\n\n"
-                f"⚠️ STT fallback: {fallback_from} failed, so Hermes used "
-                f"{provider_used} / faster-whisper."
+            fallback_notice = t(
+                "gateway.voice.stt_fallback_notice",
+                fallback_from=fallback_from,
+                provider_used=provider_used,
             )
+            return f"{transcript_echo}\n\n{fallback_notice}"
         return transcript_echo
 
     async def _enrich_inbound_voice(

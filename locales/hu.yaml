@@ -578,6 +578,7 @@ gateway:
     help: "{toggle}\n\n**Hogyan működik a /voice**\n• `/voice on` — hangválasz, amikor hangüzenetet küldesz\n• `/voice tts` — hangválasz *minden* üzenetre\n• `/voice off` — vissza a csak szöveges válaszokhoz\n• `/voice status` — az aktuális mód megjelenítése\n• `/voice` (argumentum nélkül) — gyors váltás be és ki között{channels}"
     help_channels: "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
     transcript_echo_short: "🎙️ \"{text}\""
+    stt_fallback_notice: "⚠️ STT-tartalék: {fallback_from} nem működött, ezért a Hermes ezt használta: {provider_used} / faster-whisper."
     channel_unsupported: "Ezen a platformon nem támogatottak a hangcsatornák."
     channel_guild_only: "Ez a parancs csak Discord-szerveren működik."
     channel_not_in_voice: "Előbb lépj be egy hangcsatornába."

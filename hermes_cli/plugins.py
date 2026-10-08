@@ -456,7 +456,7 @@ class PluginContext:
     def register_tool(
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
-        description: str = "", emoji: str = "", override: bool = False,
+        description: str = "", emoji: str = "", override: bool = False, never_defer: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
@@ -466,6 +466,10 @@ class PluginContext:
         ``override=True`` against a built-in tool requires the operator to opt in via
         ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
         pattern used for ``ctx.llm`` provider/model overrides (#23194).
+
+        ``never_defer=True`` keeps this tool directly visible when Tool Search is active.
+        Reserve it for recovery/control tools that must work without the bridge; each direct
+        schema costs context on every turn. Availability and toolset selection still apply.
         """
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
@@ -483,7 +487,7 @@ class PluginContext:
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, never_defer=never_defer,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None

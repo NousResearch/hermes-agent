@@ -267,7 +267,10 @@ text, the focus topic or error messages.
 
 The opt-in `hermes.compression.count` shared metric keeps coarse triggers
 (`auto`, `manual`, `overflow`) and counts only attempts the local compressor
-ran; blocked and Codex-routed attempts appear in the log line only.
+ran; blocked and Codex-routed attempts appear in the log line only. When the
+NeMo Relay runtime is live, the same record, plus micro-compaction passes and
+committed proactive prunes, is also emitted as a `hermes.compaction` mark (see
+[NeMo Relay Shared Metrics](./relay-shared-metrics.md#compaction-marks)).
 
 
 ## Configuration

@@ -30,6 +30,7 @@ from agent.auxiliary_client import (
     call_llm,
     extract_content_or_reasoning,
 )
+from agent.compaction_events import publish_prune
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
@@ -3483,6 +3484,10 @@ class ContextCompressor(
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None
+        publish_prune(
+            session_id=session_id or "", tokens_before=before, tokens_after=after, messages=len(pruned_msgs),
+            tool_results_pruned=pruned_count,
+        )
         return pruned_msgs, pruned_count
 
     def _compute_summary_budget(self, turns_to_summarize: list[dict[str, Any]]) -> int:
@@ -5578,6 +5583,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
+        telemetry["has_focus_topic"] = bool(focus_topic)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

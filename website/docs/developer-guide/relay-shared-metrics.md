@@ -132,6 +132,37 @@ or mount layouts. Relay does not filter events by working directory; if a path
 must not leave the host, use a trusted local collector or do not enable a remote
 exporter for that process.
 
+## Compaction Marks
+
+Every history rewrite emits one Relay mark with
+`data_schema: {"name": "hermes.compaction", "version": "1"}`: each
+`compress_context` attempt (including blocked, Codex-routed and aborted ones),
+each micro-compaction pass, each committed proactive tool-result prune, and
+each Codex-native thread compaction Hermes observes. The mark is emitted
+whenever the Relay runtime is live; it needs no setting because Relay
+exporters are configured separately.
+
+| Mark | When | Relay effect |
+|---|---|---|
+| `compaction` | `outcome: committed` with `scope: history` or `provider` | Resets LLM-history freshness for the session's agent scope, so the next LLM start records the full compacted history |
+| `compaction.attempt` | Any other outcome (`aborted`, `failed`, `skipped`, `blocked`) | None |
+
+The mark is parented to the live `hermes.turn` of the same session, or to the
+`hermes.session` scope when compaction runs outside a turn (gateway hygiene).
+`data` is flat so OpenTelemetry flattens every field into
+`nemo_relay.mark.data.<key>`. Categorical fields come from closed sets with an
+`other` fallback: `kind` (`summarize`, `micro_summarize`,
+`prune_tool_results`, `provider_native`), `scope`, `official` (true only for
+`compress_context`), `method`, `trigger` / `trigger_class`, `outcome` and
+`failure_class`. Numeric fields carry the effect (`tokens_before`,
+`tokens_after`, `tokens_reclaimed`, `messages_before`, `messages_after`,
+`items_dropped`) and timings (`duration_ms`, `summary_generation_ms`,
+`aux_call_duration_ms`, `queue_wait_ms`, `commit_ms`). Token counts are rough
+message-only estimates (`token_count_method: estimate_rough`). The payload never
+contains message text, summary text, the focus topic (only
+`has_focus_topic`), error text or file paths. `attempt_id` and `session_id`
+are for correlation; do not use them as metric labels.
+
 ## Process-Wide Plugin Policy and Profile Isolation
 
 Relay plugin configuration is a process-level deployment choice, not a Hermes

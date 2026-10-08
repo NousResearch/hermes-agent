@@ -1,10 +1,7 @@
 name: hermes-plex-music
 repo: https://github.com/imzacksong/hermes-plex-music
 sha: c583d6fdaac61d2108bada99b275460b4d08a993
-description: 'Mini-Plexamp for Hermes Desktop: statusbar player for your Plex music
-  library — likes synced to Liked Songs, custom playlists with rename/delete,
-  shuffle + repeat, sleep timer, queue editing, OS media keys. Needs only Plex
-  Media Server. Zero API keys, zero model tokens.'
+description: "Mini-Plexamp for Hermes Desktop: statusbar player for your Plex music library — likes synced to Liked Songs, custom playlists with rename/delete, shuffle + repeat, sleep timer, queue editing, OS media keys. Needs only Plex Media Server. Zero API keys, zero model tokens. Disclosure — talks only to the Plex Media Server you configure (default http://127.0.0.1:32400), sending your Plex token in the request URL as Plex requires; the token is stored in Desktop plugin storage, and the optional \"Get token…\" button reads the Plex `.LocalAdminToken` file you pick. Likes and playlist create/rename/delete write to your Plex server. No agent tools, no telemetry."
 maintainer: imzacksong
 tier: community
 category: desktop

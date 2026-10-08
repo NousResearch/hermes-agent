@@ -1033,17 +1033,22 @@ def build_converse_kwargs(
     temperature: Optional[float] = None, top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None, guardrail_config: Optional[Dict] = None,
 ) -> Dict[str, Any]:
-    """Build kwargs for ``bedrock-runtime.converse()`` / ``converse_stream()``. ``max_tokens=None`` omits
-    ``maxTokens`` (model maximum; default stays 4096). cachePoint markers go on system, tools and the
-    second-newest message (survives as the tail grows — mirrors Anthropic system_and_3), each only if the
-    model supports caching and Bedrock has not rejected that placement."""
+    """Build kwargs for ``bedrock-runtime.converse()`` / ``converse_stream()``. ``max_tokens=None`` sends
+    the Claude output ceiling for Claude models and omits ``maxTokens`` for every other vendor: an omitted
+    ``maxTokens`` is NOT "model maximum" on Converse — Bedrock applies its own 4096 default, and with
+    thinking billed as output that is about a minute of Opus/Sonnet 5.5 before ``stopReason=max_tokens``.
+    cachePoint markers go on system, tools and the second-newest message (survives as the tail grows —
+    mirrors Anthropic system_and_3), each only if the model supports caching and Bedrock has not rejected
+    that placement."""
+    from agent.anthropic_adapter import _forbids_sampling_params, _get_anthropic_max_output, _is_claude_model
     system_prompt, converse_messages = convert_messages_to_converse(messages)
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
+    if max_tokens is None and _is_claude_model(model):
+        max_tokens = _get_anthropic_max_output(model)  # same ceiling the Messages wire sends
     inference_config: Dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
     kwargs: Dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
-    from agent.anthropic_adapter import _forbids_sampling_params
     if not _forbids_sampling_params(model) and not _BEDROCK_XAI_GROK_NO_SAMPLING_RE.match(model or ""):
         inference_config.update({k: v for k, v in (("temperature", temperature), ("topP", top_p)) if v is not None})
     if stop_sequences:

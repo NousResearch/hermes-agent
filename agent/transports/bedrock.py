@@ -37,7 +37,8 @@ class BedrockTransport(ProviderTransport):
         self, model: str, messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None, **params,
     ) -> Dict[str, Any]:
-        """Build Converse kwargs, leaving the optional output limit to the provider."""
+        """Build Converse kwargs. Without ``max_tokens`` Claude gets its model output ceiling (Bedrock's
+        omitted-``maxTokens`` default is 4096, not the model maximum); other vendors keep the provider default."""
         from agent.bedrock_adapter import build_converse_kwargs
 
         kwargs = build_converse_kwargs(

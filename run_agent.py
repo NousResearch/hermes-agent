@@ -675,9 +675,12 @@ class AIAgent(
         """Extract the outgoing response token cap from a prepared request."""
         if not isinstance(api_kwargs, dict):
             return None
-        for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+        inference = api_kwargs.get("inferenceConfig")  # Bedrock Converse keeps the cap one level down
+        candidates = [api_kwargs.get(key) for key in ("max_output_tokens", "max_completion_tokens", "max_tokens")]
+        candidates.append(inference.get("maxTokens") if isinstance(inference, dict) else None)
+        for raw in candidates:
             try:
-                value = int(api_kwargs.get(key))
+                value = int(raw)
             except (TypeError, ValueError):
                 continue
             if value > 0:

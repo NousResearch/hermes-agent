@@ -1426,10 +1426,10 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
 
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
-    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
+    ephemeral_out = _consume_ephemeral_max_output(agent)  # one-shot truncation-retry cap, as on every other wire
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
-        max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
-        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
+        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+        region=getattr(agent, "_bedrock_region", None) or "us-east-1", guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):

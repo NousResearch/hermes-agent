@@ -370,13 +370,33 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
-def _model_output_limit(agent: Any) -> Optional[int]:
-    """The model's real max output tokens when Hermes knows it, else None."""
-    if getattr(agent, "api_mode", None) != "anthropic_messages":
+def _response_output_tokens(response: Any) -> Optional[int]:
+    """Output tokens from an OpenAI- or Messages-shaped usage object (or dict), else None."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
         return None
-    # Local: only Anthropic-Messages turns need the adapter module.
-    from agent.anthropic_adapter import _get_anthropic_max_output
-    return _get_anthropic_max_output(getattr(agent, "model", None) or "")
+    for key in ("completion_tokens", "output_tokens"):
+        value = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _requested_output_cap(agent: Any, api_kwargs: Any) -> Optional[int]:
+    reader = getattr(agent, "_requested_output_cap_from_api_kwargs", None)
+    return reader(api_kwargs) if callable(reader) else None
+
+
+def _model_output_limit(agent: Any) -> Optional[int]:
+    """The model's real max output tokens when Hermes knows it, else None: Claude on the Messages wire
+    and on Bedrock Converse (the Converse builder sends that same ceiling when no cap is configured)."""
+    # Local: only Claude turns need the adapter module.
+    from agent.anthropic_adapter import _get_anthropic_max_output, _is_claude_model
+    model = getattr(agent, "model", None) or ""
+    api_mode = getattr(agent, "api_mode", None)
+    if api_mode == "anthropic_messages" or (api_mode == "bedrock_converse" and _is_claude_model(model)):
+        return _get_anthropic_max_output(model)
+    return None
 
 
 def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> int:
@@ -483,6 +503,11 @@ def recover_from_truncation(
     else:
         _banner = "Response truncated (finish_reason='length') - model hit max output tokens"
     agent._vprint(f"{agent.log_prefix}⚠️  {_banner}", force=True, diagnostic=True)
+    logger.info(
+        "%sAPI call #%s truncated: finish_reason=%s out=%s cap=%s model=%s",
+        agent.log_prefix, api_call_count, finish_reason, _response_output_tokens(response),
+        _requested_output_cap(agent, api_kwargs), getattr(agent, "model", None),
+    )
 
     # #106260: a context-overflow error after partial delivery must not seed a
     # continuation. _partial_stream_stub marks such stubs _overflow_terminal and

@@ -1277,8 +1277,11 @@ looping model running.
 
 Native Anthropic Messages (including the native Anthropic Bedrock path) requires
 `max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate
-protocol: its optional `inferenceConfig.maxTokens` is omitted by default, which
-[AWS documents as the model maximum](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html).
+protocol: its optional `inferenceConfig.maxTokens` is omitted by default for most vendors.
+[AWS documents the omitted value as the model maximum](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InferenceConfiguration.html),
+but for Anthropic Claude Bedrock applies 4,096 output tokens (measured: `stopReason=max_tokens`
+at exactly 4,096 tokens on Claude Sonnet 5.5), and thinking counts toward that. Hermes therefore
+sends Claude's own output ceiling on Converse, as it does on the Messages wire.
 Internal bounded tasks and provider-specific protocol requirements remain implementation
 details. Omission does not universally select a model's maximum output.
 

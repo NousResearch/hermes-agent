@@ -55,6 +55,9 @@ def test_optional_wire_caps_omitted_required_and_internal_preserved():
     assert "max_tokens" not in custom
     bedrock = BedrockTransport().build_kwargs("amazon.nova-pro-v1:0", messages)
     assert "maxTokens" not in bedrock.get("inferenceConfig", {})
+    # Converse's omitted-maxTokens default is 4096 for Claude, so that wire is "required": model ceiling.
+    bedrock_claude = BedrockTransport().build_kwargs("global.anthropic.claude-opus-5-5", messages)
+    assert bedrock_claude["inferenceConfig"]["maxTokens"] == 128_000
     native = AnthropicTransport().build_kwargs("claude-sonnet-4-5", messages)
     assert native["max_tokens"] > 0
     bounded = ChatCompletionsTransport().build_kwargs(

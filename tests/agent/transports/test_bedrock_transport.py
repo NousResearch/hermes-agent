@@ -43,6 +43,19 @@ class TestBedrockBuildKwargs:
         )
         assert kw["inferenceConfig"]["maxTokens"] == 8192
 
+    def test_claude_without_max_tokens_sends_model_ceiling(self, transport):
+        # An omitted maxTokens is Bedrock's 4096 default, not the model maximum: Claude gets its ceiling.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="global.anthropic.claude-sonnet-5-5", messages=msgs)
+        assert kw["inferenceConfig"]["maxTokens"] == 128_000
+        kw = transport.build_kwargs(model="anthropic.claude-3-5-sonnet-20241022-v2:0", messages=msgs, max_tokens=None)
+        assert kw["inferenceConfig"]["maxTokens"] == 8_192
+
+    def test_non_claude_without_max_tokens_keeps_provider_default(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="amazon.nova-pro-v1:0", messages=msgs)
+        assert "maxTokens" not in kw.get("inferenceConfig", {})
+
 
 class TestBedrockConvertTools:
 

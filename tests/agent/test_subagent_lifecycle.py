@@ -41,7 +41,11 @@ class FakeChild:
 
 @pytest.fixture
 def lifecycle(monkeypatch):
-    parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"])
+    parent = SimpleNamespace(
+        session_id="parent-1",
+        enabled_toolsets=["file"],
+        valid_tool_names={"delegate_task"},
+    )
     counter = iter(range(1000))
 
     def build(**_kwargs):
@@ -99,6 +103,22 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     lifecycle.wait(handle, timeout_seconds=1)
 
 
+def test_lifecycle_rejects_parent_without_delegation_before_constructing_child(monkeypatch):
+    parent = SimpleNamespace(
+        session_id="parent-denied",
+        enabled_toolsets=None,
+        valid_tool_names={"read_file"},
+    )
+    build = Mock()
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    service = SubagentLifecycleService(lambda: parent)
+
+    with pytest.raises(SubagentLifecycleError, match="not available"):
+        service.launch(SubagentLaunchRequest(goal="restricted work"))
+
+    build.assert_not_called()
+
+
 
 
 
@@ -110,6 +130,7 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     parent = SimpleNamespace(
         session_id="parent-aggregate",
         enabled_toolsets=["file"],
+        valid_tool_names={"delegate_task"},
         _memory_manager=memory,
         _current_turn_id="turn-1",
         session_estimated_cost_usd=1.0,

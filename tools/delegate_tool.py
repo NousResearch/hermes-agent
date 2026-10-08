@@ -51,7 +51,8 @@ from tools.delegate_tool_tasks import (  # noqa: F401
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
-    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _parent_allows_delegation, _resolve_child_toolsets,
+    _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
@@ -494,6 +495,8 @@ def delegate_task(
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+    if not _parent_allows_delegation(parent_agent):
+        return tool_error("delegate_task is not available in the parent agent's resolved toolset.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():

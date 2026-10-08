@@ -23,6 +23,37 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 )
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
+
+def _parent_allows_delegation(parent_agent) -> bool:
+    """Whether the parent's final tool snapshot authorizes new subagents.
+
+    ``enabled_toolsets`` is configuration input, not the resulting session
+    capability: platform exclusions, disabled composites, and requirement
+    checks are all reflected only in ``valid_tool_names``.  A live AIAgent
+    always has that set after initialization.  The plugin lifecycle API also
+    accepts host-owned parent objects before the snapshot exists, so that
+    compatibility path recomputes resolved tool definitions; an explicit
+    empty snapshot remains an authorization denial.
+    """
+    tool_names = getattr(parent_agent, "valid_tool_names", None)
+    if isinstance(tool_names, (set, frozenset, list, tuple)):
+        return "delegate_task" in tool_names
+
+    enabled = getattr(parent_agent, "enabled_toolsets", None)
+    disabled = getattr(parent_agent, "disabled_toolsets", None)
+    enabled = list(enabled) if isinstance(enabled, (set, frozenset, list, tuple)) else None
+    disabled = list(disabled) if isinstance(disabled, (set, frozenset, list, tuple)) else None
+    import model_tools
+
+    definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=enabled,
+        disabled_toolsets=disabled,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    return any(definition.get("function", {}).get("name") == "delegate_task" for definition in definitions)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:

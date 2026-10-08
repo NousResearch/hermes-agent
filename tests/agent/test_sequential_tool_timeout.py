@@ -261,6 +261,7 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
         lambda: SimpleNamespace(
             session_id="parent-lifecycle-cancel-output",
             enabled_toolsets=["file"],
+            valid_tool_names={"delegate_task"},
         )
     )
 

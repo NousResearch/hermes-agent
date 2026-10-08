@@ -13,8 +13,10 @@ pre-existing regression unrelated to dashboard-auth.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -26,6 +28,7 @@ from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
     consume_internal_credential,
+    consume_ticket,
     internal_ws_credential,
     mint_ticket,
 )
@@ -115,13 +118,26 @@ def _logged_in(client: TestClient) -> None:
 class TestWsTicketEndpoint:
     def test_authenticated_session_can_mint(self, gated_app):
         _logged_in(gated_app)
-        r = gated_app.post("/api/auth/ws-ticket")
+        r = gated_app.post(
+            "/api/auth/ws-ticket",
+            headers={"origin": "http://127.0.0.1:47891"},
+        )
         assert r.status_code == 200
         body = r.json()
         assert "ticket" in body
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+        info = consume_ticket(body["ticket"])
+        assert info["desktop_origin"] == "http://127.0.0.1:47891"
+
+    def test_generic_ticket_metadata_cannot_mark_desktop_origin(self):
+        ticket = mint_ticket(
+            user_id="user",
+            provider="stub",
+            extra={"desktop_origin": "http://127.0.0.1:47891"},
+        )
+        assert "desktop_origin" not in consume_ticket(ticket)
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -184,7 +200,7 @@ def _fake_ws(
     client_host: str = "127.0.0.1",
     path: str = "/api/pty",
     protocols: tuple[str, ...] = (),
-):
+) -> Any:
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
     class _QP:
@@ -503,6 +519,141 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin=origin, host="fly-app.fly.dev")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
 
+    def test_ticket_authenticated_desktop_ws_accepts_exact_loopback_origin(self, gated_app):
+        ticket = mint_ticket(
+            user_id="desktop-user",
+            provider="stub",
+            desktop_origin="http://127.0.0.1:47891",
+        )
+        ws = _fake_ws(
+            query={"ticket": ticket},
+            client_host="100.80.110.113",
+            path="/api/ws",
+        )
+        ws.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47891",
+        }
+
+        assert _web_server_chat._ws_auth_ok(ws) is True
+        assert ws._hermes_auth_credential == "ticket"
+        assert ws._hermes_auth_origin == "http://127.0.0.1:47891"
+        assert _web_server_chat._ws_request_is_allowed(
+            ws, allow_authenticated_loopback_origin=True
+        ) is True
+
+        # A valid one-use ticket cannot be replayed from another localhost port.
+        other_port_ticket = mint_ticket(
+            user_id="desktop-user",
+            provider="stub",
+            desktop_origin="http://127.0.0.1:47891",
+        )
+        other_port_ws = _fake_ws(
+            query={"ticket": other_port_ticket},
+            client_host="100.80.110.113",
+            path="/api/ws",
+        )
+        other_port_ws.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47892",
+        }
+        assert _web_server_chat._ws_auth_ok(other_port_ws) is True
+        assert _web_server_chat._ws_request_is_allowed(
+            other_port_ws, allow_authenticated_loopback_origin=True
+        ) is False
+
+    def test_actual_sidecar_preaccept_gate_accepts_bound_desktop_origin(self, gated_app, monkeypatch):
+        from hermes_cli.web_routers import chat_ws
+
+        monkeypatch.setattr(chat_ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        ticket = mint_ticket(
+            user_id="desktop-user",
+            provider="stub",
+            desktop_origin="http://127.0.0.1:47891",
+        )
+        ws = _fake_ws(
+            query={"ticket": ticket},
+            client_host="100.80.110.113",
+            path="/api/ws",
+        )
+        ws.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47891",
+        }
+
+        assert asyncio.run(chat_ws._close_unless_sidecar_allowed(ws)) is True
+
+    def test_loopback_origin_exception_rejects_other_auth_routes_and_origins(self, gated_app):
+        # No authenticated ticket: the loopback HTTP origin stays blocked.
+        unauthenticated = _fake_ws(
+            query={}, client_host="100.80.110.113", path="/api/ws"
+        )
+        unauthenticated.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47891",
+        }
+        assert _web_server_chat._ws_request_is_allowed(
+            unauthenticated, allow_authenticated_loopback_origin=True
+        ) is False
+
+        # The same exception must not admit the server-internal credential.
+        internal_ws = _fake_ws(
+            query={"internal": internal_ws_credential()},
+            client_host="100.80.110.113",
+            path="/api/ws",
+        )
+        internal_ws.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47891",
+        }
+        assert _web_server_chat._ws_auth_ok(internal_ws) is True
+        assert internal_ws._hermes_auth_credential == "internal"
+        assert _web_server_chat._ws_request_is_allowed(
+            internal_ws, allow_authenticated_loopback_origin=True
+        ) is False
+
+        # A valid ticket on another route and a malformed loopback origin remain blocked.
+        events_ticket = mint_ticket(
+            user_id="desktop-user",
+            provider="stub",
+            desktop_origin="http://127.0.0.1:47891",
+        )
+        events_ws = _fake_ws(
+            query={"ticket": events_ticket},
+            client_host="100.80.110.113",
+            path="/api/events",
+        )
+        events_ws.headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "http://127.0.0.1:47891",
+        }
+        assert _web_server_chat._ws_auth_ok(events_ws) is True
+        assert _web_server_chat._ws_request_is_allowed(
+            events_ws, allow_authenticated_loopback_origin=True
+        ) is False
+
+        for origin in (
+            "https://127.0.0.1:47891",
+            "http://127.0.0.1",
+            "http://127.0.0.1:47891/path",
+            "http://127.0.0.1:47891/?ticket=secret",
+            "http://user@127.0.0.1:47891",
+        ):
+            ticket = mint_ticket(
+                user_id="desktop-user",
+                provider="stub",
+                desktop_origin=origin,
+            )
+            ws = _fake_ws(
+                query={"ticket": ticket},
+                client_host="100.80.110.113",
+                path="/api/ws",
+            )
+            ws.headers = {"host": "fly-app.fly.dev", "origin": origin}
+            assert _web_server_chat._ws_auth_ok(ws) is True
+            assert _web_server_chat._ws_request_is_allowed(
+                ws, allow_authenticated_loopback_origin=True
+            ) is False
 
 
 class TestSidecarUrl:

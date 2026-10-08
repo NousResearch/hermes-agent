@@ -130,11 +130,18 @@ export function shouldReplayAfterCookie401(
 export async function mintGatewayWsTicket(
   baseUrl: string,
   deps: MintGatewayWsTicketDeps,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  rendererOrigin?: string
 ): Promise<string> {
   const url = `${baseUrl}/api/auth/ws-ticket`
+  const ticketHeaders = Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'origin'))
+
+  if (rendererOrigin) {
+    ticketHeaders.Origin = rendererOrigin
+  }
+
   // replayOn401: a ticket that was never issued has no effect to double.
-  const options = { method: 'POST', timeoutMs: 8_000, headers, replayOn401: true }
+  const options = { method: 'POST', timeoutMs: 8_000, headers: ticketHeaders, replayOn401: true }
 
   const ticketFrom = async (request: Promise<any>): Promise<string> => {
     const body = await request

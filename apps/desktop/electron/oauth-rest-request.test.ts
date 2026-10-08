@@ -180,6 +180,40 @@ test('ws-ticket minting vouches for replay on a cookie 401', async () => {
   expect(seen.replayOn401).toBe(true)
 })
 
+test('renderer Origin overrides configured Origin on bearer and cookie ticket requests', async () => {
+  const seen: any[] = []
+
+  const deps = {
+    ensureNativeAccessToken: async () => 'access-token',
+    fetchJson: async (_url: string, _token: string | null, options: any) => {
+      seen.push(options)
+
+      return { ticket: 'bearer-ticket' }
+    },
+    fetchJsonViaOauthSession: async (_url: string, options: any) => {
+      seen.push(options)
+
+      return { ticket: 'cookie-ticket' }
+    }
+  }
+
+  await mintGatewayWsTicket(
+    'https://gw.test',
+    deps,
+    { Origin: 'https://configured.example', 'x-proxy': 'p' },
+    'http://127.0.0.1:47891'
+  )
+  expect(seen[0].headers).toEqual({ Origin: 'http://127.0.0.1:47891', 'x-proxy': 'p' })
+
+  await mintGatewayWsTicket(
+    'https://gw.test',
+    { ...deps, ensureNativeAccessToken: async () => null },
+    { origin: 'https://configured.example' },
+    'http://127.0.0.1:47891'
+  )
+  expect(seen[1].headers).toEqual({ Origin: 'http://127.0.0.1:47891' })
+})
+
 test('native failures remain transport failures unless an independent cookie session succeeds', async () => {
   for (const nativeError of [new Error('timeout'), httpStatusError(503, 'down'), new Error('malformed response')]) {
     for (const cookieWorks of [true, false]) {

@@ -164,13 +164,15 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return _ws_client_reason(ws) is None
 
 
-def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
+def _ws_host_origin_reason(
+    ws: "WebSocket", *, allow_authenticated_loopback_origin: bool = False
+) -> Optional[str]:
     """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed.
 
     HTTP middleware does not run for WebSocket routes, so the DNS-rebinding
     Host check is repeated here; an Origin header, when present, must target the
-    bound host.  Non-web origins (packaged Electron: file://, null, app://) are
-    trusted — the credential check is the real auth boundary there.
+    bound host. A ticket-authenticated Desktop ``/api/ws`` may use its ephemeral
+    loopback renderer origin; other HTTP(S) origins remain host-matched.
     """
     from hermes_cli.web_server import _is_accepted_host, app
     bound_host = getattr(app.state, "bound_host", None)
@@ -187,21 +189,52 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         parsed = urllib.parse.urlparse(origin)
     except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
         parsed = None
-    if parsed is not None and parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if parsed is None:
         return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.netloc and _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return None
+    if (
+        allow_authenticated_loopback_origin
+        and ws.url.path == "/api/ws"
+        and getattr(ws, "_hermes_auth_credential", None) in {"ticket", "ticket-subprotocol"}
+        and getattr(ws, "_hermes_auth_origin", None) == origin
+        and parsed.scheme == "http"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        try:
+            loopback_port = parsed.port
+            loopback_host = parsed.hostname
+        except ValueError:
+            loopback_port = None
+            loopback_host = None
+        if loopback_host == "127.0.0.1" and loopback_port is not None:
+            return None
+    return f"origin_mismatch origin={origin} bound={bound_host}"
 
 
-def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
-    """True when the upgrade passes the dashboard Host/Origin guard."""
-    return _ws_host_origin_reason(ws) is None
+def _ws_host_origin_is_allowed(
+    ws: "WebSocket", *, allow_authenticated_loopback_origin: bool = False
+) -> bool:
+    """True when the upgrade passes dashboard Host/Origin boundaries."""
+    return _ws_host_origin_reason(
+        ws, allow_authenticated_loopback_origin=allow_authenticated_loopback_origin
+    ) is None
 
 
-def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+def _ws_request_is_allowed(
+    ws: "WebSocket", *, allow_authenticated_loopback_origin: bool = False
+) -> bool:
     """Return True when the WebSocket upgrade matches dashboard boundaries."""
-    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+    return _ws_host_origin_is_allowed(
+        ws, allow_authenticated_loopback_origin=allow_authenticated_loopback_origin
+    ) and _ws_client_is_allowed(ws)
 
 
 _GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
@@ -307,6 +340,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     # A display ticket admits one RFB bridge on /api/display/ws (a watch-only
                     # capability handed to a screen viewer); it must not double as a login here.
                     raise TicketInvalid("display ticket presented as a gateway login")
+                setattr(ws, "_hermes_auth_origin", info.get("desktop_origin"))
                 _stamp_identity(info)
                 if protocol_ticket:
                     # Select only the stable public protocol during accept. The
@@ -376,7 +410,11 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws)[0] is None
+    reason, credential = _ws_auth_reason(ws)
+    if reason is not None:
+        return False
+    setattr(ws, "_hermes_auth_credential", credential)
+    return True
 
 
 def _resolve_chat_argv(

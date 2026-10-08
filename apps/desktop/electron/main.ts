@@ -551,6 +551,7 @@ import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { trustedRendererOrigin } from './renderer-origin'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
 import {
@@ -8075,11 +8076,20 @@ const recoverCloudCookieSession = createCloudSessionRecovery({
 
 // Native bearer first (including one forced 401 rotation), OAuth cookie second.
 // Transient ticket POST failures keep their bounded retry before Cloud recovery.
-async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}): Promise<string> {
+async function mintGatewayWsTicket(
+  baseUrl: string,
+  headers: Record<string, string> = {},
+  rendererOrigin?: string
+): Promise<string> {
   return recoverCloudCookieSession(baseUrl, () =>
     withTransientRetries(
       (): Promise<string> =>
-        mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers),
+        mintOauthGatewayWsTicket(
+          baseUrl,
+          { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession },
+          headers,
+          rendererOrigin
+        ),
       {
         isRetryable: (error: Error): boolean =>
           !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error)
@@ -8094,7 +8104,7 @@ async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, stri
 // calls this immediately before every gateway.connect() so each WS upgrade
 // carries a freshly-minted ticket. For local/token connections this just
 // reuses the static token (no minting needed).
-async function freshGatewayWsUrl(profile) {
+async function freshGatewayWsUrl(profile: any, rendererOrigin?: string) {
   // Mint for the requested profile's backend, NOT always the primary. The
   // renderer re-mints right before every gateway.connect(); when swapping to a
   // pooled profile we must return THAT backend's ws URL, otherwise the connect
@@ -8104,7 +8114,7 @@ async function freshGatewayWsUrl(profile) {
   const connection = await ensureBackend(profile)
 
   if (connection.authMode === 'oauth') {
-    const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
+    const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers, rendererOrigin)
     const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
     rememberRemoteWsHeaders(wsUrl, connection.headers)
@@ -15708,8 +15718,10 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
 
   return { ok: true, limits: next }
 })
-ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
-  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
+ipcMain.handle('hermes:gateway:ws-url', async (event: IpcMainInvokeEvent, profile: any) => {
+  const rendererOrigin = trustedRendererOrigin(event.sender.getURL())
+
+  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile, rendererOrigin))
 })
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {

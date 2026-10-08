@@ -33,13 +33,29 @@ class TicketInvalid(Exception):
     """Ticket missing, expired, or already consumed."""
 
 
-def mint_ticket(*, user_id: str, provider: str, extra: Optional[Dict[str, Any]] = None) -> str:
+def mint_ticket(
+    *,
+    user_id: str,
+    provider: str,
+    extra: Optional[Dict[str, Any]] = None,
+    desktop_origin: Optional[str] = None,
+) -> str:
     """One-shot base64url ticket (32 random bytes) bound to this identity; ``consume_ticket``
     hands the ``info`` dict back to the WS handler. ``extra`` rides along for routes that need
     server-chosen context (the Bot Desktop bridge pins the RFB socket's profile home here so a
-    client can never pick another profile's screen)."""
+    client can never pick another profile's screen). ``desktop_origin`` is reserved for the
+    authenticated desktop WS-ticket route and binds that one-use ticket to its requesting origin.
+    """
     ticket = secrets.token_urlsafe(32)
-    info = {"user_id": user_id, "provider": provider, "minted_at": int(time.time()), **(extra or {})}
+    info = {
+        "user_id": user_id,
+        "provider": provider,
+        "minted_at": int(time.time()),
+        **(extra or {}),
+    }
+    info.pop("desktop_origin", None)
+    if desktop_origin is not None:
+        info["desktop_origin"] = desktop_origin
     with _lock:
         _tickets[ticket] = (int(time.time()) + TTL_SECONDS, info)
         _gc_expired_locked()

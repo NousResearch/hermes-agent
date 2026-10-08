@@ -701,8 +701,8 @@ gateway:
     disabled_for_platform: "The **{name}** skill is disabled for {platform}.\nEnable it with: `hermes skills config`"
     stacked_disabled: "The **{names}** skill(s) in this stacked invocation are disabled for {platform}.\nEnable them with: `hermes skills config`"
     stacked_load_failed: "Failed to load stacked skills for /{command}."
-    gate_off: "Skill write approval is off (skills.write_approval). Enable it with /skills approval on, then review staged writes here with /skills pending."
-    unknown_subcommand: "Unknown /skills subcommand on this platform. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Search/install are CLI-only.)"
+    gate_off: "Skill write approval is off (skills.write_approval). Enable it with /skills approval create or all (on preserves scope), then review staged writes here with /skills pending."
+    unknown_subcommand: "Unknown /skills subcommand on this platform. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off|create|all> (alias: mode). (Search/install are CLI-only.)"
     diff_truncated: "\n… (truncated — full diff in ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "restarting"
@@ -1693,7 +1693,7 @@ slash:
   toolsets:
     description: "List available toolsets"
   skills:
-    description: "Search, install, inspect, or manage skills"
+    description: "Manage skills; approval on|off|create|all; pending/diff/approve/reject"
   memory:
     description: "Review pending memory writes / toggle the approval gate"
   bundles:

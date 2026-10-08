@@ -833,14 +833,15 @@ When on, any flagged `skill_manage` write surfaces as an approval prompt with th
 
 ### Write approval for skill writes
 
-Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+Independent of the content scanner above, `skills.write_approval` gates agent skill writes behind your explicit approval. The default scope covers every mutation (create / edit / patch / delete / supporting files); select `create` to approve only new skills:
 
 ```yaml
 skills:
-  write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval: false   # false = write freely (default) | true = require approval
+  write_approval_mode: all  # all (default) | create (new skills only)
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
+When on, writes in the selected scope are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Use `/skills approval create` or `/skills approval all` to atomically enable the gate and select its scope for the active profile. `/skills approval off` disables the gate without resetting scope; `/skills mode` is an alias. The existing `on` command remains available for compatibility and resumes the saved scope, but is not required after `create` or `all`. `/skills approval` (also `status`, `current`, or `help`) shows the current gate/scope and choices, even when off. Settings are read on the next write; existing pending writes stay pending until approved or rejected. Memory has the same boolean gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 

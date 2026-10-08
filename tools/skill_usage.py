@@ -8,9 +8,11 @@ out of auto transitions, orthogonal to state."""
 from __future__ import annotations
 
 import json
+import errno
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,21 +58,47 @@ def _archive_dir() -> Path:
     return _skills_dir() / ".archive"
 
 
-def _flock(fd, lock: bool) -> None:
+def _flock(fd, lock: bool, *, blocking: bool = True) -> None:
     if fcntl:
-        return fcntl.flock(fd, fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+        operation = fcntl.LOCK_EX if lock else fcntl.LOCK_UN
+        return fcntl.flock(fd, operation | (fcntl.LOCK_NB if lock and not blocking else 0))
     fd.seek(0)
-    msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
+    operation = (msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK) if lock else msvcrt.LK_UNLCK
+    msvcrt.locking(fd.fileno(), operation, 1)
+
+
+def _acquire_file_lock(fd, timeout: Optional[float]) -> None:
+    if timeout is None:
+        _flock(fd, True)
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _flock(fd, True, blocking=False)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Another skill writer still holds the transaction lock.") from exc
+            time.sleep(min(0.05, remaining))
 
 
 _held_locks = threading.local()  # per thread: flock is NOT re-entrant across separate fds
 
 
 @contextmanager
-def skill_file_lock(lock_path: Path):
+def skill_file_lock(lock_path: Path, *, timeout: Optional[float] = None):
     """Exclusive cross-process lock on ``lock_path`` held across a read-modify-write cycle.
     Re-entrant within one thread (a nested acquire of the same path just runs); a no-op
     where neither fcntl nor msvcrt exists."""
+    if timeout is None:
+        # Metadata/ledger locks must not outlive an opt-in skill transaction's budget.
+        from tools.skill_write_approval import remaining_write_wait
+        timeout = remaining_write_wait()
+    if timeout is not None and fcntl is None and msvcrt is None:
+        raise OSError("No cross-process skill lock backend is available.")
     lock_path = Path(lock_path)
     held = getattr(_held_locks, "paths", None)
     if held is None:
@@ -82,7 +110,7 @@ def skill_file_lock(lock_path: Path):
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")  # msvcrt needs a non-empty byte range to lock
     with open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8") as fd:
-        _flock(fd, True)
+        _acquire_file_lock(fd, timeout)
         held.add(lock_path)
         try:
             yield
@@ -614,10 +642,10 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
     return True, f"{action}d to {dest}"
 
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
+def archive_skill(skill_name: str, *, skill_dir: Optional[Path] = None) -> Tuple[bool, str]:
     """Move a curator-eligible skill dir to ``.archive/`` (flattened; timestamp suffix on collision). Never hub;
     bundled built-ins only with ``curator.prune_builtins`` (and then suppressed from re-seeding)."""
-    skill_dir = _find_skill_dir(skill_name)
+    skill_dir = _find_skill_dir(skill_name) if skill_dir is None else skill_dir
     if skill_dir is None and _find_external_skill_dir(skill_name) is not None:
         return False, _external_read_only_message(skill_name)
     if not is_curation_eligible(skill_name, skill_dir):

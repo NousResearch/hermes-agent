@@ -1476,10 +1476,10 @@ DEFAULT_CONFIG = {
         # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
         # blocking; secrets-class findings shown red. No-op without it.
         "tier1_advisory": True,
-        # Approval gate for skill_manage mutations on BOTH foreground turns and the background
-        # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
-        # pending, /skills diff <id>, /skills approve|reject <id>.
+        # Stage skill writes from either origin; review with /skills pending|diff|approve|reject.
         "write_approval": False,
+        # all = every mutation (default); create = only new skills, including mixed batches.
+        "write_approval_mode": "all",
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.

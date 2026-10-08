@@ -244,14 +244,12 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _gateway_config_home
         # Persist to config (default) unless --session opted out, mirroring the text /model command path
         # above so a picked model survives across sessions like a typed one (#49066).
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.write_approval_commands import persist_write_approval
         config_path = _gateway_config_home() / "config.yaml"
         session_key = self._session_key_for_source(event.source)
 
-        def _set_approval(enabled: bool):
-            user_config = read_user_config_raw(config_path)
-            user_config.setdefault(section, {})["write_approval"] = bool(enabled)
-            atomic_config_write(config_path, user_config)
+        def _set_approval(enabled: bool, scope=None):
+            persist_write_approval(section, enabled, scope, config_path=config_path)
             # Evict any cached agent for this session so the next message rebuilds with the correct
             # session_id end-to-end — mirrors /branch and /reset. Without this, the cached AIAgent (and its
             # memory provider, which cached `_session_id` during initialize()) keeps writing into the wrong

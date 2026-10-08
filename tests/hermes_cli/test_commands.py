@@ -48,11 +48,11 @@ class TestCommandRegistry:
         skills = resolve_command("skills")
         assert skills is not None
         assert skills.desktop is None
-        assert command_desktop_meta(skills) == {
-            "argument_mode": "options",
-            "desktop": None,
-            "desktop_subcommands": ["pending", "approve", "reject", "diff", "approval"],
-        }
+        meta = command_desktop_meta(skills)
+        assert meta["argument_mode"] == "options" and meta["desktop"] is None
+        review = set(meta["desktop_subcommands"])
+        assert {"pending", "approve", "reject", "diff", "approval"} <= review
+        assert not review & {"search", "browse", "inspect", "install", "audit"}
         assert set(skills.desktop_subcommands or ()) <= set(skills.subcommands)
 
     def test_empty_desktop_subcommand_scope_serializes_as_deny_all(self):

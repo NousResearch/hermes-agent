@@ -1572,7 +1572,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             from hermes_cli.write_approval_commands import handle_pending_subcommand
             from tools import write_approval as wa
             out = handle_pending_subcommand(
-                wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+                wa.SKILLS, args, set_mode_fn=lambda enabled, scope=None: self._save_write_approval("skills", enabled, scope),
             )
             if out is not None:
                 return print(out)
@@ -1599,9 +1599,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled))
         print(out if out is not None else _t("memory.unknown_subcommand"))
 
-    def _save_write_approval(self, subsystem: str, enabled: bool):
-        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
-        _save(f"{subsystem}.write_approval", bool(enabled))
+    def _save_write_approval(self, subsystem: str, enabled: bool, scope=None):
+        from hermes_cli.write_approval_commands import persist_write_approval
+        persist_write_approval(subsystem, enabled, scope)
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
     def _queue_prompt_turn(self, msg: str, command: str) -> None:

@@ -1020,7 +1020,7 @@ def _cmd_compress(rid, params, session, name, arg):
 _MEMORY_USAGE = ("Unknown /memory subcommand. "
                  "Use: pending, approve <id>, reject <id>, approval <on|off>.")
 _SKILLS_USAGE = ("Unknown /skills subcommand here. "
-                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off|create|all> (alias: mode). "
                  "(Search/install/browse are terminal-side.)")
 
 
@@ -1040,9 +1040,9 @@ def _pending_subcommand_store(session):
 
 
 def _write_approval_mode_setter(subsystem: str):
-    """Persist ``<subsystem>.write_approval`` into the SESSION's profile config (this runs inside
-    ``_session_home_scope``, so ``_write_config_key`` writes the right profile's config.yaml)."""
-    return lambda enabled: _write_config_key(f"{subsystem}.write_approval", bool(enabled))
+    """Persist gate + optional scope inside the dispatcher's SESSION profile scope."""
+    from hermes_cli.write_approval_commands import persist_write_approval
+    return lambda enabled, scope=None: persist_write_approval(subsystem, enabled, scope)
 
 
 def _run_pending_review(rid, subsystem: str, arg: str, session, *, unknown: str):
@@ -1078,7 +1078,7 @@ def _cmd_skills(rid, params, session, name, arg):
     if (sub[0].lower() not in {"approval", "mode"} and not wa.write_approval_enabled(wa.SKILLS)
             and wa.pending_count(wa.SKILLS) == 0):
         return _exec_out(rid, "Skill write approval is off (skills.write_approval). "
-                              "Enable it with /skills approval on, then review staged writes "
+                              "Enable it with /skills approval create or all (on preserves scope), then review staged writes "
                               "with /skills pending.")
     return _run_pending_review(rid, "skills", arg, session, unknown=_SKILLS_USAGE)
 

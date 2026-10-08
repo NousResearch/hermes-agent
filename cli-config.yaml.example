@@ -1146,6 +1146,12 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Require review with /skills pending|diff|approve|reject.
+  write_approval: false
+  # all = review every mutation (default); create = review only new skills.
+  # To let existing skills improve automatically, enable approval and use create.
+  write_approval_mode: all
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

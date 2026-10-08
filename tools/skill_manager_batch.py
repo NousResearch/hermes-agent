@@ -4,6 +4,7 @@ through ``tools.skill_manager_tool`` so that module owns it."""
 
 from contextlib import suppress
 import json
+import hashlib
 import logging
 import posixpath
 import shutil
@@ -113,6 +114,19 @@ def _validate_batch_ops(operations, default_name, tool_error):
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
         if (preflight := _background_review_preflight(act, nm)) is not None:
             return None, json.dumps(preflight, ensure_ascii=False)
+    error = _batch_clobber_error(operations, names)
+    return names, tool_error(error, success=False) if error else None
+
+
+def _batch_clobber_error(operations, names):
+    from tools.skill_target_resolution import unique_targets_enabled
+    if unique_targets_enabled():
+        if len(operations) < 2:
+            return None  # A sole operation cannot discard a preceding sibling's work.
+        from tools.skill_proposed_mutations import plan_mutations
+        return plan_mutations([{**op, "name": nm} for op, nm in zip(operations, names)],
+                              scan_creation=False, check_clobber=True).clobber_error
+    # Keep legacy all/off lookup and validation semantics unchanged.
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.
     # Additive patches are always legal. Paths are normalized against spelling variants.
@@ -126,12 +140,12 @@ def _validate_batch_ops(operations, default_name, tool_error):
                   else posixpath.normpath(fp.lstrip("/")))
         key = (nm, target)
         if (act in ("create", "write_file", "remove_file") or full_rewrite) and key in touched_files:
-            return fail(i, f": {act} on '{target}' of skill '{nm}' — an earlier op in this "
+            return (f"operations[{i}]: {act} on '{target}' of skill '{nm}' — an earlier op in this "
                            f"batch already touched that file, and this op would silently discard its work. "
                            f"One destructive op (write_file/remove_file/full rewrite) per file per batch; put "
                            f"it first, or fold the change in. Patch chains are fine.")
         touched_files.add(key)
-    return names, None
+    return None
 
 
 def _snapshot_skills(names, snap_root, find_skill, create_targets):
@@ -142,12 +156,15 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
     ``_create_skill``): record that it pre-dated the batch so rollback never rmtree()s it."""
     snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None, dir_pre_existed)
     for nm in dict.fromkeys(names):  # ordered unique
-        pre = find_skill(nm)
-        pre_dir = Path(pre["path"]) if pre else None
-        snap = snap_root / nm if pre_dir is not None and pre_dir.is_dir() else None
+        from tools.skill_target_resolution import unique_targets_enabled
+        create_target = create_targets.get(nm) if unique_targets_enabled() else None
+        pre = find_skill(nm) if create_target is None else {"path": create_target}
+        pre_dir = Path(pre["path"]).resolve() if pre else None
+        snap = snap_root / hashlib.sha256(nm.encode("utf-8")).hexdigest() if pre_dir is not None and pre_dir.is_dir() else None
         if snap is not None:
             try:
-                shutil.copytree(pre_dir, snap)
+                # Preserve aliases (including dangling links); rollback must restore the topology.
+                shutil.copytree(pre_dir, snap, symlinks=True)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
         target = create_targets.get(nm) if pre is None else None
@@ -179,7 +196,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
             post_dir.rmdir()
         return
     if not post_exists:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
@@ -187,7 +204,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
     shutil.rmtree(aside, ignore_errors=True)
     post_dir.rename(aside)
     try:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
     except Exception:
         # Restore failed: put the half-applied state back rather than nothing.
         shutil.rmtree(pre_dir, ignore_errors=True)
@@ -196,7 +213,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
     shutil.rmtree(aside, ignore_errors=True)
 
 
-def _rollback(snapshots, find_skill, results):
+def _rollback(snapshots, find_skill, results, *, journal=None):
     """Restore every snapshot. ``results`` are the ops applied so far (their name/file_path
     tell an adopted dir's rollback which files were the batch's). Returns (note, failed)."""
     notes = []
@@ -204,12 +221,15 @@ def _rollback(snapshots, find_skill, results):
         written = [posixpath.normpath(r["file_path"].lstrip("/")) for r in results
                    if r["name"] == nm and r["action"] == "write_file" and r["file_path"]]
         try:
-            post = find_skill(nm)
+            # Frontmatter renames must not redirect or hide a snapshot's physical package.
+            post = {"path": pre_dir} if pre_dir is not None else find_skill(nm)
             _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
                               dir_pre_existed, written)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
+    if journal is not None and (error := journal.restore()):
+        notes.append(error)
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
 
 
@@ -247,13 +267,17 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+        staged = _smt._run_write_gate(_staging, [{**op, "name": nm} for op, nm in zip(operations, names)])
         if staged is not None:
             return staged
     # Every target's lock is held from the snapshot through commit or rollback; the per-op
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
     with _smt._skill_mutation_locks(names):
+        if not _smt._skill_gate_bypass.get():
+            staged = _smt._run_write_gate(_staging, [{**op, "name": nm} for op, nm in zip(operations, names)])
+            if staged is not None:
+                return staged
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
         create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
                           for i, op in enumerate(operations) if op.get("action") == "create"}
@@ -264,6 +288,13 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         # Single-op path with the gate bypassed (the batch already cleared/staged it).
         results = []
         rollback_failed = False
+        from tools.skill_mutation_snapshots import BeforeImages, _active_journal
+        try:
+            journal = BeforeImages(snap_root, protected=[pre for pre, _, _ in snapshots.values() if pre is not None])
+        except OSError as exc:
+            shutil.rmtree(snap_root, ignore_errors=True)
+            return tool_error(f"Could not snapshot physical targets for atomic batch: {exc}", success=False)
+        journal_token = _active_journal.set(journal)
         token = _smt._skill_gate_bypass.set(True)
         try:
             for i, op in enumerate(operations):
@@ -274,7 +305,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 except Exception:  # noqa: BLE001
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results, journal=journal)
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
@@ -292,7 +323,12 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 # compact success row otherwise hides them and the model never sees a finding.
                 entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
                 results.append(entry)
+        except Exception as exc:
+            logger.exception("Unexpected skill batch failure; restoring snapshots")
+            note, rollback_failed = _rollback(snapshots, _smt._find_skill, results, journal=journal)
+            return tool_error(f"Batch aborted after unexpected error: {exc}; {note}.", success=False)
         finally:
+            _active_journal.reset(journal_token)
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.

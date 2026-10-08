@@ -1711,6 +1711,10 @@ def _print_skills_help(console: Console) -> None:
     """Print help for the /skills slash command."""
     console.print(Panel(
         "[bold]Skills Hub Commands:[/]\n\n"
+        "  [cyan]approval[/] <on|off|create|all> (alias: mode)\n"
+        "       See /skills approval help; create/all enable the selected scope\n"
+        "       on/off preserve scope; pending writes stay pending\n"
+        "  [cyan]pending[/], [cyan]diff[/] <id>, [cyan]approve[/] <id>, [cyan]reject[/] <id> Review staged writes\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"

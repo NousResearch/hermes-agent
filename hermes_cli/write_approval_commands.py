@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -11,7 +12,14 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    state = f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    if subsystem == wa.SKILLS:
+        try:
+            scope = wa.skill_write_approval_mode()
+        except ValueError:
+            scope = "invalid; select create or all"
+        state += f" (scope: {scope})"
+    return state
 
 
 def _fmt_pending_list(subsystem: str) -> str:
@@ -37,19 +45,18 @@ def handle_pending_subcommand(
     """Dispatch a /memory or /skills write-approval subcommand.
 
     ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
-    loaded one); ``set_mode_fn`` persists the write_approval boolean. Returns text for the user,
+    loaded one); ``set_mode_fn(enabled, scope=None)`` persists the gate plus optional skill scope.
+    Legacy boolean-only setters still work for on/off. Returns text for the user,
     or None when the args are not a write-approval subcommand so the caller falls through to its
     other handling (e.g. /skills search).
     """
     if not args:
-        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
+        return f"{_fmt_state(subsystem)}\n{_approval_help(subsystem)}\n\n" + _fmt_pending_list(subsystem)
     sub, rest = args[0].lower(), args[1:]
     if sub == "pending":
         return _fmt_pending_list(subsystem)
-    if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
-    if sub in {"reject", "deny", "drop"}:
-        return _reject(subsystem, rest)
+    if sub in {"approve", "apply", "reject", "deny", "drop"}:
+        return _review_write(subsystem, sub, rest, memory_store)
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
@@ -59,6 +66,21 @@ def handle_pending_subcommand(
 
 def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+
+
+def _review_write(subsystem, sub, rest, memory_store):
+    """Hold the skill fence through lookup, apply/reject and removal of the exact pending ID."""
+    from tools.skill_write_approval import creation_transaction
+    fence = creation_transaction() if subsystem == wa.SKILLS else nullcontext()
+    try:
+        with fence:
+            if sub in {"approve", "apply"}:
+                return _approve(subsystem, rest, memory_store)
+            return _reject(subsystem, rest)
+    except TimeoutError:
+        return "Another skill writer is busy. Pending requests were not changed; retry the review command."
+    except ValueError as exc:
+        return str(exc)
 
 
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
@@ -162,21 +184,65 @@ _APPROVAL_VALUES = {
     **dict.fromkeys(("off", "false", "no", "0", "disable", "disabled"), False)}
 
 
+def persist_write_approval(subsystem: str, enabled: bool, scope=None, *, config_path=None) -> None:
+    """Save the gate and optional skill scope in ONE profile-local round-trip write.
+
+    Raise on invalid input or I/O failure; callers must not acknowledge a failed write.
+    Omitted scope preserves the existing selection (including the legacy default: all).
+    """
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_constants import get_hermes_home
+
+    if subsystem not in {wa.SKILLS, wa.MEMORY}:
+        raise ValueError("Unknown write-approval subsystem")
+    if scope is not None and (subsystem != wa.SKILLS or scope not in {"create", "all"}):
+        raise ValueError("Only skills support scope 'create' or 'all'")
+    path = config_path if config_path is not None else get_hermes_home() / "config.yaml"
+    config = read_user_config_raw(path)
+    settings = config.setdefault(subsystem, {})
+    settings["write_approval"] = bool(enabled)
+    if scope is not None:
+        settings["write_approval_mode"] = scope
+    atomic_config_write(path, config)
+
+
+def _approval_help(subsystem: str) -> str:
+    if subsystem == wa.SKILLS:
+        return ("Set with: /skills approval <on|off|create|all> (alias: /skills mode)\n"
+                "create: enable approval for new skills only; existing skills improve automatically.\n"
+                "all: enable approval for every skill mutation (default scope).\n"
+                "on/off: enable/disable the gate without changing the selected scope.\n"
+                "Changes affect this profile's next write; pending writes stay pending.\n"
+                "Review: /skills pending, /skills diff <id>, /skills approve <id>, /skills reject <id>.")
+    return f"Set with: /{subsystem} approval <on|off>"
+
+
 def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
-    """Turn the approval gate on/off for a subsystem."""
-    if not rest:
-        return (f"{_fmt_state(subsystem)}\n"
-                f"Set with: /{subsystem} approval <on|off>")
-    arg = rest[0].strip().lower()
-    enabled = _APPROVAL_VALUES.get(arg)
-    if enabled is None:
-        return f"Invalid value '{arg}'. Use: on or off."
+    """Toggle the gate, or atomically enable and select a skill-only scope."""
+    arg = rest[0].strip().lower() if rest else ""
+    if not rest or (len(rest) == 1 and arg in {"status", "current", "help"}):
+        return f"{_fmt_state(subsystem)}\n{_approval_help(subsystem)}"
+    scope = arg if subsystem == wa.SKILLS and arg in {"create", "all"} else None
+    enabled = True if scope else _APPROVAL_VALUES.get(arg)
+    if len(rest) != 1 or enabled is None:
+        values = "on, off, create or all" if subsystem == wa.SKILLS else "on or off"
+        return f"Invalid value '{' '.join(rest)}'. Use: {values}."
     if set_mode_fn is None:
+        if scope:
+            return f"Use /skills approval {scope} in a session with settings persistence.\n{_approval_help(subsystem)}"
         val = "true" if enabled else "false"
         return (f"To change the {subsystem} approval gate, run:\n"
                 f"  hermes config set {subsystem}.write_approval {val}")
     try:
-        set_mode_fn(enabled)
+        # Legacy boolean-only callbacks keep working for on/off; scopes opt into the new keyword.
+        if scope is None:
+            set_mode_fn(enabled)
+        else:
+            set_mode_fn(enabled, scope=scope)
     except Exception as e:
         return f"Failed to set {subsystem}.write_approval: {e}"
-    return f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    out = f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."
+    if subsystem == wa.SKILLS:
+        state = f"scope: {scope}" if scope else _fmt_state(subsystem)
+        out += f"\n{state}\nPending writes stay pending; review with /skills pending."
+    return out

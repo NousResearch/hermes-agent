@@ -666,9 +666,10 @@ wanting eyes on the self-improvement loop), turn on the write-approval gate:
 ```yaml
 skills:
   write_approval: false     # false = write freely (default) | true = require approval
+  write_approval_mode: all  # all (default) | create (new skills only)
 ```
 
-When `write_approval: true`, every `skill_manage` write (create / edit /
+When `write_approval: true` and `write_approval_mode: all`, every `skill_manage` write (create / edit /
 patch / delete / write_file / remove_file) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
@@ -680,10 +681,79 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
 /skills reject <id>         # drop it (or 'all')
-/skills approval on         # turn the gate on (or 'off') and persist it
+/skills approval create     # enable approval for new skills only
+/skills approval all        # enable approval for every skill mutation
+/skills approval off        # disable approval; keep the selected scope
+/skills approval            # current gate/scope + help (also status/current/help)
+/skills mode create         # alias for /skills approval create
 ```
 
-The review surface works in the interactive CLI and on messaging platforms
+To approve new skills while letting existing skills improve automatically, run
+`/skills approval create`. To require review for every mutation, run
+`/skills approval all`. Each command atomically persists the enabled gate and selected
+scope for the active profile; no manual config edit is needed. The equivalent
+creation-only configuration is:
+
+```yaml
+skills:
+  write_approval: true
+  write_approval_mode: create
+```
+
+In `create` mode, creation still stages for review, including a `write_file` that
+introduces a new discoverable nested `SKILL.md`, or removing a manifest that would
+expose its supporting-file skill samples as standalone skills. Samples kept under
+support directories remain ordinary supporting files unless a discoverable symlink
+alias exposes them. Edits, full rewrites, other supporting-file
+changes and deletions proceed without this approval gate. Other
+guards (including pinned-skill deletion protection and background read-before-write)
+still apply. A batch containing any new skill stages **all** its operations as one
+pending write; an edits-only batch applies atomically without approval. This scope
+applies to foreground turns and background review alike.
+
+For existing-skill writes, supply the exact directory path first, for example
+`product/research`. In `create` mode an ambiguous short directory or display name
+is rejected before mutation, with exact absolute candidate paths for retry. A
+unique short name still works. Category paths are checked across configured
+catalogs; if the same category path exists in more than one catalog, supply an
+exact absolute directory path from the candidates. These paths must belong to
+the active profile's declared skill catalogs, not arbitrary filesystem locations.
+The previous lookup behavior is unchanged in `all` mode or when approval is off.
+
+In `create` mode, the batch overwrite guard also compares resolved file targets
+after each preceding operation. Directory paths, display names and file symlink
+aliases cannot hide a later destructive rewrite of an already touched file.
+That batch is rejected before any write or staging; additive patch chains remain
+allowed, including patches using a renamed display name.
+
+In this opt-in mode, skill writes share a profile-scoped, cross-process lock through
+discovery checks and mutation, plus physical subtree fences for overlapping catalogs
+shared by cooperating `create`-mode profiles. The physical locks use the real OS
+home preserved by Hermes' subprocess HOME contract, not a profile-local HOME.
+Writers using directory and display-name aliases cannot slip between those checks.
+Lock acquisition has a 30-second wait budget;
+if it expires before mutation, the unstarted request is saved in the existing
+review queue instead of waiting indefinitely. Whole-file replacements also enter
+review if their target changed while they waited, rather than silently overwriting
+another writer's edit. Targeted patches still match the current content and are
+not automatically merged on a conflict. Failed approval replay retains its original
+pending ID. Concurrent approve/reject commands use the same fence through removal
+of the pending record; pending lists and diffs remain read-only.
+
+The review commands are unchanged. `/skills approval off` disables the gate
+without resetting its scope; `/skills approval` shows the gate and selected scope
+even when off. The existing `/skills approval on` command remains available for
+compatibility and re-enables the saved scope; it is not needed after `create` or
+`all`. `/skills mode` is a backward-compatible alias for `approval`.
+`/skills approval help` also lists this compatibility command; `status` and `current` are read-only
+aliases for that view. The next skill write reads the new settings. Existing pending
+records stay pending until approved or rejected, even after changing the scope.
+The default `all` preserves existing behavior. Invalid scope values refuse gated
+skill writes with a configuration error. This option governs `skill_manage`, not
+direct filesystem writes or Skills Hub installation, and does not change memory
+write approval.
+
+The review surface works in the interactive CLI, TUI/Desktop and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).

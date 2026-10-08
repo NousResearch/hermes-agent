@@ -93,7 +93,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | CLI commands, subcommands, flags, "how do I run X" | `references/cli-reference.md` |
 | In-session slash commands | `references/slash-commands.md` |
 | Provider setup, API keys, OAuth | `references/providers-and-models.md` |
-| config.yaml sections, toolsets, voice/STT/TTS | `references/configuration.md` |
+| config.yaml sections, skill write approval, toolsets, voice/STT/TTS | `references/configuration.md` |
 | AGENTS.md / .hermes.md / CLAUDE.md project rules | `references/project-context-files.md` |
 | Secret redaction, PII, approval modes, "reset permissions" | `references/security-privacy.md` |
 | Delegation, cron, curator, kanban | `references/background-systems.md` |
@@ -115,6 +115,10 @@ need more than their docs page. For everything else Hermes ships, fetch
 `llms.txt` and it maps the question to the page that answers it.
 
 Two theming rules that hold even without loading the reference: **you apply skins yourself** (`hermes config set display.skin <name>` — every surface repaints live within ~a second; don't tell the user to run `/skin`), and **to tweak one color, edit the ACTIVE skin** (`hermes skin set <key> <hex>`) — never fork `default`, which drops the palette and resets the background.
+
+## Skill Write Approval
+
+Users can run `/skills approval create` to approve new discoverable skills while existing skills improve automatically, or `/skills approval all` to approve every `skill_manage` mutation. Each command enables the gate and saves its scope atomically for the active profile. `/skills approval off` disables the gate without resetting scope; `/skills mode` is an alias. The existing `on` command remains available only as a compatibility way to resume the saved scope; it is not needed after `create` or `all`. Inspect the current gate/scope and command help with `/skills approval` (also `status`, `current`, or `help`). Pending writes remain pending until `/skills approve <id>` or `/skills reject <id>`; review with `/skills pending` and `/skills diff <id>`. This works in CLI, TUI/Desktop and messaging sessions, without hand-editing config. Settings changes require user authorization; never bypass the gate through direct file/shell writes. Load `references/configuration.md` for scope semantics and limitations.
 
 ## Spawning Additional Hermes Instances
 

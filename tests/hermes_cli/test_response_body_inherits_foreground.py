@@ -102,3 +102,16 @@ def test_final_response_panel_leaves_body_foreground_unset(monkeypatch):
     (panel,) = _panels(console.printed)
     _assert_body_unstyled(panel)
 
+
+def test_background_result_panel_leaves_body_foreground_unset():
+    from hermes_cli.cli_commands_mixin import _print_side_result_panel
+
+    console = _RecordingConsole()
+    cli = SimpleNamespace(_app=None, final_response_markdown="strip", _scrollback_box_width=lambda *a: 80)
+
+    _print_side_result_panel(
+        cli, header_lines=["  Background task #1 complete"], body="hello", title_suffix="(bg #1)",
+        empty_note="  (no response)", console=console)
+
+    (panel,) = _panels(console.printed)
+    _assert_body_unstyled(panel)

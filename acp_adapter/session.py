@@ -153,6 +153,37 @@ class SessionState:
     message_ids: Any = None
 
 
+# What custom runtimes send when no credential resolved (keyless local servers). The resolver has
+# no shared constant for it.
+_NOAUTH_PLACEHOLDER = "no-key-required"
+
+
+def _named_custom_runtime(requested_provider: str | None, base_url: str | None, model: str | None) -> dict | None:
+    """Runtime of the named entry behind a requested bare ``custom`` label that failed to resolve on its
+    own, or resolved only to the keyless placeholder.
+
+    Session rows store the agent's resolved provider, which for a named custom provider is the bare
+    label, and that label carries no credentials of its own. Recovery uses the saved endpoint, else
+    the model or configured provider, and declines unless that evidence names exactly one account
+    and its slug resolves back to that account's endpoint, so the conversation and its credentials
+    never move to another endpoint or account.
+    """
+    if str(requested_provider or "").strip().lower() != "custom":
+        return None
+    try:
+        from hermes_cli.runtime_provider import (
+            _normalize_base_url_for_match, recover_custom_account, resolve_runtime_provider)
+        account = recover_custom_account(base_url=base_url, model=model)
+        if not account:
+            return None
+        slug, endpoint = account
+        runtime = resolve_runtime_provider(requested=slug, target_model=model)
+    except Exception:
+        logger.debug("custom provider identity recovery failed", exc_info=True)
+        return None
+    return runtime if _normalize_base_url_for_match(runtime.get("base_url")) == endpoint else None
+
+
 class SessionManager:
     """Thread-safe manager for ACP sessions backed by Hermes AIAgent instances.
 
@@ -352,6 +383,11 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        # A named custom provider resolves to the bare "custom" billing class; persist the requested
+        # ``custom:<name>`` instead so restore resolves that entry and its key directly.
+        requested = str(getattr(state.agent, "requested_provider", None) or "").strip()
+        if session_meta.get("provider") == "custom" and requested.startswith("custom:") and requested[7:].strip():
+            session_meta["provider"] = requested
 
         try:
             if db.get_session(state.session_id) is None:
@@ -535,11 +571,30 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        target_model = (model or default_model) or None
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            try:
+                runtime = resolve_runtime_provider(requested=requested_provider or config_provider, target_model=target_model)
+            except Exception:
+                runtime = _named_custom_runtime(requested_provider, base_url, target_model)
+                if runtime is None:
+                    raise
+            else:
+                # ``model.base_url`` gives bare ``custom`` the endpoint but not a key the named entry
+                # holds in key_env or key_cmd. A heal that finds no key either keeps the bare runtime.
+                if runtime.get("api_key") == _NOAUTH_PLACEHOLDER:
+                    named = _named_custom_runtime(requested_provider, base_url or runtime.get("base_url"), target_model)
+                    if named and named.get("api_key") != _NOAUTH_PLACEHOLDER:
+                        runtime = named
+            # A named ``custom:<name>`` entry's endpoint and key are one route. When the entry moved since
+            # the session was saved, take its current route whole rather than send the new key to the old endpoint.
+            if base_url and str(requested_provider or "").strip().lower().startswith("custom:"):
+                from hermes_cli.runtime_provider import _normalize_base_url_for_match
+                if _normalize_base_url_for_match(base_url) != _normalize_base_url_for_match(runtime.get("base_url")):
+                    base_url = api_mode = None
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "provider": runtime.get("provider"), "requested_provider": runtime.get("requested_provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),

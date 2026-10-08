@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
@@ -31,7 +31,15 @@ def _normalize_custom_provider_name(value: str) -> str:
 
 
 def _normalize_base_url_for_match(value) -> str:
-    return str(value or "").strip().rstrip("/").lower()
+    """Endpoint identity key. Scheme and host compare case-insensitively; path and query keep
+    their case, since ``/TenantA/v1`` and ``/tenanta/v1`` may be distinct entries with distinct
+    credentials. A trailing slash is ignored."""
+    text = str(value or "").strip().rstrip("/")
+    scheme, sep, rest = text.partition("://")
+    prefix, rest = (scheme.lower() + sep, rest) if sep else ("", text)
+    cut = min((i for i in map(rest.find, "/?#") if i >= 0), default=len(rest))
+    userinfo, at, hostport = rest[:cut].rpartition("@")
+    return prefix + userinfo + at + hostport.lower() + rest[cut:]
 
 
 def _clean(value: Any) -> str:
@@ -235,28 +243,36 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _custom_entries() -> Iterator[Tuple[str, frozenset, Dict[str, Any], bool]]:
+    """``(custom:<name> slug, aliases, entry, legacy)`` for entries in ``providers:`` then legacy
+    ``custom_providers:``, in config order. ``aliases`` are the names :func:`_get_named_custom_provider`
+    matches the entry by; ``legacy`` marks a ``custom_providers:`` listing."""
     rp = _rp()
     try:
         config = rp.load_config()
     except Exception:
-        return None
+        return
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+            if isinstance(entry, dict):
+                yield (custom_provider_slug(str(ep_name), str(ep_name)),
+                       custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)), entry, False)
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
         custom_providers = None
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
-        if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+        if isinstance(name, str) and name.strip():
+            provider_key = str(entry.get("provider_key", "") or "")
+            yield (custom_provider_slug(name, provider_key), custom_provider_aliases(name, provider_key), entry,
+                   not provider_key)
+
+
+def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
+    """First entry where ``matches(entry)`` holds, as its canonical ``custom:<name>`` slug."""
+    return next((slug for slug, _, entry, _ in _custom_entries() if matches(entry)), None)
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
@@ -273,6 +289,18 @@ def _model_id_matches(value: Any, target: str) -> bool:
     return isinstance(value, str) and value.strip().lower() == target
 
 
+def _entry_serves_model(entry: Dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
 def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     """Map a model id back to the ``custom:<name>`` entry that serves it — companion to
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
@@ -280,19 +308,64 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     target = str(model or "").strip().lower()
     if not target:
         return None
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target))
 
-    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
 
-    return _find_custom_identity(_entry_serves_model)
+def _custom_account(entry: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """Endpoint plus credential source. Listings that agree on all of it (a ``providers:`` entry
+    repeated in legacy ``custom_providers:``) are one account."""
+    return (_normalize_base_url_for_match(_entry_url(entry)), _clean(entry.get("api_key")),
+            _clean(entry.get("key_env") or entry.get("api_key_env")), _clean(entry.get("key_cmd")))
+
+
+def recover_custom_account(*, base_url: Optional[str] = None,
+                           model: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    """``(custom:<name>, normalized endpoint)`` for a bare ``custom`` session, only when the evidence
+    names exactly one account. Entries are matched by the saved endpoint; without one, by the model,
+    or failing that by the configured provider. Every matched entry, and every entry the recovered
+    slug also answers to, must be the same account; otherwise the slug could resolve to another
+    endpoint or key, and recovery declines. The caller still checks that the slug resolves to the
+    returned endpoint.
+
+    A legacy ``custom_providers:`` listing is no account of its own when live ``providers:`` entries
+    at its endpoint answer every name it could be requested by: name resolution scans ``providers:``
+    first, so its key_env and key_cmd are never read, and without an inline api_key it seeds nothing
+    into the credential pool either."""
+    from hermes_cli.config import is_provider_enabled
+    listed = list(_custom_entries())
+    live = [(aliases, _normalize_base_url_for_match(_entry_url(entry))) for _, aliases, entry, legacy in listed
+            if not legacy and is_provider_enabled(entry) and _entry_url(entry)]
+
+    def _unreachable(aliases: frozenset, entry: Dict[str, Any]) -> bool:
+        endpoint = _normalize_base_url_for_match(_entry_url(entry))
+        answered = frozenset().union(*(names for names, url in live if url == endpoint))
+        requestable = {name for name in aliases if name == _normalize_custom_provider_name(name)}
+        return not _clean(entry.get("api_key")) and requestable <= answered
+
+    entries = [(slug, aliases, entry) for slug, aliases, entry, legacy in listed
+               if not (legacy and _unreachable(aliases, entry))]
+    if base_url:
+        target = _normalize_base_url_for_match(base_url)
+        matched = [(slug, entry) for slug, _, entry in entries
+                   if _normalize_base_url_for_match(_entry_url(entry)) == target]
+    else:
+        model_id = str(model or "").strip().lower()
+        matched = [(slug, entry) for slug, _, entry in entries if model_id and _entry_serves_model(entry, model_id)]
+        if not matched:
+            try:
+                provider = _normalize_custom_provider_name(str(_rp()._get_model_config().get("provider") or ""))
+            except Exception:
+                provider = ""
+            if provider not in {"", "custom", "auto"}:
+                matched = [(slug, entry) for slug, aliases, entry in entries if provider in aliases]
+    if not matched:
+        return None
+    slug = matched[0][0]
+    accounts = {_custom_account(entry) for _, entry in matched}
+    accounts |= {_custom_account(entry) for _, aliases, entry in entries if slug in aliases}
+    if len(accounts) != 1:
+        return None
+    return slug, accounts.pop()[0]
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,

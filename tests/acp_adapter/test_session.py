@@ -401,7 +401,7 @@ class TestPersistence:
         """The FIRST row written for an ACP session carries provider/base_url/api_mode,
         so a restart before any later save restores the same route (#9812)."""
         agent = SimpleNamespace(
-            model="test-model", provider="anthropic",
+            model="test-model", provider="anthropic", requested_provider="auto",
             base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
         )
         db = SessionDB(tmp_path / "state.db")
@@ -426,6 +426,256 @@ class TestPersistence:
 
 
 
+
+    _CLIPROXY = ("custom", "http://cliproxy.example:8317/v1", "sk-cliproxy-test")
+    _NAMED = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "  base_url: http://cliproxy.example:8317/v1\n"
+        "  api_mode: chat_completions\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+        "    api_mode: chat_completions\n"
+        "    models: [proxy-model]\n"
+        "  tenant-a:\n"
+        "    base_url: https://proxy.example/TenantA/v1\n"
+        "    api_key: sk-tenant-a\n"
+        "  tenant-b:\n"
+        "    base_url: https://proxy.example/tenanta/v1\n"
+        "    api_key: sk-tenant-b\n"
+    )
+    # Two named accounts share one endpoint, and bare ``custom`` resolves to neither.
+    _SHARED_ENDPOINT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:account-a\n"
+        "providers:\n"
+        "  account-a:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-account-a\n"
+        "  account-b:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-account-b\n"
+    )
+    # ``first`` answers to the alias ``second``, so ``custom:second`` resolves to ``first``'s endpoint and key.
+    _ALIAS_COLLISION = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:first\n"
+        "providers:\n"
+        "  first:\n"
+        "    name: second\n"
+        "    base_url: https://a.example/v1\n"
+        "    api_key: sk-first\n"
+        "  second:\n"
+        "    base_url: https://b.example/v1\n"
+        "    api_key: sk-second\n"
+    )
+    # Two accounts on one endpoint whose names share the slug ``custom:foo-bar``.
+    _SLUG_COLLISION = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "providers:\n"
+        "  foo-bar:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-foo-dash\n"
+        "custom_providers:\n"
+        "  - name: Foo Bar\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-foo-space\n"
+    )
+    # Two accounts on different endpoints both serve the session's model.
+    _SHARED_MODEL = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:account-a\n"
+        "providers:\n"
+        "  account-a:\n"
+        "    base_url: https://a.example/v1\n"
+        "    api_key: sk-account-a\n"
+        "    models: [proxy-model]\n"
+        "  account-b:\n"
+        "    base_url: https://b.example/v1\n"
+        "    api_key: sk-account-b\n"
+        "    models: [proxy-model]\n"
+    )
+    # One account listed twice: keyed under ``providers:`` and again in legacy ``custom_providers:``.
+    _DUPLICATED_ACCOUNT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    name: CLIProxyAPI\n"
+        "    api: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+        "    models: [proxy-model]\n"
+        "custom_providers:\n"
+        "  - name: CLIProxyAPI\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+    )
+    # ``model.base_url`` with no model key: bare ``custom`` resolves the endpoint with the keyless
+    # placeholder, since the pool seeds inline api_key only and the entry mints its key with key_cmd.
+    _KEY_CMD_AT_MODEL_ENDPOINT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "  base_url: http://127.0.0.1:8317/v1\n"
+        "  api_mode: chat_completions\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    api: http://127.0.0.1:8317/v1\n"
+        "    key_cmd: printf sk-from-key-cmd\n"
+        "    api_mode: chat_completions\n"
+    )
+    # A local server that takes no key at all.
+    _KEYLESS_LOCAL = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:local\n"
+        "  base_url: http://127.0.0.1:8080/v1\n"
+        "providers:\n"
+        "  local:\n"
+        "    base_url: http://127.0.0.1:8080/v1\n"
+    )
+    # The ``providers:`` entry answers to every name of the legacy listing, so the resolver never
+    # reads the legacy key_env, and without an inline api_key the pool holds nothing from it.
+    _SHADOWED_LEGACY_LISTING = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    api: http://cliproxy.example:8317/v1\n"
+        "    key_cmd: printf sk-from-key-cmd\n"
+        "    models: [proxy-model]\n"
+        "custom_providers:\n"
+        "  - name: CLIProxyAPI\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    key_env: CLIPROXY_LEGACY_KEY\n"
+    )
+
+    @pytest.mark.parametrize("config, model_config, billing, env, expected", [
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
+                  "api_mode": "chat_completions"}, {}, {}, _CLIPROXY),
+        (_NAMED, {"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"},
+         {}, _CLIPROXY),
+        # No saved endpoint: the model identifies the entry.
+        (_NAMED, {"cwd": "/work", "provider": "custom"}, {}, {}, _CLIPROXY),
+        # Endpoint paths are case-sensitive: tenant-b's session must not pick up tenant-a's key.
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/tenanta/v1"}, {}, {},
+         ("custom", "https://proxy.example/tenanta/v1", "sk-tenant-b")),
+        # No entry owns the saved endpoint: the model match must not move the conversation (and the
+        # cliproxyapi key) to another endpoint. Resolution fails as before and the agent gets nothing.
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://retired.example:9000/v1"}, {}, {},
+         (None, None, None)),
+        # The endpoint names two accounts: neither is picked, so resolution fails as before.
+        (_SHARED_ENDPOINT, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/v1"}, {}, {},
+         (None, None, None)),
+        # Only the bare label heals; a real provider passes through even when the model is a custom entry's.
+        (_NAMED, {"cwd": "/work", "provider": "openrouter"}, {}, {"OPENROUTER_API_KEY": "sk-or-test"},
+         ("openrouter", "https://openrouter.ai/api/v1", "sk-or-test")),
+        # The endpoint's entry is ``second``, but its slug resolves to ``first``: no heal.
+        (_ALIAS_COLLISION, {"cwd": "/work", "provider": "custom", "base_url": "https://b.example/v1"}, {}, {},
+         (None, None, None)),
+        # One slug, two keys at the endpoint: the slug cannot say which account the session used.
+        (_SLUG_COLLISION, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/v1"}, {}, {},
+         (None, None, None)),
+        # No saved endpoint and two accounts serve the model: neither is picked.
+        (_SHARED_MODEL, {"cwd": "/work", "provider": "custom"}, {}, {}, (None, None, None)),
+        # Duplicate listings of one account (same endpoint and key) still heal, slash or not.
+        (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1/"},
+         {}, {}, ("custom", "http://cliproxy.example:8317/v1/", "sk-cliproxy-test")),
+        (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom"}, {}, {}, _CLIPROXY),
+        # Bare ``custom`` resolves, but only to the keyless placeholder: the endpoint's one entry mints the key.
+        (_KEY_CMD_AT_MODEL_ENDPOINT, {"cwd": "/work", "provider": "custom", "base_url": "http://127.0.0.1:8317/v1",
+                                      "api_mode": "chat_completions"}, {"billing_provider": "custom"}, {},
+         ("custom", "http://127.0.0.1:8317/v1", "sk-from-key-cmd")),
+        # Nothing at the endpoint holds a key, so the placeholder stays.
+        (_KEYLESS_LOCAL, {"cwd": "/work", "provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, {},
+         ("custom", "http://127.0.0.1:8080/v1", "no-key-required")),
+        # The legacy listing's key_env is unreachable, so it is not a second account.
+        (_SHADOWED_LEGACY_LISTING, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1"},
+         {}, {"CLIPROXY_LEGACY_KEY": "sk-legacy-env"}, ("custom", "http://cliproxy.example:8317/v1", "sk-from-key-cmd")),
+    ], ids=["model_config", "billing_only", "no_saved_endpoint", "case_distinct_endpoint", "unmatched_endpoint",
+            "shared_endpoint", "openrouter", "alias_collision", "slug_collision", "shared_model",
+            "duplicated_account", "duplicated_account_by_model", "key_cmd_at_model_endpoint", "keyless_local",
+            "shadowed_legacy_listing"])
+    def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, config, model_config, billing, env,
+                                              expected):
+        """A row whose stored provider is the bare ``custom`` label (what a named custom provider
+        resolves to at runtime) must restore through the named entry registered at its saved endpoint,
+        not fail credential resolution and fall back to OpenRouter with no key."""
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(config)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.model = kwargs.get("model")
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="resumed", source="acp", model="proxy-model", model_config=model_config)
+        if billing:
+            db.update_token_counts("resumed", source="acp", input_tokens=1, api_call_count=1, **billing)
+            assert db.get_session("resumed")["billing_provider"] == "custom"
+
+        restored = SessionManager(db=db).get_session("resumed")
+
+        assert restored is not None
+        kwargs = restored.agent.kwargs
+        api_key = kwargs.get("api_key")
+        # A key_cmd credential reaches the agent as a per-request callable; call it for the key it sends.
+        api_key = api_key() if callable(api_key) else api_key
+        assert (kwargs.get("provider"), kwargs.get("base_url"), api_key) == expected
+
+    @pytest.mark.parametrize("config, persisted, moved_to, expected", [
+        (_NAMED, "custom:cliproxyapi", None, _CLIPROXY),
+        # The entry moved to another endpoint and key after the save: restore takes both from config,
+        # never the saved endpoint with the new key.
+        (_NAMED, "custom:cliproxyapi", ("http://cliproxy-b.example:8317/v1", "sk-cliproxy-b"),
+         ("custom", "http://cliproxy-b.example:8317/v1", "sk-cliproxy-b")),
+    ], ids=["unchanged", "entry_moved"])
+    def test_named_custom_provider_round_trips(self, tmp_path, monkeypatch, config, persisted, moved_to, expected):
+        """A session on a named custom provider stores its ``custom:<name>`` identity, not the bare
+        ``custom`` it resolves to, so a restart restores that entry's endpoint and key."""
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(config)
+
+        class FakeAgent:
+            # The identity attributes AIAgent derives from its constructor arguments.
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.model, self.provider = kwargs.get("model"), kwargs.get("provider")
+                self.base_url, self.api_mode = kwargs.get("base_url"), kwargs.get("api_mode")
+                self.requested_provider = kwargs.get("requested_provider") or self.provider
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == persisted
+        if moved_to:
+            (get_hermes_home() / "config.yaml").write_text(
+                config.replace(self._CLIPROXY[1], moved_to[0]).replace(self._CLIPROXY[2], moved_to[1]))
+
+        restored = SessionManager(db=db).get_session(state.session_id)
+
+        assert restored is not None
+        kwargs = restored.agent.kwargs
+        assert (kwargs["provider"], kwargs["base_url"], kwargs["api_key"]) == expected
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

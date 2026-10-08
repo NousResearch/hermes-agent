@@ -2553,7 +2553,7 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
+        (("claude-", "minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
         (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}

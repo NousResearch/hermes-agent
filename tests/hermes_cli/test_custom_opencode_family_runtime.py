@@ -59,6 +59,16 @@ class TestCustomOpencodeFamilyRuntime:
         # /v1 stripped so the Anthropic SDK's own /v1/messages doesn't double up
         assert r["base_url"].rstrip("/").endswith("/zen/go")
 
+    def test_family_provider_routes_claude_to_messages_and_strips_v1(self, _bridge_env):
+        """The #134844 repro: claude-haiku-5-5 serves the Anthropic Messages
+        wire on /zen/go, so routing it to /v1/chat/completions 400s with
+        ModelProtocolUnsupported."""
+        _bridge_env("opencode-go-bridge")
+        r = _resolve("opencode-go-bridge", "claude-haiku-5-5")
+        assert r["api_mode"] == "anthropic_messages"
+        # /v1 stripped so the Anthropic SDK's own /v1/messages doesn't double up
+        assert r["base_url"].rstrip("/").endswith("/zen/go")
+
     def test_family_provider_keeps_chat_models_on_v1(self, _bridge_env):
         _bridge_env("opencode-go-bridge")
         r = _resolve("opencode-go-bridge", "deepseek-v4-flash")

@@ -1448,7 +1448,17 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         # builds run later, often with every system git removed from PATH; the
         # desktop stamp must still resolve this checkout's real HEAD.
         import pm
-        build_env = pm.ensure("git", base_env=build_env).env
+        from hermes_platform.resolver import locate_command
+        from pm.paths import store_root
+
+        # A git the machine itself provides satisfies the build, exactly as it
+        # does for expose_pm_git; only a PATH without one needs the pinned
+        # PortableGit. Skipping the ensure keeps a store copy the host blocks
+        # permanently (Defender's copied-system-tools ASR rule) from failing the
+        # whole completion while `git` itself resolves (#129217).
+        found = locate_command("git").command
+        if not (found and not Path(found[0]).resolve().is_relative_to(store_root())):
+            build_env = pm.ensure("git", base_env=build_env).env
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")

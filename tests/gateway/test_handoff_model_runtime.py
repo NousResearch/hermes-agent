@@ -11,14 +11,23 @@ from gateway.run import GatewayRunner
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('origin_provider,unavailable,existing', [
-    ('openai', False, False), ('openai', False, True),
-    ('openai', True, False), (None, False, True),
+    ('anthropic', False, False), ('anthropic', False, True),
+    ('anthropic', True, False), ('anthropic', True, True), (None, False, True),
 ])
-async def test_handoff_first_turn_uses_origin_model(tmp_path, monkeypatch, origin_provider, unavailable, existing):
+@pytest.mark.parametrize('route_shape', ['top_level', 'nested', 'billing'])
+async def test_handoff_first_turn_uses_origin_model(
+    tmp_path, monkeypatch, origin_provider, unavailable, existing, route_shape,
+):
     store = SessionStore(sessions_dir=tmp_path / 'sessions', config=GatewayConfig())
     db = store._db
-    db.create_session('origin-chat', source='desktop', model='origin-model',
-                      model_config={'provider': origin_provider, 'base_url': 'https://api.openai.com/v1'})
+    route = {'provider': origin_provider, 'base_url': 'https://api.anthropic.com'}
+    config = route if route_shape == 'top_level' else (
+        {'gateway_runtime': route} if route_shape == 'nested' else {}
+    )
+    db.create_session('origin-chat', source='desktop', model='origin-model', model_config=config)
+    if route_shape == 'billing':
+        db._write_sql('UPDATE sessions SET billing_provider = ? WHERE id = ?',
+                      (origin_provider, 'origin-chat'))
     row = db.get_session('origin-chat')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='42', user_id='42', chat_type='dm')
     runner = object.__new__(GatewayRunner)
@@ -38,10 +47,13 @@ async def test_handoff_first_turn_uses_origin_model(tmp_path, monkeypatch, origi
         old = {'model': 'old-model', 'provider': 'openai', 'api_key': 'old-token'}
         store.set_model_override(key, old)
         runner._session_state(key).conversation.model_override = old
-    def resolve(*_a, **_k):
+    resolutions = []
+
+    def resolve(provider, *, target_model=None):
+        resolutions.append((provider, target_model))
         if unavailable:
             raise RuntimeError('credentials unavailable')
-        return {'provider': 'openai', 'api_key': 'origin-token', 'api_mode': 'chat_completions'}
+        return {'provider': provider, 'api_key': 'origin-token', 'api_mode': 'chat_completions'}
     monkeypatch.setattr('gateway.run._resolve_runtime_agent_kwargs_for_provider', resolve)
     monkeypatch.setattr('gateway.run._credential_pool_for_provider', lambda *_: None)
     observed = []
@@ -56,15 +68,26 @@ async def test_handoff_first_turn_uses_origin_model(tmp_path, monkeypatch, origi
         model, runtime = observed[0]
         expected = 'default-model' if unavailable else ('origin-model' if origin_provider else 'old-model')
         assert model == expected, 'handoff silently selected the wrong route'
-        assert runtime['provider'] == ('default' if unavailable else 'openai')
+        expected_provider = 'default' if unavailable else (origin_provider or 'openai')
+        assert runtime['provider'] == expected_provider
+        if origin_provider:
+            assert resolutions
+            assert set(resolutions) == {(origin_provider, 'origin-model')}
+        else:
+            assert resolutions == []  # Keep the destination's already-resolved override.
         assert store.peek_session_id(key) == 'origin-chat'
         persisted = store.get_model_override(key)
         assert persisted['model'] == ('origin-model' if origin_provider else 'old-model')
+        assert persisted['provider'] == (origin_provider or 'openai')
         assert 'api_key' not in persisted
         if unavailable:
             assert runner._pre_agent_fallback_notice
         runner._session_state(key).conversation.model_override = None
-        again, _ = runner._resolve_session_agent_runtime(session_key=key)
+        resolutions.clear()
+        again, restored = runner._resolve_session_agent_runtime(session_key=key)
         assert again == expected
+        assert restored['provider'] == expected_provider
+        assert resolutions
+        assert set(resolutions) == {(origin_provider or 'openai', persisted['model'])}
     finally:
         db.close()

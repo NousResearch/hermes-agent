@@ -374,6 +374,24 @@ def test_snapshot_survives_a_byte_range_lock_held_by_another_handle(tmp_path):
     assert snap["entries"]["cron/.tick.lock"] == {"kind": "lock"}
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False,
+                    reason="root reads a mode-000 file")
+def test_an_unreadable_user_file_fails_the_scan_naming_the_path(tmp_path):
+    """Skipping lock files must not hide a user file the verifier cannot read."""
+    home = tmp_path / "home"
+    (home / "memories").mkdir(parents=True)
+    note = home / "memories" / "note.md"
+    note.write_text("remember\n", encoding="utf-8")
+    note.chmod(0)
+    try:
+        with pytest.raises(vus.ScanError, match="note.md") as caught:
+            vus.snapshot_home(str(home))
+    finally:
+        note.chmod(0o600)
+    assert isinstance(caught.value.__cause__, PermissionError)
+
+
 def test_a_dotenv_changed_only_in_comments_is_reported_as_such(tmp_path):
     """The per-key digests ignore comments, order and blanks by design.
 

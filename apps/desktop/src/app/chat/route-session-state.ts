@@ -32,10 +32,9 @@ export function isRouteSessionMismatch(
     storedSessionId === routedSessionId ||
     Boolean(
       storedSessionId &&
-        sessions.some(
-          session =>
-            sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, storedSessionId)
-        )
+      sessions.some(
+        session => sessionMatchesStoredId(session, routedSessionId) && sessionMatchesStoredId(session, storedSessionId)
+      )
     )
 
   // The selected view already owns the routed conversation: a profile or

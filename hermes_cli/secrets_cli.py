@@ -15,13 +15,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# The Bitwarden backend pulls in ``cryptography`` at import time; on Windows that mapped native
-# module makes the ``hermes update`` self-lock preflight defer. This module is registered
-# parse-time from ``hermes_cli.main``, so the backend import stays lazy (nothing touches ``bw``
-# until a handler runs) and ``_BWS_VERSION`` is duplicated here for the ``install --help`` text.
-# ``agent.secret_sources.bitwarden._BWS_VERSION`` is the source of truth; bump both together.
-# See #86781.
-_BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
@@ -91,8 +84,8 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             flag("--apply", "Actually export the secrets into the current shell's env (default: dry-run)"),
         )),
         ("disable", "Turn off the Bitwarden integration", cmd_disable, ()),
-        ("install", f"Download and verify the pinned bws binary (v{_BWS_VERSION})", cmd_install, (
-            flag("--force", "Re-download even if a managed copy already exists"),
+        ("install", "Install the PM-pinned bws binary", cmd_install, (
+            flag("--force", "Verify and repair the managed copy"),
         )),
     ))
 
@@ -115,7 +108,7 @@ def _setup_binary(bw, console: Console) -> Optional[Path]:
             binary = bw.install_bws()
         console.print(f"  [green]✓[/green] {binary}  ({_bws_version(binary)})")
         return binary
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ Could not install bws: {exc}[/red]")
         console.print("  Manual install: https://github.com/bitwarden/sdk-sm/releases")
         return None
@@ -209,7 +202,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     try:
         secrets, warnings = bw.fetch_bitwarden_secrets(
             access_token=token, project_id=project_id, binary=binary, use_cache=False, server_url=server_url)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
         return 1
     if not secrets:
@@ -354,7 +347,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         secrets, warnings = bw.fetch_bitwarden_secrets(
             access_token=token, project_id=project_id, use_cache=False, server_url=cfg_str(bw_cfg, "server_url"),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"[red]Fetch failed: {exc}[/red]")
         return 1
     if not secrets:
@@ -402,7 +395,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         path = bw.install_bws(force=bool(args.force))
         console.print(f"[green]✓[/green] {path}  ({_bws_version(path)})")
         return 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"[red]Install failed: {exc}[/red]")
         return 1
 
@@ -445,7 +438,7 @@ _PROJECT_LIST_HINTS = (
 
 def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
-) -> Optional[List[dict]]:
+) -> Optional[list[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
     env = secret_cli_env()
     env["BWS_ACCESS_TOKEN"] = token

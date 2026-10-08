@@ -36,7 +36,7 @@ class ToolCallChunk:
     """A tool invocation started. Raw facts only; the adapter decides presentation."""
     tool_name: str
     preview: Optional[str] = None
-    args: Optional[Dict[str, Any]] = None
+    args: Optional[dict[str, Any]] = None
     index: int = 0  # monotonic per-turn index: correlates a finish with its start
 
 
@@ -64,7 +64,7 @@ class GatewayNotice:
     (``"restart"`` / ``"online"`` / ``"long_run"`` / …), ``text`` the default rendering."""
     kind: str
     text: str = ""
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # Explicit union (not a marker base class) so a missing ``case`` in an

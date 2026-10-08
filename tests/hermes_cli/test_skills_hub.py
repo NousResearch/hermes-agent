@@ -52,8 +52,8 @@ _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 def three_source_env(monkeypatch, hub_env):
     """Populate hub/builtin/local skills for source-classification tests."""
     import tools.skills_hub as hub
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
+    from tools import skills_sync
+    from tools import skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
     monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
@@ -283,6 +283,78 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     assert meta.identifier.endswith("latipun7/agent-skill-collections/skills/skillopt")
     assert matched is not None
     assert matched.__class__ is CatalogSource
+
+
+def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
+    """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    import tools.skills_hub_search as search
+    import tools.skills_hub_clawhub as clawhub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    clients = []
+    client_kwargs = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        content = b"ok"
+        headers = {}
+
+        def json(self):
+            return {"skills": []}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Source:
+        def source_id(self):
+            return "github"
+
+        def inspect(self, _identifier):
+            hub._guarded_http_get("https://example.com/metadata")
+            # The Hermes-index fetch must ride the same pool (no cache → real GET).
+            assert search._load_hermes_index() == {"skills": []}
+            return SkillMeta("example", "metadata", "test", "example/id", "community")
+
+        def fetch(self, _identifier):
+            hub._guarded_http_get("https://example.com/SKILL.md")
+            return SkillBundle("example", {"SKILL.md": "# Example"}, "test", "example/id", "community")
+
+    def create_client(**kwargs):
+        client_kwargs.append(kwargs)
+        client = Client()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [Source()])
+    monkeypatch.setattr(hub, "create_ssrf_safe_client", create_client, raising=False)
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(search, "_hermes_index_cache_file", lambda: tmp_path / "hermes-index.json")
+    monkeypatch.setattr(search.httpx, "get", lambda *_a, **_k: pytest.fail("index fetch bypassed the pool"))
+
+    result = cli_hub.inspect_skill("example/id")
+
+    assert result is not None
+    assert len(clients) == 1
+    # The pooled client keeps the one-shot default timeout and never auto-follows redirects.
+    assert client_kwargs[0]["timeout"] == hub._DEFAULT_HTTP_TIMEOUT
+    assert client_kwargs[0]["follow_redirects"] is False
+
+    # Install runs the same resolve + fetch sequence (plus the per-file fan-out) and must pool too.
+    clients.clear()
+    monkeypatch.setattr(cli_hub, "_resolve_url_bundle_name", lambda *_a, **_k: False)
+    cli_hub.do_install("example/id", console=Console(file=StringIO()))
+    assert len(clients) == 1
 
 
 
@@ -536,6 +608,22 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
     assert "Could not fetch" not in out
 
 
+def test_fetch_failure_names_rejected_github_credential():
+    """A credential GitHub refused is named, never reported as a stale index entry (#98725)."""
+    from types import SimpleNamespace
+    from hermes_cli.skills_hub import _print_fetch_failure
+
+    src = SimpleNamespace(is_rate_limited=False, auth=SimpleNamespace(rejected=["GITHUB_TOKEN/GH_TOKEN"]),
+                          source_id=lambda: "hermes-index")
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    _print_fetch_failure(console, [src], "o/r/s", meta=object(), source=src)
+
+    out = sink.getvalue()
+    assert "rejected GITHUB_TOKEN/GH_TOKEN" in out
+    assert "Stale index entry" not in out
+
+
 @pytest.mark.parametrize("meta_hit", [False, True])
 def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
     """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the
@@ -562,6 +650,97 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
 
     out = sink.getvalue()
-    assert "Could not fetch" in out
+    assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+
+# ---------------------------------------------------------------------------
+# Short-name resolution by identifier + failure exit code
+# ---------------------------------------------------------------------------
+
+
+def _meta(name, identifier, source="clawhub"):
+    from tools.skills_hub_models import SkillMeta
+
+    return SkillMeta(name=name, description="", source=source, identifier=identifier,
+                     trust_level="community")
+
+
+def _sink_console():
+    sink = StringIO()
+    return Console(file=sink, force_terminal=False, color_system=None), sink
+
+
+def _stub_search(monkeypatch, results):
+    """unified_search is late-bound inside _resolve_short_name, so patch its module."""
+    import tools.skills_hub_search as search
+
+    monkeypatch.setattr(search, "unified_search", lambda *args, **kwargs: list(results))
+
+
+@pytest.mark.parametrize("identifier", [
+    "computer-use", "NousResearch/hermes-agent/skills/productivity/pdf",
+    "skills-sh/nousresearch/hermes-agent/google-workspace", "blender-bpy-enhanced"])
+def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, identifier):
+    """`hermes skills install <bundled skill>` failed every time: the name resolved to a stranger's
+    same-named hub skill or an ambiguity table, and this repo's own copy was rescanned as community
+    content and refused. It now makes the shipped skill active and fetches nothing. A hub slug behind
+    a prettified catalog title ("Blender Bpy Enhanced") resolves too, where it answered "No exact match"
+    while printing that very slug as the suggestion."""
+    import hermes_cli.skills_hub as cli_hub
+
+    if identifier == "blender-bpy-enhanced":
+        _stub_search(monkeypatch, [_meta("Blender Bpy Enhanced", "@emergencescience/blender-bpy-enhanced")])
+        console, sink = _sink_console()
+        assert cli_hub._resolve_short_name(identifier, [], console) == "@emergencescience/blender-bpy-enhanced"
+        assert "No exact match" not in sink.getvalue()
+        return
+    from tools import skills_sync
+
+    import tools.skills_hub as hub
+    from tools import skill_usage
+    from tools.skills_hub import HubLockFile
+
+    # hub_env's undo leaves its resolved paths as real globals; drop them so the hub follows the profile.
+    for stale in [n for n in vars(hub) if n.isupper() and n.endswith(("_DIR", "_FILE", "_LOG"))]:
+        monkeypatch.delitem(vars(hub), stale)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: pytest.fail("a bundled skill must not hit the hub"))
+    name = identifier.rsplit("/", 1)[-1]
+    # The curator pruned it (prune_builtins on): suppressed from re-seeding and recorded archived.
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+    skill_usage._toggle_suppressed_name(name, add=True)
+    skill_usage.save_usage({name: {"state": skill_usage.STATE_ARCHIVED}})
+    # A symlinked category must not carry the restore out of the skills tree (the hub's guard).
+    category = skill_usage._skills_dir() / dict(skills_sync._discover_bundled_skills(
+        skills_sync._get_bundled_dir()))[name].parent.name
+    (outside := tmp_path / "outside").mkdir()
+    category.parent.mkdir(parents=True, exist_ok=True)
+    category.symlink_to(outside, target_is_directory=True)
+    console, sink = _sink_console()
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is False
+    assert not any(outside.iterdir())
+    category.unlink()
+
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is True
+    assert "Restored built-in skill" in sink.getvalue()
+    assert name in skills_sync._read_manifest()
+    assert any(skills_sync._read_skill_name(md, "") == name for md in skills_sync._iter_active_skill_mds())
+    assert name not in skill_usage.read_suppressed_names()
+    assert skill_usage.load_usage()[name]["state"] == skill_usage.STATE_ACTIVE
+    # Already active now: a no-op the user owns, not a failure (exit 0, no reinstall).
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is None
+    # A hub skill that took the name is reported as such (with the way back), never as the built-in.
+    stranger = skill_usage._skills_dir() / "hub-installs" / name
+    stranger.mkdir(parents=True)
+    (stranger / "SKILL.md").write_text(f"---\nname: {name}\n---\nstranger\n")
+    HubLockFile().record_install(name=name, source="skills-sh", identifier=f"skills-sh/x/y/{name}",
+                                 trust_level="community", scan_verdict="safe", skill_hash="h",
+                                 install_path=f"hub-installs/{name}", files=["SKILL.md"])
+    console, sink = _sink_console()
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is False
+    # One line, subject and remedy together: the Desktop toast shows only a failed action's last 3 lines.
+    error = next(line for line in sink.getvalue().splitlines() if line.startswith("Error:"))
+    assert f"'{name}' is a built-in skill" in error and f"`hermes skills uninstall {name}`" in error
+    assert "already available" not in sink.getvalue()
+    assert (stranger / "SKILL.md").read_text().endswith("stranger\n")

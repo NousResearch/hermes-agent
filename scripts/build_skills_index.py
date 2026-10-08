@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Build the Hermes Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
@@ -257,8 +257,10 @@ def main():
 
     all_skills: list[dict] = []
 
-    # Crawl skills.sh
+    # Crawl skills.sh, then resolve its repo paths right away: the CI App token lives 1 h and
+    # the ClawHub walk below runs longer, so resolving after it 401'd every tree (0/20000).
     all_skills.extend(crawl_skills_sh(skills_sh_source))
+    all_skills = batch_resolve_paths(all_skills, auth)
 
     # Crawl other sources in parallel.
     # Per-source soft caps — sources stop returning when they run out, so these
@@ -287,9 +289,6 @@ def main():
                 all_skills.extend(future.result())
             except Exception as e:
                 print(f"  Error: {e}", file=sys.stderr)
-
-    # Batch resolve GitHub paths for skills.sh entries
-    all_skills = batch_resolve_paths(all_skills, auth)
 
     # Enrich ClawHub skills with owner handles. The listing API does not
     # include owner info, so we fetch each skill's detail page concurrently.

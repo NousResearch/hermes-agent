@@ -95,8 +95,8 @@ def bytes_to_phases(data: bytes, dim: int | None = None) -> "np.ndarray":
     _require_numpy()
     plen = len(_FLOAT32_BLOB_PREFIX)
     prefixed = data.startswith(_FLOAT32_BLOB_PREFIX)
-    f32 = lambda payload: np.frombuffer(payload, dtype=np.float32).astype(np.float64)  # noqa: E731
-    f64 = lambda payload: np.frombuffer(payload, dtype=np.float64).copy()  # noqa: E731
+    f32 = lambda payload: np.frombuffer(payload, dtype=np.float32).astype(np.float64)
+    f64 = lambda payload: np.frombuffer(payload, dtype=np.float64).copy()
     if dim is None:
         payload, size, what = (data[plen:], _F32, "float32 vector blob has invalid payload") if prefixed else (data, _F64, "legacy vector blob has invalid")
         if len(payload) % size != 0:

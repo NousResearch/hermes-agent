@@ -66,7 +66,7 @@ configure_profile() {
     local toolsets_json="$2"     # JSON array string, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array string, e.g. '["ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
-"""Patch a Hermes profile config.yaml using PyYAML so we don't depend on the
+"""Patch a Hermes profile config.yaml using ruamel.yaml so we don't depend on the
 exact default-config string format. Validates the patch took effect and exits
 non-zero if anything's off."""
 import json
@@ -74,10 +74,15 @@ import os
 import sys
 
 try:
-    import yaml
+    from ruamel.yaml import YAML
 except ImportError:
-    print("ERROR: PyYAML required. pip install pyyaml", file=sys.stderr)
+    print("ERROR: ruamel.yaml required. pip install ruamel.yaml==0.18.17", file=sys.stderr)
     sys.exit(1)
+
+yaml = YAML(typ="safe", pure=True)
+yaml.version = (1, 1)
+yaml.default_flow_style = False
+yaml.sort_base_mapping_type_on_output = False
 
 profile, toolsets_json, skills_json, workspace = sys.argv[1:5]
 toolsets = json.loads(toolsets_json)
@@ -89,7 +94,7 @@ if not os.path.exists(p):
     sys.exit(1)
 
 with open(p) as f:
-    cfg = yaml.safe_load(f) or {}
+    cfg = yaml.load(f) or {}
 
 # Apply our changes — only the keys we actually want to set.
 cfg["toolsets"] = toolsets
@@ -102,11 +107,11 @@ cfg["skills"]["always_load"] = skills
 # don't need to mutate cfg["terminal"]["cwd"] either.
 
 with open(p, "w") as f:
-    yaml.safe_dump(cfg, f, sort_keys=False)
+    yaml.dump(cfg, f)
 
 # Validate
 with open(p) as f:
-    after = yaml.safe_load(f)
+    after = yaml.load(f)
 errors = []
 if after.get("toolsets") != toolsets:
     errors.append(f"toolsets mismatch: {after.get('toolsets')!r}")

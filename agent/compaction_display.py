@@ -30,7 +30,7 @@ _COMPACTION_INTERNAL_FIELDS = (
 )
 
 
-def project_compaction_message_for_display(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Return authentic transcript content, or ``None`` for a pure handoff.
 
     Model-facing recovery history retains the complete carrier. Display

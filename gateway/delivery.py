@@ -2,7 +2,6 @@
 platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
 
 import logging
-import os
 import re
 from pathlib import Path
 from datetime import datetime
@@ -37,6 +36,15 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
 
 
+class PartialDeliveryError(RuntimeError):
+    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
+    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
+
+
 @dataclass(frozen=True)
 class DeliveryTransport:
     """Resolved live transport for one logical delivery platform."""
@@ -49,14 +57,14 @@ class DeliveryTransport:
         return self.transport_platform == Platform.RELAY
 
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
-                   metadata: Optional[Dict[str, Any]]) -> Any:
+                   metadata: Optional[dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
-                               adapters: Optional[Dict[Platform, Any]]) -> Optional[DeliveryTransport]:
+                               adapters: Optional[dict[Platform, Any]]) -> Optional[DeliveryTransport]:
     """Resolve a logical platform to its live delivery transport. A concrete native adapter always wins;
     Relay is eligible only when its authenticated transport explicitly advertises that it fronts the
     logical platform, so restart-time delivery is independent of per-chat caches without letting Relay
@@ -156,15 +164,15 @@ async def _ensure_named_dm_topic(adapter: Any, chat_id: str, name: str, *, refre
 class DeliveryRouter:
     """Resolves delivery targets and dispatches messages to platform adapters."""
 
-    def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None,
+    def __init__(self, config: GatewayConfig, adapters: dict[Platform, Any] = None,
                  dead_targets: Optional[DeadTargetRegistry] = None):  # profile-local registry when omitted
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_hermes_home() / "cron" / "output"
         self.dead_targets = dead_targets or DeadTargetRegistry()
 
-    async def deliver(self, content: str, targets: List[DeliveryTarget], job_id: Optional[str] = None,
-                      job_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def deliver(self, content: str, targets: list[DeliveryTarget], job_id: Optional[str] = None,
+                      job_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
@@ -200,7 +208,7 @@ class DeliveryRouter:
         return results
 
     def _deliver_local(self, content: str, job_id: Optional[str], job_name: Optional[str],
-                       metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                       metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Save content to local files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"
@@ -221,10 +229,8 @@ class DeliveryRouter:
         return path
 
     def _filter_silence_narration_enabled(self) -> bool:
-        """``HERMES_FILTER_SILENCE_NARRATION`` env overrides the ``gateway.filter_silence_narration`` flag."""
-        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
-        return (bool(getattr(self.config, "filter_silence_narration", True)) if env is None
-                else env.strip().lower() in ("1", "true", "yes", "on"))
+        """filter silence narration based on gateway config without checking process env"""
+        return bool(getattr(self.config, "filter_silence_narration", True))
 
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
@@ -252,9 +258,19 @@ class DeliveryRouter:
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
-                                   metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
-        transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
+                                   metadata: Optional[dict[str, Any]],
+                                   transport: Optional[DeliveryTransport] = None,
+                                   ) -> dict[str, Any]:
+        """Deliver content to a messaging platform.
+
+        ``transport`` carries an already-authorized transport past resolution:
+        the cron live lane resolved and authorized it per target (including the
+        SharedRouteAdapters satellite grant), and re-resolving from the plain
+        adapters dict cannot re-derive that grant under satellite config
+        (#115656). Omitted (None) preserves resolution for every other caller.
+        """
+        if transport is None:
+            transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:
             raise ValueError(f"No adapter configured for {target.platform.value}")
         if not target.chat_id:
@@ -311,5 +327,8 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
+            from gateway.platforms.base import BasePlatformAdapter
+            if BasePlatformAdapter._is_partial_delivery(result):
+                raise PartialDeliveryError(error, result)
             raise RuntimeError(error or f"{target.platform.value} delivery failed")
         return result

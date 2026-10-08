@@ -93,17 +93,17 @@ def _read_config() -> Optional[Dict[str, Any]]:
     """
     try:
         from hermes_cli.config import get_config_path
-        import yaml
+        import hermes_yaml as yaml
         config_path = get_config_path()
         if not config_path.exists():
             return None
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             cfg = yaml.safe_load(f) or {}
         web = cfg.get("web")
         if not isinstance(web, dict):
             return None
         return web.get("federated")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort raw-config read; failure falls back to defaults
         return None
 
 
@@ -111,7 +111,7 @@ def _get_registered_provider(name: str) -> Optional[WebSearchProvider]:
     try:
         from agent.web_search_registry import get_provider
         return get_provider(name)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- optional backend lookup; an unregistered name is skipped
         return None
 
 
@@ -374,7 +374,7 @@ def _rank_results(
 
         logger.warning("LLM ranking unparseable, falling back to keyword ranking")
     except Exception as exc:
-        logger.warning("LLM ranking failed (%s), falling back to keyword ranking", exc)
+        logger.warning("LLM ranking failed (%s), falling back to keyword ranking", exc, exc_info=True)
 
     return _keyword_rank(query, results)
 
@@ -432,7 +432,7 @@ def _search_custom_backend(
         logger.warning("Custom backend HTTP error: %s (%s)", exc, exc.response.text[:200])
         return [], exc.response.status_code
     except Exception as exc:
-        logger.warning("Custom backend failed: %s", exc)
+        logger.warning("Custom backend failed: %s", exc, exc_info=True)
     return [], None
 
 
@@ -531,7 +531,7 @@ def _search_one_backend(backend: Dict[str, Any], query: str, limit: int) -> tupl
         logger.info("Backend '%s' returned %d results", name, len(results))
         return results, status_code
     except Exception as exc:
-        logger.warning("Backend '%s' error: %s", name, exc)
+        logger.warning("Backend '%s' error: %s", name, exc, exc_info=True)
         return [], None
 
 
@@ -676,7 +676,7 @@ class FederatedSearchProvider(WebSearchProvider):
                         # the documented 401/403/429 cooldown actually fires.
                         if health_cache is not None and status_code is not None:
                             health_cache.mark_failed(name, status_code)
-                    except Exception as exc:
+                    except Exception as exc:  # health: allow BLE001 -- per-backend failure is surfaced in the response's errors list
                         errors.append(f"backend '{name}' failed: {exc}")
                         backend_results[name] = ([], None)
 
@@ -754,7 +754,7 @@ class FederatedSearchProvider(WebSearchProvider):
             }
 
         except Exception as exc:
-            logger.error("Federated search error: %s", exc)
+            logger.error("Federated search error: %s", exc, exc_info=True)
             return {"success": False, "error": f"Federated search failed: {exc}"}
 
     def get_setup_schema(self) -> Dict[str, Any]:

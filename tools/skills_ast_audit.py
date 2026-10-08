@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (file, line, pattern_id, description)
-Finding = Tuple[str, int, str, str]
+Finding = tuple[str, int, str, str]
 
 _IGNORED_DIRS = {"__pycache__", ".venv", "venv", "node_modules"}
 # builtin name -> (index of the argument that must be a literal, pattern_id, description)
@@ -22,13 +22,13 @@ def _is_importlib(name: str) -> bool:
     return name == "importlib" or name.startswith("importlib.")
 
 
-def _scan_source(content: str, rel_path: str) -> List[Finding]:
+def _scan_source(content: str, rel_path: str) -> list[Finding]:
     try:
         tree = ast.parse(content)
     except (SyntaxError, ValueError, RecursionError):
         return []
-    findings: List[Finding] = []
-    hit = lambda node, pid, desc: findings.append((rel_path, node.lineno, pid, desc))  # noqa: E731
+    findings: list[Finding] = []
+    hit = lambda node, pid, desc: findings.append((rel_path, node.lineno, pid, desc))
 
     class V(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -63,14 +63,14 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
     return findings
 
 
-def _scan_file(py: Path, rel: str) -> List[Finding]:
+def _scan_file(py: Path, rel: str) -> list[Finding]:
     try:
-        return _scan_source(py.read_text(encoding="utf-8", errors="replace"), rel)
+        return _scan_source(py.read_text(encoding="utf-8-sig", errors="replace"), rel)
     except OSError:
         return []
 
 
-def ast_scan_path(path: Path) -> List[Finding]:
+def ast_scan_path(path: Path) -> list[Finding]:
     """Scan one .py file or every .py under a directory; [] for non-Python/missing paths."""
     if path.is_file():
         return _scan_file(path, path.name) if path.suffix.lower() == ".py" else []
@@ -78,7 +78,7 @@ def ast_scan_path(path: Path) -> List[Finding]:
             for f in _scan_file(py, py.relative_to(path).as_posix())] if path.is_dir() else []
 
 
-def format_ast_report(findings: List[Finding], skill_name: str = "") -> str:
+def format_ast_report(findings: list[Finding], skill_name: str = "") -> str:
     """Plain-text (Rich-markup-free) report grouped by file."""
     header = f"AST deep scan: {skill_name}" if skill_name else "AST deep scan"
     if not findings:

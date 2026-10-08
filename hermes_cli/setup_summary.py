@@ -28,7 +28,7 @@ _BROWSER_MISSING_HINTS = {
     "Browserbase": "npm install -g agent-browser and set BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
     "Browser Use": "npm install -g agent-browser and set BROWSER_USE_API_KEY",
     "Camofox": "CAMOFOX_URL",
-    "Local browser": "npm install -g agent-browser && agent-browser install --with-deps"}
+    "Local browser": "hermes pm install agent-browser"}
 _BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
@@ -167,10 +167,6 @@ def _modal_row(config, feats):
     return None
 
 
-def _home_assistant_row(config, feats):
-    return ("Smart Home (Home Assistant)", True, None) if _setup.get_env_value("HASS_TOKEN") else None
-
-
 def _spotify_row(config, feats):
     # OAuth via hermes auth spotify — check auth.json, not env vars
     try:
@@ -196,7 +192,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _home_assistant_row, _spotify_row, _skills_hub_row, _always_on_rows)
+    _modal_row, _spotify_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):
@@ -271,4 +267,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

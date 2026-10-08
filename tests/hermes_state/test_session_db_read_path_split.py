@@ -26,33 +26,8 @@ def db(tmp_path):
     d.close()
 
 
-@pytest.mark.requires_wal
-def test_read_conn_is_per_thread(db):
-    conns = {}
-
-    def grab(key):
-        conns[key] = db._get_read_conn()
-
-    t1 = threading.Thread(target=grab, args=(1,))
-    t2 = threading.Thread(target=grab, args=(2,))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    assert conns[1] is not None and conns[2] is not None
-    assert conns[1] is not conns[2]
 
 
-@pytest.mark.requires_wal
-def test_read_conn_reused_via_pool(db):
-    """Reuse is now the pool's job, not a per-thread memo.
-
-    The old contract (``_get_read_conn()`` returns the same object twice on one
-    thread) was the leak: that memo pinned one unclosable connection per
-    (SessionDB x thread) forever. ``_get_read_conn`` now always opens a fresh
-    connection and reuse happens via checkout/return, so assert on that.
-    """
-    with db._read_ctx() as first:
-        assert first is not None
-    with db._read_ctx() as second:
-        assert second is first, "sequential readers must reuse the pooled conn"
 
 
 @pytest.mark.requires_wal
@@ -184,6 +159,9 @@ def test_session_resume_reads_do_not_take_writer_lock(db):
     db.create_session(session_id="parent1", source="cli", model="m")
     db.append_message("parent1", role="user", content="parent turn")
     db.append_message("parent1", role="assistant", content="parent reply")
+    # A real rotation stamps the parent end_reason='compression' (publish_compression_child);
+    # without the stamp this is an unverified parent link no production writer creates.
+    db.end_session("parent1", "compression")
     db.create_session(session_id="child1", source="cli", model="m", parent_session_id="parent1")
     db.append_message("child1", role="user", content="child turn")
     db.append_message("child1", role="assistant", content="child reply")

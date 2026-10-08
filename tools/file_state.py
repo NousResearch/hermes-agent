@@ -20,7 +20,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # (mtime, read_ts, partial). partial=True when read_file returned a windowed
 # view (offset > 1 or limit < total_lines) — a later write should still warn
 # so the model re-reads in full.
-ReadStamp = Tuple[float, float, bool]
+ReadStamp = tuple[float, float, bool]
 
 # Bounded so long sessions don't accumulate unbounded state.
 _MAX_PATHS_PER_AGENT = 4096
@@ -30,6 +30,12 @@ _MAX_GLOBAL_WRITERS = 4096
 def _disabled() -> bool:
     # Re-read each call so tests can toggle via monkeypatch.setenv.
     return os.environ.get("HERMES_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
+
+
+def guard_disabled() -> bool:
+    """True when the user switched the read-before-write guard off; the file
+    tools then warn instead of refusing stale/unread write_file overwrites."""
+    return _disabled()
 
 
 def _mtime_or_none(resolved: str) -> Optional[float]:
@@ -61,10 +67,10 @@ class FileStateRegistry:
     """Process-wide coordinator for cross-agent file edits."""
 
     def __init__(self) -> None:
-        self._reads: Dict[str, Dict[str, ReadStamp]] = defaultdict(dict)
-        self._last_writer: Dict[str, Tuple[str, float]] = {}
-        self._path_locks: Dict[str, threading.Lock] = {}
-        self._path_lock_users: Dict[str, int] = {}
+        self._reads: dict[str, dict[str, ReadStamp]] = defaultdict(dict)
+        self._last_writer: dict[str, tuple[str, float]] = {}
+        self._path_locks: dict[str, threading.Lock] = {}
+        self._path_lock_users: dict[str, int] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
         self._state_lock = threading.Lock()  # guards _reads + _last_writer
 
@@ -160,8 +166,8 @@ class FileStateRegistry:
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
-                    "(partial view). Re-read the whole file before "
-                    "overwriting it.")
+                    "(partial view). Read the remaining pages, or use patch, "
+                    "before overwriting it.")
             return None
 
         return (
@@ -169,21 +175,21 @@ class FileStateRegistry:
             "Read the file first so you can write an informed edit.")
 
     def writes_since(self, exclude_task_id: str, since_ts: float,
-                     paths: Iterable[str]) -> Dict[str, List[str]]:
+                     paths: Iterable[str]) -> dict[str, list[str]]:
         """``{writer_task_id: [paths]}`` for writes after ``since_ts`` by agents
         other than ``exclude_task_id`` (delegate_task's "subagent modified files
         you previously read" reminder)."""
         if _disabled():
             return {}
         paths_set = set(paths)
-        out: Dict[str, List[str]] = defaultdict(list)
+        out: dict[str, list[str]] = defaultdict(list)
         with self._state_lock:
             for p, (writer_tid, ts) in self._last_writer.items():
                 if writer_tid != exclude_task_id and ts >= since_ts and p in paths_set:
                     out[writer_tid].append(p)
         return dict(out)
 
-    def known_reads(self, task_id: str) -> List[str]:
+    def known_reads(self, task_id: str) -> list[str]:
         """Resolved paths this agent has read."""
         if _disabled():
             return []
@@ -191,9 +197,15 @@ class FileStateRegistry:
             return list(self._reads.get(task_id, {}).keys())
 
     def forget_task(self, task_id: str) -> None:
-        """Release read stamps owned by a task after its lifecycle ends."""
+        """Release read stamps and writer claims owned by a task after its lifecycle ends.
+
+        A finished task is not a concurrent sibling: leaving its writer claims behind makes
+        the next run of the same job (a fresh ``cron:<job>:<uuid>`` id) refuse to write the
+        same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
+                del self._last_writer[p]
 
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""
@@ -229,11 +241,11 @@ def lock_path(resolved_or_path: str | Path):
     return _registry.lock_path(str(resolved_or_path))
 
 
-def writes_since(exclude_task_id: str, since_ts: float, paths: Iterable[str | Path]) -> Dict[str, List[str]]:
+def writes_since(exclude_task_id: str, since_ts: float, paths: Iterable[str | Path]) -> dict[str, list[str]]:
     return _registry.writes_since(exclude_task_id, since_ts, [str(p) for p in paths])
 
 
-def known_reads(task_id: str) -> List[str]:
+def known_reads(task_id: str) -> list[str]:
     return _registry.known_reads(task_id)
 
 

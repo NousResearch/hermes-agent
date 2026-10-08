@@ -8,6 +8,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -16,8 +17,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -99,7 +100,13 @@ class GatewayGoalsMixin:
 
     @staticmethod
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
-        """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session."""
+        """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
+
+        The stored source's ``message_id`` is the message that registered the watch; a synthetic
+        prompt is not a reply to it, so it is dropped or every progress bubble and final reply
+        would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        """
+        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
@@ -132,7 +139,7 @@ class GatewayGoalsMixin:
                 return
             session_id = current
             watch[quick_key] = (source, session_id)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter is None or not adapter._message_handler:
             return
         if (
@@ -141,6 +148,10 @@ class GatewayGoalsMixin:
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
             return  # keep missed intervals due until user work has drained
+        from agent.estop import check_paused
+
+        if check_paused("heartbeat", logger):
+            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
         from hermes_cli.heartbeat import HeartbeatManager
 
         mgr = HeartbeatManager(session_id=session_id)
@@ -153,6 +164,8 @@ class GatewayGoalsMixin:
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
         event._heartbeat_execution_started = False
+        # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
+        # non-internal so authorization and the emergency stop still apply.
         event._heartbeat_session_id = session_id
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
@@ -196,7 +209,7 @@ class GatewayGoalsMixin:
             logger.debug("Failed to start heartbeat poller", exc_info=True)
 
     def _goal_notice_adapter(self, source: Any):
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
         return adapter
@@ -299,7 +312,7 @@ class GatewayGoalsMixin:
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
@@ -414,6 +427,12 @@ class GatewayGoalsMixin:
         mgr = LoopManager(session_id=sid)
         if not mgr.is_due(now):
             return
+        from agent.estop import check_paused
+
+        # Loop wakeups are injected as internal events, which bypass the inbound estop gate; without
+        # this a `hermes pause` would still start agent turns. Not claiming the tick keeps it due.
+        if check_paused("loop", logger):
+            return
         # fire_tick()/complete_tick() are writes (BEGIN IMMEDIATE) taking the SessionDB writer lock; a slow
         # writer elsewhere holding it while the loop thread blocked froze the gateway until the watchdog
         # fired. The context-preserving executor keeps the profile HERMES_HOME override under multiplex.
@@ -451,13 +470,18 @@ class GatewayGoalsMixin:
         store — a ``/loop`` set from a secondary profile's chat would never fire. Every served
         profile's store is scanned under its own runtime scope (same shape as ``_handoff_watcher``),
         and each hit is fired against that profile's adapters."""
-        from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes
+        from gateway.run import _async_profile_runtime_scope, _resolve_handoff_watch_scopes
+        from gateway.run_idle_gates import profile_has_active_loop
         await asyncio.sleep(5)  # let platforms finish connecting
         warned_no_route: set = set()
 
         def _scope(profile_home):
-            return (_async_profile_runtime_scope(profile_home) if profile_home is not None
-                    else nullcontext())
+            # profile_home None = the launch profile's own store; once the process multiplexes it
+            # binds its own scope instead of running on ambient env (see _scope_or_null).
+            if profile_home is not None:
+                return _async_profile_runtime_scope(profile_home)
+            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+            return async_launch_profile_scope_if_multiplexed()
 
         async def _scan_one_store(profile_name: Optional[str]) -> None:
             from hermes_cli.loops import list_active_loops
@@ -473,7 +497,14 @@ class GatewayGoalsMixin:
 
         while self._running:
             try:
-                for profile_name, profile_home in _handoff_watch_scopes(self):
+                # Multiplex resolution walks the filesystem off-loop; a stalled walk on the loop
+                # trips the loop-liveness watchdog (exit 75).
+                for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
+                    # Idle gate (run_idle_gates): skip the scope entry when the profile's store holds
+                    # no active loop. The root scan (None) is unscoped and stays cheap.
+                    if profile_home is not None and not await self._run_in_executor_with_context(
+                            profile_has_active_loop, profile_home):
+                        continue
                     async with _scope(profile_home):
                         await _scan_one_store(profile_name)
             except Exception as exc:

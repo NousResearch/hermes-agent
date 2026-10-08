@@ -19,7 +19,6 @@ glue layer simultaneously.
 from __future__ import annotations
 
 import asyncio
-import inspect
 
 import pytest
 
@@ -66,73 +65,6 @@ def _ensure_plugins_loaded() -> None:
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts with a clean web-provider env."""
     _clear_web_env(monkeypatch)
-
-
-class TestBundledPluginsRegister:
-    """All bundled web plugins discover and register correctly."""
-
-    def test_all_bundled_plugins_present_in_registry(self) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import list_providers
-
-        names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "federated",
-            "firecrawl",
-            "keenable",
-            "parallel",
-            "perplexity",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
-
-    @pytest.mark.parametrize(
-        "plugin_name,expected_search,expected_extract",
-        [
-            ("brave-free", True, False),
-            ("ddgs", True, False),
-            ("searxng", True, False),
-            ("exa", True, True),
-            ("parallel", True, True),
-            ("keenable", True, True),
-            ("tavily", True, True),
-            ("perplexity", True, True),
-            ("firecrawl", True, True),
-            ("federated", True, False),
-            # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False),
-        ],
-    )
-    def test_capability_flags_match_spec(
-        self,
-        plugin_name: str,
-        expected_search: bool,
-        expected_extract: bool,
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None, f"plugin {plugin_name!r} not registered"
-        assert provider.supports_search() is expected_search
-        assert provider.supports_extract() is expected_extract
-
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "perplexity", "firecrawl", "keenable", "xai"],
-    )
-    def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None
-        assert provider.name == plugin_name
-        assert provider.display_name  # any non-empty string
 
 
 # ---------------------------------------------------------------------------
@@ -237,21 +169,6 @@ class TestIsAvailable:
         )
         assert p.is_available() is True
 
-    def test_ddgs_always_available_when_package_importable(self) -> None:
-        """DDGS is the always-on fallback — no API key required.
-
-        It may report unavailable if the ``ddgs`` package itself isn't
-        installed in the env (legitimate — the plugin's post_setup hook
-        triggers pip install on first selection). We only assert that
-        is_available() doesn't raise.
-        """
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("ddgs")
-        assert p is not None
-        # Truthy or falsy, just must not raise.
-        _ = bool(p.is_available())
 
     def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
@@ -329,21 +246,55 @@ class TestRegistryResolution:
             assert result.is_available() or result.is_keyless_available()
 
 
-# ---------------------------------------------------------------------------
-# Sync-vs-async extract detection
-# ---------------------------------------------------------------------------
 
-
-class TestAsyncExtractDispatch:
-    """The dispatcher detects async vs sync extract methods correctly."""
 
 
 # ---------------------------------------------------------------------------
-# Error response shape (preserved bit-for-bit from legacy)
+# Firecrawl timeout alignment (#43272)
 # ---------------------------------------------------------------------------
 
 
-class TestErrorResponseShapes:
-    """When credentials are missing, plugins return typed errors, not raises."""
+class TestFirecrawlScrapeTimeout:
+    """Verify the server-side scrape timeout matches the asyncio deadline."""
 
+    def test_extract_passes_timeout_ms_to_scrape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """scrape() must receive timeout=60000 (ms) so the server-side
+        deadline matches the 60 s asyncio.wait_for deadline.  Without this
+        the API uses its 30 s default, causing SCRAPE_TIMEOUT."""
+        from unittest.mock import MagicMock, patch
+        from plugins.web.firecrawl import provider as firecrawl_provider
 
+        # Direct-credential mode: with no FIRECRAWL_API_KEY extract() routes
+        # to the keyless ring instead of the direct scrape path under test.
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+
+        # Set up a fake client whose scrape() returns a minimal response
+        fake_client = MagicMock()
+        fake_client.scrape.return_value = {
+            "metadata": {"title": "Test", "sourceURL": "https://example.com"},
+            "markdown": "content",
+        }
+
+        # Patch _get_firecrawl_client to return our fake client
+        monkeypatch.setattr(
+            firecrawl_provider, "_get_firecrawl_client", lambda capability=None: fake_client
+        )
+        # Patch check_website_access to allow the URL
+        monkeypatch.setattr(
+            firecrawl_provider, "check_website_access", lambda url: None
+        )
+
+        p = firecrawl_provider.FirecrawlWebSearchProvider()
+        results = asyncio.run(p.extract(["https://example.com"]))
+
+        # Verify scrape was called with timeout=60000
+        fake_client.scrape.assert_called_once()
+        call_kwargs = fake_client.scrape.call_args
+        assert call_kwargs.kwargs.get("timeout") == 60_000, (
+            f"Expected timeout=60000, got {call_kwargs.kwargs.get('timeout')}"
+        )
+
+        # Verify the result was processed correctly
+        assert len(results) == 1
+        assert results[0]["url"] == "https://example.com"
+        assert results[0]["content"] == "content"

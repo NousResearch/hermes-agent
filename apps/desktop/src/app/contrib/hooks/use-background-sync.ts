@@ -24,7 +24,7 @@ import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
-import { refreshProjects, refreshProjectTree } from '@/store/projects'
+import { refreshProjects, refreshProjectTree, syncProfileWorkspaceCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -1102,6 +1102,9 @@ export function useBackgroundSync({
     void refreshCurrentModel()
     void refreshActiveProfile()
     void refreshSessions()
+    // The profile workspace a bare new chat anchors to (see `resolveNewSessionCwd`): read once the
+    // gateway is up, so the click that needs it never waits on a config round trip.
+    void syncProfileWorkspaceCwd(activeGatewayProfile)
 
     // A RELATIVE workspace cwd (config `terminal.cwd: .`) renders as "." in the
     // file tree header — resolve it to the backend's absolute path once.

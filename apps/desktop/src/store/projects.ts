@@ -161,6 +161,21 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // you were looking at: after a restart that's the just-resumed session, whose
 // stored cwd is often a home-dir fallback, so every new chat landed there
 // instead of the configured default (#71873, #80213, #77496).
+// The profile's own workspace (`terminal.cwd`), held for the sync callers below: a click resolves a
+// new session's cwd, a config read does not. Filled at gateway open, the way `store/session.ts` keeps
+// the device-level default project dir.
+let profileWorkspaceCwd = ''
+
+export async function syncProfileWorkspaceCwd(profile?: string): Promise<string> {
+  try {
+    profileWorkspaceCwd = defaultRepoScanRoot(await getHermesConfig(profile)) ?? ''
+  } catch {
+    profileWorkspaceCwd = ''
+  }
+
+  return profileWorkspaceCwd
+}
+
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -178,7 +193,31 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
+  // No project in scope: whatever the chat is about, a detached one lands in the sidebar's Home bucket
+  // every time. The project owning the profile workspace is where this session will actually work, so
+  // it beats a default that is empty on a stock install — same tier as the configured dir (config, not
+  // the focused session's remembered cwd, which stays deliberately ignored).
+  const workspaceProject = projectOwningProfileWorkspace()
+
+  if (workspaceProject) {
+    return workspaceProject
+  }
+
   return workspaceCwdForNewSession()
+}
+
+function projectOwningProfileWorkspace(): string {
+  if (!profileWorkspaceCwd) {
+    return ''
+  }
+
+  const owner = projectIdForCwd(profileWorkspaceCwd)
+
+  if (!owner) {
+    return ''
+  }
+
+  return projectRootCwd($projectTree.get().find(node => node.id === owner))
 }
 
 // Entering a project moves the live workspace only when main holds a fresh

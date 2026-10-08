@@ -6,10 +6,13 @@ import time
 from gateway import delivery_ledger as dl
 
 
-def record(oid, *, profile=None):
-    dl.record_obligation(obligation_id=oid, session_key='session-' + oid, platform='telegram',
-                         chat_id='123', thread_id='77', content='.' * 3000, adapter_profile=profile)
-    dl.mark_failed(oid, 'flood_control:185')
+def record(oid, *, profile=None, error='flood_control:185'):
+    receipt = dl.record_obligation(obligation_id=oid, session_key='session-' + oid,
+                                   platform='telegram', chat_id='123', thread_id='77',
+                                   content='.' * 3000, adapter_profile=profile)
+    attempting = dl.mark_attempting(receipt)
+    assert attempting is not None
+    assert dl.mark_failed(attempting, error)
 
 
 def read(oid):
@@ -21,8 +24,7 @@ def read(oid):
 def test_runtime_deadline_preserves_scope_and_retry_budget():
     record('due')
     record('other', profile='other')
-    record('blocked')
-    dl.mark_failed('blocked', 'Forbidden: bot was blocked by the user')
+    record('blocked', error='Forbidden: bot was blocked by the user')
     stamp = read('due')['updated_at']
     assert dl.sweep_failed_for_runtime('telegram', now=stamp + 184) == []
     assert read('due')['attempts'] == 0
@@ -31,12 +33,12 @@ def test_runtime_deadline_preserves_scope_and_retry_budget():
     assert claimed[0]['needs_marker'] and 'rate limit' in claimed[0]['marker']
     assert read('due')['last_error'] is None
     assert dl.sweep_failed_for_runtime('telegram', now=stamp + 187) == []
-    assert dl.release_runtime_claim('due', claimed[0]['last_error'])
+    assert dl.release_runtime_claim(claimed[0]['receipt'], claimed[0]['last_error'])
     assert read('due')['attempts'] == 0
     assert dl.sweep_failed_for_runtime('telegram', now=time.time()) == []
     claimed = dl.sweep_failed_for_runtime('telegram', now=time.time() + 186)
     assert len(claimed) == 1
-    dl.mark_delivered('due')
+    assert dl.mark_delivered(claimed[0]['receipt'])
     assert dl.sweep_failed_for_runtime('telegram', now=time.time() + 187) == []
     assert read('other')['attempts'] == read('blocked')['attempts'] == 0
 

@@ -17,6 +17,8 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
+from agent.memory_provider import spawn_context_thread
+
 logger = logging.getLogger("hermes_state")
 
 TokenDelta = tuple[str, dict[str, Any]]
@@ -66,7 +68,7 @@ class TokenUsageTransport:
             if not writer_stopped:
                 self.queue.append((session_id, kwargs))
                 if not writer_alive:
-                    thread = threading.Thread(
+                    thread = spawn_context_thread(
                         target=self._writer_loop, name="session-db-token-writer", daemon=True,
                     )
                     self.writer_thread = thread
@@ -141,13 +143,13 @@ class TokenUsageTransport:
         try:
             coalesced = self._coalesce(batch)
         except Exception as exc:
-            logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
+            logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc, exc_info=True)
             coalesced = batch
         for session_id, kwargs in coalesced:
             try:
                 self._persist(session_id, **kwargs)
             except Exception as exc:
-                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc, exc_info=True)
 
     def coalesce(self, batch: list[TokenDelta]) -> list[TokenDelta]:
         """Merge only contiguous, incremental, equal-route deltas."""

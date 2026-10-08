@@ -34,6 +34,7 @@ from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
+from hermes_cli import config_container_validation
 from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
@@ -1133,45 +1134,13 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
 
 
 def _container_slots() -> Dict[str, str]:
-    """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
-    ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
-    slots: Dict[str, str] = {}
-
-    def walk(node: Dict[str, Any], prefix: str) -> None:
-        for key, value in node.items():
-            path = f"{prefix}.{key}" if prefix else key
-            if isinstance(value, dict):
-                slots[path] = "mapping"
-                walk(value, path)
-            elif isinstance(value, list):
-                slots[path] = "list"
-
-    walk(DEFAULT_CONFIG, "")
-    slots.update(_KNOWN_CONTAINER_TYPES)
-    return slots
+    return config_container_validation.container_slots(DEFAULT_CONFIG, _KNOWN_CONTAINER_TYPES)
 
 
 def _validate_quoted_containers(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
-    """A container slot holding ONE quoted string (``enabled: '["a","b"]'``) is skipped by every
-    isinstance-gated reader while ``config get`` echoes it back, so plugins silently unmount and
-    exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
-    for key, kind in _container_slots().items():
-        # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.
-        if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
-            continue
-        value = cfg_get(config, *key.split("."))
-        if not isinstance(value, str) or not _looks_structured_value(value):
-            continue
-        try:
-            parsed = yaml.safe_load(value)
-        except yaml.YAMLError:
-            continue
-        if isinstance(parsed, (list, dict)):
-            _issue(issues, "warning",
-                   f"{key} is the quoted string {value!r} — Hermes expects a YAML {kind} here "
-                   "and every reader ignores the string",
-                   f"Run: hermes config set {key} {shlex.quote(value)}  (stores a real {kind}), "
-                   "or remove the quotes in config.yaml")
+    config_container_validation.validate_quoted_containers(
+        config, issues, _container_slots(), _SCALAR_AS_ONE_ITEM_LIST_KEYS,
+        cfg_get, _looks_structured_value, _issue, yaml, shlex)
 
 
 def _validate_state_store(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:

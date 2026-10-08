@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -60,6 +62,49 @@ def _create_room():
     )["room"]
 
 
+def test_capabilities_runtime_refusal_logs_traceback_before_room_work(
+    tmp_path, monkeypatch, caplog
+):
+    from gateway import hosted_room_coordination, hosted_room_peer, hosted_rooms
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    refusal = "selected PostgreSQL hosted-room coordination is unavailable"
+
+    def reject_runtime():
+        raise RuntimeError(refusal)
+
+    monkeypatch.setattr(
+        hosted_room_coordination, "require_hosted_room_coordination_runtime", reject_runtime
+    )
+    service = Mock(side_effect=AssertionError("service must not be queried"))
+    catalog = Mock(side_effect=AssertionError("catalog must not be queried"))
+    db_path = Mock(side_effect=AssertionError("room SQLite path must not be resolved"))
+    sqlite_fallback = Mock(side_effect=AssertionError("SQLite fallback must not open"))
+    monkeypatch.setattr(srv, "get_hosted_room_service", service)
+    monkeypatch.setattr(hosted_room_peer, "local_catalog_mapping", catalog)
+    monkeypatch.setattr(hosted_rooms, "default_db_path", db_path)
+    monkeypatch.setattr(hosted_room_coordination, "sqlite_hosted_room_coordination", sqlite_fallback)
+
+    with caplog.at_level(logging.ERROR):
+        response = srv._methods["groups.capabilities"](42, {})
+
+    assert response == {"jsonrpc": "2.0", "id": 42, "error": {"code": 5109, "message": refusal}}
+    records = [record for record in caplog.records if record.exc_info]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].name == "tui_gateway.server"
+    assert records[0].message == "groups.capabilities hosted-room coordination runtime refused"
+    assert records[0].exc_info[0] is RuntimeError
+    assert str(records[0].exc_info[1]) == refusal
+    assert "reject_runtime" in caplog.text
+    service.assert_not_called()
+    catalog.assert_not_called()
+    db_path.assert_not_called()
+    sqlite_fallback.assert_not_called()
+    assert not (home / "state.db").exists()
+    assert not (home / "hosted_rooms.db").exists()
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):

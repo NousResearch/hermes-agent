@@ -560,7 +560,7 @@ def _get_session_db() -> Optional[Any]:
             from session_control_store import get_session_control_store
             return get_session_control_store()
     except Exception as exc:
-        logger.warning("GoalManager: selected PostgreSQL control store unavailable: %s", exc)
+        logger.warning("GoalManager: selected PostgreSQL control store unavailable: %s", exc, exc_info=True)
         return None
 
     cached = _DB_CACHE.get(home)

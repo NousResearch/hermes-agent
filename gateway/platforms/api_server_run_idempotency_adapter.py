@@ -61,11 +61,8 @@ def selected_run_idempotency_store_factory():
     owns its store/lifetime; no instance caching).  A PostgreSQL selection with a
     missing/unreachable DSN raises instead of degrading to SQLite.
     """
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-    except Exception:
-        config = {}
+    from hermes_cli.config import load_config
+    config = load_config()
     from state_store import resolve_state_store_config
     resolved = resolve_state_store_config(config)
     if resolved.backend == "sqlite":

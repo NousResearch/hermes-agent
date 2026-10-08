@@ -77,11 +77,8 @@ def selected_delivery_ledger() -> DeliveryLedger | None:
     home = str(get_hermes_home())
     if home in _SELECTED_LEDGER_CACHE:
         return _SELECTED_LEDGER_CACHE[home]
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-    except Exception:
-        config = {}
+    from hermes_cli.config import load_config
+    config = load_config()
     from state_store import resolve_state_store_config
     if resolve_state_store_config(config).backend == "sqlite":
         result: DeliveryLedger | None = None

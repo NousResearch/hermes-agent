@@ -280,7 +280,7 @@ def _owner_identity() -> tuple[str, str, str]:
     home = _db_path().parent
     identity_path = home / ".delivery-ledger-installation-id"
     try:
-        installation = identity_path.read_text(encoding="utf-8").strip()
+        installation = identity_path.read_text(encoding="utf-8-sig").strip()
     except OSError:
         installation = ""
     if not installation:

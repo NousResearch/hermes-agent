@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
+from state_store import StateStoreConfigurationError
 from state_store_runtime_readiness import PostgreSQLRuntimeActivationError, trap_state_db_opens
 
 
@@ -42,6 +44,88 @@ def _assert_no_gateway_artifacts(home: Path, sessions_dir: Path) -> None:
     assert not (home / "state.db").exists()
     assert not (sessions_dir / "sessions.json").exists()
     assert list(sessions_dir.glob("*.jsonl")) == [] if sessions_dir.exists() else True
+
+
+def test_malformed_backend_config_fails_before_legacy_gateway_runtime(tmp_path, monkeypatch):
+    """An invalid selection cannot be silently retried as a legacy route."""
+    import state_store_runtime_readiness
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("state_store:\n  backend: invalid\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    legacy_guard = Mock(side_effect=AssertionError("entered legacy routing after invalid config"))
+    monkeypatch.setattr(state_store_runtime_readiness, "require_legacy_state_db_runtime", legacy_guard)
+
+    with trap_state_db_opens(home) as opens:
+        with pytest.raises(StateStoreConfigurationError, match="state_store.backend must be one of"):
+            SessionStore(home / "sessions", GatewayConfig())
+
+    legacy_guard.assert_not_called()
+    assert opens == []
+    _assert_no_gateway_artifacts(home, home / "sessions")
+
+
+def test_constructor_does_not_demote_to_sqlite_when_second_config_read_fails(tmp_path, monkeypatch):
+    """A successful initial guard cannot turn a later config failure into a SQLite open."""
+    from hermes_cli import config as config_module
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    sessions_dir = home / "sessions"
+    original_load = config_module.load_config
+    calls = 0
+
+    def load_then_fail():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second config read failed")
+        return original_load()
+
+    monkeypatch.setattr(config_module, "load_config", load_then_fail)
+    with trap_state_db_opens(home) as opens:
+        with pytest.raises(RuntimeError, match="second config read failed"):
+            SessionStore(sessions_dir, GatewayConfig())
+
+    assert calls == 2
+    assert opens == []
+    _assert_no_gateway_artifacts(home, sessions_dir)
+
+
+def test_selected_postgresql_index_load_does_not_demote_on_second_config_failure(tmp_path, monkeypatch):
+    """A failed re-probe must not initialize the legacy routing index or its directory."""
+    from hermes_cli import config as config_module
+
+    home = _selected_pg_home(tmp_path, monkeypatch)
+    sessions_dir = home / "routing-index-probe-sessions"
+    with trap_state_db_opens(home) as opens:
+        store = SessionStore(sessions_dir, GatewayConfig())
+    assert opens == []
+    assert not sessions_dir.exists()
+
+    original_load = config_module.load_config
+    failure = RuntimeError("index load second PostgreSQL config probe failed")
+    calls = 0
+
+    def load_then_fail():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure
+        return original_load()
+
+    monkeypatch.setattr(config_module, "load_config", load_then_fail)
+    with trap_state_db_opens(home) as opens:
+        with pytest.raises(RuntimeError) as error:
+            store._ensure_loaded()
+
+    assert error.value is failure
+    assert calls == 2
+    assert opens == []
+    assert not sessions_dir.exists()
+    _assert_no_gateway_artifacts(home, sessions_dir)
 
 
 def test_selected_postgresql_session_store_succeeds_then_fails_closed_on_route(tmp_path, monkeypatch):

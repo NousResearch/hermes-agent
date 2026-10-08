@@ -101,7 +101,41 @@ class TestBranchCommandCLI:
         title = session_db.get_session_title(cli_instance.session_id)
         assert title == "refactor approach"
 
+    @pytest.mark.parametrize("user_count", [1, 2])
+    def test_postgresql_branch_success_uses_localized_output(self, cli_instance, monkeypatch, user_count):
+        """A committed PostgreSQL branch returns the same localized output as SQLite."""
+        from cli import HermesCLI
+        from cli_session_store import PostgreSQLCLISessionStore
+        from hermes_cli.cli_commands_session_tools import _t, _tn
 
+        class BranchBackend:
+            def __init__(self):
+                self.published = None
+
+            def branch_session(self, **kwargs):
+                self.published = kwargs
+
+        backend = BranchBackend()
+        cli_instance._session_db = PostgreSQLCLISessionStore(backend)
+        cli_instance.conversation_history = [{"role": "user", "content": "hi"}] * user_count
+        original = cli_instance.session_id
+        lines = []
+        monkeypatch.setattr("cli._cprint", lines.append)
+        monkeypatch.setattr("cli._sync_process_session_id", lambda _sid: None)
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch PG child")
+
+        assert backend.published is not None
+        assert backend.published["parent_session_id"] == original
+        assert backend.published["child_session_id"] == cli_instance.session_id
+        assert backend.published["title"] == "PG child"
+        assert cli_instance.session_id != original
+        assert cli_instance._resumed is True
+        assert lines == [
+            "  " + _tn("branch.branched", user_count, title="PG child"),
+            "  " + _t("branch.original_session", session_id=original),
+            "  " + _t("branch.branch_session", session_id=cli_instance.session_id),
+        ]
 
     def test_branch_no_session_db(self, cli_instance):
         """Branching without a session DB should show an error."""

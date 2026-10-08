@@ -11,7 +11,11 @@ from __future__ import annotations
 import pytest
 
 from gateway.delivery_ledger import RECONNECTED_MARKER
-from gateway.delivery_ledger_adapter import SqliteDeliveryLedger, selected_delivery_ledger
+from gateway.delivery_ledger_adapter import (
+    _SELECTED_LEDGER_CACHE,
+    SqliteDeliveryLedger,
+    selected_delivery_ledger,
+)
 from gateway.delivery_ledger_postgresql import PostgreSQLDeliveryLedger
 from state_store import StateStoreConfigurationError
 from state_store_runtime_readiness import trap_state_db_opens
@@ -91,6 +95,30 @@ def test_selected_pg_unreachable_raises_without_state_db(tmp_path, monkeypatch):
             selected_delivery_ledger()
     assert events == []
     assert not (home / "state.db").exists()
+
+
+@pytest.mark.integration
+def test_selected_ledger_config_load_failure_does_not_select_sqlite(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_cli.config as config_module
+
+    failure = RuntimeError("configuration load failed")
+
+    def fail_load():
+        raise failure
+
+    monkeypatch.setattr(config_module, "load_config", fail_load)
+    assert str(home) not in _SELECTED_LEDGER_CACHE
+
+    with trap_state_db_opens(home) as events:
+        with pytest.raises(RuntimeError) as exc_info:
+            selected_delivery_ledger()
+    assert exc_info.value is failure
+    assert events == []
+    assert not (home / "state.db").exists()
+    assert str(home) not in _SELECTED_LEDGER_CACHE
 
 
 @pytest.mark.integration

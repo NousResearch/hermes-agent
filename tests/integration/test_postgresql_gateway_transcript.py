@@ -127,7 +127,7 @@ def test_postgresql_has_gateway_input_owner(postgresql_test_target, oracle):
         _seed_pg(store)
         # SQLite oracle needs the marker written through display_metadata.
         marker = {"gateway_input_owner": "gateway-input-1"}
-        marked_row = oracle.append_message("sess", "user", "accepted", observed=False, display_metadata=marker)
+        oracle.append_message("sess", "user", "accepted", observed=False, display_metadata=marker)
         store.append_message_record("sess", MessageRecord(role="user", content="accepted", observed=False, display_metadata=marker))
         assert oracle.has_gateway_input_owner("sess", "gateway-input-1") is True
         assert store.has_gateway_input_owner("sess", "gateway-input-1") is True

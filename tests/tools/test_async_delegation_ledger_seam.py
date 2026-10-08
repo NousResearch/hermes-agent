@@ -63,6 +63,32 @@ def test_sqlite_home_keeps_legacy_state_db_path(tmp_path, monkeypatch):
     assert ad.mark_completion_delivered("sqlite-1") is False  # already delivered
 
 
+def test_config_load_failure_does_not_select_sqlite(tmp_path, monkeypatch):
+    import hermes_cli.config
+    from state_store_runtime_readiness import trap_state_db_opens
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _SELECTED_LEDGER_CACHE.clear()
+    failure = RuntimeError("config unavailable")
+
+    def fail_load():
+        raise failure
+
+    monkeypatch.setattr(hermes_cli.config, "load_config", fail_load)
+    with pytest.raises(RuntimeError) as exc_info:
+        selected_async_delegation_ledger()
+    assert exc_info.value is failure
+    with trap_state_db_opens(home) as events:
+        with pytest.raises(RuntimeError) as dispatch_exc:
+            ad._persist_dispatch(_record("config-fail"))
+    assert dispatch_exc.value is failure
+    assert events == []
+    assert str(home) not in _SELECTED_LEDGER_CACHE
+    assert not (home / "state.db").exists()
+
+
 def test_unreachable_pg_fails_typed_without_state_db(tmp_path, monkeypatch):
     from state_store_runtime_readiness import (
         PostgreSQLRuntimeActivationError, trap_state_db_opens)

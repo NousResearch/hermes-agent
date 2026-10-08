@@ -2,6 +2,7 @@
 usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=30)`` → ``format_terminal(report)``."""
 
 import json
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -52,7 +53,7 @@ class SqliteInsightsReadStore:
         try:
             self._has_assistant_index = bool(self._conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._ASSISTANT_INDEX,)).fetchone())
-        except Exception:
+        except sqlite3.Error:
             self._has_assistant_index = False
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:

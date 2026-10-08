@@ -5,6 +5,8 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
 import logging
+import os
+import shutil
 import subprocess
 import sys
 
@@ -17,6 +19,28 @@ logger = logging.getLogger("hermes_cli.main")
 # to the checkout (NOT in HERMES_HOME): __pycache__ is per-checkout state shared
 # by every profile.
 _BYTECODE_FINGERPRINT_FILE = ".bytecode-fingerprint"
+
+
+def _clear_bytecode_cache(root: Path) -> int:
+    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
+
+    Returns the number of directories removed.
+    """
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
+        ]
+        if os.path.basename(dirpath) == "__pycache__":
+            try:
+                shutil.rmtree(dirpath)
+                removed += 1
+            except OSError:
+                pass
+            dirnames.clear()  # nothing left to recurse into
+    return removed
 
 
 def _record_bytecode_fingerprint() -> None:

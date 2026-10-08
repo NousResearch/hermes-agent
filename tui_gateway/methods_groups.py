@@ -8,8 +8,11 @@ from .method_ctx import HandlerRegistry
 
 import contextlib
 import importlib
+import logging
 import os
 import threading
+
+logger = logging.getLogger(__name__)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -237,6 +240,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS,
     try:
         _guard(params)
     except Exception as exc:
+        logger.exception("groups.capabilities hosted-room coordination runtime refused")
         return _err(rid, 5109, str(exc))
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()

@@ -6,11 +6,61 @@ from pathlib import Path
 
 import pytest
 
+from gateway.platforms import api_server_run_idempotency_postgresql as pg_run_idempotency
 from gateway.platforms.api_server_run_idempotency_adapter import (
     open_run_idempotency_store,
     selected_run_idempotency_store_factory,
 )
 from state_store import StateStoreConfigurationError
+
+
+class _StaleCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.statements = []
+
+    def execute(self, sql, params):
+        self.statements.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+@pytest.mark.parametrize("corrupt_status", [
+    "{", None, b"\xff", "[]", "null", "42", "{}", '{"status": "running"}',
+    '{"status": ["completed"]}', '{"status": {"value": "completed"}}',
+])
+def test_pg_prune_keeps_corrupt_and_nonterminal_stale_rows(corrupt_status):
+    store = object.__new__(pg_run_idempotency.PostgreSQLRunIdempotencyStore)
+    cur = _StaleCursor([
+        ("scope", "completed", '{"status": "completed"}'),
+        ("scope", "retained", corrupt_status),
+        ("scope", "failed", '{"status": "failed"}'),
+    ])
+
+    store._prune_stale_terminal(cur, 100.0)
+
+    deletes = [(sql, params) for sql, params in cur.statements if sql.startswith("DELETE")]
+    assert [params for _, params in deletes] == [
+        ("scope", "completed"), ("scope", "failed"),
+    ]
+
+
+def test_pg_prune_propagates_unexpected_parser_error_before_deletion(monkeypatch):
+    store = object.__new__(pg_run_idempotency.PostgreSQLRunIdempotencyStore)
+    cur = _StaleCursor([("scope", "completed", '{"status": "completed"}')])
+    failure = RuntimeError("parser failed unexpectedly")
+
+    def fail_parse(_status):
+        raise failure
+
+    monkeypatch.setattr(pg_run_idempotency.json, "loads", fail_parse)
+    with pytest.raises(RuntimeError) as caught:
+        store._prune_stale_terminal(cur, 100.0)
+    assert caught.value is failure
+    assert len(cur.statements) == 1
+    assert cur.statements[0][0].startswith("SELECT")
+
 
 _PG_CONFIG = (
     "state_store:\n"
@@ -45,6 +95,23 @@ def test_selected_pg_without_dsn_raises_never_none(tmp_path, monkeypatch):
 
     with pytest.raises((ValueError, StateStoreConfigurationError)):
         selected_run_idempotency_store_factory()
+
+
+def test_selected_pg_config_load_failure_never_routes_to_sqlite(tmp_path, monkeypatch):
+    home = _selected_pg_home(tmp_path, monkeypatch)
+    import hermes_cli.config
+
+    failure = RuntimeError("config load failed")
+
+    def fail_load_config():
+        raise failure
+
+    monkeypatch.setattr(hermes_cli.config, "load_config", fail_load_config)
+    with pytest.raises(RuntimeError) as caught:
+        selected_run_idempotency_store_factory()
+    assert caught.value is failure
+    assert not (home / "state.db").exists()
+    assert not (home / "runs_idempotency.db").exists()
 
 
 def test_selected_pg_unreachable_dsn_returns_factory_that_raises_typed(tmp_path, monkeypatch):

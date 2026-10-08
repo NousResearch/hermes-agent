@@ -86,10 +86,12 @@ class TestSelectedPostgresqlTickGate:
         monkeypatch.setattr("cron.bot_chat_delivery.drain", _no_drain)
         monkeypatch.setattr("cron.bot_chat_delivery.drain_in_background", _no_drain)
 
-        def _no_advance(*_a, **_kw):
-            raise AssertionError("advance_next_runs must not run under selected PG")
+        def _no_tick_side_effect(*_a, **_kw):
+            raise AssertionError("tick must stop before housekeeping under selected PG")
 
-        monkeypatch.setattr(scheduler_mod, "advance_next_runs", _no_advance)
+        monkeypatch.setattr(scheduler_mod, "advance_next_runs", _no_tick_side_effect)
+        monkeypatch.setattr(scheduler_mod, "_maybe_reap_dead_owners", _no_tick_side_effect)
+        monkeypatch.setattr(scheduler_mod, "get_due_jobs", _no_tick_side_effect)
 
         def _no_exec_rows(*_a, **_kw):
             raise AssertionError("execution ledger rows must not be created under selected PG")
@@ -117,13 +119,12 @@ class TestSelectedPostgresqlTickGate:
         ledger_candidates = list(tmp_path.rglob("executions*.json*"))
         assert ledger_candidates == []
 
-    def test_selected_pg_gate_fails_open_on_config_error(self, monkeypatch, tmp_path):
-        """A malformed state_store block raises StateStoreConfigurationError;
-        the gate must fail open to the existing tick behavior (no skip log,
-        tick proceeds). Prove 'proceeds' by reaching get_due_jobs with no jobs."""
+    def test_selected_pg_gate_fails_open_on_config_error(self, monkeypatch, tmp_path, caplog):
+        """Malformed config still reaches due jobs, with a diagnostic traceback
+        rather than a selected-PG skip or an implicit SQLite fallback."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _force_no_skew(monkeypatch)
-        jobs_path = _seed_due_job(tmp_path)
+        _seed_due_job(tmp_path)
 
         import hermes_cli.config as cli_config_mod
 
@@ -145,9 +146,22 @@ class TestSelectedPostgresqlTickGate:
 
         monkeypatch.setattr("cron.bot_chat_delivery.drain", lambda: None)
 
-        rc = scheduler_tick_mod.tick(verbose=False)
+        with caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            rc = scheduler_tick_mod.tick(verbose=False)
         assert rc == 0
         assert reached["due"] == 1, "gate must fail open: tick proceeds past the gate"
+        diagnostic = [
+            r for r in caplog.records
+            if "Selected-backend tick gate skipped (config probe failed)" in r.getMessage()
+        ]
+        assert len(diagnostic) == 1
+        assert diagnostic[0].levelno == logging.DEBUG
+        assert diagnostic[0].exc_info is not None
+        assert "StateStoreConfigurationError" in caplog.text
+        assert "state_store.backend must be one of" in caplog.text
+        assert not any("cron tick skipped: selected PostgreSQL" in r.getMessage()
+                       for r in caplog.records)
+        assert not (tmp_path / "state.db").exists()
 
     def test_default_sqlite_tick_proceeds(self, monkeypatch, tmp_path):
         """Default sqlite backend: regression — the tick runs its normal

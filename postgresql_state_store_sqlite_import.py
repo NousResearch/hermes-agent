@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -22,6 +23,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from state_store import PostgreSQLStateStoreConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 _MANIFEST_TABLE = "sqlite_import_manifests"
@@ -247,6 +251,7 @@ def allocate_owned_sqlite_import_target(dsn: str) -> OwnedSQLiteImportTarget:
         f"hermes_state_store_tenant_{uuid.uuid4().hex}"
     )
     target = OwnedSQLiteImportTarget(dsn, schema, uuid.uuid4().hex)
+    reconciliation_required = False
     try:
         # PostgreSQL schema DDL is transactional.  A failed allocation rolls back
         # both namespaces and the marker together rather than relying on a global
@@ -267,22 +272,37 @@ def allocate_owned_sqlite_import_target(dsn: str) -> OwnedSQLiteImportTarget:
             )
             connection.commit()
         target.verify()
-        return target
     except Exception as exc:
+        logger.error(
+            "SQLite import allocation failed (details redacted)",
+            exc_info=(
+                RuntimeError,
+                RuntimeError("SQLite import allocation failed; details redacted"),
+                exc.__traceback__,
+            ),
+        )
         # A commit acknowledgement may be lost after the server committed.  Re-read
         # the durable marker: if it exists, return the capability instead of making
         # the target inaccessible to the caller's error/reconciliation path.
         try:
             target.verify()
-        except SQLitePostgreSQLImportError:
-            raise SQLitePostgreSQLImportError(
-                "SQLite import allocation outcome requires reconciliation",
-                cleanup=SQLiteImportTargetCleanup(
-                    "reconciliation-required", target.schema.name
+        except Exception as verify_exc:
+            logger.exception(
+                "SQLite import allocation marker check failed (details redacted)",
+                exc_info=(
+                    RuntimeError,
+                    RuntimeError("SQLite import marker check failed; details redacted"),
+                    verify_exc.__traceback__,
                 ),
-                stage="allocation",
-            ) from exc
-        return target
+            )
+            reconciliation_required = True
+    if reconciliation_required:
+        raise SQLitePostgreSQLImportError(
+            "SQLite import allocation outcome requires reconciliation",
+            cleanup=SQLiteImportTargetCleanup("reconciliation-required", target.schema.name),
+            stage="allocation",
+        )
+    return target
 
 
 def source_object_mapping_manifest() -> dict[str, Any]:
@@ -776,9 +796,17 @@ class SQLitePostgreSQLSandboxImporter:
                 error=error,
                 stage=stage,
             )
-        except Exception:
+        except Exception as exc:
             # An unprovable catalog is unsafe to mutate. The caller still writes
             # its filesystem receipt and fails closed.
+            logger.error(
+                "SQLite import failure catalog unavailable (details redacted)",
+                exc_info=(
+                    RuntimeError,
+                    RuntimeError("catalog introspection failed; details redacted"),
+                    exc.__traceback__,
+                ),
+            )
             return None
 
     def _assert_target_ready(
@@ -1064,14 +1092,19 @@ class SQLitePostgreSQLSandboxImporter:
         try:
             from hermes_constants import get_hermes_home
 
-            if source == (get_hermes_home() / "state.db").resolve():
-                raise SQLitePostgreSQLImportError(
-                    "SQLite import refuses the active default state.db; supply a disposable explicit source"
-                )
-        except SQLitePostgreSQLImportError:
-            raise
-        except Exception:
-            pass
+            active_default = (get_hermes_home() / "state.db").resolve()
+        except (OSError, ValueError, RuntimeError, TypeError):
+            active_default = None
+        # Raise outside the handler: the public error must not retain private paths
+        # in __context__, and an unknown home must never authorize a snapshot.
+        if active_default is None:
+            raise SQLitePostgreSQLImportError(
+                "SQLite import cannot verify the active default state.db"
+            )
+        if source == active_default:
+            raise SQLitePostgreSQLImportError(
+                "SQLite import refuses the active default state.db; supply a disposable explicit source"
+            )
         snapshot = _snapshot_sqlite(source, snapshot_root)
         fingerprint = _hash_file(snapshot)
         counts: Mapping[str, int] = {}
@@ -1341,7 +1374,15 @@ def main(argv: list[str] | None = None) -> int:
             sort_keys=True,
         ))
         return 2
-    except Exception:
+    except Exception as exc:
+        logger.error(
+            "SQLite import CLI failed (details redacted)",
+            exc_info=(
+                RuntimeError,
+                RuntimeError("SQLite import CLI failed; details redacted"),
+                exc.__traceback__,
+            ),
+        )
         print(json.dumps(_cli_failure_evidence("import", target=target), sort_keys=True))
         return 2
 

@@ -16,6 +16,7 @@ from urllib.parse import quote, urlparse
 POSTGRES_IMAGE = "pgvector/pgvector:pg16"
 _POSTGRES_USER = "hermes"
 _POSTGRES_DATABASE = "hermes"
+_COMPOSE_COMMAND_TIMEOUT_SECONDS = 60
 
 
 def _profile_identity(home: Path) -> str:
@@ -89,7 +90,7 @@ def bootstrap_postgresql_state_store(
     metadata_path = state_dir / "bootstrap.json"
     identity = _profile_identity(home)
     project = f"hermes-state-store-{identity}"
-    metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig")) if metadata_path.exists() else {}
     metadata_is_secure = metadata_path.exists() and stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
     port = int(metadata.get("port") or _find_loopback_port())
     compose_path = state_dir / "compose.yaml"
@@ -102,13 +103,34 @@ def bootstrap_postgresql_state_store(
     dsn = f"postgresql://{_POSTGRES_USER}:{quote(password, safe='')}@127.0.0.1:{port}/{_POSTGRES_DATABASE}"
     metadata_path.write_text(json.dumps({"port": port, "project": project}) + "\n", encoding="utf-8")
     os.chmod(metadata_path, 0o600)
-    invoke = runner or (lambda argv, *, env: subprocess.run(argv, env=env, check=False).returncode)
+    invoke = runner or (
+        lambda argv, *, env: subprocess.run(
+            argv, env=env, check=False, timeout=_COMPOSE_COMMAND_TIMEOUT_SECONDS,
+        ).returncode
+    )
     env = {**os.environ, "POSTGRES_PASSWORD": password}
     prefix = ["docker", "compose", "-p", project, "-f", str(compose_path)]
-    if invoke([*prefix, "up", "-d"], env=env) != 0:
-        raise RuntimeError("PostgreSQL Compose startup failed; no state-store configuration was changed.")
+    startup_timed_out = False
+    try:
+        if invoke([*prefix, "up", "-d"], env=env) != 0:
+            raise RuntimeError("PostgreSQL Compose startup failed; no state-store configuration was changed.")
+    except subprocess.TimeoutExpired:
+        startup_timed_out = True
+    if startup_timed_out:
+        raise RuntimeError("PostgreSQL Compose startup timed out; no state-store configuration was changed.")
     for _ in range(attempts):
-        if invoke([*prefix, "exec", "-T", "postgres", "pg_isready", "-U", _POSTGRES_USER, "-d", _POSTGRES_DATABASE], env=env) == 0:
+        readiness_timed_out = False
+        ready = False
+        try:
+            ready = invoke(
+                [*prefix, "exec", "-T", "postgres", "pg_isready", "-U", _POSTGRES_USER, "-d", _POSTGRES_DATABASE],
+                env=env,
+            ) == 0
+        except subprocess.TimeoutExpired:
+            readiness_timed_out = True
+        if readiness_timed_out:
+            raise RuntimeError("PostgreSQL readiness check timed out; no state-store configuration was changed.")
+        if ready:
             return dsn
         sleep(1)
     raise RuntimeError("PostgreSQL did not become ready; no state-store configuration was changed.")

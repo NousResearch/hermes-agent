@@ -297,6 +297,7 @@ def test_default_sqlite_acp_session_persists_and_restores(tmp_path, monkeypatch)
 async def test_selected_postgresql_server_session_operations_dispatch_without_protocol_refusal(tmp_path, monkeypatch):
     pytest.importorskip("acp")
     from acp_adapter.server import HermesACPAgent
+    from acp.schema import ResumeSessionResponse
 
     home = _selected_pg_home(tmp_path, monkeypatch)
     fake = _FakePGStore()
@@ -305,7 +306,11 @@ async def test_selected_postgresql_server_session_operations_dispatch_without_pr
     manager = SessionManager(agent_factory=lambda: factory_calls.append("agent") or SimpleNamespace(model="test"))
     server = HermesACPAgent(session_manager=manager)
     sent = []
-    server._conn = SimpleNamespace(session_update=lambda *args: sent.append(args))
+
+    async def capture_session_update(**kwargs):
+        sent.append(kwargs)
+
+    server._conn = SimpleNamespace(session_update=capture_session_update)
 
     from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
 
@@ -314,7 +319,9 @@ async def test_selected_postgresql_server_session_operations_dispatch_without_pr
         assert response.session_id
         assert await server.load_session(cwd="/workspace", session_id="missing") is None
         resume = await server.resume_session(cwd="/workspace", session_id="missing")
-        assert resume.session_id
+        # ACP resume replies with model/mode metadata, not a session_id field.
+        # The new session is evidenced by the second agent construction below.
+        assert isinstance(resume, ResumeSessionResponse)
         assert await server.list_sessions() is not None
         await server.cancel(session_id="missing")
         assert await server.set_session_model("test", "missing") is None

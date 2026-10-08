@@ -158,6 +158,52 @@ def test_resolve_projects_through_compression_chain(hermes_home, monkeypatch, no
     )
     assert tb.resolve_breadcrumb_session() == "20260815_110000_child"
 
+
+def test_selected_pg_open_failure_logs_trace_without_sqlite_fallback(
+    hermes_home, monkeypatch, no_terminal_env, capsys, caplog
+):
+    from state_store_runtime_readiness import trap_state_db_opens
+    import cli_session_store
+
+    (hermes_home / "config.yaml").write_text(
+        "state_store:\n  backend: postgresql\n  postgresql:\n"
+        "    dsn_env: HERMES_STATE_STORE_TEST_DSN\n",
+        encoding="utf-8",
+    )
+    _fake_no_tty(monkeypatch)
+    monkeypatch.setenv("TMUX_PANE", "%5")
+    directory = hermes_home / "terminal-sessions"
+    directory.mkdir()
+    (directory / "tmux_pane--5").write_text(
+        json.dumps({"session_id": "20260815_100000_pgcrumb", "ts": time.time()}),
+        encoding="utf-8",
+    )
+    assert tb.get_terminal_id() == "tmux_pane--5"
+    assert tb._breadcrumbs_dir() == directory
+    crumb = tb.read_breadcrumb()
+    assert crumb is not None and crumb["session_id"] == "20260815_100000_pgcrumb"
+
+    def unavailable(config):
+        assert config["state_store"]["backend"] == "postgresql"
+        raise RuntimeError("selected PostgreSQL store unavailable")
+
+    monkeypatch.setattr(cli_session_store, "open_selected_read_store", unavailable)
+    with trap_state_db_opens(hermes_home) as events, caplog.at_level("ERROR"):
+        assert tb.resolve_breadcrumb_session() is None
+
+    err = capsys.readouterr().err
+    assert "cannot open selected state store" in err
+    assert "selected PostgreSQL store unavailable" in err
+    assert "skipping breadcrumb resume" in err
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert "terminal breadcrumb" in record.message
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert str(record.exc_info[1]) == "selected PostgreSQL store unavailable"
+    assert events == []
+    assert not (hermes_home / "state.db").exists()
+
 # ------------------------------------------------------------ config gate
 
 def test_config_gate_off_disables_writes_and_resolution(

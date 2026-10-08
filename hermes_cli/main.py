@@ -897,6 +897,7 @@ from hermes_cli.main_web_build import (
 )
 from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _build_web_ui,
+    _clear_bytecode_cache,
     _nixos_build_env,
     _record_bytecode_fingerprint,
     _run_npm_install_deterministic,
@@ -1387,8 +1388,9 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
+        from cli_session_store import open_cli_session_store
+        from hermes_cli.config import load_config
         from hermes_state_ids import new_session_id as mint_session_id
-        from hermes_state_registry import acquire
 
         new_session_id = mint_session_id()
         db = open_cli_session_store(load_config())
@@ -2289,28 +2291,6 @@ def cmd_uninstall(args):
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
-
-
-def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
-
-    Returns the number of directories removed.
-    """
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
-        if os.path.basename(dirpath) == "__pycache__":
-            try:
-                shutil.rmtree(dirpath)
-                removed += 1
-            except OSError:
-                pass
-            dirnames.clear()  # nothing left to recurse into
-    return removed
 
 
 def _finalize_update_receipt(code: int, reason: str) -> None:

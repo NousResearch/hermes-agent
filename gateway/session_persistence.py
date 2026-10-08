@@ -61,13 +61,10 @@ class SessionPersistenceMixin:
         persistence: the route and transcript mixins dispatch PG-first and return
         before any legacy path, so a selected PostgreSQL backend must NOT trip the
         legacy guard (no sessions.json or JSONL fallback may be created). Backend
-        resolution failures still fail closed through the legacy guard.
+        resolution failures propagate before any legacy runtime is entered.
         """
-        try:
-            if _selected_postgresql_backend():
-                return
-        except Exception:
-            pass  # config error: fail closed via the legacy guard below
+        if _selected_postgresql_backend():
+            return
         from state_store_runtime_readiness import require_legacy_state_db_runtime
 
         require_legacy_state_db_runtime()
@@ -348,11 +345,7 @@ class SessionPersistenceMixin:
         if self._loaded:
             self._reconcile_recovered_routing_locked()
             return
-        try:
-            selected_postgresql = _selected_postgresql_backend()
-        except Exception:
-            selected_postgresql = False  # unreachable: the guard above already raised
-        if selected_postgresql:
+        if _selected_postgresql_backend():
             # Routes live in the PostgreSQL gateway_session_routes table (v24); the
             # in-memory legacy index stays empty and no sessions_dir / sessions.json /
             # state.db artifact is created or read.

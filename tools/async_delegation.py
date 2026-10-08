@@ -164,10 +164,7 @@ def _selected_async_delegation_ledger():
         from hermes_cli.config import load_config
         from state_store_runtime_readiness import (
             PostgreSQLRuntimeActivationError, inspect_runtime_activation)
-        try:
-            config = load_config() or {}
-        except Exception:
-            config = {}
+        config = load_config() or {}
         report = inspect_runtime_activation(
             config, home=get_hermes_home(), include_inventory=True)
         raise PostgreSQLRuntimeActivationError(report) from exc

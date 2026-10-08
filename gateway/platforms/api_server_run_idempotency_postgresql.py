@@ -11,6 +11,7 @@ import importlib
 import json
 import re
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator
@@ -177,10 +178,13 @@ class PostgreSQLRunIdempotencyStore:
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS))
         for stale_scope, stale_key, stale_status in cur.fetchall():
             try:
-                terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
-            except Exception:
-                terminal = False
-            if terminal:
+                parsed = json.loads(stale_status)
+            except (ValueError, TypeError, UnicodeError):
+                continue
+            if not isinstance(parsed, Mapping):
+                continue
+            status = parsed.get("status")
+            if isinstance(status, str) and status in TERMINAL_STATUSES:
                 cur.execute(
                     "DELETE FROM run_idempotency WHERE scope=%s AND idempotency_key=%s",
                     (stale_scope, stale_key))

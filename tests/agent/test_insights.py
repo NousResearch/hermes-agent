@@ -1,6 +1,9 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
+import sqlite3
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 import pytest
 
 from hermes_state import SessionDB
@@ -384,6 +387,21 @@ class TestInsightsPopulated:
         assert sorted(t["tool_name"] for t in tools_after) == sorted(
             t["tool_name"] for t in tools_before
         )
+
+    def test_sqlite_index_probe_error_falls_back_to_unpinned_queries(self):
+        conn = Mock()
+        conn.execute.side_effect = sqlite3.OperationalError("malformed database schema")
+
+        adapter = SqliteInsightsReadStore(SimpleNamespace(_conn=conn))
+
+        assert adapter._has_assistant_index is False
+
+    def test_unexpected_index_probe_error_propagates(self):
+        conn = Mock()
+        conn.execute.side_effect = RuntimeError("broken index probe")
+
+        with pytest.raises(RuntimeError, match="broken index probe"):
+            SqliteInsightsReadStore(SimpleNamespace(_conn=conn))
 
     def test_get_usage_breakdown_matches_full_generate(self, populated_db):
         engine = InsightsEngine(populated_db)

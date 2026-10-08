@@ -61,7 +61,7 @@ def test_stale_fence_cannot_renew_release_or_resolve_after_takeover(tmp_path):
 
 def test_crash_during_turn_is_indeterminate_then_new_owner_explicitly_resolves(tmp_path):
     db = SessionDB(tmp_path / "state.db")
-    first = _turn(db, "s", "turn-1")
+    _turn(db, "s", "turn-1")
     _expire(db, "s")
     second = db.acquire_session_runtime_ownership("s", _owner("two"), ttl_seconds=5)
     assert second is not None

@@ -186,11 +186,8 @@ class PostgreSQLAsyncDelegationLedger:
     # ── Dispatch / completion writes ────────────────────────────────────────
     def persist_dispatch(self, record: dict[str, Any]) -> None:
         now = time.time()
-        try:
-            from gateway.status import get_process_start_time
-            owner_started_at = get_process_start_time(os.getpid())
-        except Exception:
-            owner_started_at = None
+        from gateway.status import get_process_start_time
+        owner_started_at = get_process_start_time(os.getpid())
         task_payload = {
             key: record.get(key)
             for key in ("goal", "goals", "context", "toolsets", "role", "model",
@@ -274,10 +271,7 @@ class PostgreSQLAsyncDelegationLedger:
 
     # ── Recovery ────────────────────────────────────────────────────────────
     def _owner_alive(self, pid, started) -> bool:
-        try:
-            from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
-        except Exception:
-            return False
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
         if not pid:
             return False
         try:

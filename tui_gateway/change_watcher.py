@@ -138,14 +138,19 @@ _PG_EXCLUDED_CACHE_TTL_S = 30.0
 
 
 def _read_profile_config_for_watch(home: Path) -> dict:
-    """Raw config mapping for one home; unreadable/absent => SQLite default."""
-    try:
-        import yaml
+    """Raw config mapping for one home; only an absent/empty file defaults to SQLite."""
+    import yaml
 
-        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except Exception:
+    try:
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
+    raw = yaml.safe_load(text)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Expected a mapping in {home / 'config.yaml'}")
+    return raw
 
 
 def _pg_excluded_session_roots() -> tuple[Path, ...]:

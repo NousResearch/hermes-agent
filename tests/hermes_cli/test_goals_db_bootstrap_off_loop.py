@@ -20,8 +20,11 @@ which the heartbeat module reuses):
 """
 
 import asyncio
+import logging
 import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -169,3 +172,40 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
     assert elapsed > elapsed2, (
         "kick call should wait the one-time init window; in-flight calls the short one"
     )
+
+
+def test_selected_postgresql_control_store_failure_logs_traceback_without_sqlite(monkeypatch, caplog):
+    """An unavailable selected control store fails closed before SQLite bootstrap."""
+    from hermes_cli import config as cli_config
+    import session_control_store
+    import state_store
+
+    monkeypatch.setattr(cli_config, "load_config", lambda: {"state_store": {"backend": "postgresql"}})
+    monkeypatch.setattr(
+        state_store, "resolve_state_store_config",
+        lambda config: SimpleNamespace(backend=config["state_store"]["backend"]),
+    )
+    failure = RuntimeError("control store unavailable")
+    get_control_store = Mock(side_effect=failure)
+    acquire_sqlite = Mock(side_effect=AssertionError("SQLite must not open"))
+    monkeypatch.setattr(session_control_store, "get_session_control_store", get_control_store)
+    monkeypatch.setattr(goals, "_acquire_session_db", acquire_sqlite)
+
+    async def main():
+        return goals._get_session_db()
+
+    with caplog.at_level(logging.WARNING, logger=goals.logger.name):
+        assert asyncio.run(main()) is None
+
+    get_control_store.assert_called_once_with()
+    acquire_sqlite.assert_not_called()
+    records = [record for record in caplog.records if record.name == goals.logger.name]
+    assert len(records) == 1
+    record = records[0]
+    assert record.getMessage() == (
+        "GoalManager: selected PostgreSQL control store unavailable: control store unavailable"
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert record.exc_info[1] is failure
+    assert record.exc_info[2] is not None

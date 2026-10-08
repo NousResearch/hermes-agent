@@ -164,7 +164,7 @@ async def main():
     assert oid, "ledger refused to record the control obligation"
     result = await adapter.send(CHAT_ID, text)
     await adapter._finalize_delivery_obligation(oid, result, ev, adapter)
-    ids[body("control")] = {"id": oid, "kind": "delivered"}
+    ids[body("control")] = {"id": oid.obligation_id, "kind": "delivered"}
     for i, kind in enumerate(kinds):
         ev, text = event(i), body(i)
         if kind == "pending":
@@ -177,7 +177,7 @@ async def main():
             assert oid, "ledger refused to record an obligation"
             if kind == "sent":
                 await adapter.send(CHAT_ID, text)  # accepted; finalize never runs
-        ids[text] = {"id": oid, "kind": kind}
+        ids[text] = {"id": getattr(oid, "obligation_id", oid), "kind": kind}
     out = Path(os.environ["CELL5_IDS"])
     tmp = out.with_suffix(".part")
     tmp.write_text(json.dumps(ids))

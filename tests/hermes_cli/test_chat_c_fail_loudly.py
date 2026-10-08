@@ -133,20 +133,13 @@ class TestChatCFailLoudlyOnStderr:
         assert any("No session found matching 'Bot Chat'" in l for l in stderr_lines)
         assert not stderr_lines[0].startswith("Use 'hermes sessions list'")
 
-    def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch):
-        """--create-if-missing resolves to a new session id on args.resume."""
+    def test_create_if_missing_sets_resume(self, isolated_home):
+        """Parsed CLI flag creates a durable titled session with user provenance."""
         import hermes_cli.main as main_mod
+        from hermes_cli._parser import build_top_level_parser
 
-        args = type(
-            "Args",
-            (),
-            {
-                "continue_last": "Bot Chat",
-                "resume": None,
-                "create_if_missing": True,
-            },
-        )()
-
+        parser, _, _ = build_top_level_parser()
+        args = parser.parse_args(["chat", "-c", "Bot Chat", "--create-if-missing", "-q", "hi"])
         main_mod._resolve_continue_arg(args, use_tui=False)
 
         assert args.resume, "resume should be set to the new session id"
@@ -154,6 +147,11 @@ class TestChatCFailLoudlyOnStderr:
 
         db = SessionDB()
         try:
+            session = db.get_session(args.resume)
+            assert session is not None
+            assert session["source"] == "cli"
             assert db.get_session_title(args.resume) == "Bot Chat"
+            assert db.get_session_title_source(args.resume) == "user"
+            assert db.resolve_session_by_title("Bot Chat") == args.resume
         finally:
             db.close()

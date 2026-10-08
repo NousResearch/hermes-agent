@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_tests.sh"
+# Serial runs 19 files; the canonical runner allows up to five minutes per file.
+PARTITION_TIMEOUT_SECONDS = 7200
 SUMMARY = re.compile(
     r"^=== Summary: (?P<files>\d+) files, (?P<tests>\d+) tests passed, "
     r"(?P<failed>\d+) failed .*===$",
@@ -81,14 +83,22 @@ def run_partition(name: str, paths: tuple[str, ...]) -> tuple[str, int, int]:
     environment["HERMES_TEST_WORKERS"] = "1"
     environment["HERMES_TEST_FILE_RETRIES"] = "0"
     command = [str(RUNNER), "-o", "addopts=", *paths, "-v", "--tb=short"]
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    completed: subprocess.CompletedProcess[str] | None = None
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=PARTITION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+    # Raise after the handler exits: TimeoutExpired contains argv and partial output.
+    if completed is None:
+        raise RuntimeError(f"{name} timed out after {PARTITION_TIMEOUT_SECONDS}s")
     sys.stdout.write(f"\n===== {name} =====\n{completed.stdout}")
     match = SUMMARY.search(completed.stdout)
     if completed.returncode or match is None:
@@ -107,12 +117,16 @@ def main() -> int:
     if args.mode == "serial":
         _name, files, tests = run_partition("serial", MANIFEST)
         if files != len(MANIFEST):
-            raise RuntimeError(f"serial executed {files}, expected {len(MANIFEST)} files")
+            raise RuntimeError(
+                f"serial executed {files}, expected {len(MANIFEST)} files"
+            )
         print(f"MANIFEST_OK mode=serial files={files} tests={tests}")
         return 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(PARTITIONS)) as executor:
-        futures = [executor.submit(run_partition, name, paths) for name, paths in PARTITIONS]
+        futures = [
+            executor.submit(run_partition, name, paths) for name, paths in PARTITIONS
+        ]
         results = [future.result() for future in futures]
     files = sum(result[1] for result in results)
     tests = sum(result[2] for result in results)

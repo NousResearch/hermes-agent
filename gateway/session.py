@@ -862,13 +862,10 @@ class SessionStore(
         # require (an unreachable PG server is a per-route failure, not a constructor
         # failure — and probing it here made named-profile tests open root state.db
         # via the fallback path when the connection raised).
-        try:
-            from hermes_cli.config import load_config
-            from state_store import resolve_state_store_config
-            _selected_postgresql = resolve_state_store_config(load_config() or {}).backend == "postgresql"
-        except Exception:
-            _selected_postgresql = False
-        if not _selected_postgresql:
+        from hermes_cli.config import load_config
+        from state_store import resolve_state_store_config
+
+        if resolve_state_store_config(load_config() or {}).backend != "postgresql":
             self._open_session_db_for_active_scope()
 
     def _lazy(self, name: str, factory):

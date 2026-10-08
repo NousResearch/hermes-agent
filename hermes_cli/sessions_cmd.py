@@ -7,6 +7,7 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 """
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,8 @@ from pathlib import Path
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
 from hermes_state_errors import SessionActiveWriteGuardError
+
+logger = logging.getLogger(__name__)
 
 
 def get_hermes_home():
@@ -1247,6 +1250,31 @@ def _print_empty_store(action: str, args) -> None:
 _HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
 
 
+def _postgresql_action_preflight(action, args, config) -> tuple[bool, int | None]:
+    """Decide PostgreSQL-only actions and reject unsupported controls before opening a store."""
+    if action == "optimize":
+        return True, _cmd_postgresql_optimize(config)
+    if action not in {"list", "stats", "export", "delete", "rename", "pin", "unpin", "pinned", "retitle-skills", "browse", "prune", "archive", "clean-markers"}:
+        print(
+            f"PostgreSQL session history does not support `hermes sessions {action}` yet; "
+            "no SQLite fallback is permitted."
+        )
+        return True, 2
+    if action in {"prune", "archive", "clean-markers"}:
+        from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+        try:
+            require_state_store_maintenance(f"sessions-{action}", config)
+        except StateStoreMaintenanceError as e:
+            print(e)
+            return True, 2
+    if action == "export":
+        error = _postgresql_export_capability_error(args)
+        if error:
+            print(f"{error}; no SQLite fallback is permitted.")
+            return True, 2
+    return False, None
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     observational = action in _OBSERVATIONAL_DB_ACTIONS
@@ -1256,6 +1284,7 @@ def cmd_sessions(args, sessions_parser=None):
         config = load_config()
         selected_store = resolve_state_store_config(config)
     except Exception as e:
+        logger.exception("Could not resolve session history store configuration")
         print(f"Could not resolve your session history store: {e}; no SQLite fallback is permitted.")
         return 1
     pre = _PRE_DB_HANDLERS.get(action)
@@ -1265,6 +1294,7 @@ def cmd_sessions(args, sessions_parser=None):
             try:
                 db = open_cli_session_store(config, read_only=False)
             except Exception as e:
+                logger.exception("Could not open PostgreSQL session history for import")
                 print(f"Could not open your PostgreSQL session history: {e}")
                 return 1
             try:
@@ -1280,32 +1310,16 @@ def cmd_sessions(args, sessions_parser=None):
             return 2
         return pre(args)
     if selected_store.backend == "postgresql":
-        if action == "optimize":
-            return _cmd_postgresql_optimize(config)
-        if action not in {"list", "stats", "export", "delete", "rename", "pin", "unpin", "pinned", "retitle-skills", "browse", "prune", "archive", "clean-markers"}:
-            print(
-                f"PostgreSQL session history does not support `hermes sessions {action}` yet; "
-                "no SQLite fallback is permitted."
-            )
-            return 2
-        if action in {"prune", "archive", "clean-markers"}:
-            from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
-            try:
-                require_state_store_maintenance(f"sessions-{action}", config)
-            except StateStoreMaintenanceError as e:
-                print(e)
-                return 2
-        if action == "export":
-            error = _postgresql_export_capability_error(args)
-            if error:
-                print(f"{error}; no SQLite fallback is permitted.")
-                return 2
+        handled, code = _postgresql_action_preflight(action, args, config)
+        if handled:
+            return code
         from cli_session_store import open_cli_session_store
         try:
             db = open_cli_session_store(
                 config, read_only=action not in {"delete", "rename", "pin", "unpin", "retitle-skills", "prune", "archive", "clean-markers"},
             )
         except Exception as e:
+            logger.exception("Could not open PostgreSQL session history for action")
             print(f"Could not open your PostgreSQL session history: {e}")
             return 1
     else:

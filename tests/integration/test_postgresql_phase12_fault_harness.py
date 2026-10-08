@@ -214,7 +214,7 @@ def test_pg18_server_fault_rolls_back_message_usage_and_pool_waiter_recovers(pha
 
 def test_pg18_delivery_receipt_fence_and_concurrent_namespaces(phase12_targets):
     state_target, delivery_target = phase12_targets
-    schema, delivery_schema = state_target.schema, delivery_target.schema
+    delivery_schema = delivery_target.schema
     context = multiprocessing.get_context("spawn")
     delivery_results = context.Queue()
     delivery = context.Process(target=_delivery_claim_worker, args=(delivery_schema, delivery_results))

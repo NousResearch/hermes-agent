@@ -58,6 +58,23 @@ def _row(oid):
     }
 
 
+@pytest.mark.parametrize("bom", [False, True])
+def test_record_obligation_reuses_installation_id_with_or_without_bom(tmp_path, bom):
+    identity_path = dl._db_path().parent / ".delivery-ledger-installation-id"
+    original = (b"\xef\xbb\xbf" if bom else b"") + b"existing-installation\n"
+    identity_path.write_bytes(original)
+
+    _record("bom-obligation-1")
+    _record("bom-obligation-2")
+
+    with dl._connect() as conn:
+        installations = conn.execute(
+            "SELECT owner_installation_id FROM delivery_obligations ORDER BY obligation_id"
+        ).fetchall()
+    assert installations == [("existing-installation",), ("existing-installation",)]
+    assert identity_path.read_bytes() == original
+
+
 def _blocking_probe():
     """Return a blocking ledger call and an event-loop progress witness."""
     ledger_started = threading.Event()

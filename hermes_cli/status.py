@@ -1,6 +1,7 @@
 """Status command for hermes CLI."""
 
 import json
+import logging
 import os
 import sys
 import time
@@ -20,6 +21,8 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
+
+logger = logging.getLogger(__name__)
 
 
 def check_mark(ok: bool) -> str:
@@ -285,6 +288,7 @@ def _render_sessions(ctx):
         from state_store import resolve_state_store_config
         selected_pg = resolve_state_store_config(ctx.config).backend != "sqlite"
     except Exception as exc:
+        logger.exception("Failed to resolve selected state store for status")
         selected_pg = False
         store_error = str(exc) or exc.__class__.__name__
     if store_error is None and selected_pg:
@@ -294,6 +298,7 @@ def _render_sessions(ctx):
             if store is not None:
                 gateway_rows = store.list_gateway_sessions(active_only=True) or []
         except Exception as exc:
+            logger.exception("Failed to read selected PostgreSQL state store for status")
             gateway_rows = []
             store_error = str(exc) or exc.__class__.__name__
         finally:

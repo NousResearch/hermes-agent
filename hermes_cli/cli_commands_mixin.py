@@ -27,10 +27,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home
-from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
-from agent.message_metadata import message_identity
-from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.cli_commands_session_tools import (  # noqa: F401  moved there (ratchet); re-imported so existing `from cli_commands_mixin import _t` consumers keep working
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
@@ -1081,94 +1078,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""
-        # An in-flight agent run would flush through the rotating session identity: the branch
-        # ends the parent row and repoints agent.session_id (_sync_agent_to_session), so the
-        # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
-        if getattr(self, "_agent_running", False):
-            return _cp(f"  {_t('shared.agent_busy', command='/branch')}")
-        from cli import _sync_process_session_id
-        if not self.conversation_history:
-            return _cp(f"  {_gt('branch.no_conversation')}")
-        if not self._session_db:
-            return _cp(_db_unavailable_line())
-        # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
-        from gateway.slash_commands_branch_thread import parse_branch_args
-        _, branch_name = parse_branch_args(_command_arg(cmd_original))
-        now = datetime.now()
-        new_session_id = mint_session_id(now)
-        branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-            self._session_db.get_session_title(self.session_id) or "branch")
-        parent_session_id = self.session_id
-        # PostgreSQL owns the durable branch publication as one transaction.  Flush
-        # first, so its canonical active rows include the idle CLI transcript, then
-        # leave all process/agent/memory switching effects until after commit.
-        from cli_session_store import PostgreSQLCLISessionStore
-        if isinstance(self._session_db, PostgreSQLCLISessionStore):
-            if self.agent:
-                with suppress(Exception):
-                    self.agent._flush_messages_to_session_db(
-                        self.conversation_history, conversation_history=self.conversation_history)
-            try:
-                self._session_db.branch_session(
-                    parent_session_id=parent_session_id, child_session_id=new_session_id,
-                    source=os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=self.model,
-                    model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config},
-                    title=branch_title,
-                )
-            except Exception as e:
-                return _cp(f"  Failed to create branch session: {e}")
-            self._transfer_session_yolo(self.session_id, new_session_id)
-            self.session_id, self.session_start, self._pending_title = new_session_id, now, None
-            self._resumed = True
-            _sync_process_session_id(new_session_id)
-            if self.agent:
-                self.agent.session_start = now
-            _sync_agent_to_session(self, new_session_id, parent_session_id=parent_session_id, reason="branch")
-            msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
-            return _cp(f"  ⑂ Branched session \"{branch_title}\" ({_plural(msg_count, 'user message')})",
-                       f"  Original session: {parent_session_id}", f"  Branch session:   {new_session_id}")
-        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
-        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
-        # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
-        # even after the parent is re-ended with a different end_reason.
-        # The child sends the parent's exact system prompt: a row without one makes the branch's first
-        # turn rebuild (re-probing the workspace), so the warm cache the copied transcript buys is
-        # lost at byte 0 whenever the repo moved since the parent's session start.
-        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
-        if not isinstance(parent_prompt, str) or not parent_prompt:
-            with suppress(Exception):
-                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
-        try:
-            self._session_db.create_session(
-                session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,
-                model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
-                              "_branched_from": parent_session_id})
-        except Exception as e:
-            return _cp(f"  {_gt('branch.create_failed', error=e)}")
-        _end_current_session(self, "branched")
-        # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
-        # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
-        with suppress(Exception):
-            self._session_db.append_messages_batch(new_session_id, [
-                {"role": msg.get("role", "user"), "tool_name": msg.get("tool_name") or msg.get("name"),
-                 "api_content": extract_api_content_sidecar(msg),
-                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}, **message_identity(msg, with_tool_uids=True)}
-                for msg in self.conversation_history], chunk_rows=500)
-        with suppress(Exception):
-            self._session_db.set_session_title(new_session_id, branch_title)
-        # Switch to the new session
-        self._transfer_session_yolo(self.session_id, new_session_id)
-        self.session_id, self.session_start, self._pending_title = new_session_id, now, None
-        self._resumed = True  # Prevents auto-title generation
-        _sync_process_session_id(new_session_id)
-        if self.agent:
-            self.agent.session_start = now
-        _sync_agent_to_session(self, new_session_id, parent_session_id=parent_session_id, reason="branch")
-        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
-        _cp("  " + _tn("branch.branched", msg_count, title=branch_title),
-            f"  {_t('branch.original_session', session_id=parent_session_id)}",
-            f"  {_t('branch.branch_session', session_id=new_session_id)}")
+        from hermes_cli.cli_commands_branch import handle_branch_command
+        return handle_branch_command(
+            self, cmd_original, db_unavailable_line=_db_unavailable_line,
+            sync_agent_to_session=_sync_agent_to_session, end_current_session=_end_current_session,
+            branch_copy_keys=_BRANCH_COPY_KEYS, print_line=_cp,
+        )
 
     # ---- /worktree ------------------------------------------------------------------------
     def _handle_worktree_command(self, cmd_original: str) -> None:

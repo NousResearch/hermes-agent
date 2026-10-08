@@ -21,6 +21,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from cron.scheduler_delivery_origin import _NON_PUSH_ORIGIN_PLATFORMS, _resolve_origin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -32,11 +33,6 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "matrix", "mattermost", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao"})
-
-# Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
-# only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
-# deliver=origin destination.
-_NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
 
 # Platforms supporting a cron/notification home target -> env var used by gateway config.
 _HOME_TARGET_ENV_VARS = {
@@ -80,25 +76,6 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
             return "in_channel"
     return "thread"
 
-
-def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job. Non-dict origins (provenance strings, hand-edited
-    jobs.json) are treated as missing — otherwise every fire crashed on ``origin.get``.
-
-    Without this guard, a job tagged with e.g. ``"combined-digest-replaces-x-and-y"`` crashed every fire
-    attempt with ``'str' object has no attribute 'get'`` — ``mark_job_run`` recorded the failure, but the
-    next tick re-loaded the same poisoned origin and crashed identically until the field was patched
-    manually (#18722).
-    """
-    origin = job.get("origin")
-    if isinstance(origin, dict) and origin.get("platform") and origin.get("chat_id"):
-        # Jobs stamped before non-push origins stopped being captured (#69304): the api_server
-        # adapter's send() is a stub, so honouring this origin fails every fire with
-        # last_status=ok. Treat it as missing so deliver=origin takes the home-channel fallback.
-        if str(origin["platform"]).lower() in _NON_PUSH_ORIGIN_PLATFORMS:
-            return None
-        return origin
-    return None
 
 
 def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool:

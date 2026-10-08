@@ -8,7 +8,6 @@ keeping existing SQLite installations operational without configuration changes.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -258,10 +257,8 @@ class StateStore(Protocol):
 
 def _scoped_secret(name: str) -> str | None:
     """Use Hermes's profile-aware secret scope rather than borrowing another profile's env."""
-    try:
-        from hermes_cli.config import _env_ref_lookup
-    except Exception:
-        return os.environ.get(name)
+    from hermes_cli.config import _env_ref_lookup
+
     return _env_ref_lookup(name)
 
 

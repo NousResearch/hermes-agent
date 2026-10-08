@@ -1,9 +1,12 @@
 """Behavior contracts for the interactive PostgreSQL state-store onboarding."""
 
 import argparse
+import json
 import os
+import subprocess
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 
@@ -128,3 +131,53 @@ def test_bootstrap_writes_loopback_compose_and_waits_for_readiness(tmp_path):
     assert any("up" in argv for argv, _ in calls)
     assert any("pg_isready" in argv for argv, _ in calls)
     assert all("generated" not in " ".join(argv) for argv, _ in calls)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_bootstrap_reads_existing_metadata_with_or_without_bom(tmp_path, encoding):
+    from hermes_cli.postgresql_bootstrap import _profile_identity, bootstrap_postgresql_state_store
+
+    state_dir = tmp_path / "state-store" / "postgresql"
+    state_dir.mkdir(parents=True)
+    project = f"hermes-state-store-{_profile_identity(tmp_path)}"
+    metadata = state_dir / "bootstrap.json"
+    metadata.write_text(json.dumps({"port": 55479, "project": project}), encoding=encoding)
+    metadata.chmod(0o600)
+    existing_dsn = "postgresql://hermes:local-test-password@127.0.0.1:55479/hermes"
+    passwords = []
+
+    def runner(argv, *, env):
+        passwords.append(env["POSTGRES_PASSWORD"])
+        return 0
+
+    assert bootstrap_postgresql_state_store(
+        tmp_path, existing_dsn=existing_dsn, runner=runner, sleep=lambda _: None, attempts=1,
+    ) == existing_dsn
+    assert passwords == ["local-test-password", "local-test-password"]
+
+
+@pytest.mark.parametrize("timeout_at", ["up", "pg_isready"])
+def test_bootstrap_bounds_compose_commands_and_sanitizes_timeout(tmp_path, monkeypatch, timeout_at):
+    from hermes_cli.postgresql_bootstrap import bootstrap_postgresql_state_store
+
+    calls = []
+    secret = "test-only-secret-marker"
+    monkeypatch.setattr("hermes_cli.postgresql_bootstrap.secrets.token_urlsafe", lambda n: secret)
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if timeout_at in argv:
+            raise subprocess.TimeoutExpired([*argv, secret], kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("hermes_cli.postgresql_bootstrap.subprocess.run", run)
+    with pytest.raises(RuntimeError) as exc_info:
+        bootstrap_postgresql_state_store(tmp_path, sleep=lambda _: None, attempts=1)
+    assert len(calls) == (1 if timeout_at == "up" else 2)
+    assert all(0 < kwargs["timeout"] <= 120 for _, kwargs in calls)
+    assert all(kwargs["check"] is False for _, kwargs in calls)
+    assert secret not in str(exc_info.value)
+    assert secret not in repr(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert "configuration was changed" in str(exc_info.value)

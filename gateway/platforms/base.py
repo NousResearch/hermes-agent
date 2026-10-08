@@ -24,6 +24,7 @@ from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
+from gateway.platforms.base_delivery_obligation import record_delivery_obligation
 
 logger = logging.getLogger(__name__)
 
@@ -4251,39 +4252,8 @@ class BasePlatformAdapter(ABC):
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
-        if is_ephemeral_response or str(event.text or "").lstrip().startswith(
-            ("/", self.typed_command_prefix or "!")):
-            return None
-        try:
-            from gateway.delivery_ledger import compute_obligation_id, ledger_enabled
-            ledger = self.delivery_ledger
-            if ledger is None and not await asyncio.to_thread(ledger_enabled):
-                return None
-            source = event.source
-            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
-            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
-            _ledger_id = getattr(event, "ledger_message_id", None)
-            if _ledger_id is None:
-                _ledger_id = getattr(event, "message_id", "")
-            obligation_id = compute_obligation_id(
-                session_key, str(_ledger_id or ""), text_content)
-            if ledger is None:
-                from gateway.delivery_ledger_adapter import selected_delivery_ledger
-                ledger = selected_delivery_ledger()
-            if ledger is None:
-                from gateway.delivery_ledger_adapter import SqliteDeliveryLedger
-                ledger = SqliteDeliveryLedger()
-            receipt = await asyncio.to_thread(
-                ledger.record_obligation, obligation_id=obligation_id, session_key=session_key,
-                platform=str(getattr(source.platform, "value", source.platform)),
-                chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            receipt = await asyncio.to_thread(ledger.mark_attempting, receipt)
-            return receipt
-        except Exception:
-            logger.debug("delivery ledger record failed", exc_info=True)
-            return None
+        return await record_delivery_obligation(
+            self, event, session_key, text_content, delivery_adapter, is_ephemeral_response)
 
     async def _finalize_delivery_obligation(
         self, obligation_id: Any, result: Any, event: MessageEvent,

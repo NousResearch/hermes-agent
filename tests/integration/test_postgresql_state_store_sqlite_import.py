@@ -9,10 +9,13 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -69,6 +72,122 @@ def sandbox(postgresql_test_target: OwnedPostgreSQLTestTarget):
         settings, _DSN, schema=schema, owned_target=target
     )
     yield importer, target, settings
+
+
+def test_catalog_probe_failure_logs_redacted_trace_without_mutation(monkeypatch, caplog):
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    calls = []
+
+    def connect_with_secret():
+        calls.append("connect")
+        secret = "CANARY"
+        source = "/private/" + secret
+        raise RuntimeError(f"password={secret} source={source}")
+
+    monkeypatch.setattr(importer, "_connect", connect_with_secret)
+    monkeypatch.setattr(
+        importer, "_record_preflight_failure", lambda **_: pytest.fail("catalog mutated")
+    )
+
+    with caplog.at_level("ERROR", logger="postgresql_state_store_sqlite_import"):
+        result = importer._record_catalog_failure_if_available(
+            fingerprint="offline", source_counts={}, source_schema={},
+            error=RuntimeError("preflight failed"), stage="preflight",
+        )
+
+    assert result is None
+    assert calls == ["connect"]
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.exc_info is not None
+    assert any(frame.name == "connect_with_secret" for frame in traceback.extract_tb(record.exc_info[2]))
+    assert "catalog introspection failed; details redacted" in caplog.text
+    assert "CANARY" not in caplog.text
+    assert "/private/CANARY" not in caplog.text
+
+
+@pytest.mark.parametrize("marker_readable", [True, False])
+def test_allocation_lost_commit_ack_reconciles_with_redacted_trace(
+    monkeypatch, caplog, marker_readable,
+):
+    """A lost commit ACK is not a second allocation, even when marker read fails."""
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    statements = []
+    commits = []
+    verified = []
+    dsn = "postgresql://user:CANARY@localhost/db"
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, statement, params=None):
+            statements.append((statement, params))
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            commits.append("commit")
+            secret = "".join(("CAN", "ARY"))
+            raise RuntimeError(f"{secret} secret lost acknowledgment")
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda _: FakeConnection()))
+
+    def verify(target):
+        verified.append(target)
+        if not marker_readable:
+            secret = "".join(("CAN", "ARY"))
+            raise RuntimeError(f"{secret} marker read secret")
+
+    monkeypatch.setattr(sqlite_import.OwnedSQLiteImportTarget, "verify", verify)
+    target = None
+    error = None
+    with caplog.at_level("ERROR", logger="postgresql_state_store_sqlite_import"):
+        if marker_readable:
+            target = allocate_owned_sqlite_import_target(dsn)
+        else:
+            with pytest.raises(SQLitePostgreSQLImportError) as raised:
+                allocate_owned_sqlite_import_target(dsn)
+            error = raised.value
+
+    assert commits == ["commit"]
+    assert len(statements) == 4
+    assert sum("INSERT INTO" in statement for statement, _ in statements) == 1
+    assert len(verified) == 1
+    if marker_readable:
+        assert target is not None
+        assert target is verified[0]
+        assert target.dsn == dsn
+    else:
+        assert error is not None
+        assert error.stage == "allocation"
+        assert error.__context__ is None
+        assert error.__cause__ is None
+        assert error.cleanup is not None
+        assert error.cleanup.status == "reconciliation-required"
+        assert error.cleanup.target_schema == verified[0].schema.name
+        assert "CANARY" not in str(error)
+        assert "CANARY" not in "".join(traceback.format_exception(error))
+        assert "CANARY" not in json.dumps(error.cleanup.as_dict())
+    assert len(caplog.records) == (1 if marker_readable else 2)
+    record = caplog.records[0]
+    assert record.exc_info is not None
+    assert any(frame.name == "commit" for frame in traceback.extract_tb(record.exc_info[2]))
+    assert "details redacted" in caplog.text
+    assert "CANARY" not in caplog.text
+    assert dsn not in caplog.text
 
 
 def test_pg18_import_target_marker_is_private_and_cleanup_is_exact() -> None:
@@ -220,6 +339,148 @@ def sqlite_source(tmp_path: Path) -> Path:
         )
         connection.execute("CREATE TABLE messages_fts_fixture (value TEXT)")
     return path
+
+
+@pytest.mark.parametrize("failure", (OSError, ValueError, RuntimeError, TypeError))
+def test_sqlite_import_home_resolution_failure_stops_before_snapshot_or_target(
+    monkeypatch, sqlite_source, tmp_path, failure,
+):
+    """A broken home resolver cannot make an active store look disposable."""
+    import hermes_constants
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    untrusted = f"private home path: {sqlite_source}"
+
+    def fail_home():
+        raise failure(untrusted)
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", fail_home)
+    calls = []
+    monkeypatch.setattr(
+        sqlite_import, "_snapshot_sqlite", lambda *_args: calls.append("snapshot")
+    )
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    monkeypatch.setattr(importer, "_prepare_target", lambda: calls.append("target"))
+    original = sqlite_source.read_bytes()
+    snapshot_root = tmp_path / "snapshots"
+
+    with pytest.raises(SQLitePostgreSQLImportError) as raised:
+        importer.import_source(sqlite_source, snapshot_root=snapshot_root)
+
+    assert str(raised.value) == "SQLite import cannot verify the active default state.db"
+    assert raised.value.__context__ is None and raised.value.__cause__ is None
+    assert untrusted not in str(raised.value)
+    assert calls == []
+    assert sqlite_source.read_bytes() == original
+    assert not snapshot_root.exists()
+
+
+def test_sqlite_import_default_path_resolution_failure_stops_before_snapshot(
+    monkeypatch, sqlite_source, tmp_path,
+):
+    import hermes_constants
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    class BrokenDefaultPath:
+        def resolve(self):
+            raise OSError(f"private default path: {sqlite_source}")
+
+    class BrokenHome:
+        def __truediv__(self, filename):
+            assert filename == "state.db"
+            return BrokenDefaultPath()
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", BrokenHome)
+    calls = []
+    monkeypatch.setattr(sqlite_import, "_snapshot_sqlite", lambda *_: calls.append("snapshot"))
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    monkeypatch.setattr(importer, "_prepare_target", lambda: calls.append("target"))
+    original = sqlite_source.read_bytes()
+
+    with pytest.raises(SQLitePostgreSQLImportError) as raised:
+        importer.import_source(sqlite_source, snapshot_root=tmp_path / "snapshots")
+
+    assert str(raised.value) == "SQLite import cannot verify the active default state.db"
+    assert raised.value.__context__ is None and raised.value.__cause__ is None
+    assert calls == []
+    assert sqlite_source.read_bytes() == original
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_sqlite_import_unknown_home_failure_propagates_before_snapshot(
+    monkeypatch, sqlite_source, tmp_path,
+):
+    import hermes_constants
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    def fail_home():
+        raise LookupError("unanticipated resolver failure")
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", fail_home)
+    calls = []
+    monkeypatch.setattr(sqlite_import, "_snapshot_sqlite", lambda *_: calls.append("snapshot"))
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    monkeypatch.setattr(importer, "_prepare_target", lambda: calls.append("target"))
+    original = sqlite_source.read_bytes()
+
+    with pytest.raises(LookupError, match="unanticipated resolver failure"):
+        importer.import_source(sqlite_source, snapshot_root=tmp_path / "snapshots")
+
+    assert calls == []
+    assert sqlite_source.read_bytes() == original
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_sqlite_import_active_default_guard_stops_before_snapshot_or_target(
+    monkeypatch, tmp_path,
+):
+    import hermes_constants
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    home = tmp_path / "home"
+    home.mkdir()
+    source = home / "state.db"
+    source.write_bytes(b"active store must remain untouched")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    calls = []
+    monkeypatch.setattr(sqlite_import, "_snapshot_sqlite", lambda *_: calls.append("snapshot"))
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    monkeypatch.setattr(importer, "_prepare_target", lambda: calls.append("target"))
+
+    with pytest.raises(SQLitePostgreSQLImportError, match="refuses the active default state.db"):
+        importer.import_source(source, snapshot_root=tmp_path / "snapshots")
+
+    assert calls == []
+    assert source.read_bytes() == b"active store must remain untouched"
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_sqlite_import_explicit_disposable_source_passes_active_guard(
+    monkeypatch, sqlite_source, tmp_path,
+):
+    import hermes_constants
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path / "other-home")
+    calls = []
+
+    class SnapshotReached(Exception):
+        pass
+
+    def stop_at_snapshot(source, root):
+        calls.append((source, root))
+        raise SnapshotReached
+
+    monkeypatch.setattr(sqlite_import, "_snapshot_sqlite", stop_at_snapshot)
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    monkeypatch.setattr(importer, "_prepare_target", lambda: pytest.fail("target accessed"))
+    original = sqlite_source.read_bytes()
+
+    with pytest.raises(SnapshotReached):
+        importer.import_source(sqlite_source, snapshot_root=tmp_path / "snapshots")
+
+    assert calls == [(sqlite_source.resolve(), tmp_path / "snapshots")]
+    assert sqlite_source.read_bytes() == original
 
 
 def test_sqlite_preflight_default_guards_accept_zero_defaults(sqlite_source):
@@ -745,6 +1006,49 @@ def test_direct_module_cli_import_failure_reports_safe_reconciliation_target(
         },
     }
     assert secret_dsn not in json.dumps(rendered)
+
+
+def test_direct_module_cli_unexpected_import_failure_logs_redacted_trace(
+    monkeypatch, capsys, caplog, tmp_path,
+) -> None:
+    """Unknown failures retain the CLI contract and log frames without exception secrets."""
+    import postgresql_state_store_sqlite_import as sqlite_import
+
+    canary = "CANARY_IMPORT_CLI_SECRET"
+    source = tmp_path / f"{canary}.db"
+    dsn = f"postgresql://user:{canary}@host/import-db"
+
+    def unexpected_import_failure(*_args, **_kwargs):
+        raise RuntimeError(f"dsn={dsn} source={source}")
+
+    monkeypatch.setattr(sqlite_import, "import_into_allocated_target", unexpected_import_failure)
+
+    with caplog.at_level("ERROR", logger="postgresql_state_store_sqlite_import"):
+        status = sqlite_import.main([
+            "--source", str(source), "--snapshot-root", str(tmp_path), "--dsn", dsn,
+        ])
+
+    output = capsys.readouterr()
+    assert status == 2
+    assert json.loads(output.out) == {
+        "action": "sqlite-import",
+        "status": "failed",
+        "stage": "import",
+        "error": "sqlite-import-import-failed",
+        "cleanup": {"status": "not-allocated"},
+    }
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.levelname == "ERROR"
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert str(record.exc_info[1]) == "SQLite import CLI failed; details redacted"
+    assert any(
+        frame.name == "unexpected_import_failure"
+        for frame in traceback.extract_tb(record.exc_info[2])
+    )
+    assert "unexpected_import_failure" in caplog.text
+    assert canary not in output.out + output.err + caplog.text
 
 
 def test_direct_module_cli_final_cleanup_failure_cannot_orphan_silently(

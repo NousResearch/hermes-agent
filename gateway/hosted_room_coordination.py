@@ -178,7 +178,7 @@ def static_sqlite_hosted_room_factory_inventory(
         relative = path.relative_to(root)
         if relative.parts[0] in {"tests", ".venv"}:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         scope: list[str] = []
 
         class Visitor(ast.NodeVisitor):

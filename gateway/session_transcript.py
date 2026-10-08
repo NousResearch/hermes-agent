@@ -665,7 +665,7 @@ class SessionTranscriptMixin:
                     session_id, messages, active_only=active_only,
                     reject_active_turn_lease=reject_active_turn_lease)
             except Exception as e:
-                logger.debug("Failed to rewrite transcript in PostgreSQL: %s", e)
+                logger.debug("Failed to rewrite transcript in PostgreSQL: %s", e, exc_info=True)
                 return False
             return True
         from state_store_runtime_readiness import require_legacy_state_db_runtime
@@ -834,7 +834,7 @@ class SessionTranscriptMixin:
             except ValueError:
                 raise
             except Exception as e:
-                logger.debug("rewind_session: PostgreSQL rewind failed: %s", e)
+                logger.debug("rewind_session: PostgreSQL rewind failed: %s", e, exc_info=True)
                 return None
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
                     "target_text": outcome.live_text}

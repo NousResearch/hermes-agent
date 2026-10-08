@@ -13,7 +13,12 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-from gateway.hosted_room_coordination import HostedRoomCoordination, sqlite_hosted_room_coordination
+from gateway.hosted_room_coordination import (
+    HostedRoomCoordination,
+    SqliteHostedRoomFactoryCall,
+    sqlite_hosted_room_coordination,
+    static_sqlite_hosted_room_factory_inventory,
+)
 
 
 
@@ -26,6 +31,16 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.value += seconds
+
+
+@pytest.mark.parametrize("bom", [False, True])
+def test_factory_inventory_parses_source_with_or_without_bom(tmp_path, bom):
+    source = tmp_path / "room_factory.py"
+    source.write_bytes((b"\xef\xbb\xbf" if bom else b"") + b"def build():\n    return sqlite_hosted_room_coordination('state.db')\n")
+
+    assert static_sqlite_hosted_room_factory_inventory(tmp_path) == (
+        SqliteHostedRoomFactoryCall("room_factory.py", "build"),
+    )
 
 
 def create_room(db, *, room_id: str = "room-1"):

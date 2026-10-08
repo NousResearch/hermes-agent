@@ -66,6 +66,47 @@ def rewind_user_turn(
                                   require_retryable=require_retryable, require_composite=require_composite,
                                   adopt_row_ids=adopt_row_ids, request_id=request_id)
 
+def _persist_rewind_with_receipt(
+    store: TranscriptRewindStore, session_id: str, target_row_id: int, scaffold: Any,
+    expected_active_ids: Sequence[int], stored_view: Dict[str, Any], request_id: str,
+) -> dict[str, Any]:
+    """Persist once; resolve a lost acknowledgement through the request receipt, never a second rewind."""
+    try:
+        receipt_capable = callable(getattr(store, "get_rewind_receipt", None))
+        mutation_kwargs = {
+            "preserve_compaction_handoff": scaffold is not None,
+            "expected_active_ids": expected_active_ids,
+            # Pin against the STORED row (upstream #115493 semantics); receipt-bearing stores
+            # compare on the same projection the durable row stores.
+            "expected_target_content": _comparison_content(stored_view) if receipt_capable else stored_view.get("content"),
+        }
+        # SQLite retains its historical primitive signature. Receipt-bearing
+        # stores opt in explicitly; this is not a duck-typed SQLite extension.
+        if receipt_capable:
+            mutation_kwargs["request_id"] = request_id
+        result = store.rewind_to_message(session_id, target_row_id, **mutation_kwargs)
+    except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
+        raise RewindTargetUnavailableError(str(exc)) from exc
+    except Exception:
+        lookup = getattr(store, "get_rewind_receipt", None)
+        if callable(lookup):
+            try:
+                receipt = lookup(request_id)
+            except Exception as receipt_error:
+                raise RewindIndeterminateError(request_id) from receipt_error
+            if isinstance(receipt, Mapping):
+                result = {
+                    "request_id": request_id,
+                    "rewound_count": int(receipt["retired_count"]),
+                    "replacement_message_id": receipt.get("replacement_message_id"),
+                }
+            else:
+                raise
+        else:
+            raise
+    return result
+
+
 def _rewind_user_turn_impl(
     self, session_id: str, user_ordinal: int, *, warm_history: Optional[List[Dict[str, Any]]] = None,
     require_retryable: bool = False, require_composite: bool = False, adopt_row_ids: bool = False, request_id: str | None = None,
@@ -128,39 +169,8 @@ def _rewind_user_turn_impl(
         raise RuntimeError(_HISTORY_CHANGED)
     from uuid import uuid4
     request_id = request_id or uuid4().hex
-    try:
-        receipt_capable = callable(getattr(self, "get_rewind_receipt", None))
-        mutation_kwargs = {
-            "preserve_compaction_handoff": scaffold is not None,
-            "expected_active_ids": expected_active_ids,
-            # Pin against the STORED row (upstream #115493 semantics); receipt-bearing stores
-            # compare on the same projection the durable row stores.
-            "expected_target_content": _comparison_content(stored_view) if receipt_capable else stored_view.get("content"),
-        }
-        # SQLite retains its historical primitive signature. Receipt-bearing
-        # stores opt in explicitly; this is not a duck-typed SQLite extension.
-        if receipt_capable:
-            mutation_kwargs["request_id"] = request_id
-        result = self.rewind_to_message(session_id, target_row_id, **mutation_kwargs)
-    except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
-        raise RewindTargetUnavailableError(str(exc)) from exc
-    except Exception:
-        lookup = getattr(self, "get_rewind_receipt", None)
-        if callable(lookup):
-            try:
-                receipt = lookup(request_id)
-            except Exception as receipt_error:
-                raise RewindIndeterminateError(request_id) from receipt_error
-            if isinstance(receipt, Mapping):
-                result = {
-                    "request_id": request_id,
-                    "rewound_count": int(receipt["retired_count"]),
-                    "replacement_message_id": receipt.get("replacement_message_id"),
-                }
-            else:
-                raise
-        else:
-            raise
+    result = _persist_rewind_with_receipt(
+        self, session_id, target_row_id, scaffold, expected_active_ids, stored_view, request_id)
     if scaffold is not None:
         replacement_id = result.get("replacement_message_id")
         if not isinstance(replacement_id, int) or not durable_prefix:

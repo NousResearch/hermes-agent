@@ -116,16 +116,17 @@ def _print_fts_optimize_available_notice() -> None:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
     except Exception:
-        cfg = {}
+        logger.exception("FTS optimize notice skipped: configuration unavailable")
+        return  # unknown backend: never fall back to probing SQLite
     mode = str(((cfg.get("sessions") or {}).get("fts_optimize_notice", "advise"))).strip().lower()
     if mode == "off":
         return
 
+    from state_store import StateStoreConfigurationError, resolve_state_store_config
     try:
-        from state_store import resolve_state_store_config
         if resolve_state_store_config(cfg).backend != "sqlite":
             return  # selected PostgreSQL: no SQLite FTS layout to probe
-    except Exception:
+    except StateStoreConfigurationError:
         return  # unusable state-store config: refuse rather than probe SQLite speculatively
 
     try:

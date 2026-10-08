@@ -5,6 +5,7 @@ falls back to latest-session. Gated by ``session.terminal_continue`` (default tr
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -12,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Optional
 from utils import atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 # Multiplexer / terminal-emulator identity env vars, checked in order when no real tty path is
 # available (e.g. stdin piped but stdout still a pty owned by a known terminal).
@@ -132,6 +135,7 @@ def resolve_breadcrumb_session() -> Optional[str]:
         from cli_session_store import open_selected_read_store
         store = open_selected_read_store(load_config())
     except Exception as exc:
+        logger.exception("terminal breadcrumb: cannot open selected state store; skipping breadcrumb resume")
         print(
             f"terminal breadcrumb: cannot open selected state store ({exc}); skipping breadcrumb resume",
             file=sys.stderr,

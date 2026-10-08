@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from state_store_runtime_readiness import trap_state_db_opens
 from tui_gateway import server
 
 
@@ -462,6 +463,71 @@ def _pg_home(tmp_path, monkeypatch, name="pg-watched"):
     if hasattr(server._pg_excluded_session_roots, "_cache"):
         del server._pg_excluded_session_roots._cache
     return home
+
+
+@pytest.mark.parametrize("failure", ["invalid-yaml", "invalid-utf8", "non-mapping", "permission"])
+def test_broken_profile_config_never_probes_stale_sqlite(watcher_home, monkeypatch, failure):
+    """A selected PG profile with a broken config must not become a SQLite watcher."""
+    home, events = watcher_home
+    pg_home = _pg_home(home, monkeypatch)
+    config = pg_home / "config.yaml"
+    stale_db = pg_home / "state.db"
+    _write_session_change(stale_db, "old")
+    monkeypatch.setattr(server, "_served_profile_homes", {pg_home})
+
+    if failure == "invalid-yaml":
+        config.write_text("state_store: [\n", encoding="utf-8")
+    elif failure == "invalid-utf8":
+        config.write_bytes(b"\xff")
+    elif failure == "non-mapping":
+        config.write_text("- state_store\n", encoding="utf-8")
+    else:
+        original_read_text = type(config).read_text
+
+        def unreadable(path, *args, **kwargs):
+            if path == config:
+                raise PermissionError("config.yaml unreadable")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(type(config), "read_text", unreadable)
+
+    probes = []
+    original_probe = server._session_db_content_sig
+
+    def spy_probe(path):
+        probes.append(path)
+        return original_probe(path)
+
+    monkeypatch.setattr(server, "_session_db_content_sig", spy_probe)
+    with trap_state_db_opens(pg_home) as first_opens:
+        server._broadcast_watched_changes(now=0.0)
+    stale_db.write_text("stale legacy store moved", encoding="utf-8")
+    with trap_state_db_opens(pg_home) as second_opens:
+        server._broadcast_watched_changes(now=10.0)
+
+    assert probes == []
+    assert first_opens == second_opens == []
+    assert "sessions.changed" not in server._change_sigs
+    assert not [event for event, _ in events if event == "sessions.changed"]
+
+
+@pytest.mark.parametrize("config_text", [None, ""])
+def test_absent_or_empty_config_keeps_sqlite_watch(watcher_home, monkeypatch, config_text):
+    home, events = watcher_home
+    config = home / "config.yaml"
+    if config_text is None:
+        config.unlink()
+    else:
+        config.write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    if hasattr(server._pg_excluded_session_roots, "_cache"):
+        del server._pg_excluded_session_roots._cache
+
+    server._broadcast_watched_changes(now=0.0)
+    _write_session_change(home / "state.db", "created")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) in events
 
 
 def test_selected_postgresql_home_state_db_move_does_not_broadcast_sessions_changed(

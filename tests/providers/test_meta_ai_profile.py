@@ -25,6 +25,14 @@ class TestMetaAIProfile:
         assert p.supports_vision is True
         assert p.supports_vision_tool_messages is False
 
+    def test_carried_profile_defaults(self):
+        """Defaults carried with the meta-oauth branch: aux model,
+        token ceiling, and spark fallbacks of the bundled meta-ai profile."""
+        p = _profile()
+        assert p.default_aux_model == "muse-spark-1.2-contributor"
+        assert p.default_max_tokens == 16384
+        assert p.fallback_models == ("muse-spark-1.3", "muse-spark-1.2")
+
     def test_live_catalog_filters_non_chat_models(self, monkeypatch):
         p = _profile()
         seen = []

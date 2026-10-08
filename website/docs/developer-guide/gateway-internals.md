@@ -223,6 +223,10 @@ Canonical wire models live in `tui_gateway/contracts/canonical*.py` and generate
 `CanonicalRpcMethods` plus the OpenRPC `x-canonical-methods` catalog, separately
 from the standalone protocol. Both parameters and successful results are checked.
 
+ACP and finite CLI viewers detach with an explicit recovery notice if an accepted
+input becomes blocked behind an unknown execution. The accepted input remains
+queued: resolve the lost turn before continuing, rather than resending it.
+
 ## Private native HTTP authentication
 
 The authoritative daemon accepts a **fresh, one-use HTTP grant per request** from

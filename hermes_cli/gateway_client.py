@@ -31,6 +31,7 @@ class GatewayClient:
             await self.reader
 
     async def _read(self):
+        from websockets.exceptions import ConnectionClosed
         try:
             async for raw in self.websocket:
                 frame = json.loads(raw)
@@ -46,10 +47,11 @@ class GatewayClient:
                         future.set_result(frame.get("result", {}))
                 elif "method" in frame:
                     self.events.put_nowait(frame)
-        except (OSError, ValueError, asyncio.QueueFull):
+        except (ConnectionClosed, OSError, ValueError, asyncio.QueueFull):
             pass
         finally:
-            error = GatewayClientError("Gateway disconnected; accepted work was not cancelled. Resume the printed session ID.")
+            error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "
+                "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)

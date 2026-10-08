@@ -270,6 +270,8 @@ class GatewayACPAgent(acp.Agent):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
+        if self._has_unknown(session_id):
+            raise GatewayClientError("unknown_execution")
         from acp_adapter.content import _content_blocks_to_openai_user_content
         text, attachments = _stage_user_content(_content_blocks_to_openai_user_content(prompt))
         if text.lstrip().startswith('/') and not attachments:
@@ -308,9 +310,14 @@ class GatewayACPAgent(acp.Agent):
                 self._pending_cancels.discard(session_id)
                 await self._cancel_admission(session_id, admission_id)
             async with self._changed:
-                await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
-                if self._failure:
-                    raise self._failure
+                await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None
+                                            or self._blocked_admission(session_id, admission_id))
+                # A successor's unknown state cannot replace our committed terminal result.
+                if admission_id not in self._terminals:
+                    if self._failure:
+                        raise self._failure
+                    raise GatewayClientError("unknown_execution: do not resend accepted input; "
+                                             "resolve the lost turn before continuing")
                 terminal = self._terminals.pop(admission_id)
         finally:
             # Do not let one prompt tear down a newer mapping if the session has
@@ -321,6 +328,15 @@ class GatewayACPAgent(acp.Agent):
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
+
+    def _has_unknown(self, session_id):
+        return any(row.get("status") == "unknown"
+                   for row in self._snapshots[session_id].get("pending", []))
+
+    def _blocked_admission(self, session_id, admission_id):
+        return self._has_unknown(session_id) and any(
+            row.get("admission_id") == admission_id and row.get("status") in {"queued", "unknown"}
+            for row in self._snapshots[session_id].get("pending", []))
 
     async def _events(self):
         try:
@@ -353,6 +369,12 @@ class GatewayACPAgent(acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
+        if kind == "session.info":
+            if sid in self._snapshots and "pending" in payload:
+                async with self._changed:
+                    self._snapshots[sid]["pending"] = payload["pending"]
+                    self._changed.notify_all()
+            return
         if kind == "session.replay_gap":
             raise GatewayClientError("session_replay_gap")
         if kind in {"approval.request", "clarify.request"}:

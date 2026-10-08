@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
+    "session.info",
 })
 
 
@@ -80,7 +81,7 @@ class GatewayChatView:
                 return
             admission = params.get("admission_id") or payload.get("admission_id")
             if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
-                # Approval/clarification gates block the session FIFO, not merely one
+                # Gates and unknown executions block the session FIFO, not merely one
                 # admission's output. Track them even when another admission owns the
                 # event so a queued one-shot can detach instead of waiting forever.
                 self._dispatch_event(kind, admission, payload)
@@ -103,9 +104,14 @@ class GatewayChatView:
             "tool.start": self._tool_start, "tool.complete": self._tool_complete,
             "approval.request": self._request, "clarify.request": self._request,
             "approval.settled": self._settled, "clarify.settled": self._settled,
+            "session.info": self._session_info,
         }.get(kind)
         if handler:
             handler(admission, payload)
+
+    def _session_info(self, admission, payload):
+        self.pending = payload.get("pending", self.pending)
+        self.generation = payload.get("execution_generation", self.generation)
 
     def _tool_start(self, admission, payload):
         # Deltas before a tool call are interim commentary the final reply does not repeat;
@@ -294,6 +300,11 @@ class GatewayChatView:
                     self.changed.clear()
                     if self.failure:
                         raise self.failure
+                    if self.unknown_admissions() and any(
+                            row["admission_id"] == admission and row["status"] in {"queued", "unknown"}
+                            for row in self.pending):
+                        return self._detach("Unknown execution blocks this session; your accepted input is retained. "
+                                            "Resume interactively to resolve the lost turn; do not resend the input.")
                     if self.prompts:
                         return self._detach("Input required; detached without cancelling. Resume this session interactively.")
                     await self.changed.wait()

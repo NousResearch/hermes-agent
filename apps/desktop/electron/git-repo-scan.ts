@@ -15,6 +15,12 @@ export interface RepoScanOptions {
   maxDepth?: number
   enabled?: boolean
   excludePaths?: string[]
+  /**
+   * Also find repos NESTED inside a repo (`desktop.repo_scan_nested`). Off by default: the walk can
+   * stop at the first `.git` otherwise, which is both cheaper and what most people want — a monorepo's
+   * internal checkouts are noise. On, the walk keeps descending and containment nests each one.
+   */
+  nested?: boolean
   // Platform override for the darwin-only TCC media-dir skip (tests force
   // 'darwin' on Linux CI; production omits it).
   platform?: NodeJS.Platform
@@ -135,6 +141,7 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
     .filter((entry): entry is NormalizedScanPath => entry !== null)
 
   const found = new Map<string, { root: string; label: string }>()
+  const nested = options.nested === true
 
   function isExcluded(candidate: string): boolean {
     return exclusions.some(excluded => repoScanPathIsWithin(candidate, excluded.value, pathOptions))
@@ -153,12 +160,20 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
       return
     }
 
-    const gitDir = entries.find(entry => entry.name === '.git' && entry.isDirectory())
+    // A repo's marker is normally a `.git` DIRECTORY, but a linked worktree and EVERY SUBMODULE carry a
+    // `.git` FILE holding a `gitdir:` pointer. Requiring a directory silently skipped every submodule
+    // of a superproject, which is precisely the nesting this scanner exists to surface.
+    const gitMarker = entries.find(entry => entry.name === '.git')
 
-    if (gitDir) {
-      try {
-        await fsp.access(path.join(dir, '.git', 'HEAD'), fs.constants.R_OK)
-      } catch {
+    if (gitMarker) {
+      if (gitMarker.isDirectory()) {
+        // A real repo has an object store; a bare-looking `.git` dir without HEAD is not one.
+        try {
+          await fsp.access(path.join(dir, '.git', 'HEAD'), fs.constants.R_OK)
+        } catch {
+          return
+        }
+      } else if (!gitMarker.isFile()) {
         return
       }
 
@@ -171,7 +186,13 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
         })
       }
 
-      return
+      // Stop at the first `.git` unless nested discovery is on: descending is both more expensive
+      // and, for a monorepo, mostly noise. With `nested`, the walk keeps going and containment nests
+      // what it finds (the project tree groups a project under the project whose folder holds it).
+      // `.git` is hidden and pruned below, so the walk never enters the object store either way.
+      if (!nested) {
+        return
+      }
     }
 
     const skipTccProtectedPaths = (pathOptions.platform ?? process.platform) === 'darwin'

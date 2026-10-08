@@ -28,6 +28,7 @@ import {
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectCreate,
   openProjectRename,
   revealPath,
   setActiveProject,
@@ -100,6 +101,14 @@ function useProjectActions({
           key: 'add-folder',
           label: p.menuAddFolder,
           onSelect: () => openProjectAddFolder(target)
+        },
+        // Create a project nested under this one; the dialog's create flow runs
+        // with this project as the parent (see $projectDialog.parentId).
+        {
+          icon: 'add',
+          key: 'new-subproject',
+          label: p.menuNewSubproject,
+          onSelect: () => openProjectCreate(target)
         },
         {
           disabled: isActive,

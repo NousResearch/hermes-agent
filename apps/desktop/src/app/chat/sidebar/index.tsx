@@ -162,6 +162,7 @@ import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  nestProjectsByParent,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -1022,7 +1023,10 @@ export function ChatSidebar({
       return true
     })
 
-    return orderProjectsByIds(deduped, projectOrderIds)
+    //
+    // Nesting last: a project whose folder sits inside another's follows its
+    // parent (`nestProjectsByParent`) whatever order the two were dragged into.
+    return nestProjectsByParent(orderProjectsByIds(deduped, projectOrderIds))
   }, [
     projectTree,
     dismissedAutoProjects,

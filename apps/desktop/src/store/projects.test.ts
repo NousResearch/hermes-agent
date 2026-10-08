@@ -31,6 +31,7 @@ import {
   refreshProjectTree,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  setProjectParent,
   startWorkInRepo,
   updateProject
 } from './projects'
@@ -624,6 +625,87 @@ describe('createProject', () => {
     expect($activeProjectId.get()).toBe('p_new')
   })
 
+  it('nests the new project under the parent it was given', async () => {
+    const created = {
+      folders: [],
+      id: 'p_child',
+      name: 'Align',
+      parent_id: 'p_dev',
+      primary_path: '/srv/dev/m4l/align'
+    }
+
+    const request = vi.fn().mockResolvedValue({ project: created })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await createProject({ folders: ['/srv/dev/m4l/align'], name: 'Align', parentId: 'p_dev', use: true })
+
+    expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ parent_id: 'p_dev' }))
+  })
+
+  it('nests a dragged project through projects.set_parent, patching the row before the RPC lands', async () => {
+    const row = {
+      id: 'p_child',
+      isAuto: false,
+      label: 'Align',
+      parentId: null,
+      path: '/srv/dev/m4l/align',
+      previewSessions: [],
+      repos: [],
+      sessionCount: 0
+    } as SidebarProjectTree
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.set_parent') {
+        // The sidebar groups by parentId, so the row must already sit under its new
+        // parent while the write is in flight — not one round-trip later.
+        expect($projectTree.get().find(node => node.id === 'p_child')?.parentId).toBe('p_dev')
+
+        return { project: { id: 'p_child', parent_id: 'p_dev' } }
+      }
+
+      return { active_id: 'p_child', projects: [], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $projectTree.set([row])
+
+    await setProjectParent('p_child', 'p_dev')
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.set_parent',
+      expect.objectContaining({ id: 'p_child', parent_id: 'p_dev' })
+    )
+  })
+
+  it('moves a project back out to the top level with an empty parent', async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.set_parent'
+        ? { project: { id: 'p_child' } }
+        : { active_id: null, projects: [], scoped_session_ids: [] }
+    )
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $projectTree.set([
+      {
+        id: 'p_child',
+        isAuto: false,
+        label: 'Align',
+        parentId: 'p_dev',
+        path: '/srv/dev/m4l/align',
+        previewSessions: [],
+        repos: [],
+        sessionCount: 0
+      } as SidebarProjectTree
+    ])
+
+    await setProjectParent('p_child', '')
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.set_parent',
+      expect.objectContaining({ id: 'p_child', parent_id: '' })
+    )
+  })
+
   it('marks the backend stale and surfaces a friendly error when projects.create is missing', async () => {
     activeGateway.mockReturnValue({
       connectionState: 'open',
@@ -840,7 +922,7 @@ describe('repository discovery policy', () => {
 
     expect(scanRepos).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: false, exclude_paths: [], roots: [] },
+      discovery_policy: { enabled: false, exclude_paths: [], nested: false, roots: [] },
       profile: 'default',
       repos: []
     })
@@ -869,17 +951,33 @@ describe('repository discovery policy', () => {
     expect(getHermesConfig).toHaveBeenCalledWith('default')
     expect(scanRepos).toHaveBeenCalledWith(['/work'], {
       enabled: true,
-      excludePaths: ['/work/vendor']
+      excludePaths: ['/work/vendor'],
+      nested: false
     })
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
       discovery_policy: {
         enabled: true,
         exclude_paths: ['/work/vendor'],
+        nested: false,
         roots: ['/work']
       },
       profile: 'default',
       repos: [{ label: 'repo', root: '/work/repo' }]
     })
+  })
+
+  it('passes nested repo discovery through to the scan only when the setting is on', async () => {
+    gatewayWith(vi.fn(async () => ({ accepted: false, repos: [] })))
+    const scanRepos = vi.fn().mockResolvedValue([])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_nested: true, repo_scan_roots: ['/work'] }
+    })
+
+    await scanAndRecordRepos(true)
+
+    // Opt-in `desktop.repo_scan_nested` must reach the walker, or the setting would do nothing.
+    expect(scanRepos).toHaveBeenCalledWith(['/work'], expect.objectContaining({ nested: true }))
   })
 
   it('does not scan the local filesystem for remote connections but still refreshes the project tree', async () => {
@@ -1018,7 +1116,7 @@ describe('repository discovery policy', () => {
     await pending
 
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: true, exclude_paths: [], roots: ['/work'] },
+      discovery_policy: { enabled: true, exclude_paths: [], nested: false, roots: ['/work'] },
       profile: 'launch',
       repos: [{ label: 'repo', root: '/work/repo' }]
     })

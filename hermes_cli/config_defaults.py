@@ -2626,6 +2626,11 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
+        # Also discover repos NESTED inside a discovered repo, and show each one as a subproject of
+        # the repo containing it. Off by default: a monorepo's internal checkouts are noise for most
+        # people, and the scan costs more when it cannot stop at the first `.git`. Turning this on does
+        # nothing without `repo_scan_enabled`.
+        "repo_scan_nested": False,
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],

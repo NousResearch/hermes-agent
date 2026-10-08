@@ -732,6 +732,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'terminal.cwd',
       'desktop.repo_scan_enabled',
+      'desktop.repo_scan_nested',
       'desktop.repo_scan_roots',
       'desktop.repo_scan_exclude_paths',
       'code_execution.mode',

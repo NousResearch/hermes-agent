@@ -206,6 +206,78 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     assert active["last_active"] > idle["last_active"]
 
 
+def test_scan_finds_a_repo_nested_inside_another(tmp_path):
+    """A discovered repo may CONTAIN other repos, and containment nests them as subprojects.
+
+    The walk stops at the first `.git` unless `repo_scan_nested` is on, so this is opt-in: a monorepo's
+    internal checkouts are noise for most people, and descending costs more than the flat walk.
+    """
+    from hermes_cli import projects_db as pdb
+    import tui_gateway.server as server
+
+    outer = tmp_path / "outer"
+    (outer / "packages" / "inner").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer / "packages" / "inner", check=True)
+
+    policy = {"enabled": True, "nested": False, "roots": [str(tmp_path)], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        flat = {r["root"] for r in pdb.list_discovered_repos(conn)}
+    assert str(outer / "packages" / "inner") not in flat
+
+    policy["nested"] = True
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    # Both, not just the outer one.
+    assert str(outer) in found
+    assert str(outer / "packages" / "inner") in found
+
+
+def test_scan_does_not_descend_into_a_git_object_store(tmp_path):
+    """Nested discovery must not turn `.git` internals into projects."""
+    from hermes_cli import projects_db as pdb
+    import tui_gateway.server as server
+
+    outer = tmp_path / "outer"
+    (outer / ".git" / "modules" / "shadow").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer / ".git" / "modules" / "shadow", check=True)
+
+    policy = {"enabled": True, "nested": True, "roots": [str(tmp_path)], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    assert str(outer) in found
+    assert not any(os.sep + ".git" + os.sep in root for root in found)
+
+
+def test_discovered_repos_nest_under_the_repo_containing_them(tmp_path):
+    """Two DISCOVERED repos, one inside the other, render as parent + subproject."""
+    outer = tmp_path / "outer"
+    inner = outer / "packages" / "inner"
+    inner.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
+
+    _call("projects.record_repos", {"repos": [{"root": str(outer)}, {"root": str(inner)}]})
+
+    projects = _call("projects.tree")["projects"]
+    by_id = {p["path"]: p for p in projects}
+
+    assert str(outer) in by_id
+    assert str(inner) in by_id
+    # Display grouping only: the child renders under its parent, and neither owns the other's path.
+    assert by_id[str(inner)]["parentId"] == by_id[str(outer)]["id"]
+    assert by_id[str(outer)]["parentId"] in (None, "")
+
+
 def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeypatch):
     """A backend scan that can't fully walk its roots must NOT wipe the cache.
 
@@ -246,7 +318,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
 
     monkeypatch.setattr(server.os, "walk", _flaky_walk)
 
-    policy = {"enabled": True, "roots": [good, bad_root], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [good, bad_root], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)
@@ -292,7 +364,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     # and wipe the cache.
     missing_root = str(tmp_path / "missing-root")
 
-    policy = {"enabled": True, "roots": [good, missing_root], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [good, missing_root], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)
@@ -326,7 +398,7 @@ def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     with pdb.connect_closing() as conn:
         pdb.record_discovered_repos(conn, [(stale, "stale-repo")])
 
-    policy = {"enabled": True, "roots": [str(scandir)], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [str(scandir)], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)

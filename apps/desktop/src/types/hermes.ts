@@ -497,6 +497,8 @@ export interface HermesConfig {
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
+    /** Also discover repos nested inside a discovered repo, shown as subprojects. */
+    repo_scan_nested?: boolean
   }
   terminal?: {
     cwd?: string
@@ -1176,6 +1178,9 @@ export interface ProjectInfo {
   archived: boolean
   created_at: number
   folders: ProjectFolder[]
+  /** Nesting: null = nest by folder containment, "" = top level, a project id = that parent.
+   *  Optional because a backend older than this field simply omits it. */
+  parent_id?: null | string
 }
 
 export interface ProjectsPayload {

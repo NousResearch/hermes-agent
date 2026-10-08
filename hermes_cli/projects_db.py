@@ -74,11 +74,16 @@ _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "parent_id")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path", "parent_id")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
+# ``parent_id`` is a tri-state: NULL = no explicit parent, so the sidebar nests the project by folder
+# containment (``tui_gateway.project_tree``); ``""`` = explicitly top level (a project dragged out of
+# its parent); ``"p_xxxx"`` = that project's child. Only a project the user never moved keeps the
+# containment default, so dragging a row out of a nested folder sticks.
+PARENT_TOP_LEVEL = ""
 
 
 def _slugify(name: str) -> str:
@@ -167,6 +172,8 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    # Nesting override: None = nest by folder containment, "" = top level, "p_xxxx" = that parent.
+    parent_id: Optional[str] = None
     archived: bool = False
     folders: list[ProjectFolder] = field(default_factory=list)
 
@@ -217,13 +224,62 @@ def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archive
     return None
 
 
+def _normalize_parent(conn: sqlite3.Connection, parent_id: Optional[str], *, child_id: Optional[str] = None) -> Optional[str]:
+    """Validate a requested parent and return the value to store.
+
+    ``None`` keeps the containment default; ``""`` is the explicit top-level marker; anything else must
+    name an existing project that is not ``child_id``.
+    """
+    if parent_id is None or not str(parent_id).strip():
+        return None if parent_id is None else PARENT_TOP_LEVEL
+    parent = str(parent_id).strip()
+    if child_id is not None and parent == child_id:
+        raise ValueError("a project cannot be its own parent")
+    if get_project(conn, parent) is None:
+        raise ValueError(f"no such parent project: {parent}")
+    return parent
+
+
+def _refuse_parent_cycle(conn: sqlite3.Connection, project_id: str, parent_id: str) -> None:
+    """Raise when ``parent_id`` already sits under ``project_id``.
+
+    Walks the explicit links only: a loop through folder containment is resolved (and flattened) by the
+    display layer, and every link a drag can create is explicit. A loop here would drop rows silently.
+    """
+    seen = {project_id}
+    cursor: Optional[str] = parent_id
+    while cursor:
+        if cursor in seen:
+            raise ValueError("that move would nest a project under one of its own descendants")
+        seen.add(cursor)
+        row = conn.execute("SELECT parent_id FROM projects WHERE id = ?", (cursor,)).fetchone()
+        cursor = (row["parent_id"] or None) if row is not None else None
+
+
+def set_project_parent(conn: sqlite3.Connection, project_id: str, parent_id: Optional[str]) -> Optional[str]:
+    """Nest ``project_id`` under ``parent_id`` — ``""`` for top level, ``None`` back to containment.
+
+    Returns the stored value. Refuses self-parenting and moves that would put a project under one of its
+    own descendants.
+    """
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"no such project: {project_id}")
+    parent = _normalize_parent(conn, parent_id, child_id=project_id)
+    if parent:
+        _refuse_parent_cycle(conn, project_id, parent)
+    _execute_rowcount(conn, "UPDATE projects SET parent_id = ? WHERE id = ?", (parent, project_id))
+    return parent
+
+
 def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
     color: Optional[str] = None, board_slug: Optional[str] = None, allow_duplicate_path: bool = False,
+    parent_id: Optional[str] = None,
 ) -> str:
     """Create a project and return its id. ``folders`` are normalized to absolute paths; ``primary_path``
-    is added to the folder set (if absent) and marked primary, else the first folder becomes primary."""
+    is added to the folder set (if absent) and marked primary, else the first folder becomes primary.
+    ``parent_id`` nests the new project under an existing one (``""`` for an explicit top level)."""
     name = str(name or "").strip()
     if not name:
         raise ValueError("project name must not be empty")
@@ -242,12 +298,13 @@ def create_project(
             f"folder already belongs to project '{existing.slug}' ({existing.id}); "
             "switch to it instead of creating a duplicate"
         )
+    parent = _normalize_parent(conn, parent_id)
     with write_txn(conn):
         conn.execute(
-            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived, parent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             (pid, _unique_slug(conn, slug_candidate), name, description, icon, color,
-             normalize_slug(board_slug) if board_slug else None, primary, now),
+             normalize_slug(board_slug) if board_slug else None, primary, now, parent),
         )
         conn.executemany(
             "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",

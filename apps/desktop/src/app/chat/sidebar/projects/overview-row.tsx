@@ -10,7 +10,9 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import type { SessionDotState } from '@/store/session-dot-state'
 
+import { sessionDotClassName, sessionDotLabel } from '../../session-status-dot'
 import {
   SIDEBAR_LEAD_ICON_SIZE,
   SidebarGroupRow,
@@ -96,6 +98,10 @@ interface ProjectOverviewRowProps {
   /** How many of the backend's `sessionCount` that predicate hides, so
    *  "Show all N" promises only rows the view will actually render. */
   hiddenSessionCount?: number
+  /** The loudest status anywhere in this project's subtree — its own sessions and every nested
+   *  project's. Painted only while the row is collapsed: an expanded row shows its sessions' own
+   *  dots, and a second dot on the parent would just double the ink. */
+  attentionState?: SessionDotState
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -113,6 +119,7 @@ export function ProjectOverviewRow({
   previewSessions,
   isSessionHidden,
   hiddenSessionCount = 0,
+  attentionState,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -123,6 +130,10 @@ export function ProjectOverviewRow({
   const s = t.sidebar
   const isActive = project.id === activeProjectId
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
+  // The subtree's loudest status, shown whether the row is open or closed: a session that wants an
+  // answer inside a subproject must be visible without folding anything open.
+  const attention = attentionState && attentionState !== 'idle' ? attentionState : null
+  const attentionLabel = attention ? sessionDotLabel(attention, s.row) : null
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
@@ -242,7 +253,28 @@ export function ProjectOverviewRow({
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
-      label={project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
+      // The project's own row, marked apart from the wrapper `data-sessions-project` sits on (which
+      // also holds its session rows): a project drag reads THIS as "the project itself" and the rest
+      // of its region as its root.
+      data-project-row={project.id}
+      label={
+        <>
+          {project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
+          {attention && (
+            // Same geometry as a session row's dot: a fixed cell, self-centred in the row and
+            // centring the dot in itself, so the two dots sit on one axis.
+            <span
+              aria-label={attentionLabel?.ariaLabel}
+              className="grid size-3.5 shrink-0 self-center place-items-center"
+              data-project-attention=""
+              role="status"
+              title={attentionLabel?.title}
+            >
+              <span className={sessionDotClassName(attention)} />
+            </span>
+          )}
+        </>
+      }
       lead={lead}
       // The label is grab surface too, not just the lead's grabber — the
       // pointer activator only (the full handle stays on the grabber, see
@@ -281,6 +313,10 @@ export function ProjectOverviewRow({
     <div
       className={cn(
         dragging && 'relative z-10',
+        // A folder-nested project sits one indent under its parent (the same
+        // `pl-2` a project's own nested rows use) — grouping only, its sessions
+        // stay its own.
+        project.parentId && 'pl-2',
         // Painted imperatively by session-drag.ts while a dragged session
         // hovers this row — a live "drop here to move" cue, not React state
         // (it must not repaint the sidebar on every pixel of pointer travel).

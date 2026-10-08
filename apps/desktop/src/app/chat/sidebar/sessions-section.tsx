@@ -27,8 +27,10 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
+import { $projectTree, setProjectParent } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasLiveTurn, rollupDotState } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -36,11 +38,14 @@ import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from '.
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
+  projectSubtreeSessionIds,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   SidebarWorkspaceGroup,
-  type SidebarWorkspaceTree
+  type SidebarWorkspaceTree,
+  visibleProjectRows
 } from './projects'
+import { createProjectNestResolver } from './projects/project-drag'
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
@@ -242,6 +247,27 @@ export function SidebarSessionsSection({
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
+
+  // Dropping a project onto another's row nests it there, and dropping it in a gap between rows
+  // reorders (see projects/project-drag.ts). The resolver must outlive a mid-drag re-render — dnd-kit
+  // re-renders on every order change — so it is memoised and reads the projects from the store
+  // instead of closing over the `projectOverview` prop.
+  const projectNest = useMemo(
+    () =>
+      createProjectNestResolver({
+        projects: () => $projectTree.get(),
+        setParent: (id, parentId) =>
+          void setProjectParent(id, parentId).catch(err => notifyError(err, t.sidebar.projects.nestFailed)),
+        setTopLevel: id =>
+          void setProjectParent(id, '').catch(err => notifyError(err, t.sidebar.projects.nestFailed)),
+        strings: { nestInto: t.sidebar.projects.dragNestInto, topLevel: t.sidebar.projects.dragTopLevel }
+      }),
+    [t]
+  )
+
+  const resolveProjectNest = projectNest.resolve
+  const projectQuietZone = projectNest.quiet
+
   const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
@@ -519,12 +545,21 @@ export function SidebarSessionsSection({
     // wired — Home stays outside the sortable list, it's a fixture.
     const home = projectOverview[0]?.isNoProject ? projectOverview[0] : undefined
     const sortableProjects = home ? projectOverview.slice(1) : projectOverview
+    // A collapsed project hides its subprojects along with its sessions — the nest is a display
+    // grouping, and a row nobody can see is not a row to render. Each project keeps its own open
+    // flag, so whatever a subproject was left in survives its parent folding away and coming back.
+    // The sortable ids stay whole: a drop resolves against the FULL order, so reordering while a
+    // parent is closed cannot renumber the rows it hides.
+    const visibleProjects = visibleProjectRows(sortableProjects, id => nodeOpen[id] ?? true)
     const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
       <Component
         activeProjectId={activeProjectId}
+        // The loudest status anywhere under this project, folded up from its own sessions and every
+        // nested project's — a collapsed row still reports work waiting inside it.
+        attentionState={rollupDotState(dotStates, projectSubtreeSessionIds(projectOverview, project.id))}
         hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
         isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}
@@ -541,7 +576,7 @@ export function SidebarSessionsSection({
       />
     )
 
-    const rows = sortableProjects.map(project => projectRow(project, Row))
+    const rows = visibleProjects.map(project => projectRow(project, Row))
 
     inner = (
       <>
@@ -550,6 +585,11 @@ export function SidebarSessionsSection({
           <ReorderableList
             ids={sortableProjects.map(project => project.id)}
             onReorder={onReorderProjects}
+            // Over a project row the list stops reflowing, so the row cannot slide out from under
+            // the pointer before the drop. The gap between rows stays live, and that is where
+            // reordering happens.
+            quietZone={projectQuietZone}
+            resolveNest={resolveProjectNest}
             sensors={dndSensors}
           >
             {rows}
@@ -635,7 +675,13 @@ export function SidebarSessionsSection({
         open={sectionOpen}
       />
       {sectionOpen && (
-        <SidebarGroupContent className={resolvedContentClassName}>
+        <SidebarGroupContent
+          className={resolvedContentClassName}
+          // The projects drag paints its outline as a fixed overlay on <body>, so it needs this
+          // pane's box to clamp the outline to — an unclipped outline runs past a scrolled list's
+          // last row and out over whatever sits beside the sidebar.
+          data-project-pane={projectOverview ? '' : undefined}
+        >
           {inner}
           {footer}
         </SidebarGroupContent>

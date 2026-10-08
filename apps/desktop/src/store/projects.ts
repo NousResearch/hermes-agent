@@ -818,6 +818,8 @@ export async function moveSessionToProject(
 
 export interface RepoDiscoveryPolicy {
   enabled: boolean
+  /** Also discover repos nested inside a discovered repo, shown as subprojects. */
+  nested: boolean
   roots: string[]
   exclude_paths: string[]
 }
@@ -830,12 +832,15 @@ export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPol
       ? (desktopValue as {
           repo_scan_enabled?: unknown
           repo_scan_exclude_paths?: unknown
+          repo_scan_nested?: unknown
           repo_scan_roots?: unknown
         })
       : {}
 
   return {
     enabled: desktop.repo_scan_enabled !== false,
+    // Opt-in, and additive: it does nothing without the scan itself.
+    nested: desktop.repo_scan_nested === true,
     roots: Array.isArray(desktop.repo_scan_roots)
       ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
       : [],
@@ -949,7 +954,8 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
 
       const repos = await scan(policy.roots, {
         enabled: true,
-        excludePaths: policy.exclude_paths
+        excludePaths: policy.exclude_paths,
+        nested: policy.nested
       })
 
       if (state.generation !== generation) {
@@ -999,6 +1005,8 @@ export interface CreateProjectInput {
   color?: string
   boardSlug?: string
   use?: boolean
+  /** Nest the new project under this one — the "New subproject" flow in a project's menu. */
+  parentId?: string
   // Free-text project idea; written to IDEA.md at the primary folder on create.
   idea?: string
   /** Where a "New project" DRAG dropped the project (tab-strip slot / pane
@@ -1093,6 +1101,7 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
     color: project.color ?? null,
     icon: project.icon ?? null,
     isAuto: false,
+    parentId: project.parent_id ?? null,
     repos: [],
     sessionCount: 0,
     previewSessions: []
@@ -1125,6 +1134,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
           icon: input.icon,
           color: input.color,
           board_slug: input.boardSlug,
+          parent_id: input.parentId,
           use: input.use ?? false
         },
         context.profile
@@ -1320,6 +1330,29 @@ export async function addProjectFolder(
   reconcileProjects()
 }
 
+/**
+ * Nest a project under another one — `parentId` names the parent, `""` moves it back out to the top
+ * level.
+ *
+ * Optimistic on the tree node alone: `parentId` is what the sidebar groups by, so the row lands under
+ * its new parent immediately and a failed move rolls the snapshot back.
+ */
+export async function setProjectParent(id: string, parentId: string): Promise<void> {
+  const context = await activeProjectsContext(writableProjectProfile())
+  const snap = snapshotProjects()
+
+  $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, parentId: parentId || null } : node)))
+
+  await persistOrRollback(snap, () =>
+    gatewayRequestOn(
+      context.gateway,
+      'projects.set_parent',
+      projectParams({ id, parent_id: parentId }, context.profile)
+    )
+  )
+  reconcileProjects()
+}
+
 // True when the session currently open in the main pane belongs to `projectId`.
 // Used so deleting a project you have a session open from kicks you back to the
 // intro draft instead of stranding you in a now-orphaned view.
@@ -1390,11 +1423,15 @@ export interface ProjectDialogState {
   mode: 'add-folder' | 'create' | 'rename'
   projectId?: string
   name?: string
+  /** Create mode: nest the new project under this one — "New subproject" in a row's menu. */
+  parentId?: string
+  parentName?: string
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+/** Open the create dialog; passing a project nests the new one under it. */
+export function openProjectCreate(parent?: { id: string; name: string }): void {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
@@ -1404,7 +1441,7 @@ export function openProjectCreate(): void {
     return
   }
 
-  $projectDialog.set({ mode: 'create' })
+  $projectDialog.set({ mode: 'create', parentId: parent?.id, parentName: parent?.name })
 }
 
 /** Clear the armed "New project" drag placement — on dialog close, so a later

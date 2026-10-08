@@ -18,6 +18,7 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  rollupDotState,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
@@ -238,5 +239,25 @@ describe('$unreadSessionCount (titlebar badge)', () => {
 
     expect($unreadSessionCount.get()).toBe(0)
     expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
+  })
+})
+
+describe('rollupDotState', () => {
+  // What a collapsed container row shows instead of its rows: the loudest state anywhere under it.
+  const states = { a: 'unread', b: 'working', c: 'needs-input', d: 'draft' } as const
+
+  it('takes the loudest state in the set', () => {
+    expect(rollupDotState(states, ['a', 'b'])).toBe('working')
+    expect(rollupDotState(states, ['a', 'b', 'c'])).toBe('needs-input')
+    expect(rollupDotState(states, ['a'])).toBe('unread')
+  })
+
+  it('yields to draft and to sessions it knows nothing about', () => {
+    expect(rollupDotState(states, ['d'])).toBe('idle')
+    expect(rollupDotState(states, ['a', 'd', 'ghost'])).toBe('unread')
+  })
+
+  it('is idle for an empty set — a container with nothing to say paints nothing', () => {
+    expect(rollupDotState(states, [])).toBe('idle')
   })
 })

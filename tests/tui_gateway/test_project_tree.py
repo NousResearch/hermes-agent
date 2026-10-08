@@ -737,3 +737,130 @@ def test_cwdless_session_with_repo_root_stays_in_its_explicit_project():
     assert owned["id"] in explicit["sessionIds"]
     assert owned["id"] in [s["id"] for s in _sessions_of(explicit)]
     assert _home_session_ids(tree) == [detached["id"]]
+
+
+def test_nested_folder_nests_the_project_and_leaves_membership_alone():
+    """`parentId` is display grouping: the child keeps its own sessions.
+
+    A parent that also listed its nested child's sessions is the exact class of
+    duplicate-listings bug the folder index was hardened against, so anchor it.
+    """
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"])
+    parent_session = _session("/www/dev", branch="main")
+    child_session = _session("/www/dev/m4l/align", branch="main")
+
+    tree = pt.build_tree(
+        [parent, child], [parent_session, child_session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_dev"]["parentId"] is None
+    assert by_id["p_align"]["parentId"] == "p_dev"
+    assert [s["id"] for s in _sessions_of(by_id["p_dev"])] == [parent_session["id"]]
+    assert [s["id"] for s in _sessions_of(by_id["p_align"])] == [child_session["id"]]
+
+
+def test_parent_is_the_nearest_ancestor_not_the_outermost():
+    outer = _project("p_ws", "Workspace", ["/www"])
+    mid = _project("p_dev", "Dev", ["/www/dev"])
+    leaf = _project("p_align", "Align", ["/www/dev/m4l/align"])
+
+    tree = pt.build_tree([outer, mid, leaf], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] == "p_dev"
+    assert by_id["p_dev"]["parentId"] == "p_ws"
+    assert by_id["p_ws"]["parentId"] is None
+
+
+def test_equal_and_sibling_folders_stay_top_level():
+    """Only a STRICT ancestor nests: identical folders are peers, not parent/child."""
+    a = _project("p_a", "A", ["/www/a"])
+    b = _project("p_b", "B", ["/www/b"])
+    same = _project("p_same", "Same", ["/www/a"])
+    deeper = _project("p_deep", "Deep", ["/www/a/deep"])
+    # Same-folder copy is a peer; the deeper one is A's child.
+    tree = pt.build_tree([a, b, same, deeper], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_a"]["parentId"] is None
+    assert by_id["p_b"]["parentId"] is None
+    assert by_id["p_same"]["parentId"] is None
+    assert by_id["p_deep"]["parentId"] == "p_a"
+
+
+def test_any_declared_folder_nesting_is_enough_for_a_parent():
+    """A multi-folder project nests under the first of its folders that has an ancestor."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_multi", "Multi", ["/elsewhere/loose", "/www/dev/m4l/multi"])
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_multi"]["parentId"] == "p_dev"
+
+
+def test_home_bucket_never_gets_a_parent():
+    project = _project("p_dev", "Dev", ["/www/dev"])
+    tree = pt.build_tree([project], [_session(None)], [], resolve=lambda _cwd: None)
+
+    home = _home(tree)
+    assert home is not None
+    assert home["parentId"] is None
+
+
+def test_explicit_parent_overrides_folder_containment():
+    """A stored `parent_id` wins over what the folders imply — this is what a drag writes."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    other = _project("p_other", "Other", ["/www/elsewhere"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"], parent_id="p_other")
+
+    tree = pt.build_tree([parent, other, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] == "p_other"
+    assert by_id["p_dev"]["parentId"] is None
+
+
+def test_explicit_top_level_keeps_a_nested_folder_project_at_the_top():
+    """Dragging a project out stores "" — it must not fall back to folder containment."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"], parent_id="")
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] is None
+
+
+def test_parent_not_in_the_tree_falls_back_to_the_top_level():
+    """A parent that was archived or deleted must not hide the child's row."""
+    project = _project("p_dev", "Dev", ["/www/dev"])
+    orphan = _project("p_x", "Orphan", ["/www/x"], parent_id="p_gone")
+
+    tree = pt.build_tree([project, orphan], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_x"]["parentId"] is None
+
+
+def test_a_project_with_no_nested_folder_still_nests_when_told_to():
+    """Nesting is a stored link, so a subproject can live anywhere on disk."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_remote", "Remote", ["/opt/remote"], parent_id="p_dev")
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_remote"]["parentId"] == "p_dev"
+
+
+def test_effective_parent_map_resolves_containment_when_unset():
+    """The map the RPC layer validates moves against: explicit wins, otherwise containment."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    nested = _project("p_align", "Align", ["/www/dev/m4l/align"])
+    moved = _project("p_moved", "Moved", ["/www/dev/m4l/align"], parent_id="")
+
+    resolved = pt.effective_parent_map([parent, nested, moved])
+
+    assert resolved == {"p_dev": None, "p_align": "p_dev", "p_moved": None}

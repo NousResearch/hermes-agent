@@ -547,7 +547,7 @@ declare global {
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
         scanRepos: (
           roots: string[],
-          options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[] }
+          options?: { maxDepth?: number; enabled?: boolean; excludePaths?: string[]; nested?: boolean }
         ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {

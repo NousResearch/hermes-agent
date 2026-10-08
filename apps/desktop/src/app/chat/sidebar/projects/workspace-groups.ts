@@ -78,6 +78,11 @@ export interface SidebarProjectTree {
   // Every session id the backend assigned to this project — the authoritative
   // owner set the live overlay keys on (complete, unlike `previewSessions`).
   sessionIds?: string[]
+  // The nearest project whose folder strictly contains one of this project's,
+  // set by the backend tree (null/absent = top level). DISPLAY ONLY: the child
+  // keeps its own sessions — a parent never inherits them — so the overview
+  // just indents the row under its parent (`nestProjectsByParent`).
+  parentId?: null | string
 }
 
 /** Path split into segments, ignoring trailing slashes and mixed separators. */

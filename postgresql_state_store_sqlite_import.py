@@ -65,11 +65,17 @@ _UNSUPPORTED_SESSION_COLUMNS = {
     "compression_fallback_streak": 0,
     "compression_ineffective_count": 0,
     "compression_recovery_deadline": None,
+    # Only SQLite defaults may be ignored; non-default values must be rejected.
+    "compression_overload_streak": 0,
+    "auto_archived": 0,
     "rewind_count": 0,
     "last_read_at": None,
     "tool_names": None,
 }
 _UNSUPPORTED_MESSAGE_COLUMNS = {"display_order": None, "display_identity": None}
+_MESSAGE_IDENTITY_COLUMNS = (
+    "message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid",
+)
 _SUPPORTED_SOURCE_COLUMNS = {
     "system_prompts": frozenset({"hash", "prompt"}),
     "sessions": frozenset({
@@ -88,7 +94,8 @@ _SUPPORTED_SOURCE_COLUMNS = {
         "effect_disposition", "timestamp", "token_count", "finish_reason", "reasoning",
         "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
         "platform_message_id", "observed", "_compressed_summary", "active", "compacted",
-        "api_content", "display_kind", "display_metadata", *_UNSUPPORTED_MESSAGE_COLUMNS,
+        "api_content", "display_kind", "display_metadata", *_MESSAGE_IDENTITY_COLUMNS,
+        *_UNSUPPORTED_MESSAGE_COLUMNS,
     }),
     "session_model_usage": frozenset({
         "session_id", "model", "billing_provider", "billing_base_url", "billing_mode", "task",
@@ -462,6 +469,43 @@ def _assert_unknown_columns_unpopulated(connection: sqlite3.Connection, table: s
                 f"SQLite import rejects populated unknown canonical field {table}.{column}"
             )
 
+def _assert_message_identity_columns(connection: sqlite3.Connection) -> None:
+    """Validate without rewriting historical identity text or inventing missing links."""
+    present = _source_columns(connection, "messages") & set(_MESSAGE_IDENTITY_COLUMNS)
+    if not present:
+        return
+    columns = tuple(column for column in _MESSAGE_IDENTITY_COLUMNS if column in present)
+    selected = ", ".join(f'"{column}"' for column in columns)
+    rows = connection.execute(f'SELECT {selected} FROM "messages"')
+    for row in rows:
+        for column, value in zip(columns, row):
+            if value is None:
+                continue
+            valid = isinstance(value, str) and bool(value)
+            if valid and column in {"absorbed_message_uids", "tool_call_uids"}:
+                try:
+                    parsed = json.loads(value)
+                except (ValueError, TypeError):
+                    valid = False
+                else:
+                    if column == "absorbed_message_uids":
+                        valid = isinstance(parsed, list) and all(
+                            isinstance(uid, str) and bool(uid) for uid in parsed
+                        )
+                    else:
+                        valid = isinstance(parsed, dict) and all(
+                            isinstance(key, str) and bool(key) and (
+                                (isinstance(uid, str) and bool(uid))
+                                or (isinstance(uid, list) and bool(uid) and all(
+                                    isinstance(item, str) and bool(item) for item in uid
+                                ))
+                            ) for key, uid in parsed.items()
+                        )
+            if not valid:
+                raise SQLitePostgreSQLImportError(
+                    f"SQLite import rejected invalid identity in messages.{column}"
+                )
+
 
 def _source_inventory(snapshot: Path) -> tuple[dict[str, int], dict[str, Any]]:
     with sqlite3.connect(f"file:{snapshot}?mode=ro", uri=True) as connection:
@@ -501,6 +545,7 @@ def _source_inventory(snapshot: Path) -> tuple[dict[str, int], dict[str, Any]]:
         _assert_default_columns(connection, "messages", _UNSUPPORTED_MESSAGE_COLUMNS)
         for table in _SUPPORTED_OBJECTS:
             _assert_unknown_columns_unpopulated(connection, table)
+        _assert_message_identity_columns(connection)
         counts = {
             table: int(
                 connection.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
@@ -923,10 +968,13 @@ class SQLitePostgreSQLSandboxImporter:
             "api_content",
             "display_kind",
             "display_metadata",
+            *_MESSAGE_IDENTITY_COLUMNS,
         )
         for row in self._rows(source, "messages"):
             values = [
-                row["timestamp"] if column == "created_at" else row[column]
+                row["timestamp"] if column == "created_at" else (
+                    row[column] if column in row.keys() else None
+                )
                 for column in message_columns
             ]
             for column in ("tool_calls", "display_metadata"):

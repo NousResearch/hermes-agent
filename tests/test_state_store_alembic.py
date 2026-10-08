@@ -23,10 +23,10 @@ def test_core_v25_revision_is_the_single_public_baseline_identifier():
     assert V25_CORE_REVISION == "state_store_v25_core"
 
 
-def test_current_bootstrap_name_distinguishes_the_v25_baseline_from_v26_head():
+def test_current_bootstrap_name_distinguishes_the_v25_baseline_from_v27_head():
     from state_store_alembic import CURRENT_STATE_STORE_REVISION
 
-    assert CURRENT_STATE_STORE_REVISION == "state_store_v26_sqlite_import"
+    assert CURRENT_STATE_STORE_REVISION == "state_store_v27_message_identity"
     assert upgrade_new_tenant_to_current is not upgrade_new_tenant_to_v25
 
 
@@ -168,6 +168,116 @@ def test_pg13_version_rejection_precedes_advisory_lock_or_catalog_mutation(monke
 
     assert statements == ["SHOW server_version_num"]
     assert engine.disposed is True
+
+
+@pytest.mark.parametrize("revision", (
+    V25_CORE_REVISION, "state_store_v26_sqlite_import", "state_store_v27_message_identity",
+))
+def test_runner_preflight_dispatches_only_the_matching_revision_catalog(monkeypatch, revision):
+    from state_store_alembic import runner
+
+    schema = runner._runtime_state_store_schema(
+        "hermes_state_store_tenant_0123456789abcdef0123456789abcdef"
+    )
+    checks: list[str] = []
+
+    class RevisionConnection:
+        def exec_driver_sql(self, statement):
+            assert statement == f'SELECT version_num FROM "{schema.name}".alembic_version'
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [revision]))
+
+    monkeypatch.setattr(runner, "_has_legacy_ledger", lambda *_args: False)
+    monkeypatch.setattr(runner, "_relations", lambda *_args: ["alembic_version"])
+    monkeypatch.setattr(runner, "_require_version_table_contract", lambda *_args: checks.append("metadata"))
+    monkeypatch.setattr(runner, "validate_v25_core_catalog", lambda *_args: checks.append("v25"))
+    monkeypatch.setattr(runner, "validate_v26_catalog", lambda *_args: checks.append("v26"))
+
+    connection = RevisionConnection()
+    assert runner._preflight(connection, schema) is False
+    assert checks == ["metadata", *({V25_CORE_REVISION: ["v25"],
+                                    "state_store_v26_sqlite_import": ["v26"]}.get(revision, []))]
+    if revision == "state_store_v27_message_identity":
+        assert runner._read_exact_head(connection, schema) == revision
+    else:
+        with pytest.raises(runner.BaselineMigrationContractError, match="state_store_v27_message_identity head"):
+            runner._read_exact_head(connection, schema)
+
+
+def test_v26_drift_refuses_upgrade_before_ddl_then_recovers_after_repair(monkeypatch):
+    import sqlalchemy
+    from alembic import command
+    from state_store_alembic import runner
+
+    schema = runner._runtime_state_store_schema(
+        "hermes_state_store_tenant_0123456789abcdef0123456789abcdef"
+    )
+    events: list[str] = []
+    drifted = True
+
+    class FakeConnection:
+        dialect = SimpleNamespace(name="postgresql")
+        revision = "state_store_v26_sqlite_import"
+
+        @contextmanager
+        def begin(self):
+            yield self
+
+        def exec_driver_sql(self, statement, *_args):
+            events.append(statement)
+            if statement == "SHOW server_version_num":
+                return SimpleNamespace(scalar_one=lambda: "180000")
+            if statement.startswith("SELECT version_num FROM"):
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [self.revision]))
+            assert statement.startswith("SELECT pg_advisory_xact_lock(")
+            return None
+
+        def close(self):
+            return None
+
+    class FakeEngine:
+        def connect(self):
+            return connection
+
+        def dispose(self):
+            return None
+
+    connection = FakeConnection()
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_args, **_kwargs: FakeEngine())
+    monkeypatch.setattr(runner, "_has_legacy_ledger", lambda *_args: False)
+    monkeypatch.setattr(runner, "_relations", lambda *_args: ["alembic_version", "messages"])
+    monkeypatch.setattr(runner, "_require_version_table_contract", lambda *_args: events.append("metadata"))
+
+    def validate_v26(_connection, _schema):
+        events.append("validate_v26")
+        if drifted:
+            raise runner.BaselineMigrationContractError("v26 catalog drift")
+
+    def upgrade(_config, target):
+        assert target == "head"
+        events.append("upgrade")
+        connection.revision = runner.CURRENT_STATE_STORE_REVISION
+
+    monkeypatch.setattr(runner, "validate_v26_catalog", validate_v26)
+    monkeypatch.setattr(runner, "validate_current_catalog", lambda *_args: events.append("validate_v27"))
+    monkeypatch.setattr(command, "upgrade", upgrade)
+    raw_connection = SimpleNamespace(info=SimpleNamespace(vendor="PostgreSQL"))
+
+    with pytest.raises(runner.BaselineMigrationContractError, match="v26 catalog drift"):
+        runner.upgrade_new_tenant_to_current(raw_connection, schema)
+    assert [event for event in events if event in {"metadata", "validate_v26", "upgrade", "validate_v27"}] == [
+        "metadata", "validate_v26",
+    ]
+    assert "upgrade" not in events
+    assert not any(statement.startswith("CREATE ") for statement in events)
+    assert connection.revision == "state_store_v26_sqlite_import"
+
+    drifted = False
+    result = runner.upgrade_new_tenant_to_current(raw_connection, schema)
+    assert result.revision == "state_store_v27_message_identity"
+    assert [event for event in events if event in {"metadata", "validate_v26", "upgrade", "validate_v27"}] == [
+        "metadata", "validate_v26", "metadata", "validate_v26", "upgrade", "metadata", "validate_v27",
+    ]
+    assert not any(statement.startswith("CREATE ") for statement in events)
 
 
 def test_public_state_store_and_operations_boundaries_reject_raw_schema_names():

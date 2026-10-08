@@ -20,7 +20,10 @@ from collections.abc import Iterator, Mapping
 from typing import Any, Collection
 
 from hermes_cli.timefmt import coerce_epoch
+from agent.message_metadata import TOOL_CALL_UID, TOOL_CALL_UIDS, mint_uid, message_uid_or_none, index_tool_call_uids, resolve_tool_call_uid
+from agent.message_sanitization import coalesce_tool_call_id, tool_result_id_variants
 from agent.session_activity import bound_activity_description, normalize_activity_provenance
+from hermes_state_identity import _absorbed_uids_json, _tool_call_uids_json, _tool_call_uid_or_none, _tool_call_uid_map, _restore_identity_columns
 from hermes_state_common import _RECOVERABLE_END_REASONS, _RESET_END_REASONS, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM
 from hermes_state_ids import new_session_id
 from hermes_state_runtime_ownership import RuntimeOwner, RuntimeOwnershipReceipt, SessionRuntimeOwnershipMixin, TurnState
@@ -67,10 +70,12 @@ _MESSAGE_RECORD_COLUMNS = (
     "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
     "platform_message_id", "observed", "_compressed_summary", "active", "compacted", "api_content",
     "display_kind", "display_metadata", "display_identity",
+    "message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid",
 )
 _MESSAGE_RECORD_WRITE_COLUMNS = tuple(
     column for column in _MESSAGE_RECORD_COLUMNS if column not in {"active", "compacted", "display_identity"}
 )
+_MESSAGE_INSERT_PLACEHOLDERS = ", ".join("%s" for _ in range(4 + len(_MESSAGE_RECORD_WRITE_COLUMNS)))
 _TITLE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SEARCH_RESULT_FIELDS = (
     "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context",
@@ -292,8 +297,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             self._transcript_write_guards(cursor, new_session_id)
             cursor.execute(
                 f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) "
-                f"VALUES ({', '.join('%s' for _ in range(21))}) RETURNING id, created_at",
-                self._record_params(new_session_id, record),
+                f"VALUES ({_MESSAGE_INSERT_PLACEHOLDERS}) RETURNING id, created_at",
+                self._record_params(new_session_id, record, cursor=cursor),
             )
             row = cursor.fetchone()
             created_at = row["created_at"]
@@ -893,10 +898,49 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
     def _record_json_text(value: Any) -> str | None:
         return None if not value else (value if isinstance(value, str) else json.dumps(value))
 
-    def _record_params(self, session_id: str, record: MessageRecord) -> tuple[Any, ...]:
+    def _paired_tool_call_uid(self, cursor: Any, session_id: str, tool_call_id: str | None) -> str | None:
+        """Pair only with a named, active assistant call after the last user turn.
+
+        A nearer assistant naming the same provider id but lacking a durable UID
+        shadows earlier occurrences. Never guess an identity from the provider id.
+        """
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return None
+        variants = set(tool_result_id_variants(tool_call_id))
+        cursor.execute(
+            f"SELECT tool_calls, tool_call_uids FROM {self._schema}.messages "
+            "WHERE session_id=%s AND active AND role='assistant' AND id > COALESCE(("
+            f"SELECT MAX(id) FROM {self._schema}.messages WHERE session_id=%s AND active AND role='user'"
+            "), 0) ORDER BY id DESC",
+            (session_id, session_id),
+        )
+        for row in cursor.fetchall():
+            calls = row["tool_calls"] if isinstance(row, Mapping) else row[0]
+            stored_uids = row["tool_call_uids"] if isinstance(row, Mapping) else row[1]
+            if not isinstance(calls, list):
+                continue
+            index: dict[str, str] = {}
+            named = index_tool_call_uids(index, {"tool_calls": calls, TOOL_CALL_UIDS: _tool_call_uid_map({"tool_call_uids": stored_uids})})
+            if not variants.isdisjoint(named):
+                return resolve_tool_call_uid(index, tool_call_id)
+        return None
+
+    def _record_params(self, session_id: str, record: MessageRecord, *, cursor: Any) -> tuple[Any, ...]:
         timestamp = coerce_epoch(record.timestamp, field="message timestamp")
         tool_calls = self._record_json(record.tool_calls)
         display_metadata = self._record_json(record.display_metadata, object_only=True)
+        identity = {name: getattr(record, name) for name in (
+            "message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid")}
+        uid = message_uid_or_none(identity) or mint_uid()
+        if record.role == "assistant" and isinstance(tool_calls, list):
+            uids = _tool_call_uid_map(identity)
+            for call in tool_calls:
+                call_id = coalesce_tool_call_id(call)
+                if call_id and call_id not in uids:
+                    uids[call_id] = mint_uid()
+            identity["tool_call_uids"] = uids
+        if record.role == "tool" and _tool_call_uid_or_none(identity) is None:
+            identity["tool_call_uid"] = self._paired_tool_call_uid(cursor, session_id, record.tool_call_id)
         return (
             session_id, record.role, self._encode_content(record.content),
             timestamp if timestamp is not None else time.time(), record.tool_call_id,
@@ -907,6 +951,7 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             self._record_json_text(record.codex_message_items), record.platform_message_id, bool(record.observed),
             bool(record._compressed_summary), record.api_content, record.display_kind,
             self._psycopg.types.json.Jsonb(display_metadata) if display_metadata else None,
+            uid, _absorbed_uids_json(identity), _tool_call_uids_json(identity), _tool_call_uid_or_none(identity),
         )
 
     def append_message(self, session_id: str, *, role: str, content: str | None = None) -> int:
@@ -930,8 +975,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
                 reject_active_turn_lease=reject_active_turn_lease)
             cursor.execute(
                 f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) "
-                f"VALUES ({', '.join('%s' for _ in range(21))}) RETURNING id, created_at",
-                self._record_params(session_id, record),
+                f"VALUES ({_MESSAGE_INSERT_PLACEHOLDERS}) RETURNING id, created_at",
+                self._record_params(session_id, record, cursor=cursor),
             )
             row = cursor.fetchone()
             message_id = row["id"] if isinstance(row, Mapping) else row[0]
@@ -950,8 +995,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             for record in records:
                 cursor.execute(
                     f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) "
-                    f"VALUES ({', '.join('%s' for _ in range(21))}) RETURNING created_at",
-                    self._record_params(session_id, record),
+                    f"VALUES ({_MESSAGE_INSERT_PLACEHOLDERS}) RETURNING created_at",
+                    self._record_params(session_id, record, cursor=cursor),
                 )
                 created_at = cursor.fetchone()[0]
                 cursor.execute(
@@ -1078,7 +1123,6 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         if not parent_session_id or not child_session_id or not messages:
             raise ValueError("compression publication requires parent, child, and non-empty handoff")
         receipt_id = request_id or child_session_id
-        record_fields = MessageRecord.__dataclass_fields__
         with self._connection() as connection, connection.cursor(row_factory=self._psycopg.rows.dict_row) as cursor:
             now = self._coordination_clock_and_lock(cursor, "compression_locks", parent_session_id)
             cursor.execute(f"SELECT parent_session_id, child_session_id FROM {self._schema}.compression_rotation_receipts WHERE request_id=%s FOR UPDATE", (receipt_id,))
@@ -1120,8 +1164,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             values = (child_session_id, source or parent["source"], now, model or parent["model"], self._psycopg.types.json.Jsonb(model_config) if model_config else parent["model_config"], prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"], parent["git_repo_root"], profile_name or parent["profile_name"], parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"], parent["thread_id"], parent["display_name"], parent["origin_json"], parent["title"], parent["title_source"], parent["hidden"], parent["archived"], parent["pinned"], now)
             cursor.execute(f"INSERT INTO {self._schema}.sessions ({', '.join(columns)}) VALUES ({', '.join('%s' for _ in columns)})", values)
             for message in messages:
-                record = MessageRecord(**{name: message[name] for name in record_fields if name in message})
-                cursor.execute(f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) VALUES ({', '.join('%s' for _ in range(21))})", self._record_params(child_session_id, record))
+                record = self._replace_record_from_dict(message)
+                cursor.execute(f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) VALUES ({_MESSAGE_INSERT_PLACEHOLDERS})", self._record_params(child_session_id, record, cursor=cursor))
             if watermark is not None:
                 upper = int(watermark_ceiling) if watermark_ceiling is not None else 9223372036854775807
                 cursor.execute(f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_COLUMNS)}) SELECT %s, role, content, created_at, {', '.join(_MESSAGE_RECORD_COLUMNS)} FROM {self._schema}.messages WHERE session_id=%s AND active AND id > %s AND id <= %s ORDER BY id", (child_session_id, parent_session_id, int(watermark), upper))
@@ -1378,6 +1422,10 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         keep_reasoning = msg.get("role") == "assistant"
         fields = MessageRecord.__dataclass_fields__
         values = {name: msg[name] for name in fields if name in msg}
+        for column, live_key in (("absorbed_message_uids", "_absorbed_message_uids"),
+                                 ("tool_call_uids", TOOL_CALL_UIDS), ("tool_call_uid", TOOL_CALL_UID)):
+            if live_key in msg:
+                values[column] = msg[live_key]
         values.setdefault("role", "unknown")
         values["platform_message_id"] = msg.get("platform_message_id") or msg.get("message_id")
         values["observed"] = bool(msg.get("observed"))
@@ -1421,8 +1469,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             for record in records:
                 cursor.execute(
                     f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) "
-                    f"VALUES ({', '.join('%s' for _ in range(21))})",
-                    self._record_params(session_id, record),
+                    f"VALUES ({_MESSAGE_INSERT_PLACEHOLDERS})",
+                    self._record_params(session_id, record, cursor=cursor),
                 )
 
     def get_messages_as_conversation(self, session_id: str, include_inactive: bool = False,
@@ -1443,7 +1491,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
             "finish_reason, reasoning, reasoning_content, reasoning_details, "
             "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
-            "_compressed_summary, created_at AS timestamp, api_content, display_kind, display_metadata"
+            "_compressed_summary, created_at AS timestamp, api_content, display_kind, display_metadata, "
+            "message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid"
         )
         active_clause = "" if include_inactive else " AND active"
         with self._connection() as connection, connection.cursor(row_factory=self._psycopg.rows.dict_row) as cursor:
@@ -1457,6 +1506,7 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg: dict[str, Any] = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER: True}
+            _restore_identity_columns(row, msg)
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = int(row["id"])
             msg.update((column, row[column]) for column in ("api_content", "display_kind") if row[column])
@@ -1687,8 +1737,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             if preserve_compaction_handoff:
                 if handoff is None:  # guarded above; keeps the transactional path type-safe.
                     raise ValueError("preserve_compaction_handoff requires an active composite carrier")
-                record = MessageRecord(**{name: handoff[name] for name in MessageRecord.__dataclass_fields__ if name in handoff})
-                cursor.execute(f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) VALUES ({', '.join('%s' for _ in range(21))}) RETURNING id", self._record_params(session_id, record))
+                record = self._replace_record_from_dict(handoff)
+                cursor.execute(f"INSERT INTO {self._schema}.messages (session_id, role, content, created_at, {', '.join(_MESSAGE_RECORD_WRITE_COLUMNS)}) VALUES ({_MESSAGE_INSERT_PLACEHOLDERS}) RETURNING id", self._record_params(session_id, record, cursor=cursor))
                 inserted = cursor.fetchone()
                 replacement_id = int(inserted["id"] if isinstance(inserted, Mapping) else inserted[0])
             if replacement_id is None:
@@ -1717,7 +1767,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             "id, session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
             "created_at AS timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
             "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
-            "active, compacted, api_content, display_kind, display_metadata"
+            "active, compacted, api_content, display_kind, display_metadata, "
+            "message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid"
         )
         with self._connection() as connection, connection.cursor(row_factory=self._psycopg.rows.dict_row) as cursor:
             visibility = "(active OR compacted)" if include_compacted else "active"
@@ -1751,7 +1802,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             "id, session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
             "created_at AS timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
             "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
-            "active, compacted, api_content, display_kind, display_metadata"
+            "active, compacted, api_content, display_kind, display_metadata, "
+            "message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid"
         )
         cursor.execute(
             f"SELECT {columns} FROM {self._schema}.messages "
@@ -2288,12 +2340,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
                 else:
                     config[key] = value
             cursor.execute(
-                f"UPDATE {self._schema}.sessions SET model = %s, model_config = %s, system_prompt_hash = NULL WHERE id = %s",
+                f"UPDATE {self._schema}.sessions SET model = %s, model_config = %s WHERE id = %s",
                 (model, self._psycopg.types.json.Jsonb(config) if config else None, session_id),
-            )
-            cursor.execute(
-                f"DELETE FROM {self._schema}.system_prompts p WHERE NOT EXISTS "
-                f"(SELECT 1 FROM {self._schema}.sessions s WHERE s.system_prompt_hash = p.hash)"
             )
 
     def update_session_billing_route(
@@ -2304,12 +2352,8 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         with self._connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 f"UPDATE {self._schema}.sessions SET billing_provider = %s, billing_base_url = %s, "
-                "billing_mode = COALESCE(%s, billing_mode), system_prompt_hash = NULL WHERE id = %s",
+                "billing_mode = COALESCE(%s, billing_mode) WHERE id = %s",
                 (provider, base_url, billing_mode, session_id),
-            )
-            cursor.execute(
-                f"DELETE FROM {self._schema}.system_prompts p WHERE NOT EXISTS "
-                f"(SELECT 1 FROM {self._schema}.sessions s WHERE s.system_prompt_hash = p.hash)"
             )
 
     def get_recent_session_model_route(self, session_id: str) -> dict[str, Any] | None:

@@ -16,7 +16,7 @@ from state_store_alembic import (
     V26_SQLITE_IMPORT_MANIFEST_REVISION,
     upgrade_new_tenant_to_v25,
 )
-from state_store_alembic.semantic_catalog import _CURRENT_TABLES
+from state_store_alembic.semantic_catalog import V27_MESSAGE_IDENTITY_REVISION, _CURRENT_TABLES
 from state_store_postgresql import PostgreSQLStateStore
 
 _DSN_ENV = "HERMES_STATE_STORE_TEST_DSN"
@@ -41,8 +41,8 @@ def _open_owned_store(monkeypatch, target):
     return open_state_store(_config())
 
 
-def _upgrade_target_to_v25(target) -> None:
-    """Create an authentic v25-only catalog without running the child migration."""
+def _upgrade_target_to_revision(target, revision: str) -> None:
+    """Create an authentic historical catalog without running later migrations."""
     from alembic import command
     from alembic.config import Config
     from sqlalchemy import create_engine
@@ -55,7 +55,7 @@ def _upgrade_target_to_v25(target) -> None:
             config.attributes["tenant_schema"] = target.schema
             with resources.as_file(resources.files("state_store_alembic")) as script_location:
                 config.set_main_option("script_location", str(script_location))
-                command.upgrade(config, V25_CORE_REVISION)
+                command.upgrade(config, revision)
     finally:
         engine.dispose()
 
@@ -80,8 +80,8 @@ def test_owned_fixture_keeps_tenant_empty_before_production_bootstrap(postgresql
 def test_fresh_owned_tenant_has_current_head_and_no_legacy_ledger(monkeypatch, postgresql_test_target):
     store = cast(Any, _open_owned_store(monkeypatch, postgresql_test_target))
     try:
-        assert CURRENT_STATE_STORE_REVISION == V26_SQLITE_IMPORT_MANIFEST_REVISION
-        _assert_version(postgresql_test_target, V26_SQLITE_IMPORT_MANIFEST_REVISION)
+        assert CURRENT_STATE_STORE_REVISION == V27_MESSAGE_IDENTITY_REVISION
+        _assert_version(postgresql_test_target, V27_MESSAGE_IDENTITY_REVISION)
         with store._connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation "
@@ -176,7 +176,7 @@ def test_current_core_catalog_excludes_later_session_topic_ddl(monkeypatch, post
 
 
 def test_valid_v25_catalog_upgrades_to_the_current_head(postgresql_test_target):
-    _upgrade_target_to_v25(postgresql_test_target)
+    _upgrade_target_to_revision(postgresql_test_target, V25_CORE_REVISION)
     _assert_version(postgresql_test_target, V25_CORE_REVISION)
     with postgresql_test_target.connect() as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -187,10 +187,7 @@ def test_valid_v25_catalog_upgrades_to_the_current_head(postgresql_test_target):
         )
         assert cursor.fetchone() == (False,)
 
-    with postgresql_test_target.connect() as connection:
-        result = upgrade_new_tenant_to_v25(connection, postgresql_test_target.schema)
-
-    assert result.revision == V26_SQLITE_IMPORT_MANIFEST_REVISION
+    _upgrade_target_to_revision(postgresql_test_target, V26_SQLITE_IMPORT_MANIFEST_REVISION)
     _assert_version(postgresql_test_target, V26_SQLITE_IMPORT_MANIFEST_REVISION)
     with postgresql_test_target.connect() as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -200,6 +197,30 @@ def test_valid_v25_catalog_upgrades_to_the_current_head(postgresql_test_target):
             (postgresql_test_target.schema,),
         )
         assert cursor.fetchone() == (True,)
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=%s AND table_name='messages' "
+            "AND column_name IN ('message_uid', 'absorbed_message_uids', 'tool_call_uids', 'tool_call_uid')",
+            (postgresql_test_target.schema,),
+        )
+        assert cursor.fetchall() == []
+
+    with postgresql_test_target.connect() as connection:
+        result = upgrade_new_tenant_to_v25(connection, postgresql_test_target.schema)
+
+    assert result.revision == V27_MESSAGE_IDENTITY_REVISION
+    _assert_version(postgresql_test_target, V27_MESSAGE_IDENTITY_REVISION)
+    with postgresql_test_target.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema=%s AND table_name='messages' "
+            "AND column_name IN ('message_uid', 'absorbed_message_uids', 'tool_call_uids', 'tool_call_uid')",
+            (postgresql_test_target.schema,),
+        )
+        assert set(cursor.fetchall()) == {
+            (name, "text", "YES", None)
+            for name in ("message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid")
+        }
 
 
 def test_legacy_numeric_ledger_fails_closed_before_alembic_bootstrap(monkeypatch, postgresql_test_target):

@@ -21,6 +21,8 @@ from postgresql_state_store_sqlite_import import (
     SQLiteImportTargetCleanup,
     SQLitePostgreSQLImportError,
     SQLitePostgreSQLSandboxImporter,
+    _MESSAGE_IDENTITY_COLUMNS,
+    _source_inventory,
     allocate_owned_sqlite_import_target,
     import_into_allocated_target,
     source_object_mapping_manifest,
@@ -253,6 +255,146 @@ def sqlite_source(tmp_path: Path) -> Path:
     return path
 
 
+def test_sqlite_preflight_default_guards_accept_zero_defaults(sqlite_source):
+    with sqlite3.connect(sqlite_source) as connection:
+        assert connection.execute(
+            "SELECT auto_archived, compression_overload_streak FROM sessions WHERE id='session-a'"
+        ).fetchone() == (0, 0)
+    counts, _schema = _source_inventory(sqlite_source)
+    assert counts["sessions"] == 1
+    assert counts["messages"] == 1
+
+
+@pytest.mark.parametrize("column", ("auto_archived", "compression_overload_streak"))
+def test_sqlite_preflight_default_guards_reject_nondefault_session_field(sqlite_source, column):
+    with sqlite3.connect(sqlite_source) as connection:
+        connection.execute(f'UPDATE sessions SET "{column}"=1 WHERE id=?', ("session-a",))
+    with pytest.raises(
+        SQLitePostgreSQLImportError,
+        match=rf"unimplemented canonical field sessions\.{column}",
+    ):
+        _source_inventory(sqlite_source)
+
+
+@pytest.mark.parametrize(
+    "column, value, error",
+    (
+        ("display_order", 0, r"unimplemented canonical field messages\.display_order"),
+        ("display_identity", b"visible", r"unimplemented canonical field messages\.display_identity"),
+    ),
+)
+def test_sqlite_preflight_default_guards_keep_other_fields_fail_closed(
+    sqlite_source, column, value, error,
+):
+    with sqlite3.connect(sqlite_source) as connection:
+        connection.execute(f'UPDATE messages SET "{column}"=? WHERE id=41', (value,))
+    with pytest.raises(SQLitePostgreSQLImportError, match=error):
+        _source_inventory(sqlite_source)
+
+
+_IDENTITY = (
+    "msg-uid-41",
+    '["absorbed-1", "absorbed-2"]',
+    '{"call-1":["call-uid-1","call-uid-2"],"call-2":"call-uid-3"}',
+    "tool-result-uid",
+)
+
+
+def _set_identity(source: Path) -> None:
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "UPDATE messages SET message_uid=?, absorbed_message_uids=?, "
+            "tool_call_uids=?, tool_call_uid=? WHERE id=41", _IDENTITY,
+        )
+
+
+def _remove_identity_columns(source: Path) -> None:
+    with sqlite3.connect(source) as connection:
+        connection.execute("DROP TRIGGER IF EXISTS messages_message_uid_insert")
+        connection.execute("DROP INDEX IF EXISTS idx_messages_session_uid")
+        for column in _MESSAGE_IDENTITY_COLUMNS:
+            connection.execute(f'ALTER TABLE messages DROP COLUMN "{column}"')
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    (
+        ("message_uid", ""),
+        ("message_uid", b"binary"),
+        ("tool_call_uid", ""),
+        ("tool_call_uid", b"binary"),
+        ("absorbed_message_uids", "not-json"),
+        ("absorbed_message_uids", "null"),
+        ("absorbed_message_uids", '{}'),
+        ("absorbed_message_uids", '["good", 3]'),
+        ("absorbed_message_uids", '[""]'),
+        ("tool_call_uids", "[]"),
+        ("tool_call_uids", '{"": "uid"}'),
+        ("tool_call_uids", '{"call": null}'),
+        ("tool_call_uids", '{"call": []}'),
+        ("tool_call_uids", '{"call": ["uid", false]}'),
+        ("tool_call_uids", '{"call": ""}'),
+    ),
+)
+def test_sqlite_preflight_rejects_malformed_identity_before_target_access(
+    sqlite_source, column, value,
+):
+    with sqlite3.connect(sqlite_source) as connection:
+        connection.execute(f'UPDATE messages SET "{column}"=? WHERE id=41', (value,))
+    with pytest.raises(SQLitePostgreSQLImportError, match=f"invalid identity in messages.{column}"):
+        _source_inventory(sqlite_source)
+
+
+def test_sqlite_preflight_accepts_identity_values_and_legacy_absence(sqlite_source):
+    _set_identity(sqlite_source)
+    counts, schema = _source_inventory(sqlite_source)
+    assert counts["messages"] == 1
+    assert set(_MESSAGE_IDENTITY_COLUMNS) <= set(schema["tables"]["messages"])
+    _remove_identity_columns(sqlite_source)
+    counts, schema = _source_inventory(sqlite_source)
+    assert counts["messages"] == 1
+    assert set(_MESSAGE_IDENTITY_COLUMNS).isdisjoint(schema["tables"]["messages"])
+
+
+def test_sqlite_message_insert_payload_keeps_exact_identity_text_and_legacy_nulls(
+    sqlite_source,
+):
+    """Exercise the mapped INSERT offline; target text is not parsed or reserialized."""
+    class RecordingCursor:
+        def __init__(self):
+            self.inserts = []
+
+        def execute(self, sql, values=None):
+            if ".messages (" in sql:
+                self.inserts.append((sql, values))
+            return self
+
+        def fetchone(self):
+            return ("sequence",)
+
+    importer = object.__new__(SQLitePostgreSQLSandboxImporter)
+    importer._schema = "hermes_state_store_tenant_" + "a" * 32
+    importer._jsonb = lambda value: value
+
+    def capture():
+        _source_inventory(sqlite_source)
+        cursor = RecordingCursor()
+        with sqlite3.connect(sqlite_source) as connection:
+            connection.row_factory = sqlite3.Row
+            importer._import_objects(cursor, connection)
+        assert len(cursor.inserts) == 1
+        sql, values = cursor.inserts[0]
+        columns = sql.split(".messages (", 1)[1].split(")", 1)[0].split(", ")
+        return dict(zip(columns, values))
+
+    _set_identity(sqlite_source)
+    row = capture()
+    assert tuple(row[column] for column in _MESSAGE_IDENTITY_COLUMNS) == _IDENTITY
+    _remove_identity_columns(sqlite_source)
+    row = capture()
+    assert tuple(row[column] for column in _MESSAGE_IDENTITY_COLUMNS) == (None,) * 4
+
+
 def _manifest(target: OwnedPostgreSQLTestTarget) -> dict:
     with target.connect() as connection, connection.cursor() as cursor:
         cursor.execute(
@@ -314,11 +456,53 @@ def test_pg18_import_happy_manifest_invariants_sequence_search_and_logical_rollb
     assert restored["verified"] is True and restored["restored_database"] is None
 
 
+def test_pg18_import_preserves_populated_identity_text(sandbox, sqlite_source, tmp_path):
+    importer, target, _settings = sandbox
+    _set_identity(sqlite_source)
+    result = importer.import_source(sqlite_source, snapshot_root=tmp_path)
+    assert result.status == "complete"
+    with target.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            f'SELECT {", ".join(_MESSAGE_IDENTITY_COLUMNS)} '
+            f'FROM "{target.schema}".messages WHERE id=41'
+        )
+        assert cursor.fetchone() == _IDENTITY
+
+
+def test_pg18_import_legacy_identity_columns_are_null(sandbox, sqlite_source, tmp_path):
+    importer, target, _settings = sandbox
+    _remove_identity_columns(sqlite_source)
+    assert importer.import_source(sqlite_source, snapshot_root=tmp_path).status == "complete"
+    with target.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            f'SELECT {", ".join(_MESSAGE_IDENTITY_COLUMNS)} '
+            f'FROM "{target.schema}".messages WHERE id=41'
+        )
+        assert cursor.fetchone() == (None,) * 4
+
+
+def test_pg18_import_malformed_identity_rejected_without_target_mutation(
+    sandbox, sqlite_source, tmp_path,
+):
+    importer, target, _settings = sandbox
+    importer._prepare_target()
+    with sqlite3.connect(sqlite_source) as connection:
+        connection.execute("UPDATE messages SET tool_call_uids=? WHERE id=41", ('{"call":42}',))
+    with pytest.raises(SQLitePostgreSQLImportError, match="invalid identity in messages.tool_call_uids"):
+        importer.import_source(sqlite_source, snapshot_root=tmp_path)
+    with target.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(f'SELECT count(*) FROM "{target.schema}".messages')
+        assert cursor.fetchone() == (0,)
+        cursor.execute(f'SELECT count(*) FROM "{target.schema}".sqlite_import_manifests')
+        assert cursor.fetchone() == (0,)
+
+
 def test_pg18_import_interruption_rolls_back_and_resumes_idempotently(
     sandbox, sqlite_source, tmp_path
 ):
     importer, target, _settings = sandbox
     schema = target.schema
+    _set_identity(sqlite_source)
     with pytest.raises(SQLitePostgreSQLImportError, match="target remains isolated"):
         importer.import_source(
             sqlite_source, snapshot_root=tmp_path, fail_after="messages"
@@ -331,6 +515,12 @@ def test_pg18_import_interruption_rolls_back_and_resumes_idempotently(
     completed = importer.import_source(sqlite_source, snapshot_root=tmp_path)
     retry = importer.import_source(sqlite_source, snapshot_root=tmp_path)
     assert completed.import_id == retry.import_id and retry.status == "complete"
+    with target.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            f'SELECT {", ".join(_MESSAGE_IDENTITY_COLUMNS)} '
+            f'FROM "{schema}".messages WHERE id=41'
+        )
+        assert cursor.fetchone() == _IDENTITY
 
 
 def test_pg18_import_rejects_unmapped_source_fts_is_excluded_and_target_drift(

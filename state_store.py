@@ -74,6 +74,10 @@ class MessageRecord:
     api_content: str | None = None
     display_kind: str | None = None
     display_metadata: dict[str, Any] | None = None
+    message_uid: str | None = None
+    absorbed_message_uids: list[str] | str | None = None
+    tool_call_uids: dict[str, Any] | str | None = None
+    tool_call_uid: str | None = None
 
 
 class ContextualSessionSearchStore(Protocol):

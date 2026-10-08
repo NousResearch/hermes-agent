@@ -14,6 +14,7 @@ from state_store_alembic.errors import BaselineMigrationContractError
 from state_store_alembic.migration_helpers import TENANT_SCHEMA_PATTERN, V25_CORE_REVISION
 
 V26_SQLITE_IMPORT_MANIFEST_REVISION = "state_store_v26_sqlite_import"
+V27_MESSAGE_IDENTITY_REVISION = "state_store_v27_message_identity"
 
 # Compact form: name:type[:notnull][:default].  Types are format_type() results.
 _CORE_TABLES: Mapping[str, tuple[str, ...]] = {
@@ -47,6 +48,10 @@ _MANIFEST_TABLES: Mapping[str, tuple[str, ...]] = {
     "sqlite_import_manifests": ("import_id:text:notnull", "source_fingerprint:text:notnull", "source_counts:jsonb:notnull", "source_schema:jsonb:notnull", "pre_import_target:jsonb:notnull", "destination_counts:jsonb", "status:text:notnull", "error:text", "created_at:double precision:notnull", "updated_at:double precision:notnull"),
 }
 _CURRENT_TABLES = {**_CORE_TABLES, **_MANIFEST_TABLES}
+_V27_TABLES = {
+    **_CURRENT_TABLES,
+    "messages": (*_CURRENT_TABLES["messages"], "message_uid:text", "absorbed_message_uids:text", "tool_call_uids:text", "tool_call_uid:text"),
+}
 
 _CORE_PKS = {
     "alembic_version": ("version_num",),
@@ -258,15 +263,22 @@ def validate_v25_core_catalog_cursor(cursor: Any, schema: str) -> None:
     _validate_catalog(cursor, schema, revision=V25_CORE_REVISION, tables=_CORE_TABLES, pks=_CORE_PKS, checks=_CORE_CHECKS)
 
 
-def validate_current_catalog_cursor(cursor: Any, schema: str) -> None:
-    """Validate precisely the current Alembic head, including child receipts."""
+def validate_v26_catalog_cursor(cursor: Any, schema: str) -> None:
+    """Validate precisely the v26 SQLite import manifest catalog."""
     if not TENANT_SCHEMA_PATTERN.fullmatch(schema):
         _fail("untrusted tenant schema")
     _validate_catalog(cursor, schema, revision=V26_SQLITE_IMPORT_MANIFEST_REVISION, tables=_CURRENT_TABLES, pks=_PKS, checks=_CHECKS)
 
 
+def validate_current_catalog_cursor(cursor: Any, schema: str) -> None:
+    """Validate precisely the current v27 Alembic head."""
+    if not TENANT_SCHEMA_PATTERN.fullmatch(schema):
+        _fail("untrusted tenant schema")
+    _validate_catalog(cursor, schema, revision=V27_MESSAGE_IDENTITY_REVISION, tables=_V27_TABLES, pks=_PKS, checks=_CHECKS)
+
+
 def validate_core_v25_catalog_cursor(cursor: Any, schema: str) -> None:
-    """Compatibility validator for a v25 tenant or the current child revision."""
+    """Compatibility validator for v25, v26, or current v27 tenants."""
     if not TENANT_SCHEMA_PATTERN.fullmatch(schema):
         _fail("untrusted tenant schema")
     cursor.execute("SELECT version_num FROM " + '"' + schema + '".alembic_version')
@@ -274,6 +286,8 @@ def validate_core_v25_catalog_cursor(cursor: Any, schema: str) -> None:
     if versions == [(V25_CORE_REVISION,)]:
         validate_v25_core_catalog_cursor(cursor, schema)
     elif versions == [(V26_SQLITE_IMPORT_MANIFEST_REVISION,)]:
+        validate_v26_catalog_cursor(cursor, schema)
+    elif versions == [(V27_MESSAGE_IDENTITY_REVISION,)]:
         validate_current_catalog_cursor(cursor, schema)
     else:
         _fail("Alembic version table contains an unsupported revision")
@@ -291,6 +305,10 @@ def _validate_with_cursor(connection: Any, schema: str, validator: Any) -> None:
 
 def validate_v25_core_catalog(connection: Any, schema: str) -> None:
     _validate_with_cursor(connection, schema, validate_v25_core_catalog_cursor)
+
+
+def validate_v26_catalog(connection: Any, schema: str) -> None:
+    _validate_with_cursor(connection, schema, validate_v26_catalog_cursor)
 
 
 def validate_current_catalog(connection: Any, schema: str) -> None:

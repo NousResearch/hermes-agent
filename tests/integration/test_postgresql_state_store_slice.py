@@ -19,6 +19,8 @@ from state_store import (
     resolve_contextual_session_search_store,
 )
 from hermes_state import SessionDB
+from state_store_alembic.semantic_catalog import V27_MESSAGE_IDENTITY_REVISION
+from state_store_postgresql import PostgreSQLStateStore
 from tools.session_search_tool import session_search
 from tests.integration.postgresql_test_target import OwnedPostgreSQLTestTarget
 
@@ -290,20 +292,47 @@ def test_sqlite_and_postgresql_active_message_record_contract_parity(monkeypatch
             platform_message_id="platform-1", observed=True, _compressed_summary=True, api_content="exact api",
             display_kind="tool_result", display_metadata={"task_count": 1},
         ),
-        MessageRecord(role="tool", content=None, timestamp=1235.5),
+        MessageRecord(role="tool", content=None, tool_call_id="call-1", timestamp=1235.5),
     ]
     observations = []
+    identity_columns = {"message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid"}
+    sessions = []
     try:
         for store in stores:
             session_id = f"message-record-{uuid.uuid4()}"
+            sessions.append(session_id)
             store.ensure_session(session_id, source="integration")
             assert store.append_message_records(session_id, expected_records) == 2
             records = store.get_message_records(session_id)
             assert [record["id"] for record in records] == sorted(record["id"] for record in records)
-            observations.append([{key: value for key, value in record.items() if key not in {"id", "session_id"}} for record in records])
+            assert all(identity_columns <= record.keys() for record in records)
+            assert all(isinstance(record["message_uid"], str) and len(record["message_uid"]) == 32 for record in records)
+            assert records[0]["message_uid"] != records[1]["message_uid"]
+            assert records[0]["absorbed_message_uids"] is None
+            assert records[1]["tool_call_uids"] is None
+            assert records[0]["tool_call_uid"] is None
+            assert records[0]["tool_call_uids"] is not None
+            call_uid = json.loads(records[0]["tool_call_uids"])["call-1"]
+            assert isinstance(call_uid, str) and len(call_uid) == 32
+            assert records[1]["tool_call_uid"] == call_uid
+            observations.append([{key: value for key, value in record.items()
+                                  if key not in {"id", "session_id"} | identity_columns} for record in records])
         assert observations[0] == observations[1]
         assert observations[0][0]["content"] == expected_records[0].content
         assert observations[0][1]["content"] is None
+        identity_before = [[{key: record[key] for key in identity_columns}
+                            for record in store.get_message_records(session_id)]
+                           for store, session_id in zip(stores, sessions)]
+        for store in stores:
+            store.close()
+        reopened = (open_state_store({}, db_path=tmp_path / "state.db"), open_state_store(_config()))
+        try:
+            for index, store in enumerate(reopened):
+                assert [{key: record[key] for key in identity_columns}
+                        for record in store.get_message_records(sessions[index])] == identity_before[index]
+        finally:
+            for store in reopened:
+                store.close()
     finally:
         for store in stores:
             store.close()
@@ -321,6 +350,53 @@ def test_message_record_batch_failure_is_atomic_for_both_backends(monkeypatch, t
     finally:
         for store in stores:
             store.close()
+
+
+def test_postgresql_message_identity_copy_replace_and_fail_closed_pairing(monkeypatch):
+    monkeypatch.setenv(_DSN_ENV, "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test")
+    store = cast(PostgreSQLStateStore, open_state_store(_config()))
+    parent, child = (f"uid-{uuid.uuid4()}" for _ in range(2))
+    try:
+        store.ensure_session(parent, source="integration")
+        first = MessageRecord(role="assistant", content="call", tool_calls=[{"id": "repeat", "type": "function"}],
+                              message_uid="explicit-message", absorbed_message_uids=["absorbed", "absorbed"])
+        store.append_message_record(parent, first)
+        store.append_message_record(parent, MessageRecord(role="tool", tool_call_id="repeat", content="result"))
+        before = store.get_message_records(parent)
+        assert before[0]["message_uid"] == "explicit-message"
+        assert before[0]["absorbed_message_uids"] == '["absorbed"]'
+        assert before[1]["tool_call_uid"] == json.loads(before[0]["tool_call_uids"])["repeat"]
+        assert store.get_messages_around(parent, before[0]["id"], window=1)["window"][0]["message_uid"] == "explicit-message"
+        restored = store.get_messages_as_conversation(parent)
+        assert restored[0]["message_uid"] == "explicit-message"
+        assert restored[0]["_absorbed_message_uids"] == ["absorbed"]
+        assert restored[1]["_tool_call_uid"] == before[1]["tool_call_uid"]
+        store.branch_session(parent_session_id=parent, child_session_id=child, source="integration",
+                             model=None, model_config={}, title=f"UID branch {uuid.uuid4()}")
+        copied = store.get_message_records(child)
+        for original, clone in zip(before, copied):
+            assert clone["id"] != original["id"]
+            assert all(clone[key] == original[key] for key in
+                       ("message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid"))
+        store.replace_messages(child, [{key: row[key] for key in MessageRecord.__dataclass_fields__ if key in row}
+                                       for row in copied])
+        assert [row["message_uid"] for row in store.get_message_records(child)] == [row["message_uid"] for row in copied]
+        store.append_message_record(child, MessageRecord(role="user", content="new turn"))
+        store.append_message_record(child, MessageRecord(role="tool", tool_call_id="repeat", content="orphan"))
+        assert store.get_message_records(child)[-1]["tool_call_uid"] is None
+        store.append_message_record(child, MessageRecord(role="assistant", tool_calls=[{"id": "repeat"}]))
+        store.append_message_record(child, MessageRecord(role="tool", tool_call_id="repeat"))
+        rows = store.get_message_records(child)
+        assert rows[-1]["tool_call_uid"] == json.loads(rows[-2]["tool_call_uids"])["repeat"]
+        assert rows[-1]["tool_call_uid"] != rows[1]["tool_call_uid"]
+        # A nearest legacy assistant naming the id without a UID must shadow the older call.
+        store.append_message_record(child, MessageRecord(role="assistant", tool_calls=[{"id": "repeat"}]))
+        legacy_id = store.get_message_records(child)[-1]["id"]
+        _target().execute(f"UPDATE {_SCHEMA}.messages SET tool_call_uids=NULL WHERE id=%s", (legacy_id,))
+        store.append_message_record(child, MessageRecord(role="tool", tool_call_id="repeat"))
+        assert store.get_message_records(child)[-1]["tool_call_uid"] is None
+    finally:
+        store.close()
 
 
 def test_sqlite_and_postgresql_content_addressed_system_prompt_parity(monkeypatch, tmp_path):
@@ -354,7 +430,7 @@ def test_postgresql_fresh_alembic_baseline_is_idempotent_and_catalog_complete(mo
     try:
         store = open_state_store(_config())
         store.close()
-        assert _alembic_revisions(dsn) == ["state_store_v26_sqlite_import"]
+        assert _alembic_revisions(dsn) == [V27_MESSAGE_IDENTITY_REVISION]
         with _psycopg().connect(dsn) as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{_SCHEMA}' AND table_name = 'sessions'")
             columns = {row[0] for row in cursor.fetchall()}
@@ -363,7 +439,16 @@ def test_postgresql_fresh_alembic_baseline_is_idempotent_and_catalog_complete(mo
             assert {"hash", "prompt"} <= {row[0] for row in cursor.fetchall()}
             cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{_SCHEMA}' AND table_name = 'messages'")
             message_columns = {row[0] for row in cursor.fetchall()}
-            assert {"tool_calls", "reasoning_details", "display_metadata", "active", "compacted", "search_document"} <= message_columns
+            assert {"tool_calls", "reasoning_details", "display_metadata", "active", "compacted", "search_document", "message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid"} <= message_columns
+            cursor.execute(
+                f"SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                f"WHERE table_schema = '{_SCHEMA}' AND table_name = 'messages' "
+                "AND column_name IN ('message_uid', 'absorbed_message_uids', 'tool_call_uids', 'tool_call_uid')"
+            )
+            assert set(cursor.fetchall()) == {
+                (name, "text", "YES", None)
+                for name in ("message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid")
+            }
             cursor.execute(f"SELECT indexname FROM pg_indexes WHERE schemaname = '{_SCHEMA}'")
             assert {"messages_session_id_id", "messages_resume_projection", "messages_search_document_gin", "sessions_source_session_key", "sessions_parent_session_id", "sessions_title_unique", "sessions_visibility_started_at", "sessions_pinned_started_at", "sessions_effective_activity"} <= {row[0] for row in cursor.fetchall()}
             cursor.execute(f"SELECT conname, convalidated FROM pg_constraint WHERE conrelid = '{_SCHEMA}.sessions'::regclass AND contype = 'f' ORDER BY conname")
@@ -373,7 +458,7 @@ def test_postgresql_fresh_alembic_baseline_is_idempotent_and_catalog_complete(mo
             ]
         store = open_state_store(_config())
         store.close()
-        assert _alembic_revisions(dsn) == ["state_store_v26_sqlite_import"]
+        assert _alembic_revisions(dsn) == [V27_MESSAGE_IDENTITY_REVISION]
         _target().execute(f"UPDATE {_SCHEMA}.alembic_version SET version_num='unknown_revision'")
         with pytest.raises(StateStoreConfigurationError, match="exactly one supported revision"):
             open_state_store(_config())
@@ -638,8 +723,12 @@ def test_sqlite_and_postgresql_model_config_lifecycle_parity(monkeypatch, tmp_pa
                 session_id, "after", "provider-after",
                 base_url="https://provider.example/v1", api_mode="chat",
             )
+            model_session = store.get_session(session_id)
+            assert model_session is not None and model_session["system_prompt"] == "cached footer"
             store.patch_session_model_config(session_id, {"keep": None, "nested": {"json": None}, "new": [1, 2]})
             store.update_session_billing_route(session_id, provider="new-provider", base_url="new-url", billing_mode="metered")
+            route_session = store.get_session(session_id)
+            assert route_session is not None and route_session["system_prompt"] == "cached footer"
             assert store.get_session_model_config_value(session_id, "missing", "fallback") == "fallback"
             before_rollback = store.get_session_model_config_value(session_id, "new")
             with pytest.raises(TypeError):
@@ -676,12 +765,12 @@ def test_sqlite_and_postgresql_model_config_lifecycle_parity(monkeypatch, tmp_pa
                 },
                 "nested": {"json": None}, "new": [1, 2],
             },
-            "prompt": None, "route": ("new-provider", "new-url", "metered"), "usage": (4, 1),
+            "prompt": "cached footer", "route": ("new-provider", "new-url", "metered"), "usage": (4, 1),
         }] * 2
         postgresql = cast(Any, stores[1])
         with postgresql._connection() as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT version_num FROM {_SCHEMA}.alembic_version")
-            assert cursor.fetchall() == [("state_store_v26_sqlite_import",)]
+            assert cursor.fetchall() == [(V27_MESSAGE_IDENTITY_REVISION,)]
     finally:
         for store in stores:
             store.close()

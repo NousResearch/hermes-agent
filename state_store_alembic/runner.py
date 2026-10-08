@@ -28,11 +28,13 @@ from state_store_alembic.migration_helpers import (
 )
 from state_store_alembic.semantic_catalog import (
     V26_SQLITE_IMPORT_MANIFEST_REVISION,
+    V27_MESSAGE_IDENTITY_REVISION,
     validate_current_catalog,
     validate_v25_core_catalog,
+    validate_v26_catalog,
 )
 
-CURRENT_STATE_STORE_REVISION = V26_SQLITE_IMPORT_MANIFEST_REVISION
+CURRENT_STATE_STORE_REVISION = V27_MESSAGE_IDENTITY_REVISION
 
 if TYPE_CHECKING:
     import psycopg
@@ -136,7 +138,9 @@ def _read_single_revision(connection: Any, schema: TrustedTenantSchema) -> str:
         raise BaselineMigrationContractError(
             "PostgreSQL State Store Alembic metadata is malformed; formal reinitialization is required"
         ) from exc
-    if len(revisions) != 1 or revisions[0] not in {V25_CORE_REVISION, CURRENT_STATE_STORE_REVISION}:
+    if len(revisions) != 1 or revisions[0] not in {
+        V25_CORE_REVISION, V26_SQLITE_IMPORT_MANIFEST_REVISION, CURRENT_STATE_STORE_REVISION,
+    }:
         raise BaselineMigrationContractError(
             "PostgreSQL State Store Alembic metadata must contain exactly one supported revision"
         )
@@ -148,7 +152,7 @@ def _read_exact_head(connection: Any, schema: TrustedTenantSchema) -> str:
     if revision != CURRENT_STATE_STORE_REVISION:
         raise BaselineMigrationContractError(
             "PostgreSQL State Store Alembic metadata must contain exactly the current "
-            "state_store_v26_sqlite_import head"
+            "state_store_v27_message_identity head"
         )
     return revision
 
@@ -164,6 +168,8 @@ def _preflight(connection: Any, schema: TrustedTenantSchema) -> bool:
         revision = _read_single_revision(connection, schema)
         if revision == V25_CORE_REVISION:
             validate_v25_core_catalog(connection, schema.name)
+        elif revision == V26_SQLITE_IMPORT_MANIFEST_REVISION:
+            validate_v26_catalog(connection, schema.name)
         return False
     if not relations:
         return True
@@ -175,7 +181,7 @@ def _preflight(connection: Any, schema: TrustedTenantSchema) -> bool:
 def upgrade_new_tenant_to_current(
     connection: "psycopg.Connection[Any]", schema: TrustedTenantSchema,
 ) -> BaselineMigrationResult:
-    """Upgrade an empty or valid-v25 tenant to the v26 non-topic importer head.
+    """Upgrade an empty, valid-v25, or valid-v26 tenant to the v27 message-identity head.
 
     The tenant-scoped advisory lock, PostgreSQL 14 gate, legacy-ledger detection,
     metadata checks, and Alembic upgrade run on the connection supplied by the

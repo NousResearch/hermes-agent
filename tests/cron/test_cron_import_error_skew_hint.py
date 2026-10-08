@@ -9,6 +9,8 @@ fingerprint — when boot SHA != disk HEAD, the delivered error must say so and
 name the command.
 """
 
+import os
+
 import cron.scheduler as scheduler
 from cron.scheduler import _summarize_cron_failure_for_delivery
 
@@ -72,3 +74,51 @@ def test_skew_probe_failure_degrades_to_the_plain_message(monkeypatch):
             "summarizer must not propagate a skew-probe failure"
         ) from None
     assert "cannot import name" in msg
+
+
+def test_failure_notice_identifies_emitting_process_and_loaded_revision(monkeypatch):
+    """The tag is appended to the FULLY composed notice — after nudges, hints and hold
+    lines — so every delivery shape ends with the same identification line."""
+    monkeypatch.setattr(
+        "cron.scheduler_failure_copy.delivery_process_context",
+        lambda: "[emitter pid=412 loaded_revision=abc123]",
+    )
+    msg, _, *_ = scheduler._compose_run_delivery(
+        {"name": "morning-brief", "id": "aaa111"}, success=False,
+        error="RuntimeError: boom", final_response="", output_file=None)
+    assert msg.endswith("[emitter pid=412 loaded_revision=abc123]")
+
+
+def test_blocked_config_and_agent_declared_notices_carry_the_emitter_tag(monkeypatch):
+    """Blocked-config and agent-declared failures bypass the summarizer but still
+    identify the emitting process: the tag is composed at delivery, not inside the
+    summarizer."""
+    monkeypatch.setattr(
+        "cron.scheduler_failure_copy.delivery_process_context",
+        lambda: "[emitter pid=412 loaded_revision=abc123]",
+    )
+    blocked, _, *_ = scheduler._compose_run_delivery(
+        {"name": "morning-brief", "id": "aaa111"}, success=False,
+        error="[blocked_config] provider credential missing: no key",
+        final_response="", output_file=None)
+    assert blocked.endswith("[emitter pid=412 loaded_revision=abc123]"), blocked
+    declared, _, *_ = scheduler._compose_run_delivery(
+        {"name": "morning-brief", "id": "aaa111"}, success=False,
+        error="[CRON_FAILURE] agent diagnosed: quota exhausted",
+        final_response="", output_file=None, agent_declared=True)
+    assert declared.endswith("[emitter pid=412 loaded_revision=abc123]"), declared
+
+
+def test_emitter_tag_survives_a_failed_revision_import(monkeypatch):
+    """A long-lived process with mixed old/new modules can fail importing the revision
+    probe; the tag must still deliver — keep the PID, mark the revision unknown."""
+    import gateway.code_skew as code_skew
+
+    def boom():
+        raise ImportError("cannot import name 'boot_code_sha'")
+
+    monkeypatch.setattr(code_skew, "boot_code_sha", boom)
+    from cron.scheduler_failure_copy import delivery_process_context
+
+    tag = delivery_process_context()
+    assert tag == f"[emitter pid={os.getpid()} loaded_revision=unknown]", tag

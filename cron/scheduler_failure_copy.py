@@ -8,6 +8,7 @@ the real output directory — "cron output" alone sent operators hunting.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional
 
@@ -146,3 +147,22 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
         "the next scheduled time and will not repeat this alert; check with "
         "`hermes cron doctor`."
     )
+
+
+def delivery_process_context() -> str:
+    """Identify the process and revision that emitted a cron failure notice.
+
+    The delivery path can run inside a long-lived desktop backend, so the revision
+    on disk is not necessarily the revision loaded in memory. An install without a
+    boot fingerprint still gets the useful PID.
+    """
+    from gateway.code_skew import boot_code_sha
+
+    # A long-lived process can hold mixed old/new modules: the revision probe itself
+    # may fail to import. The tag must still deliver — keep the PID, mark the
+    # revision unknown. A notice that dies here tells the operator nothing.
+    try:
+        revision = boot_code_sha() or "unknown"
+    except Exception:
+        revision = "unknown"
+    return f"[emitter pid={os.getpid()} loaded_revision={revision}]"

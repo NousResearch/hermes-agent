@@ -260,8 +260,8 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     and would otherwise be blamed on the model service); everything else goes through the shared
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
-        classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        classify_cron_failure_reason, generic_failure_notice,
+        inactivity_notice, provider_failure_notice, script_timeout_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -320,6 +320,23 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             )
 
     return message
+
+
+def _append_emitter_tag(notice: str) -> str:
+    """Append the emitting-process tag to a FULLY composed failure notice.
+
+    The tag must come last — after copy tables, code-skew hints, streak nudges and
+    hold notices — so every delivery shape (generic, script timeout, inactivity,
+    blocked-config, agent-declared) ends with the same identification line, not
+    only the shapes routed through ``_summarize_cron_failure_for_delivery``.
+    """
+    try:
+        from cron.scheduler_failure_copy import delivery_process_context
+
+        return f"{notice} {delivery_process_context()}"
+    except Exception:
+        # A diagnostics tag must never cost the notice itself.
+        return notice
 
 
 DEFAULT_FAILURE_REPEAT_ALERT_HOURS = 6.0
@@ -2939,7 +2956,8 @@ def _compose_run_delivery(
         # Bypass the generic failure summarizer (its auth/timeout heuristics would mislabel this).
         _pf_text = re.sub(r"\[blocked_config[^\]]*\]\s*", "", err).strip()
         from cron.scheduler_failure_copy import blocked_config_notice
-        deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
+        deliver_content = _append_emitter_tag(
+            blocked_config_notice(job.get("name") or job["id"], _pf_text))
     elif success:
         deliver_content = final_response
         _resolve_incidents_for_recovered_job(job)
@@ -2957,12 +2975,12 @@ def _compose_run_delivery(
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
             # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
             from cron.scheduler_failure_copy import generic_failure_notice
-            deliver_content = generic_failure_notice(
+            deliver_content = _append_emitter_tag(generic_failure_notice(
                 job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
-            ) + _failure_streak_nudge(job)
+            ) + _failure_streak_nudge(job))
         else:
             from cron.quota_hold import hold_notice
-            deliver_content = (
+            deliver_content = _append_emitter_tag(
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
                 # The one alert on entering a provider-window hold says so (#89376).
                 + hold_notice(job, job.get("_quota_hold_seconds"))
@@ -3219,7 +3237,9 @@ def _deliver_crash_failure(
             job,
             # Same text as the normal failure delivery: this run also counts toward
             # failure_streak, so the nudge must leave through here too.
-            _summarize_cron_failure_for_delivery(job, err_text) + _failure_streak_nudge(job),
+            _append_emitter_tag(
+                _summarize_cron_failure_for_delivery(job, err_text) + _failure_streak_nudge(job)
+            ),
             adapters=adapters,
             loop=loop,
             for_failure=True,
@@ -3903,6 +3923,13 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     home_token = secret_token = None
     try:
         home_token = set_hermes_home_override(profile_home)
+        # This process never ran gateway startup, so its boot fingerprint was never
+        # snapshotted: every failure notice it delivered said loaded_revision=unknown even
+        # when the checkout revision was readable. Snapshot it before running the job so the
+        # emitter tag identifies the code this worker loaded.
+        from gateway.code_skew import record_boot_fingerprint
+
+        record_boot_fingerprint()
         multiplex_active = bool(payload.get("multiplex_active", False))
         set_multiplex_active(multiplex_active)
         # Plugin secret sources (``ctx.register_secret_source()``) only exist after plugin

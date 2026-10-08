@@ -1324,6 +1324,18 @@ agent:
   service_tier: ""
   fast_auto_seconds: 60
 
+  # How much of a proxy/aggregator route's encrypted reasoning gets replayed.
+  # Only applies to routes that are not first-party (not OpenAI/Codex, xAI or
+  # GitHub Copilot). Those routes can change which backend identity signs their
+  # reasoning, and the provider then rejects older reasoning with HTTP 400
+  # invalid_encrypted_content.
+  #   2 (default) - only the 2 most recent assistant turns send their reasoning
+  #   0           - send none; no reasoning is ever replayed
+  #   N           - only the N most recent assistant turns send their reasoning
+  # Assistant text is never affected. First-party routes ignore this key and
+  # always replay their full reasoning history.
+  codex_proxy_replay_turns: 2
+
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
   # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always

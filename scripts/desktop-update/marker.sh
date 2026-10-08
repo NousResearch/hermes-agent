@@ -81,7 +81,8 @@ marker_names_handoff() { # daemon pid -> 0 iff line 1 names it or a process it f
 }
 
 ct_close() { # a b tolerance -> 0 iff |a - b| <= tolerance
-  awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'
+  # LC_ALL=C as in proc_ct: the cts are dotted, so their parse must not depend on the locale.
+  LC_ALL=C awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'
 }
 
 marker_now() { date +%s; }

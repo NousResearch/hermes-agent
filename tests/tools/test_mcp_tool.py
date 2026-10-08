@@ -1635,7 +1635,7 @@ class TestHTTPConfig:
         config = {"url": "https://example.com/mcp"}
 
         async def _test():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False), patch.dict(sys.modules, {"mcp.client.streamable_http": None}):
                 with pytest.raises(ImportError):
                     await server._run_http(config)
 

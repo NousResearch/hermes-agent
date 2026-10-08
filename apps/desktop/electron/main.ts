@@ -15845,6 +15845,7 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
 // --- Pet overlay (pop-out mascot) — see pet-overlay-ipc.ts. ---------------
 registerPetOverlayIpc({
   getMainWindow: () => mainWindow,
+  hermesHome: HERMES_HOME,
   getPetOverlayWindow: () => petOverlayWindow,
   openPetOverlay,
   closePetOverlay

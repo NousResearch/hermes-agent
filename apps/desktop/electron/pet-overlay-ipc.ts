@@ -1,11 +1,16 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { type BrowserWindow, ipcMain, screen } from 'electron'
 
 import { petOverlayClickThrough, resolvePetOverlayBounds } from './pet-overlay'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
+  /** HERMES_HOME root; the notices file lives at `<hermesHome>/pet-notices.json`. */
+  hermesHome: string
   getPetOverlayWindow: () => BrowserWindow | null
   openPetOverlay: (bounds: unknown) => void
   closePetOverlay: () => void
@@ -30,6 +35,7 @@ export function placePetOverlay(bounds, mainWindow: BrowserWindow | null) {
 
 export function registerPetOverlayIpc({
   getMainWindow,
+  hermesHome,
   getPetOverlayWindow,
   openPetOverlay,
   closePetOverlay
@@ -138,7 +144,24 @@ export function registerPetOverlayIpc({
     petOverlayWindow.setFocusable(Boolean(focusable))
 
     if (focusable) {
+      // macOS: focusing the overlay activates the whole app, which drags the
+      // main window over whatever the user was doing. When the main window was
+      // not the one in use, tuck it away while the companion has the keyboard;
+      // the Dock icon or a double-click on the pet brings it back.
+      const mainWindow = getMainWindow()
+
+      const hideMain =
+        process.platform === 'darwin' &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isFocused()
+
       petOverlayWindow.focus()
+
+      if (hideMain) {
+        mainWindow.hide()
+      }
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.
@@ -189,5 +212,44 @@ export function registerPetOverlayIpc({
     }
 
     mainWindow.webContents.send('hermes:pet-overlay:control', payload)
+  })
+
+  watchPetNotices(path.join(hermesHome, 'pet-notices.json'), getMainWindow)
+}
+
+// Notices for the companion balloon: any process (a cron job, a script) writes
+// `{ id, text }` to <HERMES_HOME>/pet-notices.json; a new id is forwarded to the
+// main renderer, which surfaces it on the popped-out pet. The notice present at
+// startup counts as already seen, so a relaunch never replays an old one.
+function readPetNotice(file: string): { id: string; text: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+
+    if (parsed && typeof parsed.id === 'string' && typeof parsed.text === 'string' && parsed.text.trim()) {
+      return { id: parsed.id, text: parsed.text.trim() }
+    }
+  } catch {
+    // Missing or half-written file: nothing to show yet.
+  }
+
+  return null
+}
+
+function watchPetNotices(file: string, getMainWindow: () => BrowserWindow | null) {
+  let lastId = readPetNotice(file)?.id ?? null
+
+  fs.watchFile(file, { interval: 3000 }, () => {
+    const notice = readPetNotice(file)
+
+    if (!notice || notice.id === lastId) {
+      return
+    }
+
+    lastId = notice.id
+    const mainWindow = getMainWindow()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('hermes:pet-overlay:control', { ...notice, type: 'notice' })
+    }
   })
 }

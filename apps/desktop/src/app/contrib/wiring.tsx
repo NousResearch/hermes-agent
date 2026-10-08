@@ -537,7 +537,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     selectSidebarItem,
     startFreshSessionDraft,
     submitTextToNewSession,
-    unarchiveSession
+    unarchiveSession,
+    createDetachedSession
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
@@ -741,7 +742,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // The popped-out pet overlay's bridge back into the app.
-  usePetBridge({ requestGateway, resumeSession, submitText })
+  usePetBridge({
+    createDetachedSession,
+    requestGateway,
+    resumeSession,
+    submitText,
+    transcribeAudio: transcribeVoiceAudio
+  })
 
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked

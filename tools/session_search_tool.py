@@ -41,6 +41,9 @@ _READ_MAX_CONTENT = 2000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
+_DEFAULT_DISCOVERY_LIMIT = 3
+_DEFAULT_BROWSE_LIMIT = 10
+_MAX_SESSION_SEARCH_LIMIT = 10
 # exclude_session_ids: ids already inspected this task; capped so a runaway list can't fan out lineage walks.
 _EXCLUDE_SESSION_IDS_CAP = 20
 # Relative time bounds: "7d" / "24h" / "2w" = now minus N hours/days/weeks.
@@ -600,9 +603,10 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
         return _read_scoped(db, session_id.strip(), profile)
-    limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        browse_limit = _clamp_int(limit, _DEFAULT_BROWSE_LIMIT, 1, _MAX_SESSION_SEARCH_LIMIT)
+        return _list_recent_sessions(db, browse_limit, current_session_id, link_profile=profile)
+    limit = _clamp_int(limit, _DEFAULT_DISCOVERY_LIMIT, 1, _MAX_SESSION_SEARCH_LIMIT)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
@@ -616,7 +620,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
 
-def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
+def session_search(query: str = "", role_filter: str = None, limit: Optional[int] = None, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
                    after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
@@ -680,11 +684,11 @@ SESSION_SEARCH_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Max sessions to return. Discovery defaults to 3; browse/no-args "
+                    "defaults to 10. Max 10. Bump discovery to 5–10 when the topic "
+                    "likely spans several sessions and you want to pick the right one "
+                    "to scroll into."
                 ),
-                "default": 3,
             },
             "sort": {
                 "type": "string",

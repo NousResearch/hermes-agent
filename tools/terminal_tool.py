@@ -172,6 +172,7 @@ Persist: background=true, persist_on_release=true keeps the job alive across age
 # Environment lifecycle state.
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+_env_lifetimes: Dict[str, int] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -565,7 +566,9 @@ def _select_image(env_type: str, overrides: Dict[str, Any], config: Dict[str, An
     return overrides.get(key) or config[key]
 
 
-def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
+def _lookup_active_env(
+    effective_task_id: str, task_id: Optional[str], *, lifetime_seconds: Optional[int] = None,
+):
     """Return the cached env for the collapsed id, else for the raw task_id, else None.
 
     Caller holds ``_env_lock``. Per-session surfaces (ACP/gateway/dashboard)
@@ -576,6 +579,8 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     for key in (effective_task_id, task_id):
         if key and key in _active_environments:
             _last_activity[key] = time.time()
+            if lifetime_seconds is not None:
+                _env_lifetimes[key] = lifetime_seconds
             return _active_environments[key]
     return None
 
@@ -792,7 +797,7 @@ def _cleanup_thread_worker():
     """Background thread worker that periodically cleans up inactive environments."""
     while _cleanup_running:
         with _quiet("Error in cleanup thread", level=logging.WARNING):
-            _cleanup_inactive_envs(_get_env_config()["lifetime_seconds"])
+            _cleanup_inactive_envs()
         for _ in range(60):
             if not _cleanup_running:
                 break
@@ -1193,7 +1198,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     env_type, eff = plan.env_type, plan.effective_task_id
 
     with _env_lock:
-        env: Any = _lookup_active_env(eff, task_id)
+        env: Any = _lookup_active_env(eff, task_id, lifetime_seconds=plan.config["lifetime_seconds"])
     if env is not None:
         return env
 
@@ -1202,7 +1207,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with task_lock:
         with _env_lock:
-            env = _lookup_active_env(eff, task_id)
+            env = _lookup_active_env(eff, task_id, lifetime_seconds=plan.config["lifetime_seconds"])
         if env is not None:
             return env
 
@@ -1227,6 +1232,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         with _env_lock:
             _active_environments[eff] = new_env
             _last_activity[eff] = time.time()
+            _env_lifetimes[eff] = plan.config["lifetime_seconds"]
         logger.info("%s environment ready for task %s", env_type, eff[:8])
         return new_env
 

@@ -27,7 +27,7 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     import tools.code_execution_tool as code_execution_tool
     import tools.terminal_tool_backends as backends
 
-    config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "docker_network": False,
+    config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "lifetime_seconds": 300, "docker_network": False,
               "docker_extra_args": ["--user", "1009:1009"], "docker_forward_env": ["DATABASE_URL"],
               "docker_env": {"FOO": "bar"}, "docker_image": "debian:bookworm-slim"}
     expected = backends._container_config_from_config(config)

@@ -130,21 +130,22 @@ def _unregister_env(task_id: str):
     terminal/file tool call."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _env_lifetimes, _last_activity,
     )
     with _env_lock:
         env = _active_environments.pop(task_id, None)
         _last_activity.pop(task_id, None)
+        _env_lifetimes.pop(task_id, None)
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
     return env
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
-    """Clean up environments that have been inactive for longer than lifetime_seconds."""
+    """Clean up idle environments using each one's lifetime, or the fallback."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _env_lifetimes, _last_activity,
     )
     current_time = time.time()
 
@@ -160,10 +161,14 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
     # stop them outside it (see _unregister_env for why).
     with _env_lock:
-        stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
+        stale = [
+            t for t, last in list(_last_activity.items())
+            if current_time - last > _env_lifetimes.get(t, lifetime_seconds)
+        ]
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
             _last_activity.pop(t, None)
+            _env_lifetimes.pop(t, None)
         with _creation_locks_lock:
             for t in stale:
                 _creation_locks.pop(t, None)
@@ -197,7 +202,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     """
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _get_env_config, _last_activity, _resolve_container_task_id,
+        _env_lifetimes, _get_env_config, _last_activity, _resolve_container_task_id,
         _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
     )
     config = _get_env_config()
@@ -211,6 +216,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     if existing is not None:
         with _env_lock:
             _last_activity[effective_task_id] = time.time()
+            _env_lifetimes[effective_task_id] = config["lifetime_seconds"]
         return existing
 
     image = _select_image(env_type, resolve_task_overrides(task_id), config)
@@ -223,6 +229,9 @@ def ensure_task_env(task_id: Optional[str] = None):
     with task_lock:
         existing = get_active_env(effective_task_id)
         if existing is not None:
+            with _env_lock:
+                _last_activity[effective_task_id] = time.time()
+                _env_lifetimes[effective_task_id] = config["lifetime_seconds"]
             return existing
         try:
             new_env = _create_configured_env(
@@ -240,6 +249,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         with _env_lock:
             _active_environments[effective_task_id] = new_env
             _last_activity[effective_task_id] = time.time()
+            _env_lifetimes[effective_task_id] = config["lifetime_seconds"]
         logger.info(
             "%s environment lazily initialized for task %s",
             env_type, effective_task_id[:8],
@@ -314,7 +324,7 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     """Drop any cached env for *task_id* (and its collapsed key) after an
     infrastructure failure, so later calls don't reuse a dead connection."""
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
+        _active_environments, _env_lifetimes, _env_lock, _last_activity, _resolve_container_task_id,
     )
     keys = {_resolve_container_task_id(task_id)}
     if task_id:
@@ -324,6 +334,7 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
         for key in keys:
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
+            _env_lifetimes.pop(key, None)
             if env is not None:
                 evicted.append(env)
     for env in evicted:

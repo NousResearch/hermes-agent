@@ -790,7 +790,10 @@ const ChatViewContent = memo(function ChatViewContent({
         suppressMessages={routeSessionMismatch}
       >
         <div
-          className={cn('relative min-h-0 max-w-full flex-1 overflow-hidden contain-[layout_paint]', !wallpaperActive && 'bg-(--ui-chat-surface-background)')}
+          className={cn(
+            'relative min-h-0 max-w-full flex-1 overflow-hidden contain-[layout_paint]',
+            !wallpaperActive && 'bg-(--ui-chat-surface-background)'
+          )}
           data-intro-holding={introHoldsThread ? '' : undefined}
           data-slot="composer-bounds"
           {...dropHandlers}

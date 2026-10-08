@@ -66,6 +66,15 @@ class LocalSessionAdapter(BasePlatformAdapter):
         # selects that rendering path without a plaintext fallback or a second waiter.
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
+    async def send_clarify(self, chat_id, question, choices, clarify_id, session_key, metadata=None):
+        policy = self.policies.get(chat_id)
+        if policy is not None and policy.source == 'bot_room':
+            # Hosted controls expose approvals only; acknowledging this question
+            # would park the member on an answer nobody can submit.
+            return SendResult(success=False, error='Clarification is unavailable in hosted rooms',
+                              error_kind='forbidden')
+        return SendResult(success=True, message_id=clarify_id)
+
 
 def authorize_local_source(runner, source):
     """None for legacy/nonlocal routes; registered local adapters fail closed."""

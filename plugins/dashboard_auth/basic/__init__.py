@@ -77,6 +77,34 @@ def _verify_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def _is_well_formed_scrypt_hash(encoded: str) -> bool:
+    """True iff ``encoded`` parses as a ``scrypt$n$r$p$<salt_b64>$<dk_b64>`` hash with a
+    power-of-two ``n``, positive ``r``/``p`` and valid base64 salt/derived-key.
+
+    A mangled hash — most commonly the ``$`` segments stripped by a double-quoted shell
+    argument — fails this check, so it is rejected at config/construction time instead of
+    being silently stored and then failing every login (the silent-lockout bug #110069).
+    """
+    try:
+        scheme, n_s, r_s, p_s, salt_b64, dk_b64 = encoded.split("$")
+    except ValueError:
+        return False
+    if scheme != "scrypt":
+        return False
+    try:
+        n, r, p = int(n_s), int(r_s), int(p_s)
+    except ValueError:
+        return False
+    if n <= 1 or (n & (n - 1)) != 0 or r <= 0 or p <= 0:
+        return False
+    try:
+        salt = base64.b64decode(salt_b64, validate=True)
+        dk = base64.b64decode(dk_b64, validate=True)
+    except (ValueError, TypeError):
+        return False
+    return bool(salt) and bool(dk)
+
+
 # Verified against when the username is unknown so "no such user" and "wrong
 # password" take comparable time.
 _DUMMY_HASH = hash_password("dummy-password-for-constant-time-verify")
@@ -127,6 +155,11 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             raise ValueError("username must be non-empty")
         if not password_hash:
             raise ValueError("password_hash must be non-empty")
+        if not _is_well_formed_scrypt_hash(password_hash):
+            raise ValueError(
+                "password_hash must be a well-formed scrypt hash "
+                "(compute it with plugins.dashboard_auth.basic.hash_password)"
+            )
         if len(secret) < 16:
             raise ValueError("secret must be at least 16 bytes")
         self._username = username
@@ -219,6 +252,15 @@ def _settings() -> dict:
 
     username = setting("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "username")
     password_hash = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "password_hash")
+    if password_hash and not _is_well_formed_scrypt_hash(password_hash):
+        raise SkipRegistration(
+            "dashboard.basic_auth.password_hash is not a well-formed scrypt hash, so it could "
+            "never authenticate anyone and would silently lock you out of the dashboard. Compute "
+            "it with plugins.dashboard_auth.basic.hash_password. If you set it via a double-quoted "
+            "shell argument, its '$' segments were expanded away and mangled it — single-quote the "
+            "value instead.",
+            level="error",
+        )
     plaintext = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "password")
     ttl_raw = setting("HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "session_ttl_seconds")
     if not username:

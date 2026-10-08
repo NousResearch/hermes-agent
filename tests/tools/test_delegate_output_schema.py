@@ -151,6 +151,37 @@ class _StubChild:
         return None
 
 
+class _TranscriptChild(_StubChild):
+    """Keeps a transcript the way the real loop does: a turn starts from the
+    ``conversation_history`` it is handed and returns that history plus its own
+    messages. Only the first turn calls a tool."""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.histories: list = []
+
+    def run_conversation(self, user_message, task_id=None, conversation_history=None, **_kwargs):
+        self.histories.append(list(conversation_history or []))
+        self.calls.append(user_message)
+        text = self.responses.pop(0)
+        turn = [{"role": "user", "content": user_message}]
+        if len(self.calls) == 1:
+            turn += [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query": "office address"}'},
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "Karl Johans gate 1, 0154 Oslo"},
+            ]
+        turn.append({"role": "assistant", "content": text})
+        return {
+            "final_response": text,
+            "completed": True,
+            "api_calls": 1,
+            "messages": list(conversation_history or []) + turn,
+        }
+
+
 class _StubParent:
     _current_task_id = None
     _delegate_depth = 0
@@ -194,6 +225,27 @@ class TestRunSingleChildSchemaValidation:
         assert entry["schema_retries"] == 1
         # exactly ONE retry — bounded
         assert len(child.calls) == 2
+
+    def test_retry_continues_the_childs_transcript(self):
+        """The retry is the next turn of the same conversation (#135252). The goal is only the
+        child's first user turn, so a retry from an empty history asks the child to correct an
+        answer it can no longer see, for a task it was never shown."""
+        child = _TranscriptChild(["The office is in Oslo.", '{"city": "Oslo"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        retry_history = child.histories[1]
+        assert [m["content"] for m in retry_history if m["role"] == "user"] == ["produce the address"]
+        assert any(m["role"] == "tool" for m in retry_history)
+        assert retry_history[-1] == {"role": "assistant", "content": "The office is in Oslo."}
+        assert entry["schema_valid"] is True
+
+    def test_retry_counts_first_turn_tool_calls_once(self):
+        """run_conversation returns the cumulative transcript, so the retry's messages already
+        hold the first turn; the parent's tool trace must not report it twice."""
+        child = _TranscriptChild(["The office is in Oslo.", '{"city": "Oslo"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert [t["tool"] for t in entry["tool_trace"]] == ["web_search"]
 
     def test_retry_exception_degrades_to_invalid(self):
         child = _StubChild(["nope"])

@@ -32,6 +32,15 @@ from tools.skills_hub_models import _normalize_lock_install_path, _validate_skil
 logger = logging.getLogger(__name__)
 
 
+def _clear_stale_disabled_state(skill_name: str) -> None:
+    """Best-effort lifecycle cleanup; config trouble must not half-fail a file operation."""
+    try:
+        from hermes_cli.skills_config import clear_disabled_skill
+        clear_disabled_skill(skill_name)
+    except Exception:
+        logger.warning("Unable to clear disabled state for skill '%s'", skill_name, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -322,6 +331,7 @@ class HubLockFile(_JsonStateFile):
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
         data = self.load()
+        fresh_install = safe_name not in data["installed"]
         now = datetime.now(timezone.utc).isoformat()
         data["installed"][safe_name] = {
             "source": source,
@@ -337,11 +347,14 @@ class HubLockFile(_JsonStateFile):
             "updated_at": now,
         }
         self.save(data)
+        if fresh_install:
+            _clear_stale_disabled_state(safe_name)
 
     def record_uninstall(self, name: str) -> None:
         data = self.load()
         data["installed"].pop(name, None)
         self.save(data)
+        _clear_stale_disabled_state(name)
 
     def get_installed(self, name: str) -> Optional[dict]:
         return self.load()["installed"].get(name)

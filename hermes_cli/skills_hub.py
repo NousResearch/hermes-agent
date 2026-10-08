@@ -3,9 +3,12 @@
 
 import json
 import logging
+import os
 import re
 import shutil
+import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1335,6 +1338,71 @@ def _read_frontmatter(skill_md: str) -> dict:
         return {}
 
 
+def _publication_link_count(file_stat: os.stat_result) -> Optional[int]:
+    """Return a useful hard-link count, or ``None`` when the filesystem omits it."""
+    count = getattr(file_stat, "st_nlink", None)
+    return count if isinstance(count, int) and count > 0 else None
+
+
+def _copy_publication_tree(source: Path, destination: Path) -> None:
+    """Copy ``source`` without retaining hard links and reject links owned outside it.
+
+    The guard scans and the publisher reads this private copy, so later source edits cannot
+    replace reviewed bytes. A known external hard link is refused before copying because an
+    outside pathname can mutate the same source inode while the snapshot is being built.
+    Filesystems that do not expose a useful link count remain supported: the independently
+    owned copy is still the scan-to-publish binding.
+    """
+    regular_files = []
+    for directory, dirnames, filenames in os.walk(source, topdown=True, followlinks=False):
+        dirnames.sort()
+        filenames.sort()
+        directory_path = Path(directory)
+        # Do not descend through directory symlinks. copytree preserves them so the existing
+        # structural scanner can apply its inside/outside policy to the snapshot.
+        for dirname in tuple(dirnames):
+            try:
+                mode = os.lstat(directory_path / dirname).st_mode
+            except OSError as exc:
+                raise ValueError(f"Could not inspect publication source '{dirname}': {exc}") from exc
+            if stat.S_ISLNK(mode):
+                dirnames.remove(dirname)
+        for filename in filenames:
+            candidate = directory_path / filename
+            try:
+                file_stat = os.lstat(candidate)
+            except OSError as exc:
+                raise ValueError(f"Could not inspect publication source '{filename}': {exc}") from exc
+            if stat.S_ISREG(file_stat.st_mode):
+                regular_files.append((candidate.relative_to(source), file_stat))
+
+    links_inside = {}
+    for _relative, file_stat in regular_files:
+        inode = getattr(file_stat, "st_ino", 0)
+        identity = (getattr(file_stat, "st_dev", 0), inode) if inode else None
+        if identity is not None:
+            links_inside[identity] = links_inside.get(identity, 0) + 1
+
+    for relative, file_stat in regular_files:
+        link_count = _publication_link_count(file_stat)
+        if link_count is None or link_count <= 1:
+            continue
+        inode = getattr(file_stat, "st_ino", 0)
+        identity = (getattr(file_stat, "st_dev", 0), inode) if inode else None
+        if link_count > (links_inside.get(identity, 1) if identity is not None else 1):
+            raise ValueError(
+                f"Refusing to publish: '{relative.as_posix()}' has a hard link outside "
+                "the skill directory."
+            )
+
+    try:
+        # Preserve symlinks for the scanner instead of silently following an escaping link.
+        # Regular files (including source hard-link siblings) are copied to fresh inodes.
+        shutil.copytree(source, destination, symlinks=True)
+    except OSError as exc:
+        raise ValueError(f"Could not create an owned publication copy: {exc}") from exc
+
+
 def do_publish(skill_path: str, target: str = "github", repo: str = "",
                console: Optional[Console] = None) -> None:
     """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
@@ -1348,38 +1416,46 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     if not (path / "SKILL.md").exists():
         _print_error(c, f"No SKILL.md found at {path}")
         return
-    skill_md = (path / "SKILL.md").read_text(encoding="utf-8-sig").lstrip("\ufeff")  # tolerate BOM
-    fm = _read_frontmatter(skill_md)
-    name = fm.get("name", path.name)
-    if not fm.get("description", ""):
-        _print_error(c, "SKILL.md must have a 'description' in frontmatter.")
-        return
-
-    c.print(f"[bold]Scanning '{name}' before publish...[/]")
-    result = scan_skill(path, source="self")
-    c.print(format_scan_report(result))
-    if result.verdict == "dangerous":
-        c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")
-        return
-
-    if target == "github":
-        if not repo:
-            _print_error(c, "--repo required for GitHub publish.\n"
-                            "Usage: hermes skills publish <path> --to github --repo owner/repo")
+    with tempfile.TemporaryDirectory(prefix="hermes-skill-publish-") as temp_root:
+        snapshot = Path(temp_root) / "skill"
+        try:
+            _copy_publication_tree(path, snapshot)
+        except ValueError as exc:
+            _print_error(c, str(exc))
             return
-        auth = GitHubAuth()
-        if not auth.is_authenticated():
-            _print_error(c, "GitHub authentication required.\n"
-                            f"Set GITHUB_TOKEN in {display_hermes_home()}/.env "
-                            "or run 'gh auth login'.")
+
+        skill_md = (snapshot / "SKILL.md").read_text(encoding="utf-8-sig").lstrip("\ufeff")  # tolerate BOM
+        fm = _read_frontmatter(skill_md)
+        name = fm.get("name", path.name)
+        if not fm.get("description", ""):
+            _print_error(c, "SKILL.md must have a 'description' in frontmatter.")
             return
-        c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
-        _report_pair(c, *_github_publish(path, name, repo, auth))
-    elif target == "clawhub":
-        c.print("[yellow]ClawHub publishing is not yet supported. "
-                "Submit manually at https://clawhub.ai/submit[/]\n")
-    else:
-        c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
+
+        c.print(f"[bold]Scanning '{name}' before publish...[/]")
+        result = scan_skill(snapshot, source="self")
+        c.print(format_scan_report(result))
+        if result.verdict == "dangerous":
+            c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")
+            return
+
+        if target == "github":
+            if not repo:
+                _print_error(c, "--repo required for GitHub publish.\n"
+                                "Usage: hermes skills publish <path> --to github --repo owner/repo")
+                return
+            auth = GitHubAuth()
+            if not auth.is_authenticated():
+                _print_error(c, "GitHub authentication required.\n"
+                                f"Set GITHUB_TOKEN in {display_hermes_home()}/.env "
+                                "or run 'gh auth login'.")
+                return
+            c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
+            _report_pair(c, *_github_publish(snapshot, name, repo, auth))
+        elif target == "clawhub":
+            c.print("[yellow]ClawHub publishing is not yet supported. "
+                    "Submit manually at https://clawhub.ai/submit[/]\n")
+        else:
+            c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
 
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -> tuple:

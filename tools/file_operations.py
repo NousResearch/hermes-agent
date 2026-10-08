@@ -19,6 +19,8 @@ import logging
 import secrets
 import unicodedata
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Optional, Dict
 from pathlib import Path
 
@@ -206,10 +208,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     """File operations over any terminal backend exposing ``execute(command, cwd)``
     returning ``{"output": str, "returncode": int}``.
 
-    cwd rule: every ``_exec`` prefers the LIVE ``env.cwd`` so a ``cd`` run via the
-    terminal tool is picked up immediately; the init-time ``self.cwd`` is only a
-    fallback for envs that don't track cwd (using it for every call once made
-    patches "succeed" with a plausible diff while landing in the wrong directory).
+    cwd rule: every ``_exec`` prefers an explicit argument, then an operation-scoped
+    cwd, then the LIVE ``env.cwd`` so a ``cd`` run via the terminal tool is picked up
+    immediately. The init-time ``self.cwd`` is only a fallback for envs that don't
+    track cwd (using it for every call once made patches "succeed" with a plausible
+    diff while landing in the wrong directory).
     """
 
     def __init__(self, terminal_env, cwd: str = None):
@@ -223,17 +226,35 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         self._command_cache: Dict[str, bool] = {}
         self._rg_resolution_cache: Dict[str, str] = {}
         self._rg_modified_capability: Dict[str, Optional[str]] = {}
+        # One backend env can be shared by several task ids, so a mutable cwd on
+        # either this object or the env would race concurrent file calls. The
+        # caller-scoped override follows the execution context instead.
+        self._operation_cwd: ContextVar[Optional[str]] = ContextVar(
+            f"shell_file_operations_cwd_{id(self)}", default=None)
+
+    @contextmanager
+    def scoped_cwd(self, cwd: str):
+        """Run this operation's backend commands from *cwd* without mutating the
+        shared terminal environment or changing ordinary live-cwd semantics."""
+        token = self._operation_cwd.set(cwd)
+        try:
+            yield self
+        finally:
+            self._operation_cwd.reset(token)
 
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
-        """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
-        init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX)."""
+        """Run ``command`` on the backend. cwd: explicit arg → operation scope →
+        live ``env.cwd`` → init-time ``self.cwd``. ``stdin_data`` is piped
+        (bypasses ARG_MAX)."""
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        effective_cwd = (
+            cwd or self._operation_cwd.get()
+            or getattr(self.env, 'cwd', None) or self.cwd)
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
         output = result.get("output", "")

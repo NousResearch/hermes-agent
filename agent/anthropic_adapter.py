@@ -478,6 +478,12 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
     rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
     sdk = _require_sdk("the Anthropic provider")
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if _is_bedrock_mantle_endpoint(base_url):
+        from agent.anthropic_credentials import resolve_anthropic_token
+        api_key = resolve_anthropic_token(base_url)
+        if not api_key:
+            raise ValueError("No Bedrock API key found. Set AWS_BEARER_TOKEN_BEDROCK.")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta

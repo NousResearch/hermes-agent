@@ -353,9 +353,11 @@ class CLIModelSwitchMixin:
             return changed
 
         try:
+            from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
             from hermes_cli.model_normalize import (
                 _AGGREGATOR_PROVIDERS, normalize_model_for_provider)
-            if resolved_provider not in _AGGREGATOR_PROVIDERS:
+            if (resolved_provider not in _AGGREGATOR_PROVIDERS
+                    and not _is_bedrock_mantle_endpoint(self.base_url)):
                 _adopt(
                     normalize_model_for_provider(current_model, resolved_provider),
                     lambda new: t("cli.model.normalized_model", old=current_model, new=new, provider=resolved_provider))

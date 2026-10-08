@@ -1601,7 +1601,9 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     from hermes_cli.models_local import _get_ollama_request_headers
     from hermes_cli.models_validate import validate_requested_model
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
-    st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if not _is_bedrock_mantle_endpoint(st.base_url):
+        st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
 
     from hermes_cli.chat_catalog import is_known_non_chat_model
     if is_known_non_chat_model(st.new_model):

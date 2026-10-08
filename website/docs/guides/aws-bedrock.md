@@ -23,6 +23,25 @@ Hermes routes each model family through the API that serves it best:
 
 All three routes share the same AWS credential chain and region resolution — no separate configuration is needed. Requests to the Mantle endpoint are authenticated with `AWS_BEARER_TOKEN_BEDROCK` when set, or SigV4-signed via the standard boto3 credential chain otherwise.
 
+### Mantle Claude with a Bedrock API key
+
+The Bedrock API Key setup flow routes Mantle `anthropic.claude-*` catalog IDs
+through the Anthropic Messages API, separately from the native `bedrock` provider:
+
+```yaml
+model:
+  provider: anthropic
+  default: anthropic.claude-opus-4-8
+  base_url: https://bedrock-mantle.us-east-1.api.aws/anthropic
+  api_mode: anthropic_messages
+  key_env: AWS_BEARER_TOKEN_BEDROCK
+```
+
+Use the exact model ID returned by your Mantle catalog. This endpoint uses only
+`AWS_BEARER_TOKEN_BEDROCK` as Bearer authentication. It does not fall back to
+Anthropic API keys, OAuth, Claude Code credentials, or IAM signing. Other models
+selected in the API Key flow retain the named OpenAI-compatible Mantle provider.
+
 ## Prerequisites
 
 - **AWS credentials** — any source supported by the [boto3 credential chain](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html):

@@ -120,6 +120,23 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
     return bool(override_host) and base_url_hostname(base_url or "") == override_host
 
 
+def _is_bedrock_mantle_endpoint(base_url: str | None) -> bool:
+    """HTTPS Mantle Anthropic roots only; never match lookalike hosts or other APIs."""
+    try:
+        parsed = urlparse(_normalize_base_url_text(base_url))
+        labels = (parsed.hostname or "").lower().split(".")
+        return (
+            parsed.scheme == "https"
+            and len(labels) == 4
+            and labels[0] == "bedrock-mantle"
+            and bool(labels[1])
+            and labels[2:] == ["api", "aws"]
+            and parsed.path.rstrip("/") in {"", "/anthropic"}
+        )
+    except ValueError:
+        return False
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
     Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
@@ -127,6 +144,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     normalized = _normalized_lower(base_url)
     return (
         _is_nous_portal_endpoint(base_url)
+        or _is_bedrock_mantle_endpoint(base_url)
         or normalized.startswith(_MINIMAX_ANTHROPIC_PREFIXES)
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")

@@ -465,12 +465,8 @@ def _finalize_routing(agent, api_mode, credential_pool):
             start_nous_auth_keepalive()
 
     with suppress(Exception):
-        from hermes_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-        )
-
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        from agent.agent_init_models import normalize_model_for_route
+        normalize_model_for_route(agent)
 
     # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
     # swap can change the route later, so ``_swap_credential`` applies the same helper again.
@@ -756,7 +752,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(base_url, model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading

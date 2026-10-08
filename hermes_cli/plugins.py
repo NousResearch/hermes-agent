@@ -377,10 +377,11 @@ class PluginContext:
     def llm(self) -> Any:
         """Host-owned :class:`agent.plugin_llm.PluginLlm` facade: completions on the user's active
         model/auth. Overrides (model, agent id, auth profile) are fail-closed, gated by
-        ``plugins.entries.<plugin_id>.llm.*``."""
+        ``plugins.entries.<plugin_id>.llm.*``. Binds the manager's home so calls from scopes
+        outside any turn still resolve the owning profile's credentials (#132887)."""
         if self._llm is None:
             from agent.plugin_llm import PluginLlm
-            self._llm = PluginLlm(plugin_id=self.plugin_id)
+            self._llm = PluginLlm(plugin_id=self.plugin_id, profile_home=str(self._manager.home_path))
         return self._llm
 
     @cached_property

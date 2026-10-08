@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import agent.auxiliary_client as aux
+from agent.auxiliary_pool_recovery import recover_provider_pool
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -70,13 +71,14 @@ def test_pool_rotation_evicts_client_built_with_revoked_credential(monkeypatch):
 
     pool = MagicMock()
     pool.has_credentials.return_value = True
-    pool.try_refresh_current.return_value = None
+    pool.entries.return_value = [SimpleNamespace(runtime_api_key="revoked-token")]
+    pool.try_refresh_matching.return_value = None
     pool.mark_exhausted_and_rotate.return_value = SimpleNamespace(id="fresh-oauth-entry")
     auth_error = Exception("revoked OAuth token")
     auth_error.status_code = 401
 
     with patch("agent.auxiliary_client.load_pool", return_value=pool):
-        assert aux._recover_provider_pool("anthropic", auth_error, failed_api_key="revoked-token") is True
+        assert recover_provider_pool("anthropic", auth_error, failed_api_key="revoked-token") is pool.mark_exhausted_and_rotate.return_value
 
     assert stale_key not in aux._client_cache
     pool.mark_exhausted_and_rotate.assert_called_once()

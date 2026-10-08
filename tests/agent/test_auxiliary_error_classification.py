@@ -10,6 +10,7 @@ import logging
 import pytest
 
 from agent import auxiliary_client as ac
+from agent.auxiliary_pool_recovery import recover_provider_pool
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -65,7 +66,7 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     assert classify_api_error(exc).reason is (
         FailoverReason.rate_limit if benches_pool else FailoverReason.overloaded)
 
-    # The predicate is only half the contract: _recover_provider_pool must not bench a credential
+    # The predicate is only half the contract: recover_provider_pool must not bench a credential
     # for an upstream-capacity 429, while a real per-key rate limit still rotates the pool.
     class _StubPool:
         def __init__(self):
@@ -73,6 +74,10 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
 
         def has_credentials(self):
             return True
+
+        def entries(self):
+            from types import SimpleNamespace
+            return [SimpleNamespace(runtime_api_key="sk-failed")]
 
         def try_refresh_current(self):
             return None
@@ -84,8 +89,8 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     pool = _StubPool()
     monkeypatch.setattr(ac, "load_pool", lambda provider: pool)
     monkeypatch.setattr(ac, "_evict_cached_clients", lambda provider: None)
-    recovered = ac._recover_provider_pool("openrouter", exc, failed_api_key="sk-failed")
-    assert recovered is benches_pool
+    recovered = recover_provider_pool("openrouter", exc, failed_api_key="sk-failed")
+    assert (recovered is not None) is benches_pool
     assert len(pool.rotate_calls) == (1 if benches_pool else 0)
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429

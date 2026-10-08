@@ -1123,7 +1123,7 @@ class TurnRunner:
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),
-            session_id=ctx.session_id, platform=platform_key,
+            session_id=ctx.session_id, platform=platform_key, profile_name=self._turn_profile_name(),
             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
             gateway_session_key=ctx.session_key,
@@ -1135,6 +1135,16 @@ class TurnRunner:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )
+
+    def _turn_profile_name(self):
+        """Use ingress runtime ownership, not the process launcher's profile."""
+        from gateway.session_identity import identity_of
+        from hermes_cli.profiles import current_profile_name
+        source = self._ctx.source
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.runtime_profile
+        return getattr(source, "profile", None) or current_profile_name()
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
@@ -1148,6 +1158,7 @@ class TurnRunner:
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            profile_name=self._turn_profile_name(),
         )
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)

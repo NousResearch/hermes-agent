@@ -1699,6 +1699,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
+                profile=getattr(agent, "_profile_name", None),
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

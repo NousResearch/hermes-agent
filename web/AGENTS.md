@@ -41,5 +41,5 @@ desktop has no build/runtime dependency on this frontend. Details: `apps/desktop
 - Routers are one-file-per-surface; a new surface is a new `web_routers/<surface>.py`, not a growing
   `web_server.py`.
 - Tests: Python in `tests/hermes_cli/` (routers, pty bridge); JS in the `web/` vitest suite. Python
-  tests must not assert about `package.json` / `.tsx` sources (root testing rules). Root TypeScript
+  tests must not assert about `package.json` / `.tsx` sources ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)). [`../CODING_STANDARDS.md#typescript`](../CODING_STANDARDS.md#typescript)
   style rules apply.

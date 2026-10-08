@@ -87,18 +87,18 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 
 ## Third-Party Product Integrations: Ship as a Standalone Plugin
 
-The same rule extends to **any plugin that integrates someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins, and similar third-party integrations. **These do not land in this repo.**
+Read [the placement policy in CODING_STANDARDS.md](CODING_STANDARDS.md#accepted-and-rejected-shapes) before proposing a third-party-product integration. This section supplies the maintenance rationale and publication steps.
 
 The reason is maintenance load, not quality. Every external product absorbed into the core tree becomes ours to keep working against a fast-moving codebase, for a backend we don't own and can't control. Hermes ships a lot and the core moves quickly; coupling third-party products into it creates an open-ended burden on the maintainers.
 
-Publish these as a **standalone plugin repo** instead:
+Publication steps for a standalone plugin repo:
 
 - Implement the relevant ABC and use the existing plugin discovery path (`~/.hermes/plugins/`, project `.hermes/plugins/`, or a pip entry point) — see [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin)
 - Register lifecycle hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), and CLI subcommands (`ctx.register_cli_command`) through the surface we already expose — no core changes needed
-- If your plugin needs a capability the framework doesn't expose, that's a feature request to **widen the generic plugin surface** (a new hook or `ctx` method) — never special-case your plugin in core
+- For missing framework capabilities, follow the [plugin contract](plugins/AGENTS.md#plugins-never-touch-core-teknium-may-2026)
 - Promote it in the [Nous Research Discord](https://discord.gg/NousResearch) `#plugins-skills-and-skins` channel so users can find and install it
 
-A well-built third-party-product plugin can clear automated review and still be closed for this reason — it's a placement decision, not a verdict on the code. PRs that add such a directory under `plugins/` will be closed with a pointer to publish it as its own repo.
+Automated review measures implementation quality; the linked placement policy addresses maintenance coupling. Publication guidance belongs here, not a second copy of that policy.
 
 ---
 
@@ -437,7 +437,7 @@ You must still add the tool name to the appropriate list in `toolsets.py`
 registers but is never exposed to the agent. If you introduce a new toolset,
 add it in `toolsets.py` and wire it into the relevant platform presets.
 
-See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
+See [`tools/AGENTS.md`](tools/AGENTS.md) and [`CODING_STANDARDS.md#footprint-ladder`](CODING_STANDARDS.md#footprint-ladder) for profile-aware paths and
 plugin vs core guidance.
 
 ---
@@ -886,7 +886,7 @@ def test_native_windows_arm64_behavior():
 For several supported hosts, use one marker with multiple arguments, such as
 `@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
 Tests of pure functions that accept a platform as data need no host marker.
-See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
+See [tests/AGENTS.md](tests/AGENTS.md#dont-fake-the-host-os) for the complete contract.
 
 ---
 

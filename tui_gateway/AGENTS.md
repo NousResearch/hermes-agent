@@ -31,7 +31,7 @@ answers them (`client.capabilities {server_requests: true}`, sent by the shared 
 a WebSocket client that never did is an app build older than server→client requests, and `send()` fails
 fast for it instead of stalling the agent for the deadline. Desktop reaches the same server over WebSocket
 via `apps/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
-in an existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
+in an existing topical sibling, registered in the table — no `if method == ...` chain ([`../CODING_STANDARDS.md#facades-and-siblings`](../CODING_STANDARDS.md#facades-and-siblings)).
 
 **The wire is declared in Python and generated for TypeScript** (`tui_gateway/contracts/`). Every method
 has a `Params` + `Result` model, every server→client request a `Params` + `Result`, every event a
@@ -146,7 +146,7 @@ npm test          # vitest
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A
 Python test that asserts about `package.json` / `.ts` sources will not run on a JS-only PR — keep
-JS-side assertions in vitest (root testing rules). Root TypeScript style rules apply.
+JS-side assertions in vitest ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)). [`../CODING_STANDARDS.md#typescript`](../CODING_STANDARDS.md#typescript) style rules apply.
 
 Related: `web/AGENTS.md` (dashboard embeds this TUI over a PTY), `apps/desktop/AGENTS.md` (own
 renderer on the same backend).

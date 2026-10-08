@@ -206,6 +206,6 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 ## Tests
 
 `tests/gateway/`. Adapter tests exercise the real delivery path with a fake transport; never
-assert on hardcoded platform lists or command counts (root: no change-detectors). Session-key and
+assert on hardcoded platform lists or command counts ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)). Session-key and
 guard behaviour are invariants worth a test; platform API quirks belong in connector comments +
 tests, not in prose.

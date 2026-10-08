@@ -1,6 +1,6 @@
 # tools/ + toolsets.py + model_tools.py — model tools
 
-Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
+Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** ([`../CODING_STANDARDS.md#footprint-ladder`](../CODING_STANDARDS.md#footprint-ladder)) before adding anything here.
 Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
 `tools-runtime.md`.
 
@@ -51,7 +51,7 @@ Rules for tool code:
   at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
   its own state.
 - **No `offset`/`limit` on instructional tools** (skills, prompts, playbooks) — models read page 1
-  and skip the rest (root rubric).
+  and skip the rest ([`../CODING_STANDARDS.md#accepted-and-rejected-shapes`](../CODING_STANDARDS.md#accepted-and-rejected-shapes)).
 - **`check_fn` answers reachability/opt-in for the profile it runs under, never surface.** Results
   are TTL-cached in `registry.py::_check_fn_cache` keyed by `hermes_home_key()`, and one process
   serves many sessions AND many profiles: a probe reads credentials through
@@ -59,7 +59,7 @@ Rules for tool code:
   `.env` for everyone). The registry classifies an `UnscopedSecretError` from
   `current_secret_scope()` at the catch site — a boot-time probe with no scope is DEBUG, not a
   traceback. GUI-only tools go in a named toolset (`desktop_ui`, `project`) folded in by
-  `_load_enabled_toolsets(platform)` (root: capability is a property of the SESSION).
+  `_load_enabled_toolsets(platform)` (see [`../CODING_STANDARDS.md#footprint-ladder`](../CODING_STANDARDS.md#footprint-ladder)).
 - **Agent-level tools** (`todo`, `memory`) are intercepted before `handle_function_call()` via the
   `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
 - **`_last_resolved_tool_names`** is a process-global in `model_tools.py`; `_run_single_child()` in
@@ -69,10 +69,7 @@ Rules for tool code:
 
 ## Toolsets (`toolsets.py`)
 
-Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
-delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
-kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
-tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
+Read the `TOOLSETS` dict in `toolsets.py` for current keys; tests assert relationships, not the list. Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
 replaces the other browser tools when `browser.backend` is `browser-use`.
 
@@ -84,7 +81,7 @@ browser (`browser_tool_*.py`: cdp, cloud, install, lifecycle, session, real_prof
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
-never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
+never an `elif` on a backend name ([`../CODING_STANDARDS.md#facades-and-siblings`](../CODING_STANDARDS.md#facades-and-siblings)). Remote-backend file visibility problems are
 fixed at the mount, not by adding a tool.
 
 **Native vision embeds are history, not one-shot payloads.** `vision_tools.py::_vision_analyze_native`

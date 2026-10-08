@@ -98,7 +98,7 @@ than the crash it replaced.
 
 ## Keep the waist narrow, grow at the edges
 
-The root contribution rubric governs here too. New capability should arrive at
+The [contribution rubric](../../CODING_STANDARDS.md#work-worth-accepting) governs here too. New capability should arrive at
 the smallest surface that solves it: extend what exists, add a feature locally,
 lean on an existing seam — before you invent a framework. The shell's internal
 registries are composition seams, not a public plugin ABI; do not build a

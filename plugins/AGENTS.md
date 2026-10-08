@@ -12,7 +12,7 @@ If it needs a capability the framework lacks, widen the **generic** plugin surfa
 ctx method) and have the plugin use it — never hardcode plugin-specific logic into core (PR #5295
 removed 95 lines of hardcoded honcho argparse from `main.py`). Plugin setup goes through
 `hermes memory setup` → `provider.post_setup(hermes_home, config)`, never a parallel top-level
-command. A hook with no concrete consumer is speculative infrastructure and is rejected (root).
+command. A hook with no concrete consumer is speculative infrastructure and is rejected ([`../CODING_STANDARDS.md#accepted-and-rejected-shapes`](../CODING_STANDARDS.md#accepted-and-rejected-shapes)).
 
 ## What may live in this tree (policy)
 
@@ -35,12 +35,7 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   once the plugin dir exists): a later `hermes plugins remove` sticks, a failed install retries.
   Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
   `display_tier`, `shared_env_prefixes`), never a name check.
-- **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
-  connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
-  (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:
-  every absorbed product is our maintenance burden against a fast-moving core for a backend we don't
-  own. `observability/`, `kanban/`, `disk-cleanup/` are precedent, not an invitation. Closing such a
-  PR is a coupling decision, not a quality judgment.
+- **Third-party-product placement:** follow [`../CODING_STANDARDS.md#accepted-and-rejected-shapes`](../CODING_STANDARDS.md#accepted-and-rejected-shapes). Existing `observability/`, `kanban/`, and `disk-cleanup/` directories do not grant new integrations an exception. The [contributor guide](../CONTRIBUTING.md#third-party-product-integrations-ship-as-a-standalone-plugin) supplies publication steps and the maintenance rationale.
 - Reference/docs-companion plugins (`example-dashboard`, `strike-freedom-cockpit`,
   `plugin-llm-example`, `plugin-llm-async-example`) live in
   [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins), not here.

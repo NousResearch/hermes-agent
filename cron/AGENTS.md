@@ -90,7 +90,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
   briefs are labelled user turns appended at a turn boundary, preserving role alternation.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means
-  "spawned by the app", not "a GUI is watching" (root: capability is a property of the session).
+  "spawned by the app", not "a GUI is watching" ([`../CODING_STANDARDS.md#footprint-ladder`](../CODING_STANDARDS.md#footprint-ladder)).
 - Background `delegate_task` is process-local; work that must survive restarts is a cron job or a
   `terminal(background=True, notify_on_complete=True)` process.
 
@@ -104,7 +104,7 @@ zero outside a kanban task (footprint ladder rung 3).
   `db_dispatch`, `db_notify`, `db_graph` (task initialization and decomposition), `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
   unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
   reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
-  notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
+  notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls`.
 - **Toolset:** `tools/kanban_tools.py` — `kanban_show, kanban_complete, kanban_request_review,
   kanban_request_changes, kanban_block, kanban_schedule, kanban_heartbeat, kanban_comment,
   kanban_create, kanban_link,
@@ -152,4 +152,4 @@ recycled PID gets killed on reclaim.
 
 `tests/cron/`, `tests/hermes_cli/test_kanban*.py`, `tests/tools/test_kanban*.py`. Schedule parsing
 and catch-up windows are pure functions — test them as data. Never assert on the verb list or
-toolset size (root: no change-detectors). Time-based tests use loose bounds (≥ 2s) and event sync.
+toolset size ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)). Time-based tests use loose bounds (≥ 2s) and event sync.

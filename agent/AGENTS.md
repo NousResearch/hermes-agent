@@ -1,6 +1,6 @@
 # agent/ — AIAgent, turn loop, prompt, compression
 
-Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + siblings rules).
+Applies on top of the root `AGENTS.md` (prompt-caching invariant) and [`CODING_STANDARDS.md`](../CODING_STANDARDS.md) (facade + siblings rules).
 
 ## Shape
 
@@ -104,7 +104,7 @@ cache break — keep it the only one. Full detail:
   `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
   `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
-  against a temp `HERMES_HOME`, not mocks (root rubric).
+  against a temp `HERMES_HOME`, not mocks ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)).
 
 ## i18n (`agent/i18n.py` + `i18n_layers.py` + `i18n_languages.py`)
 
@@ -143,9 +143,9 @@ providers intentionally do not run during cron.
 ## Tests
 
 Loop/phase tests go in `tests/agent/`; patch the binding the phase actually reads (siblings often
-`from run_agent import X` inside the function — root "patch where production reads"). Assert
+`from run_agent import X` inside the function — [`../CODING_STANDARDS.md#facades-and-siblings`](../CODING_STANDARDS.md#facades-and-siblings)). Assert
 message-shape invariants (alternation, byte-stable system prompt) rather than snapshotting prompt
-text.
+text ([`../CODING_STANDARDS.md#tests-and-verification`](../CODING_STANDARDS.md#tests-and-verification)).
 
 Long-form: `website/docs/developer-guide/agent-loop.md`, `prompt-assembly.md`,
 `context-compression-and-caching.md`, `provider-runtime.md`, `session-storage.md`,

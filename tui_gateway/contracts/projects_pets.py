@@ -38,6 +38,8 @@ class ProjectInfo(Result):
     color: str | None = None
     board_slug: str | None = None
     primary_path: str | None = None
+    # Nesting override: absent = nest by folder containment, "" = top level, an id = that parent.
+    parent_id: str | None = None
     archived: bool = False
     created_at: int
     folders: list[ProjectFolder] = Field(default_factory=list)
@@ -189,6 +191,7 @@ class RepoDiscoveryPolicyParams(Params):
     """The policy the desktop scanned under (short or ``repo_scan_*`` long keys both accepted)."""
 
     enabled: bool | None = None
+    nested: bool | None = None
     roots: list[str] | None = None
     exclude_paths: list[str] | None = None
     repo_scan_enabled: bool | None = None

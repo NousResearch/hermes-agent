@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,10 +178,21 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
     captured = []
 
     class FakeProc:
+        """Just enough of ``Popen`` for ``_communicate_until_exit``: real pipe fds (the drain reads
+        them raw), a writable stdin, and an immediate exit."""
         returncode = 0
 
-        def communicate(self, input=None, timeout=None):
-            return "{}", ""
+        def __init__(self):
+            stdout_r, stdout_w = os.pipe()
+            stderr_r, stderr_w = os.pipe()
+            os.write(stdout_w, b"{}")
+            os.close(stdout_w)
+            os.close(stderr_w)
+            self.stdout, self.stderr = os.fdopen(stdout_r, "rb"), os.fdopen(stderr_r, "rb")
+            self.stdin = open(os.devnull, "wb")
+
+        def wait(self, timeout=None):
+            return 0
 
     def fake_popen(cmd, **kwargs):
         captured.append((cmd, kwargs))

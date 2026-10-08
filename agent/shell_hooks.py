@@ -337,7 +337,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         if IS_WINDOWS:
             argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding='utf-8', errors='replace', shell=False,
+                                shell=False,  # bytes: _communicate_until_exit reads the raw fds and decodes
                                 env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
     except Exception as exc:
         for cls, msg in _POPEN_ERRORS:
@@ -349,12 +349,12 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
             return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
         return failed(str(exc))
     try:
-        stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
+        stdout, stderr = _communicate_until_exit(proc, stdin_json, spec.timeout)
     except BaseException as exc:
         # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
-            proc.communicate(timeout=1)
+            proc.wait(timeout=1)
         if not isinstance(exc, Exception):
             raise
         if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
@@ -363,6 +363,47 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return result
     result.update(returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "", elapsed_seconds=round(time.monotonic() - t0, 3))
     return result
+
+
+# How long to keep draining stdout/stderr after the hook process itself has exited. A helper the hook
+# left running (``some-daemon &``) still holds the pipes, so EOF may never come; its later output is
+# not the hook's answer.
+_PIPE_DRAIN_GRACE_SECONDS = 0.5
+
+
+def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: int) -> Tuple[str, str]:
+    """Feed ``stdin_json``, drain both pipes on reader threads and return once the hook's OWN process
+    has exited (``subprocess.TimeoutExpired`` when it has not within ``timeout``).
+
+    ``Popen.communicate()`` instead waits for pipe EOF, so a hook that starts a background helper
+    without redirecting its stdio (``some-daemon &``) "hung" for the whole timeout, lost its verdict
+    and had the helper it meant to leave running killed with the tree. The helper keeps the pipes;
+    its reader threads end with it."""
+    chunks: Dict[str, List[bytes]] = {"stdout": [], "stderr": []}
+    stdin = proc.stdin
+    assert stdin is not None  # Popen(stdin=PIPE)
+
+    def _drain(name: str) -> None:
+        stream = getattr(proc, name)
+        with suppress(OSError, ValueError):
+            while chunk := os.read(stream.fileno(), 65536):
+                chunks[name].append(chunk)
+
+    def _feed() -> None:
+        with suppress(OSError, ValueError):  # the hook may exit without reading stdin
+            stdin.write(stdin_json.encode("utf-8"))
+            stdin.close()
+
+    threads = [threading.Thread(target=_drain, args=(name,), daemon=True, name=f"hook-{name}") for name in chunks]
+    threads.append(threading.Thread(target=_feed, daemon=True, name="hook-stdin"))
+    for thread in threads:
+        thread.start()
+    proc.wait(timeout=timeout)
+    deadline = time.monotonic() + _PIPE_DRAIN_GRACE_SECONDS  # one grace budget shared by all three threads
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    stdout, stderr = (b"".join(chunks[name]).decode("utf-8", errors="replace") for name in ("stdout", "stderr"))
+    return stdout, stderr
 
 
 def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:

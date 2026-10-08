@@ -68,7 +68,7 @@ def _ensure_key(platform_config: PlatformConfig, home: Path) -> bool:
     key = secrets.token_hex(32)
     try:
         save_env_value(_KEY_ENV, key)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         # Still start this run with the generated key; the next boot retries the write.
         logger.warning("Could not persist generated %s to %s: %s", _KEY_ENV, home / ".env", exc)
     extra["key"] = key
@@ -102,3 +102,28 @@ def ensure_cron_loopback_listener(
             "turned off while that provider is active).", home / "config.yaml")
         platform_config.enabled = True
     return True
+
+
+def ensure_cron_loopback_listener_safely(config: GatewayConfig, home: Path, home_count: int) -> None:
+    """:func:`ensure_cron_loopback_listener` for the config loader: a failure here must never stop
+    the gateway from booting, so it is logged with its traceback and the config is left as loaded."""
+    try:
+        ensure_cron_loopback_listener(config, home=Path(home), home_count=home_count)
+    except Exception:  # health: allow BLE001 -- boot-time boundary; logged with traceback below
+        logger.warning("Could not check whether the cron provider needs the loopback api_server", exc_info=True)
+
+
+def warn_if_cron_loopback_listener_missing(cron_provider: object, runner: object) -> None:
+    """Say ONCE when a loopback-firing provider is active but the forced api_server start failed
+    (bind error, unusable operator key): every scheduled fire would otherwise fail silently."""
+    from cron.loopback_fire import provider_fires_over_loopback
+
+    if not provider_fires_over_loopback(cron_provider):
+        return
+    if Platform.API_SERVER in (getattr(runner, "adapters", None) or {}):
+        return
+    logger.warning(
+        "Cron provider '%s' delivers scheduled fires over the loopback api_server, but the "
+        "api_server adapter failed to start in this gateway, so every scheduled fire will fail "
+        "(manual runs still work). Check the api_server startup error above (port already in use, "
+        "or an unusable API_SERVER_KEY).", getattr(cron_provider, "name", "external"))

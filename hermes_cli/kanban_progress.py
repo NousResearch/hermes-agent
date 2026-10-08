@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
@@ -49,26 +48,21 @@ DEFAULT_PROGRESS_ZOMBIE_SECONDS = 60 * 60
 _SIGNATURE_CHARS = 12
 
 
-def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return max(minimum, int(raw))
-    except (TypeError, ValueError):
-        return default
-
-
 def progress_stall_seconds() -> int:
-    return _env_int("HERMES_KANBAN_PROGRESS_STALL_SECONDS", DEFAULT_PROGRESS_STALL_SECONDS)
+    """No-new-signature budget before a fresh-heartbeat worker reads as stalled.
+
+    The board-side diagnostic rule can override per install
+    (``kanban.diagnostics.worker_stall_seconds``); this is the fallback.
+    """
+    return DEFAULT_PROGRESS_STALL_SECONDS
 
 
 def progress_loop_repeat_limit() -> int:
-    return _env_int("HERMES_KANBAN_PROGRESS_LOOP_REPEAT_LIMIT", DEFAULT_PROGRESS_LOOP_REPEAT_LIMIT)
+    return DEFAULT_PROGRESS_LOOP_REPEAT_LIMIT
 
 
 def progress_zombie_seconds() -> int:
-    return _env_int("HERMES_KANBAN_PROGRESS_ZOMBIE_SECONDS", DEFAULT_PROGRESS_ZOMBIE_SECONDS)
+    return DEFAULT_PROGRESS_ZOMBIE_SECONDS
 
 
 def tool_signature(tool_name: str, args: Optional[Mapping[str, Any]]) -> str:
@@ -82,7 +76,7 @@ def tool_signature(tool_name: str, args: Optional[Mapping[str, Any]]) -> str:
     name = (tool_name or "").strip() or "?"
     try:
         blob = json.dumps(args or {}, sort_keys=True, separators=(",", ":"), default=str)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- hashing a tool call must never break the agent loop
         blob = repr(args)
     digest = hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:_SIGNATURE_CHARS]
     return f"{name}:{digest}"
@@ -134,7 +128,7 @@ class ProgressTracker:
                 self.distinct_signatures += 1
                 self.last_progress_at = now
             return sig
-        except Exception:
+        except Exception:  # health: allow BLE001 -- tracker bug must not kill the worker
             # A tracker bug must not kill the worker; treat it as no-op.
             return ""
 

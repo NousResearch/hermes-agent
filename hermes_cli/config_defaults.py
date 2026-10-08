@@ -1945,13 +1945,6 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
-        # Dispatcher-side runtime cap for cards with neither an explicit
-        # max_runtime_seconds nor a worker estimate (kanban_heartbeat
-        # expected_runtime_seconds). When >0 the worker is terminated and requeued
-        # once elapsed exceeds it, long before the 4h stale window. 0 = off, which
-        # keeps the 4h/1h stale path as the only wall-clock bound (backward
-        # compatible). See enforce_max_runtime.
-        "default_max_runtime_seconds": 0,
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.

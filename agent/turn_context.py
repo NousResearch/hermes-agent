@@ -158,6 +158,26 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def replay_historical_content(
+    msg: Dict[str, Any], api_msg: Dict[str, Any], sidecar: Optional[str],
+) -> None:
+    """THE one historical replay policy for every wire-boundary consumer (``build_api_messages``
+    and ``_iteration_summary_api_messages``): a historical user/assistant row replays the exact
+    bytes its turn sent (its ``api_content`` sidecar) so the prompt-cache prefix stays byte-stable —
+    EXCEPT a source-identified user row (a queued prompt's turn boundary): its wire copy is its
+    SOURCE text. Transient sidecar glue (first-contact onboarding notes, per-turn injections) was
+    delivered live on that row's own turn and must never re-enter the boundary a provider sees;
+    stale guidance never replays as user text. Normal and forced-summary requests render identical
+    user content (prefix parity) because both consume this policy and nothing else.
+    ``sidecar`` is the already-popped ``api_content`` value of ``msg``'s outgoing copy."""
+    if (
+        isinstance(sidecar, str) and sidecar
+        and api_msg.get("role") in ("user", "assistant")
+        and not _source_identified_user_row(msg)
+    ):
+        api_msg["content"] = sidecar
+
+
 def _pop_turn_note(agent: Any, attr: str) -> str:
     """One-shot per-turn note: read and clear, so the system prompt stays byte-stable and a
     cached agent never replays a stale note."""
@@ -1304,21 +1324,12 @@ def build_api_messages(
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
-        elif (
-            isinstance(_api_content, str) and _api_content
-            and msg.get("role") in ("user", "assistant")
-        ):
-            # Historical row: replay the exact bytes sent live so the prompt-cache
-            # prefix stays byte-stable. User rows carry the injection sidecar; user
-            # and assistant rows may carry a sanitize-divergence sidecar.
-            # A source-identified user row is a queued-prompt boundary: its wire copy
-            # is its SOURCE text — transient sidecar glue (first-contact onboarding
-            # notes, per-turn injections) and source ids must never re-enter the
-            # boundary a provider sees (and that the strict-provider user merge
-            # joins). The glue was delivered live on that row's own turn; stale
-            # guidance never replays as user text.
-            if not _source_identified_user_row(msg):
-                api_msg["content"] = _api_content
+        else:
+            # Historical row: ONE replay policy, shared with the max-iteration summary path
+            # (replay_historical_content) — sidecar bytes for cache-prefix parity, SOURCE text for
+            # a source-identified (queued-prompt) boundary row. Two policies here once diverged the
+            # two request shapes on the same history row.
+            replay_historical_content(msg, api_msg, _api_content)
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
         # reasoning context is preserved.

@@ -118,6 +118,43 @@ def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path
     assert session["cwd"] == str(repo)
 
 
+def test_a_chat_parked_on_the_profile_workspace_adopts_the_repo_it_worked_in(
+    session, repo_with_worktree, tmp_path, monkeypatch
+):
+    """A bare new chat starts on the profile's own workspace (nobody picked it, so there is no
+    ``explicit_cwd``); the work turns out to live in one repo, so the chat files itself under that
+    repo — and its worktrees then cut inside it instead of the workspace root.
+    """
+    repo, _ = repo_with_worktree
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(workspace))
+    session["cwd"] = str(workspace)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(repo)
+    assert session["cwd_from_settle"] is True
+
+
+def test_a_session_started_in_a_project_keeps_that_repo(session, repo_with_worktree, tmp_path, monkeypatch):
+    """The follow-up to the file-it-itself case: a session started in a specific project stays in
+    that project's repo. Here the picked workspace IS the profile's own workspace (the project row
+    for the workspace root), and the other repo it visited is a visit, not a relocation.
+    """
+    repo, _ = repo_with_worktree
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-b", "main")
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(repo))
+    session["cwd"] = str(repo)
+    session["explicit_cwd"] = True
+    terminal_tool.record_session_cwd(session["session_key"], str(other))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
 def test_an_unrelated_repo_is_not_a_move(session, repo_with_worktree, tmp_path):
     """Git workspace A visiting unrelated git repo B is a visit, not a re-home.
 

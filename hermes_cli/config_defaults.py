@@ -1711,6 +1711,10 @@ DEFAULT_CONFIG = {
     # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
     # deliberately omitted here so an empty default never clobbers a user allow-list.
     "plugins": {
+        # Fail closed when a named policy hook is required but its plugin failed to load.
+        # Supported names: pre_tool_call, pre_memory_context, pre_compression_commit.
+        # Empty preserves existing behavior for profiles that have not opted in.
+        "required_policy_hooks": [],
         # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
         # need more time; each network operation is capped at one hour.
         "clone_timeout_seconds": 300,

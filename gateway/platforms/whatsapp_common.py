@@ -234,6 +234,33 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns or ())
 
+    def _message_addresses_bot(self, data: Dict[str, Any]) -> bool:
+        return (
+            str(data.get("body") or "").strip().startswith("/")
+            or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data)
+            or self._message_matches_mention_patterns(data)
+        )
+
+    def _reply_expected_for_message(self, data: Dict[str, Any]) -> Optional[bool]:
+        """Only known, unaddressed group chatter may suppress an explicit silence marker."""
+        if not data.get("isGroup"):
+            return True
+        if self._message_addresses_bot(data):
+            return True
+        body = str(data.get("body") or "").strip()
+        # Without the bot's identity (or the quoted author) we cannot rule out an address.
+        # A bare question may be aimed at the bot even in a free-response group.
+        if not self._bot_ids_from_message(data) or (data.get("hasQuotedMessage") and not data.get("quotedParticipant")):
+            return None
+        # Opening with a mention of, or quoting, someone else (bot ruled out above) is addressed
+        # elsewhere, question or not; a mid-sentence mention may still be a question for the bot.
+        lead = re.match(r"@(\w+)", body)
+        mentioned = {self._normalize_whatsapp_id(m).split("@", 1)[0] for m in data.get("mentionedIds") or ()}
+        if (lead and lead.group(1) in mentioned) or data.get("quotedParticipant"):
+            return False
+        return None if "?" in body else False
+
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
             return text
@@ -257,12 +284,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
             return True
-        return (
-            str(data.get("body") or "").strip().startswith("/")
-            or self._message_is_reply_to_bot(data)
-            or self._message_mentions_bot(data)
-            or self._message_matches_mention_patterns(data)
-        )
+        return self._message_addresses_bot(data)
 
     # ------------------------------------------------------------------ formatting
     def format_message(self, content: str) -> str:

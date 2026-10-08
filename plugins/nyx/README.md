@@ -6,12 +6,17 @@ ferramenta chamada solta um cometa que orbita a cabeça enquanto ela roda, e o c
 a ferramenta deu erro. Quando a resposta começa a sair, a galáxia recolhe e o dourado do rosto
 pulsa. Subagentes ganham uma galáxia-satélite menor.
 
-## Ligar
+## Instalar
+
+Num Hermes que não tem o Nyx (instala direto deste repositório, já ativado):
 
 ```bash
-hermes plugins enable nyx
-hermes dashboard          # aba "Nyx"
+hermes plugins install julinhodailha/hermes-agent/plugins/nyx --enable
+hermes dashboard          # aba "Nyx", na seção de plugins da barra lateral
 ```
+
+Enquanto o Nyx não estiver na `main`, fixe o commit da branch com `--ref <sha de 40 caracteres>`.
+Neste fork o plugin já vem junto: basta `hermes plugins enable nyx`.
 
 Funciona com qualquer superfície que rode o agente (CLI, TUI, desktop, gateway de mensagens): os
 hooks escrevem no barramento do perfil e o painel lê de lá. O botão **ensaio** manda pelo mesmo

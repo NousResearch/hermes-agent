@@ -333,8 +333,11 @@ export function montar(el, { densidade = 1 } = {}) {
     composer.setSize(w, h);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    // tela estreita (celular em pé): afasta a câmera pra caber cabeça e ombros, mantendo a direção do giro
+    const dist = 19 * Math.max(1, 0.9 / camera.aspect);
+    camera.position.sub(controls.target).setLength(dist).add(controls.target);
     // a figura ocupa ~metade da altura; com a contagem de grãos fixa, a sobreposição cresce com 1/altura²
-    uniforms.uExpo.value = Math.min(1.2, Math.max(0.2, (h / 940) ** 2));
+    uniforms.uExpo.value = Math.min(1.2, Math.max(0.2, (h * 19 / dist / 940) ** 2));
   };
   const ro = new ResizeObserver(ajustar);
   ro.observe(el);

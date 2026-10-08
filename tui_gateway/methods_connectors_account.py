@@ -18,14 +18,10 @@ def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorEr
     def decorate(fn):
         def handler(rid, params):
             from pydantic import ValidationError
-            from tools.connectors import connectors_available
             from tools.connectors.gateway.errors import GatewayAuthError
-            from tui_gateway.contracts.connectors import ConnectorErrorReason
 
-            if not connectors_available():
-                return _connector_rpc_error(
-                    rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available."
-                )
+            if gate_error := _account_gate_closed(rid) or _account_identity_error(rid):
+                return gate_error
             try:
                 request = params if params_model is None else params_model.model_validate(params)
             except ValidationError:

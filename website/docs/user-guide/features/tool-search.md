@@ -157,8 +157,8 @@ tools:
 
 ## Connectors (remote tools)
 
-When you are signed in to the Nous Portal, the bridge additionally reaches
-**connectors** — remote tools served by the managed tool gateway. They are
+The bridge also reaches **connectors**: remote tools served by the managed tool
+gateway. They are
 never registered locally: `tool_search` sends each query to the gateway, adds
 the gateway's hits to the local catalog as documents (tagged
 `source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
@@ -182,9 +182,22 @@ tools:
                     # behaves exactly as if the feature didn't exist
 ```
 
-Signed out (or when the gateway does not serve connectors for your
-account), everything above is invisible: local search behaves exactly as
-described in the rest of this page, with no errors shown to the model.
+Connectors need a Nous identity. You do not have to sign in for one: if you
+have no Nous account, the first `manage_connections` action (or opening the
+desktop Connectors page) creates a free Nous identity for you, on every
+surface. It does not change your model provider: outside builds that ship
+the Nous free tier it is used for connectors and managed tools only. Until it exists, `tool_search` sends nothing to the
+gateway and its result says that hosted connectors are not set up yet and
+that `manage_connections` sets them up. To opt out, set:
+
+```yaml
+nous:
+  guest: false
+```
+
+With that setting, or when the gateway does not serve connectors for a
+signed-in account, everything above is invisible: local search behaves exactly
+as described in the rest of this page, with no errors shown to the model.
 
 A connector call that needs an account you haven't linked returns a
 `CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
@@ -192,9 +205,8 @@ their connection state and starts an authorization: in the desktop app the call
 shows a card, blocks until each app is connected or skipped, and reports the
 outcomes; elsewhere it returns a connect link per app for the user to open.
 Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
-local MCP servers from the catalog (targets with `mcp: true`), so it is
-present whether or not you are signed in; only the managed-connector actions
-need the sign-in.
+local MCP servers from the catalog (targets with `mcp: true`); those actions
+never create a Nous identity.
 
 The desktop backend's account-list and disconnect APIs use the Portal's
 account-management service, including its organization membership checks and

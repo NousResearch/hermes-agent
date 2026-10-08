@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
-from tools.connectors.gateway.config import operation_session_key
+from tools.connectors.gateway.config import ensure_guest_identity, operation_session_key
 from tools.connectors.gateway.errors import RateLimited
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
@@ -42,9 +42,17 @@ NOTE = (
 )
 
 
-def managed_client():
-    from tools.connectors.gateway.client import ConnectorClient
+GUEST_SETUP_FAILED = "GUEST_SETUP_FAILED"
 
+
+def managed_client():
+    """The real gateway client for a user action. The first one creates the guest identity when the
+    user has none: every hosted action is a request for an app."""
+    from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.gateway.errors import ToolGatewayError
+
+    if setup_error := ensure_guest_identity():
+        raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
     return ConnectorClient()
 
 
@@ -266,6 +274,8 @@ def run_managed_action(
         )
     except Exception as exc:
         logger.debug("manage_connections %s failed: %s", action, exc)
+        if getattr(exc, "code", None) == GUEST_SETUP_FAILED:
+            return tool_error(str(exc))
         return tool_error(
             f"The connector gateway request failed: {exc}. "
             "If this persists, the user can manage connections in the Nous Portal."

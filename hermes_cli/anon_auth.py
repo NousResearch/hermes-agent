@@ -1,7 +1,9 @@
 """Nous free-tier identity: the ``anonymous`` auth method of the ``nous`` provider.
 
-The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
-while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
+The identity is created in two places: at boot (``hermes_cli.free_tier_bootstrap``) while
+``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``), and on the first hosted connector action for
+anyone without a Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated only
+by ``guest_allowed``). Either mints an anonymous Nous
 account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
 JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``. In
 the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
@@ -33,7 +35,8 @@ from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
+    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, NOUS_INFERENCE_INVOKE_SCOPE, _decode_jwt_claims,
+    httpx)
 
 logger = logging.getLogger("hermes_cli.auth")
 
@@ -45,9 +48,9 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 # The shared secret gates the anonymous surface during its integration phase. It is a deployment
 # secret (Sid's), read from the environment only.
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
-# Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
-# (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. Not a user preference: never written to
+# Launch gate for the free tier while it is pre-GA: exactly "1" turns it on for this process (CLI,
+# gateway, serve backend alike): the boot mint, the free model and the free-tier surfaces. A guest
+# for connectors only needs ``nous.guest`` (``guest_allowed``). Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 # Preview cohort for the free tier's connector set, sent once on account creation so the account
@@ -154,15 +157,18 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
 
 
 def guest_enabled() -> bool:
-    """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off."""
-    if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
-        return False
+    """The free tier is on for this process: the launch gate is set AND :func:`guest_allowed`."""
+    return (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() == "1" and guest_allowed()
+
+
+def guest_allowed() -> bool:
+    """``nous.guest`` (default True) has not switched guests off. Enough for a guest used only for
+    connectors; the free model and the boot mint also need the launch gate (:func:`guest_enabled`)."""
     try:
         from hermes_cli.config import load_config_readonly
         nous_cfg = load_config_readonly().get("nous")
-    except Exception as exc:  # config unreadable: keep today's behaviour (no guest) rather than mint
-        logger.debug("guest: config unreadable, treating nous.guest as false: %s", exc)
+    except Exception:  # config unreadable: keep today's behaviour (no guest) rather than mint
+        logger.debug("guest: config unreadable, treating nous.guest as false", exc_info=True)
         return False
     if not isinstance(nous_cfg, dict):
         return True
@@ -210,6 +216,12 @@ def has_free_tier_account() -> bool:
     credential-pool entry can pick a paid Nous key while the profile singleton is still a guest.
     """
     return guest_enabled() and has_guest()
+
+
+def guest_without_free_tier(state: Any) -> bool:
+    """A guest identity while the free tier is off: it serves connectors and managed tools only, so
+    inference, account and status readers treat the profile as not signed in."""
+    return is_guest_state(state) and not guest_enabled()
 
 
 def free_tier_route() -> bool:
@@ -351,8 +363,36 @@ def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     return payload
 
 
+# ``purpose: "connectors"`` (NAS hermes-portal#1516) mints a JWT whose only scope is
+# ``connectors:invoke``: connector routes and the tool gateway accept it, the welcome host refuses it,
+# and NAS never puts the free-inference challenge in front of it. A NAS from before #1516 ignores the
+# field and answers with an inference token (a superset), so which slot a token fills is read off its
+# ``scope`` claim, never off the purpose that asked for it.
+def is_connectors_only(token: Any) -> bool:
+    """*token* carries a scope claim and it lacks ``inference:invoke`` (a scopeless JWT reads as today's)."""
+    from hermes_cli.auth_nous import _scope_values
+    claims = _decode_jwt_claims(token)
+    scopes = _scope_values(claims.get("scope")) | _scope_values(claims.get("scp"))
+    return bool(scopes) and NOUS_INFERENCE_INVOKE_SCOPE not in scopes
+
+
+def held_connectors_token(state: Any, *, skew_seconds: Optional[int] = None) -> Optional[str]:
+    """The bearer a connectors / managed-tools call sends: the profile's token (for a guest the
+    inference one, a superset), else a guest's connectors-only token, preferring one that outlives
+    *skew_seconds*. ``None`` also accepts an expiring token (availability probes)."""
+    from hermes_cli.auth import _is_expiring
+    if not isinstance(state, dict):
+        return None
+    slots = (state, state.get("connectors_token") if is_guest_state(state) else None)
+    held = [(s["access_token"], s.get("expires_at")) for s in slots
+            if isinstance(s, dict) and isinstance(s.get("access_token"), str) and s["access_token"]]
+    live = next((token for token, exp in held if not _is_expiring(exp, skew_seconds or 0)), None)
+    return live or (held[0][0] if held and skew_seconds is None else None)
+
+
 def exchange_anon_jwt(
     client: httpx.Client, portal_base_url: str, anon_token: str, *, auth_state: Dict[str, Any],
+    purpose: str = "inference",
 ) -> Dict[str, Any]:
     """``POST /api/anonymous/token {token}`` -> ``{access_token, expires_in, inference_base_url, ...}``.
 
@@ -363,7 +403,7 @@ def exchange_anon_jwt(
     from hermes_cli import anon_challenge
     response = client.post(
         f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(),
-        json={"token": anon_token, "client": anon_challenge.client_info()})
+        json={"token": anon_token, "client": anon_challenge.client_info(), "purpose": purpose})
 
     def challenge(body: Dict[str, Any]) -> AuthError:
         return anon_challenge.challenge_error(
@@ -385,12 +425,15 @@ def exchange_anon_jwt(
     if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
         logger.info("Nous free tier token exchange returned no token")
         raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
-    anon_challenge.note_optional_challenges(payload, portal_base_url)
+    # A connectors-only grant must neither clear nor announce an inference challenge.
+    if not is_connectors_only(payload["access_token"]):
+        anon_challenge.note_optional_challenges(payload, portal_base_url)
     return payload
 
 
 def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) -> None:
-    """Write a fresh exchange result into a guest state in place (token, expiry, routing)."""
+    """Write a fresh exchange result into a guest state in place: an inference token (token, expiry,
+    routing) into the state itself, a connectors-only one into ``connectors_token`` beside it."""
     from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
@@ -400,6 +443,9 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
         expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
+    if is_connectors_only(access_token):
+        state["connectors_token"] = {"access_token": access_token, "expires_at": expires_at.isoformat()}
+        return
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
     # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
     # host: the gateway cross-refuses an anonymous JWT there.
@@ -552,7 +598,7 @@ def _note_mint_failure(err: AuthError) -> MintFailure:
     return failure
 
 
-def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False) -> Optional[Dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
@@ -582,25 +628,40 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[Dict[str, An
                 if not shared:
                     _write_shared_nous_state(profile_state)
                 return profile_state
+            # A caller queued on these locks behind a mint that just failed waits out its cooldown.
+            failure = _mint_failure_for_profile()
+            if failure and not force and time.monotonic() < failure.not_before:
+                return None
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
-            with _nous_http_client(timeout_seconds, verify) as client:
-                return _mint_locked(client, portal, auth_store)
+            try:
+                with _nous_http_client(timeout_seconds, verify) as client:
+                    return _mint_locked(client, portal, auth_store)
+            except Exception as exc:
+                # Noted before the locks are released, so a caller queued on them sees the cooldown.
+                err = classify_mint_exception(exc)
+                err.mint_failure = _note_mint_failure(err)
+                if err is exc:
+                    raise
+                raise err from exc
 
 
 def ensure_portal_identity(
     *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS, force: bool = False,
+    for_connectors: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
 
     ``explicit`` is required and must be True: the only callers are the boot bootstrap
-    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the setup
-    chat's apps card (``setup_choose_tool._connectors_closed``, one attempt), and the
-    dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
-    ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
-    of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
+    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the first
+    hosted connector action (``tools.connectors.gateway.config.ensure_guest_identity``), and the
+    dead-credential replacements
+    (``auth_nous.resolve_nous_runtime_credentials``, ``managed_tool_gateway._replace_dead_guest_token``).
+    Nothing creates an identity as a side effect of reading status, resolving a provider or fetching a
+    connector bearer (NS-845 Q1.2).
 
-    Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
+    Order: gate -> reconcile with the shared store -> mint. The gate is ``guest_enabled``, or only
+    ``guest_allowed`` with ``for_connectors=True``: a connectors guest never opens the free model. Locks are taken profile
     first, then shared, matching every other Nous path. Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
 
     A failed mint is memoised with a cooldown (``MintFailure``): until it passes, and for a
@@ -611,27 +672,29 @@ def ensure_portal_identity(
     """
     if not explicit:
         raise ValueError("ensure_portal_identity: only explicit creators may call this (explicit=True)")
-    if not guest_enabled():
+    if not (guest_allowed() if for_connectors else guest_enabled()):
         return None
     failure = _mint_failure_for_profile()
     if failure and not force and not current_nous_state() and time.monotonic() < failure.not_before:
         return None  # in cooldown (or terminal) for this profile; do not hammer the portal
     try:
-        state = _reconcile_and_provision(timeout_seconds=timeout_seconds)
+        state = _reconcile_and_provision(timeout_seconds=timeout_seconds, force=force)
     except Exception as exc:
         err = classify_mint_exception(exc)
-        noted = _note_mint_failure(err)
+        noted = getattr(err, "mint_failure", None) or _note_mint_failure(err)
         logger.info("Nous free tier not set up (%s, attempt %d%s)", noted.code, noted.attempts,
                     f", next try in {noted.retry_after:.0f}s" if noted.retryable else ", not retried")
         if err is exc:
             raise
         raise err from exc
-    _clear_mint_failure()
+    if state is not None:
+        _clear_mint_failure()
     return state
 
 
-def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
-    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place.
+def refresh_guest_state(state: Dict[str, Any], client: httpx.Client, *, purpose: str = "inference") -> str:
+    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place and return
+    the minted token (``purpose="connectors"`` asks for a connectors-only one).
 
     The portal URL is the resolver's canonical one (env override, else the validated stored URL,
     else the default), never a raw stored value on its own.
@@ -642,8 +705,10 @@ def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
-    apply_exchange_to_state(state, exchange_anon_jwt(
-        client, _nous_portal_base_url(state), anon_token, auth_state=state))
+    exchanged = exchange_anon_jwt(
+        client, _nous_portal_base_url(state), anon_token, auth_state=state, purpose=purpose)
+    apply_exchange_to_state(state, exchanged)
+    return exchanged["access_token"]
 
 
 def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
@@ -888,7 +953,7 @@ FREE_TIER_AVAILABLE_NOTICE = (
 def guest_notice_pending() -> bool:
     """True when a guest identity exists and the one-time availability notice has not been shown."""
     state = current_nous_state()
-    return is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
+    return guest_enabled() and is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
 
 
 def mark_guest_notice_shown() -> bool:

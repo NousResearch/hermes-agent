@@ -687,7 +687,10 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             prior_active_provider = auth._load_auth_store().get("active_provider")
         auth_state = None
         # Interrupting the import question defaults to importing.
-        if auth._read_shared_nous_state() and _confirm("  Found existing Nous OAuth credentials. Import them? [Y/n]: ") is not False:
+        from hermes_cli.anon_auth import is_guest_state
+
+        shared = auth._read_shared_nous_state()
+        if shared and not is_guest_state(shared) and _confirm("  Found existing Nous OAuth credentials. Import them? [Y/n]: ") is not False:
             auth_state = auth._try_import_shared_nous_state(timeout_seconds=15.0)
         if auth_state is None:
             auth_state = auth._nous_device_code_login()

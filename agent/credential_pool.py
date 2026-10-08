@@ -2643,10 +2643,9 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     if owned_profile_reads_root_state(auth_store, "nous", source_path):
         # e.g. an agent_key-only row surviving a fork strip/heal
         return
-    has_runtime_material = bool(
-        isinstance(state, dict)
-        and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())
-    )
+    from hermes_cli.anon_auth import guest_without_free_tier  # kept for connectors only: no inference rows
+    has_runtime_material = not guest_without_free_tier(state) and bool(isinstance(state, dict) and (
+        str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip()))
     if state and not has_runtime_material:
         seed.changed |= _retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
     if not (state and has_runtime_material):

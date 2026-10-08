@@ -295,7 +295,7 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
-    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # Nous free tier: the one boot-time creator of its identity. Inventories credentials, mints only
     # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
     # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
     # first setup.status waits on the record (bounded) instead.

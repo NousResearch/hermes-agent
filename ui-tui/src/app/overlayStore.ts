@@ -11,6 +11,7 @@ const buildOverlayState = (): OverlayState => ({
   clarify: null,
   confirm: null,
   connection: null,
+  connectors: false,
   ambient: [],
   widget: null,
   journey: false,
@@ -39,6 +40,7 @@ export const $isBlocked = computed(
     clarify,
     confirm,
     connection,
+    connectors,
     journey,
     modelPicker,
     pager,
@@ -61,6 +63,7 @@ export const $isBlocked = computed(
       clarify ||
       confirm ||
       connection ||
+      connectors ||
       journey ||
       modelPicker ||
       pager ||
@@ -94,7 +97,7 @@ export const $isBlocked = computed(
  *   subtree) so it can anchor the full-screen absolute `Overlay`
  *   (`components/overlay.tsx`) against the whole terminal.
  * - The FloatingOverlays set — `modelPicker`, `pager`, `petPicker`,
- *   `sessions`, `skillsHub`, `pluginsHub` — but ONLY when the rule sits at
+ *   `sessions`, `skillsHub`, `pluginsHub`, `connectors` — but ONLY when the rule sits at
  *   the top.  That panel is `position="absolute" bottom="100%"` inside
  *   ComposerPane's relative Box (`appOverlays.tsx:387`), so it grows UPWARD
  *   over the `at="top"` rule and never reaches the `at="bottom"` one.
@@ -131,6 +134,7 @@ export const $isBlocked = computed(
  */
 export const hasFloatingPanel = (overlay: OverlayState): boolean =>
   Boolean(
+    overlay.connectors ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -179,6 +183,7 @@ export const resetFlowOverlays = () =>
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     ambient: $overlayState.get().ambient,
     connection: $overlayState.get().connection,
+    connectors: $overlayState.get().connectors,
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,

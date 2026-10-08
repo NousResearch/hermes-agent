@@ -153,6 +153,24 @@ class TestSkips:
         preflight_db_writability(db)
         assert stat.S_IMODE(db.stat().st_mode) == before
 
+    def test_symlinked_db_checks_resolved_target_directory(self, hermes_home, tmp_path):
+        """A symlink whose own directory is read-only must not fail the preflight when the
+        resolved target directory is writable — SQLite follows the symlink and writes its
+        journal/-wal/-shm sidecars next to the target (#135113)."""
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        real_db = real_dir / "kanban.db"
+        _make_db(real_db)
+        link_dir = tmp_path / "ro-link"
+        link_dir.mkdir()
+        link = link_dir / "kanban.db"
+        link.symlink_to(real_db)
+        os.chmod(link_dir, 0o555)
+        try:
+            preflight_db_writability(link, db_label="kanban.db")  # must not raise
+        finally:
+            os.chmod(link_dir, 0o755)
+
 
 class TestSessionDBIntegration:
     def test_sessiondb_selfheals_readonly_db_in_home(self, hermes_home):

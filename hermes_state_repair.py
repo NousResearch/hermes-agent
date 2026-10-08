@@ -551,6 +551,10 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     home: Optional[Path] = None
     with contextlib.suppress(Exception):  # pragma: no cover - defensive
         home = Path(get_hermes_home()).resolve()
+    # SQLite follows a symlinked db and writes its journal/-wal/-shm sidecars next to the
+    # RESOLVED target, so the preflight must check the target's directory and sidecars —
+    # checking the symlink's own (possibly read-only) directory rejects writable DBs (#135113).
+    db_path = db_path.resolve()
     # SQLite needs a writable directory in every journal mode (WAL/SHM sidecars, or the DELETE-mode journal).
     sidecars = (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"))
     for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:

@@ -24,13 +24,20 @@ export function resolveLiveProjectFilter(
 /**
  * The sidebar overview is a session history, not a disk browser (#53004): an
  * auto-promoted repo with no sessions yet stays out of the sidebar until work
- * lands there (it reappears the moment it owns a session). Explicit projects
- * and the Home bucket always render — the user created or kept those. Session
- * counts come from the backend `projects.tree`, so this stays live without
- * client-side re-derivation.
+ * lands there (it reappears the moment it owns a session). Explicit projects,
+ * the Home bucket, and repos the disk scan found — a repo the profile's own
+ * workspace holds, which is the whole point of having scanned it — always
+ * render. Session counts come from the backend `projects.tree`, so this stays
+ * live without client-side re-derivation.
  */
 export function filterToSessionBearingProjects<
-  T extends { isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
+  T extends { discovered?: boolean; isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
 >(projects: readonly T[]): T[] {
-  return projects.filter(project => !project.isAuto || project.isNoProject || (project.sessionCount ?? 0) > 0)
+  return projects.filter(
+    project =>
+      !project.isAuto ||
+      project.isNoProject ||
+      project.discovered === true ||
+      (project.sessionCount ?? 0) > 0
+  )
 }

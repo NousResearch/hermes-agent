@@ -1531,7 +1531,15 @@ class UpdateLock:
 
     @staticmethod
     def _is_partner(pid: int) -> bool:
-        return pid == os.getpid() or (pid and (pid == _handoff_pid() or _is_ancestor_pid(pid)))
+        handoff_pid = _handoff_pid()
+        return pid == os.getpid() or (
+            pid
+            and (
+                pid == handoff_pid
+                or _is_ancestor_pid(pid)
+                or (handoff_pid is not None and _stdlib_parent_pid(pid) == handoff_pid)
+            )
+        )
 
     def _adopt_or_refuse(self, existing: _Marker) -> bool:
         """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under.

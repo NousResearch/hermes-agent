@@ -296,9 +296,10 @@ reported that its session/routing identity settlement is still pending: restart 
 reloads the routing index from the database, so the purge lands), or stop it — with no gateway
 holding the store the command performs the durable delete itself.
 
-The purge keys off `<name>` alone, so the profile directory does not have to exist — but a profile
-that is live again under that name is refused: identity is settled by name, so purging it would take
-the new profile's routing with it. Routing keys (`agent:<name>:*`), heartbeat rows and the profile's
+The purge keys off `<name>` alone, and the profile directory must already be gone. A failed or partial
+filesystem removal is refused: identity is settled by name, so purging while the old home remains
+could let a replacement inherit or erase its routing. Same-name creation stays fenced until the purge
+succeeds. Routing keys (`agent:<name>:*`), heartbeat rows and the profile's
 Telegram topic bindings/mode rows are deleted; `delivery_obligations` rows are marked `abandoned`
 rather than dropped, so pending delivery state is not lost silently. Session rows are not deleted by
 the purge itself — it settles identity, not history; whether a conversation record outlives a delete

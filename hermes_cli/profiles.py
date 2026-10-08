@@ -1,6 +1,7 @@
 """Profile management for multiple isolated Hermes instances."""
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -20,7 +21,8 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
+    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted,
+    mark_named_profile_deleted, mark_named_profile_deleting, named_profile_deletion_pending,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 
@@ -412,6 +414,54 @@ def _canon_valid(name: str) -> str:
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     return canon
+
+
+_PROFILE_OPERATION_LOCKS: dict[str, threading.Lock] = {}
+_PROFILE_OPERATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _profile_operation_fence(canon: str):
+    """Admit one create/delete for *canon* across threads and processes.
+
+    The lock inode stays outside the profile tree and is never removed: replacing an inode while
+    another process waits on it would admit two owners. Acquisition is non-blocking so a concurrent
+    same-name create fails explicitly instead of silently becoming a replacement when delete wins.
+    """
+    with _PROFILE_OPERATION_LOCKS_GUARD:
+        thread_lock = _PROFILE_OPERATION_LOCKS.setdefault(canon, threading.Lock())
+    if not thread_lock.acquire(blocking=False):
+        raise FileExistsError(
+            f"Profile '{canon}' operation is already in progress; wait for it to finish before "
+            "creating or deleting that name."
+        )
+    fd: int | None = None
+    try:
+        lock_dir = _get_profiles_root() / ".operation-locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_dir / f"{canon}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        from pm.filesystem import lock_fd
+        if not lock_fd(fd, wait=False):
+            raise FileExistsError(
+                f"Profile '{canon}' operation is already in progress; wait for it to finish before "
+                "creating or deleting that name."
+            )
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        thread_lock.release()
+
+
+def _serialize_profile_operation(function):
+    @functools.wraps(function)
+    def _wrapped(name, *args, **kwargs):
+        canon = _canon_valid(name)
+        if canon == "default":
+            return function(name, *args, **kwargs)
+        with _profile_operation_fence(canon):
+            return function(name, *args, **kwargs)
+    return _wrapped
 
 
 def _existing_profile_dir(name: str) -> Tuple[str, Path]:
@@ -1374,6 +1424,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
+@_serialize_profile_operation
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
@@ -1406,6 +1457,13 @@ def create_profile(
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
+    if named_profile_deletion_pending(profile_dir):
+        retry = (f"hermes profile delete {canon}" if profile_dir.exists()
+                 else f"hermes profile purge-identity {canon}")
+        raise FileExistsError(
+            f"Cannot create profile '{canon}': its deletion or identity purge is still pending. "
+            f"Finish it with `{retry}` before reusing the name."
+        )
     if profile_dir.exists() and not named_profile_has_identity(profile_dir):
         if named_profile_is_deleted(profile_dir):
             # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
@@ -1821,6 +1879,7 @@ class ProfileIdentitySettlementPending(RuntimeError):
             f"still pending — run: {self.retry_command}")
 
 
+@_serialize_profile_operation
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service (service disabled first
     to prevent auto-restart, gateway stopped if running)."""
@@ -1828,6 +1887,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if canon == "default":
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
+    prior_tombstone = named_profile_is_deleted(profile_dir)
+    prior_deletion_pending = named_profile_deletion_pending(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _get_wrapper_dir() / canon
     has_wrapper = wrapper_path.exists()
@@ -1855,14 +1916,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _stop_profile_backends(canon, profile_dir)
     _stop_bot_desktop(profile_dir)
 
-    # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
-    mark_named_profile_deleted(profile_dir)
+    # A pending tombstone hides this name from runtime enumeration and survives a process crash.
+    # The operation fence prevents create from clearing it while this delete owns the name.
+    mark_named_profile_deleting(profile_dir)
     # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
     # into the directory before we remove it. Identity settlement is a separate delete-only
     # operation below: an ordinary unserve must preserve identity, because a rename's old name
     # leaves the served set exactly like a deleted one does (#111926, delete side).
     _notify_multiplexer(canon)
-    identity_settled = _purge_identity(canon)
 
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
@@ -1895,23 +1956,34 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released_logs:
             print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
-    # 3. Remove wrapper script
-    if has_wrapper and remove_wrapper_script(canon):
-        print(f"✓ Removed {wrapper_path}")
-
-    # 4. Remove profile directory
-    remove_error: Exception | None = None
+    # 3. Remove the profile directory. Identity remains untouched until this succeeds: rmtree can
+    # partially remove markers before failing, and those old routes still belong to the surviving
+    # home rather than to a replacement profile.
     try:
         _rmtree_with_retry(profile_dir, _rmtree_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
-        remove_error = e
+        # Roll logical deletion back. If rmtree removed identity markers before failing, the
+        # marker-less directory still fails closed in create_profile instead of being replaced.
+        if prior_deletion_pending:
+            mark_named_profile_deleting(profile_dir)
+        elif prior_tombstone:
+            mark_named_profile_deleted(profile_dir)
+        else:
+            clear_named_profile_deleted(profile_dir)
+            _notify_multiplexer(canon)
+        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {e}") from e
 
-    # 5. Clear active_profile if it pointed to this profile
+    # 4. The filesystem commit happened; settle routing identity while the same-name operation
+    # fence is still held. purge_profile_identity finalizes the tombstone only on success, so a
+    # failed settlement continues to block same-name creation until the documented retry lands.
+    identity_settled = _purge_identity(canon)
+
+    # 5. Remove wrapper and clear active_profile only after the filesystem commit.
+    if has_wrapper and remove_wrapper_script(canon):
+        print(f"✓ Removed {wrapper_path}")
     _retarget_active_profile(canon, "default", "✓ Active profile reset to default")
-    if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the

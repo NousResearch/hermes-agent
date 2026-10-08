@@ -985,7 +985,8 @@ async def delete_profile_endpoint(name: str):
     then 404'd)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        with _profile_errors("DELETE /api/profiles/%s failed", name):
+        with _profile_errors("DELETE /api/profiles/%s failed", name,
+                             bad_request=(ValueError, FileExistsError)):
             # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
             # loop that parks every request past the desktop's 10 s WebSocket ready-probe.
             path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)

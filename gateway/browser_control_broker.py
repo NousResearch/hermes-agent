@@ -8,6 +8,7 @@ changes happen under one RLock; the send callback runs *outside* it so a control
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import threading
@@ -40,6 +41,44 @@ BROWSER_CONTROL_ARTIFACT_CAPABILITIES = frozenset({"browser_artifact_download", 
 #: Wire method names for controller frames; transports carry them verbatim.
 FRAME_COMMAND = "browser.controller.command"
 FRAME_CANCEL = "browser.controller.cancel"
+#: Protocol tag of the browser-extension turn envelope that names the user's target tab.
+BROWSER_TURN_PROTOCOL = "hermes.browser.turn.v2"
+_BROWSER_TURN_MARKER = '{"protocol":"%s"' % BROWSER_TURN_PROTOCOL
+
+
+def browser_turn_target(user_message: Any) -> Optional[dict]:
+    """Exact tab the user pointed this turn at, from a ``hermes.browser.turn.v2`` envelope.
+
+    Returns ``{"controller_id", "tab_id", "frame_id"}`` when the turn carries an available
+    ``extension-controller`` route with a positive integer tab id, else ``None``. The extension
+    still enforces that the tab is leased and owned; this only stops the broker from leaving
+    target choice to whichever lease the extension happens to hold.
+    """
+    if not isinstance(user_message, str):
+        return None
+    text = user_message.strip()
+    start = text.find(_BROWSER_TURN_MARKER)
+    if start < 0:
+        return None
+    try:
+        envelope, _ = json.JSONDecoder().raw_decode(text[start:])
+    except ValueError:
+        return None
+    control = envelope.get("browser_control") if isinstance(envelope, dict) else None
+    if not isinstance(control, dict) or control.get("route") != "extension-controller":
+        return None
+    if control.get("availability") not in (None, "available"):
+        return None
+    controller_id = control.get("controller_id")
+    tab_id = control.get("tab_id")
+    frame_id = control.get("frame_id", 0)
+    if not isinstance(controller_id, str) or not controller_id.strip():
+        return None
+    if isinstance(tab_id, bool) or not isinstance(tab_id, int) or tab_id <= 0:
+        return None
+    if isinstance(frame_id, bool) or not isinstance(frame_id, int) or frame_id < 0:
+        frame_id = 0
+    return {"controller_id": controller_id.strip(), "tab_id": tab_id, "frame_id": frame_id}
 
 
 def browser_control_protocol_supported(value: Any) -> bool:
@@ -182,6 +221,8 @@ class BrowserControlBroker:
         self._developer_mode_pinned: Optional[bool] = None if developer_mode is None else developer_mode is True
         # Artifact stores keyed by profile id; ``None`` is the default slot.
         self._artifact_stores: Dict[Optional[str], Any] = {}
+        # Per-session tab the user targeted on the current turn (see ``set_turn_target``).
+        self._turn_targets: Dict[str, dict] = {}
 
     @property
     def developer_mode(self) -> bool:
@@ -332,6 +373,30 @@ class BrowserControlBroker:
             if notify_controller:
                 self._emit_cancel_frames(controller, pendings)
 
+    def set_turn_target(self, session_id: str, *, controller_id: str, tab_id: int, frame_id: int = 0) -> None:
+        """Pin the tab the user targeted for this session's turn so every command names it.
+
+        Without an explicit ``tab_id`` the extension falls back to whichever single tab it has
+        leased, which may be a stale lease on a tab the user is no longer looking at."""
+        key = str(session_id or "").strip()
+        if not key:
+            return
+        with self._lock:
+            self._turn_targets[key] = {
+                "controller_id": str(controller_id), "tab_id": int(tab_id), "frame_id": int(frame_id or 0)}
+
+    def clear_turn_target(self, session_id: str) -> None:
+        with self._lock:
+            self._turn_targets.pop(str(session_id or "").strip(), None)
+
+    def _turn_target_for(self, scope: ControllerScope) -> Optional[dict]:
+        """The pinned target for ``scope``'s session, only when it names this exact controller."""
+        with self._lock:
+            target = self._turn_targets.get(str(scope.session_id or "").strip())
+        if not target or target.get("controller_id") != scope.controller_id:
+            return None
+        return target
+
     def dispatch(
         self, scope: ControllerScope, *, action: str, arguments: Optional[dict] = None, tool_call_id: Optional[str] = None,
     ) -> Any:
@@ -344,10 +409,15 @@ class BrowserControlBroker:
         if action in BROWSER_CONTROL_ARTIFACT_CAPABILITIES:
             self._validate_artifact_reference(scope, action, arguments)
         command_id = secrets.token_hex(16)
-        frame = {"method": FRAME_COMMAND, "params": {
+        params = {
             "command_id": command_id, "action": action, "arguments": arguments, "controller_id": scope.controller_id,
             "browser_profile_id": scope.browser_profile_id, "tool_call_id": tool_call_id,
-        }}
+        }
+        target = self._turn_target_for(scope)
+        if target is not None:
+            # The extension resolves the authoritative document generation for this tab itself.
+            params["tab_id"], params["frame_id"] = target["tab_id"], target["frame_id"]
+        frame = {"method": FRAME_COMMAND, "params": params}
         pending = _PendingCommand(scope=controller.scope, command_id=command_id, tool_call_id=tool_call_id)
         with controller.send_lock:
             with self._lock:
@@ -488,6 +558,7 @@ class BrowserControlBroker:
             self.detach(scope)
         with self._lock:
             self._tickets.clear()
+            self._turn_targets.clear()
             # Pending entries whose controller a concurrent teardown removed.
             for pending in list(self._pending.values()):
                 self._resolve_pending(pending, cancelled=True)

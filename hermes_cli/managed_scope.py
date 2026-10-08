@@ -136,7 +136,7 @@ def apply_managed_overlay(config: dict) -> dict:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
         from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
-        managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
+        managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed, lookup=os.environ.get))
         # _normalize_root_model_keys only promotes the string when root provider/base_url
         # keys exist to migrate; handle the bare case here (matches cli.py) so _deep_merge
         # never replaces the caller's ``model`` dict with a string.

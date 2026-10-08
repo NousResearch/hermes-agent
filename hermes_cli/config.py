@@ -1543,7 +1543,7 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     return _get_secret(name)
 
 
-def _env_expand_match(m: re.Match) -> str:
+def _env_expand_match(m: re.Match, *, lookup=None) -> str:
     """Expand one ``${VAR}`` (legacy bare name) or ``${env:VAR}`` (Cursor-style SecretRef).
     Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``...) are NOT resolved here:
     external backends inject their values into the environment at startup (the ``secrets:``
@@ -1560,7 +1560,7 @@ def _env_expand_match(m: re.Match) -> str:
                 "startup, so reference the variable as ${env:NAME} instead",
                 raw, inner.split(":", 1)[0])
         return raw  # non-env source, or empty ``${env:}``
-    val = _env_ref_lookup(name)
+    val = (lookup or _env_ref_lookup)(name)
     if val is not None:
         return val
     if inner.startswith("env:"):
@@ -1585,24 +1585,24 @@ def _env_ref_var_name(ref: str) -> Optional[str]:
     return ref
 
 
-def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` / ``${env:VAR}`` in string values (keys/non-strings untouched)."""
+def _expand_env_vars(obj, *, lookup=None):
+    """Expand refs in values; default to profile lookup, with an explicit reader for managed config."""
     if isinstance(obj, str):
-        return _ENV_REF_RE.sub(_env_expand_match, obj)
+        return _ENV_REF_RE.sub(lambda match: _env_expand_match(match, lookup=lookup), obj)
     if isinstance(obj, dict):
-        return {k: _expand_env_vars(v) for k, v in obj.items()}
+        return {k: _expand_env_vars(v, lookup=lookup) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_expand_env_vars(item) for item in obj]
+        return [_expand_env_vars(item, lookup=lookup) for item in obj]
     return obj
 
 
-def _env_ref_snapshot(obj, snapshot=None):
+def _env_ref_snapshot(obj, snapshot=None, *, lookup=None):
     """Map each env-sourced ``${...}`` ref in *obj* to its current value.
     Stored with cached ``load_config()`` results so a cache hit can detect that the expansion was
     made against a different environment (load before ``load_hermes_dotenv()``, in-process
     rotation) — file mtime/size alone cannot see either.
 
-    See #58514.
+    ``lookup`` must match the layer's expansion source. See #58514.
     """
     if snapshot is None:
         snapshot = {}
@@ -1610,13 +1610,13 @@ def _env_ref_snapshot(obj, snapshot=None):
         for raw in _ENV_REF_RE.findall(obj):
             name = _env_ref_var_name(raw)
             if name is not None:
-                snapshot[name] = _env_ref_lookup(name)
+                snapshot[name] = (lookup or _env_ref_lookup)(name)
     elif isinstance(obj, dict):
         for value in obj.values():
-            _env_ref_snapshot(value, snapshot)
+            _env_ref_snapshot(value, snapshot, lookup=lookup)
     elif isinstance(obj, list):
         for item in obj:
-            _env_ref_snapshot(item, snapshot)
+            _env_ref_snapshot(item, snapshot, lookup=lookup)
     return snapshot
 
 
@@ -2278,7 +2278,7 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
     if isinstance(managed_normalized.get("model"), str):
         managed_normalized = dict(managed_normalized)
         managed_normalized["model"] = {"default": managed_normalized["model"]}
-    return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
+    return _deep_merge(expanded, _expand_env_vars(managed_normalized, lookup=os.environ.get)), managed_config
 
 
 def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, Any]]:
@@ -2301,7 +2301,9 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
         except OSError:
             return hit
     env_snapshot = cached[9] if len(cached) > 9 else {}
-    if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
+    managed_snapshot = cached[10] if len(cached) > 10 else {}
+    if (all(_env_ref_lookup(k) == v for k, v in env_snapshot.items())
+            and all(os.environ.get(k) == v for k, v in managed_snapshot.items())):
         return hit
     return None
 
@@ -2379,9 +2381,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # records the values this expansion was made against so later loads detect drift.
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
-            if managed_config:
-                _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            # A name can occur in both layers with different values: managed refs
+            # follow the process, while user refs follow the active profile.
+            managed_snapshot = _env_ref_snapshot(managed_config, lookup=os.environ.get)
+            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot, managed_snapshot)
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
                 return cached_copy

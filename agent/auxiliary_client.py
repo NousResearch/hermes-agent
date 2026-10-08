@@ -3507,7 +3507,9 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     if not isinstance(exc, RuntimeError):
         return False
     msg = str(exc).lower()
-    return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
+    return "auxiliary " in msg and (
+        ("llm returned invalid response" in msg and "choices[0].message" in msg)
+        or "provider returned a timeout shim" in msg)
 
 
 def _is_statusless_structured_provider_error(exc: Exception) -> bool:
@@ -5876,6 +5878,9 @@ def _refresh_nous_auxiliary_client(
         return None, model
     fresh_key, fresh_base_url = runtime
     sync_client = _create_openai_client(api_key=fresh_key, base_url=fresh_base_url)
+    from hermes_cli.providers import nous_api_mode
+    sync_client = _maybe_wrap_anthropic(
+        sync_client, model or "", fresh_key, fresh_base_url, nous_api_mode(model or ""))
     current_loop = _current_event_loop() if async_mode else None
     if async_mode:
         client, final_model = _to_async_client(sync_client, model or "", is_vision=is_vision)
@@ -7721,7 +7726,6 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: Dict[str, Any], message: s
         kwargs["model"] = refreshed_model
     return _LadderStep("call", (refreshed_client, kwargs))
 
-
 def _ladder_nous_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], client_is_nous: bool,
 ):
@@ -7761,7 +7765,6 @@ def _ladder_nous_rungs(
                 return resp, None
     return None, first_err
 
-
 def _ladder_credential_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], client_is_nous: bool,
 ):
@@ -7792,7 +7795,7 @@ def _ladder_credential_rungs(
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Recover the failed key even if another process already rotated the pool.
     _client_api_key = str(getattr(client, "api_key", "") or "")
-    if pool_provider and _credential_rung_accepts(first_err):
+    if pool_provider and not route.resolved_api_key and _credential_rung_accepts(first_err):
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
         # another request with the same exhausted key.
@@ -7818,7 +7821,6 @@ def _ladder_credential_rungs(
                     raise
     return None, first_err
 
-
 def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
     failed_model: Optional[str], failure_scope: Any, *, task_chain_only: bool = False,
@@ -7842,7 +7844,6 @@ def _next_fallback_after_quarantine(
             resolved_provider, task, reason=reason, failed_base_url=route.base_info,
             failure_scope=failure_scope, main_runtime=route.main_runtime)
     return fb
-
 
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
@@ -7937,7 +7938,6 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                    "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
     return None
-
 
 def _aux_recovery_ladder(
     first_err: Exception, *, client: Any, kwargs: Dict[str, Any], task: Optional[str],

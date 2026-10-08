@@ -54,10 +54,12 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     # checkout is the whole tree the child sees (CI has no editable finder for the source).
     shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
-    # sys.path (CI has no editable finder), so give it the one name the hand-off reads.
+    # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
+    # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
     (root / "hermes_constants.py").write_text(
         "import os\nfrom pathlib import Path\n"
-        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n", encoding="utf-8",
+        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n"
+        "get_default_hermes_root = get_hermes_home\n", encoding="utf-8",
     )
     program = root / "historical.py"
     program.write_text(
@@ -134,7 +136,10 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
 @pytest.mark.parametrize("desktop", [None, False, True])
-def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding, desktop):
+# A Windows console/pipe in the ANSI code page: the old updater's stdout encodes strictly in cp1252,
+# and its hand-off banner runs before the child starts (review S1).
+@pytest.mark.parametrize("stdio", [None, "cp1252:strict"])
+def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding, desktop, stdio):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
@@ -182,8 +187,10 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(('HERMES_', 'PYTHON', 'UV_'))}
     env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH="/not/the/new/source")
+    if stdio:
+        env["PYTHONIOENCODING"] = stdio
     result = subprocess.run([sys.executable, "-B", str(program)], env=env,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     assert result.returncode == status, result.stdout + result.stderr
     assert (home / "runs").read_text() == "child\n"
     assert (home / "cleanup").read_text() == "ran"
@@ -438,3 +445,200 @@ def test_bootstrap_lock_remains_live_without_application_dependencies(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert holder.returncode == 0
     assert not lock.exists()
+
+
+SHA = "c" * 40
+
+
+@pytest.mark.parametrize("git", [
+    "missing",
+    pytest.param("failing", marks=pytest.mark.platforms("posix")),  # POSIX shell stub
+])
+def test_takeover_arms_the_checkout_head_when_git_cannot_answer(tmp_path, monkeypatch, git):
+    """The historical takeover arms the fleet restart AFTER the tree moved. A host whose git is off
+    PATH (only PM's store copy) used to raise FileNotFoundError there, reporting a committed update
+    as failed (F20); a git that runs but fails silently armed nothing (F25). Either way the record
+    must still name the HEAD the checkout's own ref files hold."""
+    from hermes_cli import _early_recovery, _update_takeover
+    from hermes_cli.update_host_obligation import read_host_obligation
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
+    root = tmp_path / "checkout"
+    if git == "missing":
+        # The git PATH and PM's store cannot find; the checkout is a linked worktree whose branch
+        # is only in the common dir's packed-refs.
+        monkeypatch.setattr(_early_recovery, "_git_executable", lambda *args, **kwargs: "git")
+        worktree = tmp_path / "repo.git" / "worktrees" / "checkout"
+        worktree.mkdir(parents=True)
+        (worktree / "commondir").write_text("../..\n", encoding="utf-8")
+        (worktree / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (tmp_path / "repo.git" / "packed-refs").write_text(
+            f"# pack-refs with: peeled fully-peeled sorted\n{'d' * 40} refs/heads/other\n{SHA} refs/heads/main\n",
+            encoding="utf-8")
+        root.mkdir()
+        (root / ".git").write_text(f"gitdir: {worktree}\n", encoding="utf-8")
+    else:
+        stub = bin_dir / "git"
+        stub.write_text("#!/bin/sh\nexit 128\n", encoding="utf-8")
+        stub.chmod(0o755)
+        monkeypatch.setattr(_early_recovery, "_git_executable", lambda *args, **kwargs: str(stub))
+        (root / ".git" / "refs" / "heads").mkdir(parents=True)
+        (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (root / ".git" / "refs" / "heads" / "main").write_text(f"{SHA}\n", encoding="utf-8")
+
+    _update_takeover._arm_fleet_obligation(root)
+
+    assert (read_host_obligation() or {}).get("expected_sha") == SHA
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_takeover_arms_an_sha_less_obligation_for_a_git_less_root(tmp_path, monkeypatch):
+    """An archive install has no HEAD to name, yet its update still owes the fleet a restart (F21):
+    an SHA-less record (readers hold the fleet to the checkout) instead of no record at all."""
+    from hermes_cli import _update_takeover
+    from hermes_cli.update_host_obligation import read_host_obligation
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # no enclosing repo answers for it
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    _update_takeover._arm_fleet_obligation(root)
+
+    record = read_host_obligation()
+    assert record is not None and record["expected_sha"] == ""
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_takeover_arms_the_host_record_without_application_dependencies(tmp_path):
+    """The arm runs in the HISTORICAL interpreter, before PM installs the new dependencies. A
+    ruamel-less interpreter (-I -S here) must still write the HOST record every profile reads, not
+    only the arming profile's per-home breadcrumb (R1-1)."""
+    source = Path(__file__).resolve().parents[2]
+    root = tmp_path / "checkout"
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    rev_parse = [*git, "rev-parse", "HEAD"]
+    head = subprocess.run(rev_parse, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    lock_dir, home = tmp_path / "gateway-locks", tmp_path / "home"
+    home.mkdir()
+    child = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c",
+         "import importlib.util, sys\nfrom pathlib import Path\n"
+         f"sys.path.insert(0, {str(source)!r})\n"
+         "assert importlib.util.find_spec('ruamel') is None, 'precondition: no app dependencies'\n"
+         "from hermes_cli._update_takeover import _arm_fleet_obligation\n"
+         f"_arm_fleet_obligation(Path({str(root)!r}))\n"],
+        env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(lock_dir), "HERMES_HOME": str(home)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+    [armed] = lock_dir.glob("host-update-restart-*.json")  # the install-keyed record (review S3)
+    assert json.loads(armed.read_text(encoding="utf-8-sig"))["expected_sha"] == head
+
+
+def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tmp_path, monkeypatch, capsys):
+    """The historical updater already moved the tree and prepare() armed the tail. A Popen/resume
+    OSError starting update_finish used to land in the preparation catch-all: receipt failed,
+    .update_exit_code=1, exit 1 for a committed update (review C7, invariant 3)."""
+    from hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
+    from hermes_constants import get_hermes_home
+
+    class _Lock:
+        holder = None
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def acquire(self):
+            return True
+
+        def release(self):
+            pass
+
+    def no_child(*_args, **_kwargs):
+        raise OSError(12, "Cannot allocate memory")
+
+    monkeypatch.setattr(update_lock, "UpdateLock", _Lock)
+    monkeypatch.setattr(_update_takeover, "prepare", lambda request: (Path(sys.executable), dict(os.environ)))
+    monkeypatch.setattr(update_custody, "popen_post_commit", no_child)
+    saved = []
+    real_finalize = update_receipt.finalize_pending_update_receipt
+    monkeypatch.setattr(update_receipt, "finalize_pending_update_receipt",
+                        lambda code=None, reason="": saved.append(code) or real_finalize(code, reason))
+    root = tmp_path / "root"
+    root.mkdir()
+    context, result = tmp_path / "context.json", tmp_path / "result.json"
+    context.write_text(json.dumps({"root": str(root), "gateway_mode": True, "receipt": {}}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["_update_takeover", str(context), str(result)])
+
+    assert _update_takeover.main() == 0
+
+    assert saved == [0]
+    assert (get_hermes_home() / ".update_exit_code").read_text(encoding="utf-8").strip() == "0"
+    assert json.loads(result.read_text(encoding="utf-8"))["resume_handled"] is False
+    assert "finishing steps did not run" in capsys.readouterr().err
+
+
+def test_the_takeover_breadcrumb_is_written_temp_fsync_rename(tmp_path, monkeypatch):
+    """With the host record unwritable the takeover falls back to the per-home breadcrumb; it was
+    written in place (review C12, invariant 5): a crash mid-write left a truncated debt record."""
+    from hermes_cli import _update_takeover, update_host_obligation
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(update_host_obligation, "write_host_obligation", lambda **_kw: False)
+    monkeypatch.setattr(_update_takeover, "_head_sha", lambda _root: "a" * 40)
+    synced, replaced = [], []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: synced.append(fd) or real_fsync(fd))
+    monkeypatch.setattr(os, "replace", lambda src, dst: replaced.append((Path(dst), len(synced)))
+                        or real_replace(src, dst))
+
+    _update_takeover._arm_fleet_obligation(tmp_path)
+
+    crumb = get_hermes_home() / "fleet_restart_pending"
+    assert replaced and replaced[-1][0] == crumb and replaced[-1][1] > 0
+    assert f"expected_sha={'a' * 40}" in crumb.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
+def test_a_takeover_debt_another_profile_cannot_see_is_never_silent(tmp_path, monkeypatch, capsys):
+    """The takeover arms after the historical updater already moved the tree, through the same
+    fallback as the commit point: with the host record unwritable on a two-profile install, the
+    arming profile's marker hides the debt from the other one, so the takeover must say so (it
+    cannot refuse a move that already happened) (kshitijk4poor P2, review S2)."""
+    from hermes_cli import _update_takeover
+
+    homes = {name: tmp_path / "profiles" / name for name in ("coder", "writer")}
+    for home in homes.values():
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    monkeypatch.setenv("HERMES_HOME", str(homes["coder"]))
+    monkeypatch.setattr(_update_takeover, "_head_sha", lambda _root: "a" * 40)
+    lock_dir.chmod(0o500)
+    try:
+        _update_takeover._arm_fleet_obligation(tmp_path)
+    finally:
+        lock_dir.chmod(0o700)
+
+    assert (homes["coder"] / "fleet_restart_pending").is_file()
+    assert "hermes gateway restart" in capsys.readouterr().err
+
+
+def test_a_historical_updater_arms_the_host_record_under_the_current_mutex(tmp_path, monkeypatch):
+    """An N-1 updater imported ``update_lock`` before its pull, then lazily imports the pulled
+    ``update_host_obligation``: the arm must still write the record, under the same sidecar lock
+    current processes hold, instead of crashing the update on the missing ``marker_mutex``."""
+    from hermes_cli import update_lock
+    from hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    monkeypatch.delattr(update_lock, "marker_mutex")  # N-1's in-memory update_lock had no such name
+    assert write_host_obligation(expected_sha="a" * 40)
+    assert read_host_obligation()["expected_sha"] == "a" * 40
+    assert (tmp_path / "gateway-locks" / ".host-update-restart.mutex" / "record.lock").exists()

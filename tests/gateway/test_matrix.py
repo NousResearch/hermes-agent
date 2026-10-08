@@ -1572,7 +1572,7 @@ class TestMatrixEncryptedSendFallback:
 class TestJoinedRoomsReference:
     def test_joined_rooms_reference_preserved_after_reassignment(self):
         """_CryptoStateStore must see updates after initial sync populates rooms."""
-        from plugins.platforms.matrix.adapter import _CryptoStateStore
+        from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
 
         joined = set()
         store = _CryptoStateStore(MagicMock(), joined)

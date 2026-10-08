@@ -1,0 +1,30 @@
+name: nexus
+repo: https://github.com/Neboy72/nexus-memory
+sha: ec3a21c51331fb0482192c12f17e6e25ebd70e60
+subdir: plugins/memory/nexus
+version: "0.22.12"
+description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Note that an embedding key already present in the environment is auto-detected, so the README's egress section is the authoritative list of what can leave the machine. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. Disclosure — an embedding key already in Hermes' environment (VOYAGE/OPENAI/GOOGLE/JINA_API_KEY) is auto-detected and sends turn text to that provider for embedding; session-end fact extraction sends conversation text to the model endpoint in Hermes config.yaml; reads ~/.hermes/.env and config.yaml; state and daily backups under ~/.nexus-memory; an opt-in NEXUS_UPDATE_CHECK=1 adds a GitHub release check and an upgrade nudge to the system prompt."
+maintainer: Neboy72
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Neboy72/nexus-memory/blob/ec3a21c51331fb0482192c12f17e6e25ebd70e60/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/ec3a21c51331fb0482192c12f17e6e25ebd70e60/docs/images/nexus-logo-square.png
+capabilities:
+  provides_tools:
+    - nexus_recall
+    - nexus_remember
+    - nexus_forget
+    - nexus_guardrail_check
+    - nexus_guardrail_override
+    - nexus_graph_traverse
+    - nexus_find_entities
+    - nexus_get_subgraph
+    - nexus_get_related
+    - nexus_cost_routing_stats
+    - nexus_cost_routing_explain
+    - nexus_sica_run
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

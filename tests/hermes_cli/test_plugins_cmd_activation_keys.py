@@ -122,3 +122,26 @@ def test_status_matches_the_loader_for_a_user_installed_model_provider(home):
     name, _v, _d, source, dir_path, _k = by_key["fakeprov"]
     assert plugins_cmd._plugin_status(name, enabled, {"fakeprov"}, key="fakeprov", source=source,
                                       dir_path=dir_path) == "disabled"
+
+
+def test_status_enables_a_user_model_provider_only_where_provider_discovery_imports_it(home):
+    """providers/ discovery imports every ``plugins/model-providers/<name>/`` child, but a flat
+    ``plugins/<name>/`` one only when it declares exactly ``kind: model-provider``. A provider in a
+    category directory, or flat with a differently-cased kind, never loads, so status must not call
+    it enabled. A non-provider under ``model-providers/`` is imported but never registered."""
+    import providers
+
+    for rel, kind in (("flatprov", "model-provider"), ("model-providers/subprov", "model-provider"),
+                      ("model-providers/subcaps", "MODEL-PROVIDER"), ("custom/nestedprov", "model-provider"),
+                      ("model-providers/substand", "standalone"), ("capsprov", "MODEL-PROVIDER")):
+        d = _write_plugin(home / "plugins", rel, rel.rsplit("/", 1)[-1], f"kind: {kind}\n")
+        (d / "__init__.py").write_text(f"open({str(d / 'imported')!r}, 'w').close()\n", encoding="utf-8")
+    providers._scan_home_layer(providers._HomeLayer(), str(home))
+
+    rows = {e[5]: e for e in plugins_cmd._discover_all_plugins() if e[3] == "user"}
+    imported = {key: (row[4] / "imported").exists() for key, row in rows.items()}
+    assert imported == {"flatprov": True, "model-providers/subprov": True, "model-providers/subcaps": True,
+                        "model-providers/substand": True, "custom/nestedprov": False, "capsprov": False}
+    status = {key: plugins_cmd._plugin_status(row[0], set(), set(), key=key, source=row[3], dir_path=row[4])
+              == "enabled" for key, row in rows.items()}
+    assert status == {**imported, "model-providers/substand": False}

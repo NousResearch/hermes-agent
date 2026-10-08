@@ -1159,8 +1159,7 @@ export function useBackgroundSync({
   // Wake/return backstop (#125532): a socket that zombie-survives laptop sleep
   // never transitions gatewayState, so the reconnect backstop above cannot
   // fire, and replies that completed while the machine slept leave the open
-  // transcript behind — the first send after wake then bounces off the
-  // stale-send guard (#65047) once. Catch up when the window is viewed again;
+  // transcript behind. Catch up when the window is viewed again;
   // the reconcile is signature-gated, so an unchanged transcript costs one
   // cheap tail read. Messaging transcripts keep their own visible poll below.
   useEffect(() => {

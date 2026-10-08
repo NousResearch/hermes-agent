@@ -71,19 +71,25 @@ def match_blueprint(query: str) -> Tuple[Optional[Any], List[Any]]:
     it's picked): exact key first, then case-insensitive prefix on key or title, then substring
     anywhere in key/title/description, then a difflib fuzzy pass on keys.
     """
-    from cron.blueprint_catalog import CATALOG, get_blueprint
+    from cron.blueprint_catalog import list_blueprints
     q = (query or "").strip().lower()
     if not q:
         return None, []
 
-    exact = get_blueprint(q)
+    catalog = list_blueprints()
+    by_key = {r.key.lower(): r for r in catalog}
+    exact = by_key.get(q)
     if exact is not None:
         return exact, []
 
+    # Plugin keys are ``<plugin>:<key>``: the bare ``<key>`` half is what people type.
+    def _keys(r):
+        return (r.key.lower(), r.key.lower().rpartition(":")[2])
+
     passes = (
-        lambda: [r for r in CATALOG if r.key.lower().startswith(q) or any(w.lower().startswith(q) for w in r.title.split())],
-        lambda: [r for r in CATALOG if q in r.key.lower() or q in r.title.lower() or q in r.description.lower()],
-        lambda: [get_blueprint(k) for k in difflib.get_close_matches(q, [r.key for r in CATALOG], n=3, cutoff=0.6)],
+        lambda: [r for r in catalog if any(k.startswith(q) for k in _keys(r)) or any(w.lower().startswith(q) for w in r.title.split())],
+        lambda: [r for r in catalog if q in r.key.lower() or q in r.title.lower() or q in r.description.lower()],
+        lambda: [by_key[k] for k in difflib.get_close_matches(q, list(by_key), n=3, cutoff=0.6)],
     )
     for candidates in passes:
         picked = _pick(candidates())
@@ -142,10 +148,11 @@ def build_blueprint_seed(blueprint) -> str:
 
 
 def _fmt_catalog() -> str:
-    from cron.blueprint_catalog import CATALOG
+    from cron.blueprint_catalog import list_blueprints
     lines = ["Automation Blueprints — `/blueprint <name>` and I'll ask you what I need:\n"]
-    for r in CATALOG:
-        lines.append(f"  • {r.key} — {r.title}")
+    for r in list_blueprints():
+        source = f" (plugin: {r.plugin})" if r.plugin else ""
+        lines.append(f"  • {r.key} — {r.title}{source}")
         lines.append(f"    {r.description}")
     lines.append(
         "\nTip: `/blueprint <name>` walks you through it. Power users can "
@@ -162,8 +169,8 @@ def _fmt_candidates(query: str, candidates: List[Any]) -> str:
 
 
 def _fmt_no_match(query: str) -> str:
-    from cron.blueprint_catalog import CATALOG
-    close = difflib.get_close_matches((query or "").lower(), [r.key for r in CATALOG], n=3, cutoff=0.4)
+    from cron.blueprint_catalog import list_blueprints
+    close = difflib.get_close_matches((query or "").lower(), [r.key for r in list_blueprints()], n=3, cutoff=0.4)
     msg = f"No automation blueprint matches '{query}'."
     if close:
         msg += " Did you mean: " + ", ".join(close) + "?"

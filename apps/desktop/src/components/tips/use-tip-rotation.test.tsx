@@ -7,10 +7,8 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $awaitingResponse, $busy, $connection } from '@/store/session'
 import { $activeTip, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt } from '@/store/tips'
 
-import { offerLocalSetupTip } from './local-setup-offer'
 import { useTipRotation } from './use-tip-rotation'
 
-vi.mock('./local-setup-offer', () => ({ offerLocalSetupTip: vi.fn(() => false) }))
 vi.mock('@/store/tutorial-lifetime', () => ({ checkTutorialLifetime: vi.fn() }))
 
 const reply = async (request: { path: string }) =>
@@ -69,7 +67,6 @@ it('offers the update at the first quiet moment despite tutorial settling and co
     await vi.advanceTimersByTimeAsync(2_000)
   })
   expect($activeTip.get()?.action?.label).toBe('Update now')
-  expect(offerLocalSetupTip).not.toHaveBeenCalled()
   expect(api.mock.calls.some(([request]) => 'method' in request && request.method === 'POST')).toBe(false)
 })
 
@@ -177,34 +174,6 @@ it.each(['flag-off', 'tips-off', 'remote'])('does not read or offer when %s', as
   })
   expect(api).not.toHaveBeenCalled()
   expect($activeTip.get()).toBeNull()
-})
-
-it('keeps tutorial settling and cooldown when no engine update is available', async () => {
-  api.mockImplementation(async request =>
-    request.path.endsWith('/jobs')
-      ? { jobs: [] }
-      : {
-          enabled: true,
-          runtime_installed: true,
-          update_available: false,
-          configured_tag: 'target'
-        }
-  )
-  mount()
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(4 * 60_000)
-  })
-  expect(offerLocalSetupTip).not.toHaveBeenCalled()
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(60_000)
-  })
-  expect(offerLocalSetupTip).toHaveBeenCalledTimes(1)
-  $nextTipAt.set(Date.now() + 6 * 60 * 60_000)
-  $activeTip.set(null)
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(60_000)
-  })
-  expect(offerLocalSetupTip).toHaveBeenCalledTimes(1)
 })
 
 it('stops the fast check when the host unmounts', async () => {

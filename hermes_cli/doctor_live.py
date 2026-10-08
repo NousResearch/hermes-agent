@@ -13,6 +13,7 @@ from typing import Callable, List, Optional
 from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
+from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
 
@@ -44,6 +45,10 @@ class ProbeResult:
 def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
     """Single HTTP GET seam for all metadata probes."""
     import httpx
+    # Sanitize at the seam (idempotent, no-op on a clean env): a bracketed-IPv6 NO_PROXY entry
+    # ([::1], Clash Verge/mihomo) makes this bare trust_env client raise InvalidURL at
+    # construction (#118159), which _run_one's catch-all would dress up as backend downtime.
+    normalize_proxy_env_vars()
     return httpx.get(url, headers=headers or {}, timeout=timeout)
 
 

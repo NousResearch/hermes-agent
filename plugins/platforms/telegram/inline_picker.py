@@ -82,7 +82,8 @@ def build_inline_results(query: str, offset: str = "", page_size: int = PAGE_SIZ
     args = parts[1].strip() if len(parts) > 1 else ""
     matches = filter_catalog(collect_inline_catalog(), term)
     try:
-        start = int(offset) if offset else 0
+        # Client-controlled text: negatives must not slice the catalog from the tail.
+        start = max(0, int(offset)) if offset else 0
     except (TypeError, ValueError):
         start = 0
     next_offset = str(start + page_size) if len(matches) > start + page_size else ""

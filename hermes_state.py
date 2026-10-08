@@ -30,7 +30,8 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+    escape_like as _escape_like, _placeholders,
+    stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
 from hermes_state_pidns import holder_pid_checkable
@@ -72,6 +73,7 @@ from hermes_state_wal import (
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
+from hermes_state_tool_retries import SessionToolRetriesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -460,7 +462,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -1588,7 +1590,7 @@ class SessionDB(
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
-        "billing_mode", "source",
+        "billing_mode", "source", "task",
     )
 
     MAX_TITLE_LENGTH = 100
@@ -1667,6 +1669,28 @@ class SessionDB(
             self.set_meta(gate, "1", cursor=cursor)
             return retagged
         return self._execute_write(_do)
+
+    def is_kanban_owned_session(self, session_id: str) -> bool:
+        """True when this session — or any segment of the compression lineage a resume would
+        materialize — belongs to the Kanban dispatcher (``source``/``created_source`` =
+        ``'kanban'``): the transcript of a worker run, not a human conversation (#68779).
+
+        Both columns are checked: ``source`` is live routing state the dispatcher tags
+        (``HERMES_SESSION_SOURCE=kanban``) and the legacy retag rewrites, while immutable
+        ``created_source`` survives later surface flips. The lineage is the VERIFIED
+        compression chain (``_resume_lineage_ids``) — exactly the rows a resume loads — so a
+        worker transcript stays kanban-owned across rotations, while a delegate/branch child
+        of a worker (a DIFFERENT conversation) is not swept in. Plain classification, not a
+        gate: the resume-time guard (``hermes_cli/kanban_resume_guard.py``) owns the decision
+        and the dispatcher-owned exemption."""
+        lineage = self._resume_lineage_ids(session_id)
+        if not lineage:
+            return False
+        rows = self._read_all(
+            f"SELECT 1 FROM sessions WHERE id IN ({_placeholders(lineage)}) "
+            "AND (source = 'kanban' OR created_source = 'kanban') LIMIT 1",
+            tuple(lineage))
+        return bool(rows)
 
     def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
         """``[(key, value), ...]`` for state_meta keys starting with the literal

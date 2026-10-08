@@ -18,8 +18,10 @@ def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subp
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
-    return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    from hermes_cli.update_custody import run_git
+
+    return run_git(
+        git_cmd, args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
         **kwargs,
     )
 
@@ -46,6 +48,18 @@ def clear_git_debris(root: Path) -> None:
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
     settle_partial_clone_maintenance(root)
+
+
+def report_pack_tidy(root: Path) -> None:
+    """Spend the update's bounded slice on a partial clone's on-demand packs, and say what it did."""
+    from hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
+
+    tidy = tidy_partial_clone_packs(root)
+    if tidy.erased or tidy.merged:
+        print(f"  (git cleanup: erased {tidy.erased} duplicate pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
+              f" merged {tidy.merged}; {tidy.packs_left} left)")
+    if tidy.out_of_time:
+        print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

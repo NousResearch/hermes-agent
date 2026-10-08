@@ -517,8 +517,10 @@ _SEND_CONSENT_EXPLAINER = (
     "(it contains no personal information and is reset by deleting",
     "the shared-metrics directory). Only packages whose entire",
     "collection period falls inside a recorded consent window are",
-    "ever sent — data from before you opt in, or from any gap",
-    "while sending was off, stays on this machine. Sending can be", "turned off again at any time.",
+    "ever sent. Apart from the fresh-install note (noted on this",
+    "machine and counted only once you opt in), data from before",
+    "you opt in, or from any gap while sending was off, stays on",
+    "this machine. Sending can be turned off again at any time.",
 )
 
 
@@ -526,8 +528,12 @@ def setup_telemetry(config: dict):
     """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
     _info("Shared metrics contain only bounded counters: activity, session length,",
-          "outcomes, error classes, model routes and token totals, built-in tool, command",
-          "and catalog names, bucketed setup counts, update results and timing, crashes,",
+          "outcomes, error classes (with a fixed-list reason when a memory write or",
+          "context compression is refused, fails or is skipped), model routes and",
+          "token totals, built-in tool, command and catalog names, bucketed setup",
+          "counts, update and install results and timing (with a fixed-list reason",
+          "and the stage when one fails; a fresh install is noted on this machine and",
+          "counted only once you opt in), crashes,",
           "startup and reply speed, messaging-platform health, how Hermes gets used",
           "(agent accuracy and efficiency, active time per surface, which features and",
           "settings are used or switched off, provider setup outcomes), and coarse",

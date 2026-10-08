@@ -791,7 +791,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     The parsed refusal rides ``error_context`` so the terminal copy can say what happened.
     """
     from hermes_cli.anon_auth import (
-        WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
+        WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, route_is_welcome_host, welcome_route_refusal)
     status = c.status_code
     if not c.anonymous:
         # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
@@ -801,10 +801,18 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
             return _v(_R.format_error, retryable=False, should_fallback=True,
                       error_context={"welcome_route": "named_on_welcome_host"})
         return None
+    if status == 402 and route_is_welcome_host(c.base_url):
+        # The free tier has no credits to top up: a payment wall on it is the tier refusing. Off the welcome
+        # host a free-tier JWT keeps the ordinary 402 handling (the route heal, billing copy).
+        refusal = {"reason": "refused", "retry_after": 0, "alternates": [], "upgrade_url": ""}
+        return _v(_R.auth_permanent, retryable=False, should_fallback=True,
+                  error_context={"welcome_refusal": refusal})
     if status == 429:
-        refusal = parse_welcome_refusal(c.body)
-        if refusal is None:
-            return None
+        # Every free-tier 429 is the allowance talking, so even one without a ``reason`` (header-only,
+        # quota words) is a refusal; otherwise it would fall to billing or the generic rate-limit copy.
+        from agent.nous_rate_guard import welcome_refusal_from_headers
+        refusal = parse_welcome_refusal(c.body) or welcome_refusal_from_headers(
+            c.headers, body_wait=_rate_limit_reset_seconds(c.msg, c.body, c.headers))
         ctx = {"welcome_refusal": refusal}
         if refusal["reason"] in WELCOME_TIER_GATE_REASONS:
             return _v(_R.model_not_found, retryable=False, should_fallback=True, error_context=ctx)

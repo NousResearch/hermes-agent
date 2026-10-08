@@ -10,7 +10,7 @@ a real fetch, checkout and rebuild, never the "already current" branch.
 After the seed the sandbox loses the ``insteadOf`` rewrite: the checkout's origin is the official
 ``https://github.com/NousResearch/hermes-agent.git`` again, and inside the namespace the only way
 to reach it is the test's proxy, which routes ``github.com`` to a git smart-HTTP server over the
-same bare origin. The partial clone (``--filter=tree:0``) makes every lazy tree/blob fetch of the
+same bare origin. The partial clone (``--filter=blob:none``) makes every lazy blob fetch of the
 checkout cross that proxy too.
 
 ``Installed.run(..., edge=...)`` runs one command under ``bwrap --unshare-net``: no route, no

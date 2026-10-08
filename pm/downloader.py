@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import logging
+import ssl
 import threading
 import time
 import urllib.error
@@ -65,7 +66,18 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_OPENER = urllib.request.build_opener(_HttpsRedirectHandler())
+def _https_context() -> ssl.SSLContext:
+    # Trust a CA the store holds even when its own issuer is absent: Windows can
+    # cache Let's Encrypt "Root YR" without ISRG Root X1. Python 3.13+ does this
+    # by default; the older interpreter that starts a cold update does not.
+    context = ssl.create_default_context()
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return context
+
+
+_OPENER = urllib.request.build_opener(
+    _HttpsRedirectHandler(), urllib.request.HTTPSHandler(context=_https_context())
+)
 
 
 class DownloadError(RuntimeError):

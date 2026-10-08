@@ -51,6 +51,42 @@ def test_list_leaves_live_reader_as_completion_owner():
     )
 
 
+@pytest.mark.platforms("posix")
+def test_poll_during_the_readers_final_drain_keeps_the_whole_output(tmp_path):
+    """A child that ends on a burst exits with its tail still in the pipe. A poll landing while the reader
+    is behind must report, and leave in the completion, the whole output — not the chunk read so far."""
+    import threading
+
+    import tools.process_registry as module
+
+    module._SYSTEMD_SCOPE_AVAILABLE = False
+    registry = module.ProcessRegistry()
+    stalled, release = threading.Event(), threading.Event()
+
+    def slow_sink(_session, _chunk):  # a live-output consumer that falls behind for a moment
+        if not stalled.is_set():
+            stalled.set()
+            release.wait(10)
+
+    registry.on_output = slow_sink
+    burst = "import sys; sys.stdout.write('x' * 99 + '\\n'); sys.stdout.write(('y' * 99 + '\\n') * 100 + 'FINAL\\n')"
+    session = registry.spawn_local(f"{shlex.quote(sys.executable)} -c {shlex.quote(burst)}", cwd=str(tmp_path))
+    session.notify_on_complete = True
+    try:
+        assert stalled.wait(10)
+        assert session.process.wait(timeout=10) == 0
+        threading.Timer(0.3, release.set).start()
+        polled = registry.poll(session.id)
+        assert session._completion_event.wait(10)
+        assert polled["status"] == "exited"
+        assert polled["output_preview"].rstrip().endswith("FINAL"), polled["output_preview"][-80:]
+        event = registry.completion_queue.get(timeout=2)
+        assert event["output"].rstrip().endswith("FINAL"), event["output"][-80:]
+    finally:
+        release.set()
+        registry.kill_all(source="test")
+
+
 @pytest.mark.platforms("linux")
 def test_list_reconciles_real_exit_without_consuming_owned_result(tmp_path):
     # A disposable subreaper owns even the orphaned writer; no global pytest

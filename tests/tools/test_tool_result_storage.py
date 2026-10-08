@@ -341,6 +341,17 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_results_count_their_text_and_spill_it(self):
+        """Image-bearing results are part lists: the aggregate counts their text characters (not the number of
+        parts) and spills the big text part, keeping images and the short notes inline."""
+        img = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        msgs = [{"role": "tool", "tool_call_id": f"mm{i}",
+                 "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
+                for i in range(6)]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
+        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
+
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:

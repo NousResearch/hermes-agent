@@ -6,6 +6,7 @@ starts on sentence one. True streamers (``StreamingTTSProvider.stream``) wrap ch
 APIs; providers with no chunked API (edge, the default) get per-sentence playback via
 the sync ``text_to_speech_tool`` path. Adding a streamer is ``@register("name")`` on
 a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver come free.
+Plugin ``TTSProvider``s join by declaring ``streams_pcm`` + ``stream_sample_rate``.
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
 from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -169,6 +171,29 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
 _PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
 
 
+class _PluginPCMStreamer(StreamingTTSProvider):
+    """A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``; see
+    ``tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
+
+    def __init__(self, provider: Any, sample_rate: int, tts_config: Dict):
+        super().__init__(tts_config, tts_config.get(provider.name) or {})
+        self._provider, self.sample_rate = provider, sample_rate
+
+    @staticmethod
+    def available() -> bool:
+        return True  # gated at resolve time, per instance
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        yield from _capped(
+            self._provider.stream(text, format="pcm", **_plugin_voice_kwargs(self.tts_config)),
+            f"plugin streamer {self._provider.name}")
+
+
+def _plugin_streamer(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
+    found = _plugin_pcm_streaming_provider(name, tts_config)
+    return _PluginPCMStreamer(*found, tts_config) if found is not None else None
+
+
 def resolve_streaming_provider(
     tts_config: Dict, preferred: Optional[str] = None) -> Optional[StreamingTTSProvider]:
     """Return a ready streamer for the *configured* provider, else ``None``.
@@ -176,12 +201,18 @@ def resolve_streaming_provider(
     ``auto`` returns the first usable in ``_PROVIDER_PRIORITY``. Otherwise the configured TTS
     provider (or ``preferred``): ``None`` means "no chunked API" — the dispatcher speaks
     per-sentence via the sync path, preserving the user's chosen voice. We never silently swap
-    providers just to get streaming."""
+    providers just to get streaming.
+
+    A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``) streams here too, after the
+    built-ins and under the same rules (a pinned name never substitutes another voice)."""
     pinned = str((tts_config.get("streaming") or {}).get("provider") or "").lower().strip()
     if pinned == "auto":
-        return next((inst for name in _PROVIDER_PRIORITY
-                     if (inst := _try_instantiate(name, tts_config))), None)
-    return _try_instantiate(pinned or (preferred or _get_provider(tts_config)).lower().strip(), tts_config)
+        for name in _PROVIDER_PRIORITY:
+            if (inst := _try_instantiate(name, tts_config)) is not None:
+                return inst
+        return _plugin_streamer(_get_provider(tts_config), tts_config)
+    name = pinned or (preferred or _get_provider(tts_config)).lower().strip()
+    return _try_instantiate(name, tts_config) or _plugin_streamer(name, tts_config)
 
 
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:

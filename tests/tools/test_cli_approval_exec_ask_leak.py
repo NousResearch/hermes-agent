@@ -44,10 +44,6 @@ def _clean_approval_env(monkeypatch):
         approval_context, "_get_approval_mode",
         lambda: "manual",
     )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-    )
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
     approval_module._pending.clear()

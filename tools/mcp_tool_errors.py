@@ -11,7 +11,7 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
-from tools.mcp_tool_common import _sanitize_error, _core
+from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -152,6 +152,26 @@ def _contains_only_cancellation(exc: BaseException) -> bool:
     if isinstance(exc, BaseExceptionGroup):
         return all(_contains_only_cancellation(sub) for sub in exc.exceptions)
     return isinstance(exc, asyncio.CancelledError)
+
+
+def _auth_error_detail(exc: BaseException) -> str:
+    """`` <guidance>`` when *exc* (or its group root) is the SDK's ``OAuthRegistrationError``, else ``""``. The DCR
+    guard in ``HermesMCPOAuthProvider`` raises one naming the next step (pre-register an OAuth client), and the
+    generic needs-reauth text alone would hide it from the model (#78190)."""
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:  # pragma: no cover — SDK required in CI
+        return ""
+    root = _unwrap_exception_group(exc)
+    text = str(root).strip() if isinstance(root, OAuthRegistrationError) else ""
+    return f" {_sanitize_error(text)}" if text else ""
+
+
+def _mcp_call_failed_message(exc: BaseException) -> str:
+    """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
+    "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""
+    root = _unwrap_exception_group(exc)
+    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}")
 
 
 def _classify_mcp_failure(exc: BaseException) -> str:

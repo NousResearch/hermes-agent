@@ -1,20 +1,19 @@
+import type { OnboardingStateResult } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-import { readKey, writeKey } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
+import { resetTips } from './tips'
 
-const PHASE_KEY = 'hermes-onboarding-phase-v1'
-
-export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'skipped', 'handoff', 'done'] as const
+// `left`: the user walked out of the intro (sidebar, another chat, a layout pick) without skipping;
+// the setup chat is a normal chat from then on and can still finish the guide.
+const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'left', 'skipped', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
-function isOnboardingPhase(value: string | null): value is OnboardingPhase {
-  return ONBOARDING_PHASES.some(phase => phase === value)
-}
+export type GuideKickoffResult = 'started' | 'off' | 'failed'
 
 export interface OnboardingGateState {
   phase: OnboardingPhase
@@ -22,23 +21,30 @@ export interface OnboardingGateState {
   guideKickoff: 'idle' | 'starting' | 'started'
 }
 
-type GuideKickoff = { status: 'idle' } | { status: 'starting'; promise: Promise<boolean> } | { status: 'started' }
+type GuideKickoff =
+  { status: 'idle' } | { status: 'starting'; promise: Promise<GuideKickoffResult> } | { status: 'started' }
 
-function loadGate(): OnboardingGateState {
-  const saved = readKey(PHASE_KEY)
+export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
 
-  const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
+/** `onboarding.state` has answered (or failed) in this window. */
+export const $onboardingStateRead = atom(false)
 
-  return {
-    phase,
-    guideQueued: phase === 'pending' || phase === 'guided',
-    guideKickoff: 'idle'
-  }
-}
-
-export const $onboardingGate = atom<OnboardingGateState>(loadGate())
+/** The setup profile's name, from `onboarding.state` or from the kickoff that creates it; `null` when none is known. */
+export const $setupProfileName = atom<null | string>(null)
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
+
+const guidedPhase = (phase: OnboardingPhase) => phase === 'pending' || phase === 'guided'
+
+/**
+ * Guided first run is behind the user: finished, skipped, or never due. The phase is only
+ * trusted once the backend's `onboarding.state` (its `intro`) has been read.
+ */
+export const $guidedOnboardingSettled = computed(
+  [$onboardingGate, $onboardingStateRead],
+  (gate, read) => !isOnboardingEnabled() || (read && !guidedPhase(gate.phase))
+)
+
 export const $guideOpening = computed(
   $onboardingGate,
   gate =>
@@ -51,18 +57,41 @@ function setGuideKickoff(state: GuideKickoff): void {
 }
 
 function setPhase(phase: OnboardingPhase): void {
-  writeKey(PHASE_KEY, phase === 'idle' ? null : phase)
   $onboardingGate.set({ ...$onboardingGate.get(), phase, guideQueued: false })
+}
+
+function reportOnboarding(method: 'onboarding.mark_seen' | 'onboarding.record_failed_start'): void {
+  void $gateway
+    .get()
+    ?.request(method, {})
+    .catch(error => console.warn(`[onboarding] ${method} failed`, error))
 }
 
 export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
-  return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
+  return isOnboardingEnabled() && guidedPhase(phase)
 }
 
-export function beginOnboardingFlow(firstRunSkipped: boolean): void {
-  if (!isOnboardingEnabled() || firstRunSkipped || $onboardingGate.get().phase !== 'idle') {
+export function markOnboardingStateRead(): void {
+  $onboardingStateRead.set(true)
+}
+
+export function afterOnboardingStateRead(run: () => void): void {
+  if (!isOnboardingEnabled() || $onboardingStateRead.get()) {
+    run()
+
+    return
+  }
+
+  const stop = $onboardingStateRead.listen(() => {
+    stop()
+    run()
+  })
+}
+
+export function beginOnboardingFlow(state: OnboardingStateResult): void {
+  if (!isOnboardingEnabled() || !state.eligible || state.intro !== 'unseen' || $onboardingGate.get().phase !== 'idle') {
     return
   }
 
@@ -70,9 +99,9 @@ export function beginOnboardingFlow(firstRunSkipped: boolean): void {
   $onboardingGate.set({ ...$onboardingGate.get(), guideQueued: true })
 }
 
-export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolean> {
+export function runGuideKickoff(kickoff: () => Promise<GuideKickoffResult>): Promise<GuideKickoffResult> {
   if (!isOnboardingEnabled()) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
   if (guideKickoff.status === 'starting') {
@@ -80,24 +109,24 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
   }
 
   if (guideKickoff.status === 'started') {
-    return Promise.resolve(true)
+    return Promise.resolve('started')
   }
 
   if (!$onboardingGate.get().guideQueued) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
   const promise = Promise.resolve()
     .then(kickoff)
     .then(
-      started => {
-        setGuideKickoff({ status: started ? 'started' : 'idle' })
+      result => {
+        setGuideKickoff({ status: result === 'started' ? 'started' : 'idle' })
 
-        if (started && $onboardingGate.get().phase === 'pending') {
+        if (result === 'started' && $onboardingGate.get().phase === 'pending') {
           setPhase('guided')
         }
 
-        return started
+        return result
       },
       error => {
         setGuideKickoff({ status: 'idle' })
@@ -111,17 +140,19 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
   return promise
 }
 
-export function beginOnboardingHandoff(): void {
+/** A setup `start_chat` started the task chat: the guide is complete (the backend recorded it). */
+export function completeGuide(): void {
   const { phase } = $onboardingGate.get()
 
-  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'skipped')) {
-    setPhase('handoff')
+  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'left' || phase === 'skipped')) {
+    setPhase('done')
   }
 }
 
-export function completeOnboardingFlow(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'handoff') {
-    setPhase('done')
+export function leaveGuide(): void {
+  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'guided') {
+    setPhase('left')
+    reportOnboarding('onboarding.mark_seen')
   }
 }
 
@@ -130,26 +161,30 @@ export function skipGuide(): void {
 
   if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
     setPhase('skipped')
+    reportOnboarding('onboarding.mark_seen')
   }
 }
 
-export async function devResetOnboardingFlow(): Promise<void> {
-  if (!import.meta.env.DEV) {
-    return
-  }
+export function abandonGuide(result: Exclude<GuideKickoffResult, 'started'>): void {
+  const { phase } = $onboardingGate.get()
 
-  await $gateway.get()?.request('onboarding.reset_setup_profile', {})
-  setGuideKickoff({ status: 'idle' })
-  setPhase('idle')
-  setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [], plugins: [], pluginOutcomes: {} })
-}
+  if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
+    setPhase('skipped')
 
-declare global {
-  interface Window {
-    __onboarding?: { reset: typeof devResetOnboardingFlow }
+    if (result === 'failed') {
+      reportOnboarding('onboarding.record_failed_start')
+    }
   }
 }
 
-if (import.meta.env.DEV) {
-  window.__onboarding = { reset: devResetOnboardingFlow }
+/** Settings → Advanced → Developer: rebuild the setup profile and clear its marker, so the next
+ *  launch runs the first run from zero. The primary profile is left as it is. The caller reloads.
+ *  `request` is the ambient gateway requester (reconnects a stale socket); the params stay bare. */
+export async function resetOnboarding(
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+): Promise<void> {
+  await request('onboarding.reset_setup_profile', {})
+  setOnboardingAnswers({ ...DEFAULT_ANSWERS })
+  // Skip retired the tutorial tips; from zero means they come back.
+  resetTips()
 }

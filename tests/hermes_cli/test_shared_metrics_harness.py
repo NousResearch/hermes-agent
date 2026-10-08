@@ -252,7 +252,7 @@ def test_everything_is_a_no_op_while_disabled(direct_runtime, tmp_path, monkeypa
 def test_v3_schema_accepts_exactly_the_contract_values():
     import hermes_cli.observability as observability
 
-    schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v3.schema.json").read_text())
+    schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}
     for metric in (contract.FILE_EDIT_METRIC, contract.LOOP_GUARD_METRIC, contract.TOOL_RECOVERY_METRIC,
                    contract.TERMINAL_OUTCOME_METRIC, contract.MODEL_REPLY_ISSUE_METRIC):

@@ -2509,17 +2509,10 @@ def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatc
     ``desktop_ui`` — the client's own control surface — survives the subtraction."""
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
 
-    assert server._with_session_toolsets(["memory"], "desktop") == [
-        "memory",
-        "desktop_ui",
-    ]
-    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    assert server._with_session_toolsets(["memory"], "desktop") == ["memory", "catalog", "desktop_ui"]
+    # Nothing disabled: the fold-in keeps every client-surface toolset.
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
-    assert server._with_session_toolsets(["memory"], "desktop") == [
-        "memory",
-        "desktop_ui",
-        "project",
-    ]
+    assert server._with_session_toolsets(["memory"], "desktop") == ["memory", "catalog", "desktop_ui", "project"]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):

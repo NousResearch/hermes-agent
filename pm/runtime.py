@@ -15,6 +15,7 @@ import sys
 from typing import Callable
 import uuid
 
+from pm.filesystem import native
 from pm.package import InstallError
 
 
@@ -27,7 +28,7 @@ def runtime_environment() -> dict[str, str]:
 
     env = _base_environment()
     env["HERMES_HOME"] = str(get_hermes_home())
-    env["HERMES_RUNTIME_DIR"] = str(store_root())
+    env["HERMES_RUNTIME_DIR"] = native(store_root())
     return env
 
 
@@ -46,7 +47,8 @@ def _inputs(project: Path, python: Path, *, as_spelled: bool = False) -> str:
     # the same one reached through a symlinked store (a per-task HERMES_HOME whose
     # tools/ links back) must. Only the directories resolve: the pinned
     # bin/python3 is itself a symlink, so resolving it would re-key every install.
-    python = python.absolute()
+    # A store spells its root extended-length on Windows; the identity must not.
+    python = Path(native(python)).absolute()
     digest.update(str(python if as_spelled else python.parent.resolve() / python.name).encode())
     return digest.hexdigest()
 

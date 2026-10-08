@@ -835,9 +835,9 @@ def _render_candidate_list() -> str:
     Bundled built-ins are excluded even when ``curator.prune_builtins`` is
     on. That flag makes them eligible for *deterministic archival*
     (``apply_automatic_transitions`` → ``archive_skill``), not for the
-    rewrite/umbrella pass. Listing them here invites ``skill_manage``
-    writes that ``_background_review_write_guard`` unconditionally
-    refuses, burning tool calls until the loop guard aborts the run.
+    rewrite/umbrella pass. Listing them here invites umbrella deletes
+    that ``_background_review_delete_guard`` unconditionally refuses,
+    burning tool calls until the loop guard aborts the run.
 
     Skills in ``skills.disabled`` (global or platform list) are excluded for
     the same reason on the read side: ``skill_view`` — the pass's only read

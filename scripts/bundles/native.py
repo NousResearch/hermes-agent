@@ -234,6 +234,13 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     features = installed_extras(repo_dir, venv_dir, python_exe=python_bin)
     write_features(features, out)
+
+    # The payload venv was built from this exact lock and feature set. Publish
+    # that state so the first runtime sync can reuse the shipped environment
+    # instead of rebuilding it before any plugin dependencies are requested.
+    from pm.packages import Venv
+
+    facts.record_state("venv", Venv(repo_dir).expected_stamp(features, plugin_dirs=[]), features)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
     # Ship the full uv cache (build-only sdist sources and wheel ZIPs are
@@ -297,6 +304,7 @@ def finish_native(prepared: Path, frontends: dict[str, Path]) -> int:
         inputs = load_prepared(prepared)
         values = asdict(inputs)
         values["frontends"] = {name: Path(path).absolute() for name, path in frontends.items()}
+        print("assembling verified payload", flush=True)
         assemble(AgentInputs.from_dict(values), out)
     print(f"✓ manifest ({out / 'manifest.json'})")
     return 0

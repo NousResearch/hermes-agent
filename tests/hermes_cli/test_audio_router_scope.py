@@ -7,7 +7,10 @@ under multiplex). Only the unscoped default-profile path (UnscopedSecretError)
 may read the env.
 """
 
+import json
+
 import pytest
+from fastapi import HTTPException
 
 
 @pytest.fixture(autouse=True)
@@ -56,3 +59,66 @@ async def test_voices_route_scope_failure_never_borrows_env(tmp_path, monkeypatc
         ss.set_multiplex_active(was_active)
 
     assert result == {"available": False, "voices": []}
+
+
+@pytest.mark.asyncio
+async def test_voices_route_bounds_response_read(monkeypatch, tmp_path):
+    """The ElevenLabs voices fetch must read the body with a size cap."""
+    from hermes_cli import web_server_gateway
+    import hermes_cli.web_routers.audio as audio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            captured["size"] = size
+            data = json.dumps(
+                {"voices": [{"voice_id": "voice-1", "name": "Voice One"}]}
+            ).encode()
+            return data if size < 0 else data[:size]
+
+    monkeypatch.setattr(audio.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    result = await audio.get_elevenlabs_voices()
+    assert result["available"] is True
+    assert result["voices"][0]["voice_id"] == "voice-1"
+    assert captured["size"] == (
+        web_server_gateway._DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_voices_route_rejects_oversized_response(monkeypatch, tmp_path):
+    """An oversized ElevenLabs voices body must fail as 502, not buffer."""
+    from hermes_cli import web_server_gateway
+    import hermes_cli.web_routers.audio as audio
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        web_server_gateway, "_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES", 8
+    )
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            return b"x" * size
+
+    monkeypatch.setattr(audio.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    with pytest.raises(HTTPException) as exc_info:
+        await audio.get_elevenlabs_voices()
+    assert exc_info.value.status_code == 502

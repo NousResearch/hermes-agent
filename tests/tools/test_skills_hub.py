@@ -156,6 +156,29 @@ class TestGitHubSourceFileFetch:
             "skill/references/foo%23bar.md"
         )
 
+    @pytest.mark.parametrize("gh_token", ["gh-live", "gh-dead"])
+    def test_rejected_token_falls_through_to_next_credential(self, monkeypatch, gh_token):
+        """A 401 on the .env token retries with `gh auth token`, then anonymously (#98725)."""
+        import tools.skills_hub as hub
+        auth = GitHubAuth()
+        monkeypatch.setattr(auth, "_try_pat", lambda: "pat-dead")
+        monkeypatch.setattr(auth, "_try_gh_cli", lambda: gh_token)
+        monkeypatch.setattr(auth, "_try_github_app", lambda: None)
+        sent = []
+
+        def fake_get(url, *, headers, **_kw):
+            sent.append(headers)
+            dead = headers.get("Authorization", "").endswith("-dead")
+            return httpx.Response(401 if dead else 200, content=b"body")
+
+        monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+        assert GitHubSource(auth)._fetch_file_bytes("o/r", "s/SKILL.md") == b"body"
+        expected = ["token pat-dead", "token gh-live"] if gh_token == "gh-live" else [
+            "token pat-dead", "token gh-dead", None]
+        assert [h.get("Authorization") for h in sent] == expected
+        assert sent[-1]["Accept"] == "application/vnd.github.v3.raw"
+        assert auth.rejected[0] == "GITHUB_TOKEN/GH_TOKEN"
+
 # ---------------------------------------------------------------------------
 # SkillsShSource
 # ---------------------------------------------------------------------------

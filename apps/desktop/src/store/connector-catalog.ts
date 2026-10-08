@@ -5,8 +5,10 @@
  * deployed catalog: it offered apps the gateway does not carry and spelled
  * others with hyphens the gateway does not use. The build chat then had to
  * tell the user the pick could not be connected. This hook asks the gateway
- * what is there, through the same session-owned RPC the connector cards use,
- * so the picker can only offer what can be connected.
+ * what is there, through the account-owned RPC the Connectors page uses, on
+ * the backend that owns the session, so the picker can only offer what can be
+ * connected. The session-owned list answers for the session's own tools, and
+ * the setup profile carries only its beat tools, so it always said no.
  *
  * `available: false` (toolset off, signed out), a failed request, and a
  * request that takes longer than 15 s all resolve to `unavailable`; the caller
@@ -15,11 +17,11 @@
  * and the probe runs once they arrive, so the card never waits on a request
  * that was never sent.
  */
+import type { ConnectorRow } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { translateNow } from '@/i18n'
-import type { ConnectorRow } from '@/lib/connector-tools'
 import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { queryClient } from '@/lib/query-client'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -28,13 +30,12 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-export type ConnectorCatalog =
-  { status: 'loading' } | { status: 'ready'; rows: ConnectorRow[] } | { status: 'unavailable' }
+type ConnectorCatalog = { status: 'loading' } | { status: 'ready'; rows: ConnectorRow[] } | { status: 'unavailable' }
 
 /** The picks card remounts on every transcript rebuild (each hidden submit, each turn end), so the read is
  *  held in the query cache per session: a remount paints the rows it already has instead of flashing back to
  *  the skeleton for another round trip. */
-async function readConnectorCatalog(storedId: string, runtimeId: string): Promise<ConnectorCatalog> {
+async function readConnectorCatalog(storedId: string): Promise<ConnectorCatalog> {
   try {
     const scope = await resolveSessionOwner(storedId)
     assertSessionOwnerResolved(scope, { method: 'connectors.list', sessionId: storedId })
@@ -45,7 +46,7 @@ async function readConnectorCatalog(storedId: string, runtimeId: string): Promis
       connectionId,
       profile,
       'connectors.list',
-      { owner: { session_id: runtimeId, type: 'session' } },
+      { owner: { type: 'account' } },
       15000
     )
 
@@ -59,30 +60,31 @@ async function readConnectorCatalog(storedId: string, runtimeId: string): Promis
   }
 }
 
-const catalogKey = (storedId: null | string, runtimeId: null | string) =>
-  ['onboarding', 'connectors.list', storedId, runtimeId] as const
+const catalogKey = (storedId: null | string) => ['onboarding', 'connectors.list', storedId] as const
 
 /** Start the read when the guide session opens: cold, it takes several seconds, and the card that needs it is
  *  two turns away. */
-export function prefetchConnectorCatalog(storedId: string, runtimeId: string): void {
+export function prefetchConnectorCatalog(storedId: string): void {
   void queryClient.prefetchQuery({
-    queryFn: () => readConnectorCatalog(storedId, runtimeId),
-    queryKey: catalogKey(storedId, runtimeId),
+    queryFn: () => readConnectorCatalog(storedId),
+    queryKey: catalogKey(storedId),
     staleTime: Infinity
   })
 }
 
-export function useConnectorCatalog(storedId: null | string, runtimeId: null | string): ConnectorCatalog {
+export function useConnectorCatalog(storedId: null | string): ConnectorCatalog {
   const query = useQuery({
-    enabled: Boolean(storedId && runtimeId),
-    queryFn: () => readConnectorCatalog(storedId!, runtimeId!),
-    queryKey: catalogKey(storedId, runtimeId),
-    staleTime: Infinity
+    enabled: Boolean(storedId),
+    queryFn: () => readConnectorCatalog(storedId!),
+    queryKey: catalogKey(storedId),
+    // Only a list is kept: an `unavailable` read from before the setup card minted a guest identity is read
+    // again when the card mounts, and shows as loading meanwhile, not as the dead end it was.
+    staleTime: ({ state }) => (state.data?.status === 'ready' ? Infinity : 0)
   })
 
-  if (!storedId || !runtimeId) {
+  if (!storedId) {
     return { status: 'unavailable' }
   }
 
-  return query.data ?? { status: 'loading' }
+  return query.data && !(query.data.status === 'unavailable' && query.isFetching) ? query.data : { status: 'loading' }
 }

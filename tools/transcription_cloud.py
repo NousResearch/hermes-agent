@@ -19,9 +19,11 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, STTResponseError, XAI_STT_BASE_URL, _error_result, _get_stt_section,
-    _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, RETIRED_GROQ_MODELS, STTResponseError,
+    XAI_STT_BASE_URL,
+    _error_result, _get_stt_section, _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result,
+    normalize_xai_stt_model)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -103,7 +105,7 @@ def _transcribe_groq(
         return _error_result("GROQ_API_KEY not set")
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
-    if model_name in OPENAI_MODELS:  # auto-correct an OpenAI-only model
+    if model_name in OPENAI_MODELS | RETIRED_GROQ_MODELS:  # OpenAI-only or shut-down model
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
     language = language or _resolve_stt_language("groq")
@@ -141,7 +143,7 @@ def _transcribe_openai(
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
-    if provider_label == "openai" and model_name in GROQ_MODELS:
+    if provider_label == "openai" and model_name in GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 
@@ -280,9 +282,17 @@ def _transcribe_xai(
 
     def _post() -> Any:
         from tools.xai_http import hermes_xai_user_agent
-        data: Dict[str, str] = {"language": language} if language else {}
-        data.update({flag: "true" for flag, default in (("format", True), ("diarize", False))
-                     if is_truthy_value(xai_config.get(flag, default))})
+        # Always name the model: xAI moved the server default from 1.0 to 2.0 mid-September and
+        # will retire 1.0, so an omitted field silently changes what Hermes runs.
+        resolved_model = normalize_xai_stt_model(model_name)
+        data: Dict[str, str] = {"model": resolved_model}
+        if language:
+            data["language"] = language
+        # ``format`` (inverse text normalization) requires ``language``; /v1/stt answers HTTP 400
+        # "Field 'language' is required when 'format' is true" otherwise, so with stt.language ""
+        # (auto-detect) the flag is dropped instead of failing every transcription.
+        flags = ((("format", True),) if language else ()) + (("diarize", False),)
+        data.update({flag: "true" for flag, default in flags if is_truthy_value(xai_config.get(flag, default))})
 
         def _post_transcription(bearer: str, endpoint_base_url: str):
             headers = {"Authorization": f"Bearer {bearer}", "User-Agent": hermes_xai_user_agent()}

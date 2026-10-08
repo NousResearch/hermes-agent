@@ -96,7 +96,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
-        "has_alias": attr("alias_path", None) is not None, "role": attr("role", None)}
+        "has_alias": attr("alias_path", None) is not None}
 
 
 def _profile_setup_command(name: str) -> str:
@@ -476,8 +476,11 @@ def get_profiles_sessions(
         exclude_sources=_csv_list(exclude_sources) or None, min_message_count=max(0, min_messages),
         include_archived=archived == "include", archived_only=archived == "only")
     # Over-fetch per profile so the merged+sorted window is correct for the requested page.
-    # Capped so a huge profile can't blow up the response.
-    per_profile = min(max(limit + offset, limit), 500)
+    # ``limit`` is already bounded to 500 by FastAPI; the offset is caller-controlled
+    # pagination state, so include it instead of capping the source window at 500.
+    # Otherwise page 3 of a 577-row profile is permanently empty even though ``total``
+    # reports the remaining rows.
+    per_profile = limit + offset
 
     merged: List[Dict[str, Any]] = []
     totals: Dict[str, int] = {}
@@ -684,7 +687,11 @@ def _merge_profile_tree(
             session["profile"] = profile
             session["is_default_profile"] = profile == "default"
 
-        key = project.get("path") or project["id"]
+        # Same folder-identity notion the per-profile tree builder uses (``_path_key``):
+        # shape-derived — Windows paths case-fold on any host, separators unify, NFC —
+        # so the cross-profile merge agrees by construction with the trees it merges.
+        from tui_gateway.project_tree import _path_key
+        key = _path_key(project.get("path") or project["id"])
         existing = merged.get(key)
         if existing is None:
             merged[key] = project

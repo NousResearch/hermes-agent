@@ -1159,9 +1159,12 @@ class _OutputScan:
 
 def _normalize_codex_response(
     response: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
+    recover_leaked_tool_call: bool = True,
 ) -> tuple[Any, str]:
     """Normalize a Responses API object to ``(assistant_message, finish_reason)``.
-    ``issuer_kind`` / ``issuer_model`` are stamped onto captured reasoning items for provenance replay drops."""
+    ``issuer_kind`` / ``issuer_model`` are stamped onto captured reasoning items for provenance replay drops.
+    ``recover_leaked_tool_call=False`` is for callers with no continuation (aux): tool-call-shaped text is
+    then kept as ordinary content and judged by the same phase/completion gates as any other answer."""
     response_status = _lower_or_none(getattr(response, "status", None))
     incomplete_reason = str(_field(getattr(response, "incomplete_details", None), "reason", "") or "").strip().lower()
     response_incomplete_content_filter = response_status == "incomplete" and incomplete_reason == "content_filter"
@@ -1194,7 +1197,9 @@ def _normalize_codex_response(
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.
-    leaked_tool_call_text = bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
+    leaked_tool_call_text = bool(
+        recover_leaked_tool_call and final_text and not tool_calls and _leaked_tool_call_text(final_text)
+    )
     if leaked_tool_call_text:
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content (no structured function_call "

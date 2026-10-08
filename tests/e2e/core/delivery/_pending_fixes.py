@@ -31,6 +31,8 @@ from typing import Callable, Dict, Iterator, Optional
 
 import pytest
 
+from tests.e2e.core._pending_fixes import strict_acceptance
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
@@ -77,11 +79,12 @@ def known_failure(pattern: str, reason: str,
     """Run-time xfail for a live gap without a fix PR: an ``AssertionError`` raised inside the
     block whose message matches ``pattern`` XFAILs the cell; any other failure propagates, and a
     clean pass stays a pass. Wrap only the final assertions, after every wait has settled, so a
-    lost reply, a failed restart or a timeout can never be mistaken for the gap."""
+    lost reply, a failed restart or a timeout can never be mistaken for the gap. Strict
+    acceptance refuses owned gaps before running any xfail-only bookkeeping."""
     try:
         yield
     except AssertionError as exc:
-        if not re.search(pattern, str(exc)):
+        if not re.search(pattern, str(exc)) or strict_acceptance(reason):
             raise
         if on_xfail is not None:
             on_xfail()

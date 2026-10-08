@@ -36,6 +36,15 @@ class SettleReason(str, Enum):
 KINDS: Tuple[str, ...] = ("connector", "mcp", "plugin", "skill")
 
 RESOLVED_STATES = frozenset({TargetState.connected, TargetState.skipped})
+# A failed catalog row is done as well: the host already ran the install and the row carries the
+# reason. Counting it as open held the model's turn until the deadline while nobody clicked. Try
+# again still works while another row keeps the operation open, and the failed row keeps its state
+# and reason when the operation settles.
+_RESOLVED_BY_KIND = {kind: RESOLVED_STATES | {TargetState.failed} for kind in ("plugin", "skill")}
+
+
+def resolves(kind: str, state: TargetState) -> bool:
+    return state in _RESOLVED_BY_KIND.get(kind, RESOLVED_STATES)
 
 _S, _A = TargetState, Actor
 

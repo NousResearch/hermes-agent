@@ -39,6 +39,7 @@ from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
+from hermes_cli.local_runtime.gguf import split_parts
 
 logger = logging.getLogger(__name__)
 
@@ -396,8 +397,8 @@ def _assign_default(job: Dict[str, Any], model_id: str) -> None:
 
 
 # ── downloads: ranged parallel streams ───────────────────────
-def _hf_url(repo: str, path: str) -> str:
-    return f"https://huggingface.co/{repo}/resolve/main/{path}"
+def _hf_url(repo: str, path: str, revision: str = "main") -> str:
+    return f"https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
 
 def _model_id_for(gguf: Path) -> str:
@@ -406,20 +407,21 @@ def _model_id_for(gguf: Path) -> str:
 
 
 def _variant_files_on_disk(model_id: str) -> "list[Path]":
-    """Every local file of a staged model: all split parts plus catalog-declared assets (mmproj/draft) when present."""
+    """Every local file of a staged model: all split parts plus catalog-declared assets (mmproj/draft/MTP head) when present."""
     files = [p for p in bootstrap.models_dir().glob("*.gguf") if _model_id_for(p) == model_id]
     hit = catalog.find_entry_for_model(model_id)
-    assets = (hit[0].mmproj, hit[0].draft) if hit is not None else ()
+    assets = (hit[0].mmproj, hit[0].draft, hit[0].mtp_head) if hit is not None else ()
     files += [bootstrap.assets_dir() / a.local_name for a in assets
               if a is not None and (bootstrap.assets_dir() / a.local_name).exists()]
     return files
 
 
 def _download_plan(entry, variant) -> list:
-    """Everything a variant needs: split parts + mmproj/draft assets, as (url, dest, bytes) tuples."""
-    plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
-    plan += [(_hf_url(entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
-             for a in (entry.mmproj, entry.draft) if a is not None]
+    """Everything a variant needs: split parts + mmproj/draft/MTP head assets, as (url, dest, bytes) tuples."""
+    plan = [(_hf_url(entry.repo, a.path, a.revision), bootstrap.models_dir() / a.local_name, a.size_bytes)
+            for a in variant.files]
+    plan += [(_hf_url(a.repo or entry.repo, a.path, a.revision), bootstrap.assets_dir() / a.local_name, a.size_bytes)
+             for a in (entry.mmproj, entry.draft, entry.mtp_head) if a is not None]
     return plan
 
 
@@ -470,9 +472,8 @@ def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, 
 
 def _staged_row(gguf: Path) -> Dict[str, Any]:
     model_id = _model_id_for(gguf)
-    # Split models: report the whole variant's bytes, not one part's.
-    hit = catalog.find_entry_for_model(model_id)
-    size = hit[1].size_bytes if hit is not None else gguf.stat().st_size
+    # A split model is every part on disk; its first file can be a metadata stub of a few MB.
+    size = sum(p.stat().st_size for p in split_parts(gguf) or [gguf])
     return {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
 
 
@@ -574,7 +575,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         "recommended": entry.id == recommended,
         "recommended_reason": recommended_reason if entry.id == recommended else None,
         "downloaded": dl is not None, "downloaded_model_id": dl.model_id if dl else None,
-        "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp, "vision": entry.mmproj is not None,
+        "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp_capable, "vision": entry.mmproj is not None,
         # Day-0 architectures need the llama.cpp release where their support landed: True gates
         # download/activate until the engine updates, but the row still renders (visible + explained beats hidden).
         "needs_engine": _engine_too_old(entry.min_engine),

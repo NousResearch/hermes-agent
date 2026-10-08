@@ -47,6 +47,8 @@
   "/import": null,
   "/indicator": "terminal",
   "/init": null,
+  "/initiate-setup": null,
+  "/initiate_setup": null,
   "/insights": "advanced",
   "/journey": null,
   "/kanban": "advanced",

@@ -21,8 +21,10 @@ from tools.tts_command_provider import (
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
     command_failure_detail, render_command_template as _render_command_stt_template,
     run_command_provider as _run_command_stt)
+from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
+from utils import is_truthy_value
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -65,13 +67,33 @@ def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
     raise RuntimeError(f"Command STT provider wrote no output file at {output_path} and produced no stdout")
 
 
+def _normalize_command_stt_input(audio: Path, tmpdir: str, provider_name: str,
+                                 config: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the file handed to a command STT provider. ``stt.providers.<name>.normalize``
+    (default off) transcodes to 16 kHz mono m4a first — desktop voice notes arrive as
+    WebM/Opus 48 kHz and providers with container/sample-rate contracts (Tencent 16k_zh)
+    reject the raw container. Failure is an error, not a silent pass-through: the user
+    opted into normalization, so feeding the raw file would reproduce the bug. Returns
+    ``(input_path, None)`` or ``(None, error)``."""
+    if not is_truthy_value(config.get("normalize"), default=False):
+        return str(audio.resolve()), None
+    converted_path, transcode_error = _transcode_audio_for_stt(str(audio.resolve()), tmpdir)
+    if transcode_error or not converted_path:
+        return None, (f"stt.providers.{provider_name}.normalize: true but the audio could not be "
+                      f"normalized for the command provider: {transcode_error or 'unknown ffmpeg failure'}")
+    logger.info("Normalized %s to 16 kHz mono for command STT provider '%s'",
+                audio.name, provider_name)
+    return converted_path, None
+
+
 def _transcribe_command_stt(
     file_path: str, provider_name: str, config: Dict[str, Any], stt_config: Dict[str, Any],
     model_override: Optional[str] = None, language_override: Optional[str] = None,
     prompt: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe via a user-declared ``stt.providers.<name>: type: command``. Placeholders
-    (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}``, ``{output_path}`` (transcript
-    file), ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
+    (shell-quote-aware; ``{{``/``}}`` stay literal): ``{input_path}`` (the original file, or a
+    16 kHz mono m4a when ``normalize: true``), ``{output_path}`` (transcript file),
+    ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
     ``{model}`` (empty when unset)."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
@@ -91,9 +113,12 @@ def _transcribe_command_stt(
                 or _resolve_stt_language(provider_name, stt_config) or DEFAULT_COMMAND_STT_LANGUAGE)
     try:
         with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
+            input_path, normalize_error = _normalize_command_stt_input(audio, tmpdir, provider_name, config)
+            if normalize_error:
+                return fail(normalize_error)
             output_path = Path(tmpdir) / f"transcript.{output_format}"
             command = _render_command_stt_template(command_template, {
-                "input_path": str(audio.resolve()), "output_path": str(output_path),
+                "input_path": input_path, "output_path": str(output_path),
                 "output_dir": str(output_path.parent), "format": output_format,
                 "language": str(language), "model": str(model_override or config.get("model") or ""),
             })

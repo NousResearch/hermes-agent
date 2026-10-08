@@ -185,11 +185,12 @@ class TestBoardCRUD:
 
     @pytest.mark.parametrize("archive", [True, False])
     def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
-        # Regression for #23833: poll loops that call connect(board=slug) right
-        # after remove_board() recreate an empty kanban.db at the same path
-        # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
-        # contains the resolved path, the CREATE TABLE pass is skipped and
-        # downstream readers hit `no such table: task_events`.
+        # Regression for #23833: a poll loop that re-creates a just-removed
+        # board must get a fresh schema-init pass — if _INITIALIZED_PATHS
+        # still contained the resolved path, the CREATE TABLE pass would be
+        # skipped and downstream readers hit `no such table: task_events`.
+        # (Since #43243 connect() itself refuses to recreate a removed board,
+        # so the re-creation goes through create_board, as it should.)
         kb.create_board("recycle")
         # First connect populates _INITIALIZED_PATHS for this DB.  Use
         # connect_closing: `with connect() as conn` does NOT close the fd, and
@@ -205,8 +206,9 @@ class TestBoardCRUD:
         # connect() gets a fresh schema-init pass.
         assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
 
-        # Simulate the event-stream poll: re-open the same slug. connect()
-        # recreates the directory + empty .db; the schema must be re-applied.
+        # Simulate the board being re-created at the same slug: the schema
+        # must be re-applied on the fresh DB file.
+        kb.create_board("recycle")
         with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
@@ -372,3 +374,58 @@ class TestCLI:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Archived / deleted board resurrection (#43243)
+# ---------------------------------------------------------------------------
+
+class TestBoardResurrection:
+    """Read/watch paths must not resurrect archived or deleted boards.
+
+    Stale dashboard tabs, gateway notifiers and event-stream pollers can hand
+    ``connect(board=<slug>)`` a slug whose board was archived (moved to
+    ``_archived/`` with an ``archived`` tombstone) or hard-deleted
+    (``rmtree``).  ``connect`` must refuse to recreate the directory/DB, and
+    ``list_boards`` must not surface a DB-only stub as an active board.
+    """
+
+    def test_connect_does_not_recreate_archived_board(self, fresh_home):
+        kb.create_board("gone")
+        kb.remove_board("gone", archive=True)
+        tombstone = kb.board_metadata_path("gone")
+        assert tombstone.exists() and kb.read_board_metadata("gone")["archived"] is True
+        with pytest.raises(ValueError, match="archived"):
+            kbc.connect(board="gone")
+        assert not (kb.board_dir("gone") / "kanban.db").exists()
+
+    def test_connect_does_not_recreate_deleted_board(self, fresh_home):
+        kb.create_board("nuked")
+        kb.remove_board("nuked", archive=False)
+        assert not kb.board_dir("nuked").exists()
+        with pytest.raises(ValueError, match="does not exist"):
+            kbc.connect(board="nuked")
+        assert not kb.board_dir("nuked").exists()
+
+    def test_connect_still_opens_live_board(self, fresh_home):
+        kb.create_board("live")
+        with kbc.connect_closing(board="live") as conn:
+            conn.execute("SELECT 1").fetchone()
+        assert kb.board_exists("live")
+
+    def test_list_boards_ignores_db_only_stub(self, fresh_home):
+        # Simulate the historical stub shape: kanban.db with no board.json.
+        stub = kb.board_dir("ghost")
+        stub.mkdir(parents=True)
+        (stub / "kanban.db").touch()
+        assert "ghost" not in [b["slug"] for b in kb.list_boards()]
+        assert "ghost" not in [b["slug"] for b in kb.list_boards(include_archived=True)]
+
+    def test_archive_tombstone_keeps_name(self, fresh_home):
+        kb.create_board("keepname", name="My Board")
+        kb.remove_board("keepname", archive=True)
+        meta = kb.read_board_metadata("keepname")
+        assert meta["archived"] is True
+        assert meta["name"] == "My Board"
+        assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
+        assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]

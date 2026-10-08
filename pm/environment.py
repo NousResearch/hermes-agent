@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import TextIO
 
+from pm.filesystem import native
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
 
@@ -142,7 +143,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextSink) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
     deadline = time.monotonic() + timeout
-    proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(command, cwd=native(cwd), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=0)
     pipe = proc.stdout
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
@@ -284,11 +285,13 @@ class PythonEnvironment:
             from pm.index_config import is_index_redirect
 
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
-        env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
-                   UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # uv is a child: it gets the ordinary spelling of store paths (pm.filesystem.native),
+        # or the venv it writes would record the extended-length one in pyvenv.cfg.
+        env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
+                   UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
-            command = [str(self.uv), *args]
+            command = [native(self.uv), *map(native, args)]
             if self.no_config and "--no-config" not in command:
                 command.append("--no-config")
             if self.offline:
@@ -314,7 +317,7 @@ class PythonEnvironment:
                         raise
                     tail.close(result.returncode == 0)
                     return result
-                return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
+                return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout)
             except subprocess.TimeoutExpired as exc:
                 from pm.index_config import TIMEOUT_HINT

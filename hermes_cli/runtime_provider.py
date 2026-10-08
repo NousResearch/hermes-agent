@@ -224,6 +224,18 @@ def _effective_model(model_cfg: Dict[str, Any], target_model: Optional[str]) -> 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
     configured_mode = _configured_api_mode("copilot", model_cfg)
     if configured_mode:
+        # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
+        # per-model requirement. Copilot serves ``gpt-5-mini`` on chat completions only; a
+        # Responses-API request there silently succeeds but returns no reasoning/thinking
+        # content (#46527). The stale value commonly survives an ordinary flow: the Copilot
+        # OAuth setup writes ``api_mode: codex_responses`` (correct for the gpt-5.4-mini it
+        # initially selects), then the user switches to gpt-5-mini without the mode being
+        # recomputed. The check is the pure-regex Copilot exception — no network call; a
+        # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
+        model_name = str(_effective_model(model_cfg, target_model)).strip()
+        if (configured_mode == "codex_responses" and model_name
+                and not _models._should_use_copilot_responses_api(model_name)):
+            return "chat_completions"
         return configured_mode
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".

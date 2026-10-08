@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
+from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
@@ -36,6 +37,7 @@ from agent.surface_switch import (
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
@@ -343,15 +345,9 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     # preserves alternation only — scaffold bytes must never land in it, since api_content
     # is substituted back into content on replay (#81841).
     if not (messages and messages[-1].get("role") == "assistant"):
-        placeholder: Dict[str, Any] = {"role": "assistant", "content": visible or ""}
-        if not visible:
-            placeholder["display_kind"] = "hidden"
-            # Hidden row, but a non-empty neutral api_content so the pre-call sanitizer
-            # does not re-heal it every call (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
-            # as assistant text the model echoes it (#81841).
-            from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
-            placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
-        append_message(messages, placeholder)
+        # Hidden row with a neutral api_content (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
+        # as assistant text the model echoes it (#81841).
+        append_message(messages, {"role": "assistant", "content": visible} if visible else hidden_interrupt_placeholder_row())
     # Transcript shows the user's own words; the provider replays the scaffolded form.
     append_message(messages, {"role": "user", "content": text, "api_content": correction})
 
@@ -1530,6 +1526,24 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
+    """The codex app-server's result for this turn, or None when its failure activated a fallback and the
+    generic loop retries the same user turn."""
+    codex_result = agent._run_codex_app_server_turn(
+        user_message=s.user_message, original_user_message=s.original_user_message,
+        messages=s.messages, effective_task_id=s.effective_task_id,
+        should_review_memory=s._should_review_memory,
+    )
+    from agent.turn_recovery import activate_codex_app_server_fallback
+    if not activate_codex_app_server_fallback(agent, codex_result):
+        return codex_result
+    # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+    # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+    s.api_call_count = int(codex_result.get("api_calls") or 0)
+    s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    return None
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1545,6 +1559,7 @@ def _run_conversation_turn(
     turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    prelude: Optional[Prelude] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
@@ -1554,7 +1569,8 @@ def _run_conversation_turn(
     ``title_user_message``: optional pre-injection text for titles only (None uses the
     model-facing message; an empty string suppresses titling for this turn).
     ``persist_user_display_*``:
-    display-only event rendering; the model still receives the message unchanged."""
+    display-only event rendering; the model still receives the message unchanged.
+    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``)."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1596,6 +1612,10 @@ def _run_conversation_turn(
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
+    # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
+    from agent.voice_turn_route import begin_voice_turn_route
+    _ctx.active_system_prompt = begin_voice_turn_route(agent, _ctx.messages, _ctx.active_system_prompt)
 
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
@@ -1619,21 +1639,15 @@ def _run_conversation_turn(
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        codex_result = agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
-        from agent.turn_recovery import activate_codex_app_server_fallback
-        if not activate_codex_app_server_fallback(agent, codex_result):
-            return codex_result
-        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
-        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
-        s.api_call_count = int(codex_result.get("api_calls") or 0)
-        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
+        return codex_result
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
+    if _prelude_action == "return":
+        return _prelude_result
+    while _prelude_action != "break" and (
+        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
+    ):
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1707,6 +1721,7 @@ def run_conversation(
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    prelude: Optional[Prelude] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1716,28 +1731,37 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
+    # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
+    agent._turn_user_intervened = False
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
-        result = _run_conversation_turn(
-            agent,
-            user_message,
-            system_message=system_message,
-            conversation_history=conversation_history,
-            task_id=task_id,
-            stream_callback=stream_callback,
-            persist_user_message=persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            persist_user_display_kind=persist_user_display_kind,
-            persist_user_display_metadata=persist_user_display_metadata,
-            persist_user_platform_id=persist_user_platform_id,
-            moa_config=moa_config,
-            turn_author=turn_author,
-            title_user_message=title_user_message,
-        )
+        try:
+            result = _run_conversation_turn(
+                agent,
+                user_message,
+                system_message=system_message,
+                conversation_history=conversation_history,
+                task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                persist_user_platform_id=persist_user_platform_id,
+                moa_config=moa_config,
+                turn_author=turn_author,
+                title_user_message=title_user_message,
+                prelude=prelude,
+            )
+        finally:
+            end_voice_turn_route(agent)
     result = export_current_turn_boundary(agent, result, user_message)
+    if isinstance(result, dict):
+        result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)
     return result
 

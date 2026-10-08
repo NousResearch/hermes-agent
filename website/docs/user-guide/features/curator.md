@@ -276,11 +276,15 @@ existing `last_activity_at`, so handing over a library you already stopped
 using does not buy it a fresh 90-day window. Expect adopted long-idle skills to
 go `stale` (or `archived`) on the next pass; that is the point.
 
-Adoption is also what unblocks autonomous *improvement*. The background review
-fork refuses to patch a skill that isn't curator-managed, so if it notices one
-of your skills is outdated it will say so and recommend adoption rather than
-edit it. Foreground (user-directed) edits are never affected — you and the
-agent can always edit your own skills on request.
+Adoption only governs *archival*. The background self-improvement review can
+patch, rewrite, and add support files to any skill it learns from (hand-written,
+URL-installed, bundled, hub-installed, external, or pinned), so lessons land in
+the skill that governs the task whoever wrote it. Every such write is recorded
+in the skill ledger. It may archive (delete) only curator-managed skills, never
+pinned ones. To review those writes before they land, turn on
+`skills.write_approval` (see [Gating agent skill writes](./skills.md#gating-agent-skill-writes-skillswrite_approval)).
+A bundled or hub-installed skill the review has edited counts as locally
+modified, so `hermes update` / `hermes skills update` stop overwriting it.
 
 :::note `created_by` is a policy flag, not a provenance claim
 The stored field is named `created_by`, but it is consumed as "may autonomous

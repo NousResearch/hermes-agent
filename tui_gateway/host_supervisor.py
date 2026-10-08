@@ -82,7 +82,7 @@ def _check_output(argv: list[str], **kwargs: Any) -> str:
     """Stripped stdout of a short subprocess, or ``""`` on any failure."""
     with contextlib.suppress(Exception):
         return subprocess.check_output(
-            argv, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+            argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
             timeout=2, **kwargs).strip()
     return ""
 

@@ -35,12 +35,14 @@ def completion_tail(monkeypatch):
 
     spawned = Spawned()
 
-    def call(command, **kwargs):
+    def run(command, **kwargs):
         spawned.append(command)
         spawned.kwargs = kwargs
-        return spawned.exit_code
+        return subprocess.CompletedProcess(command, spawned.exit_code)
 
-    monkeypatch.setattr(venv_sync.subprocess, "call", call)
+    from hermes_cli import update_custody
+
+    monkeypatch.setattr(update_custody, "run", run)
     return spawned
 
 

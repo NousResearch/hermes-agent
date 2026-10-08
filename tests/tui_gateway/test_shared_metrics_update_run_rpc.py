@@ -20,6 +20,6 @@ def test_desktop_update_run_is_bounded_and_never_carries_raw_text(monkeypatch):
     assert response["result"] == {"ok": True}
     assert rows == [(contract.UPDATE_RUN_MARK, {
         "apply_mode": "package", "duration_bucket": "5m_to_15m", "failed_stage": "other",
-        "from_version_age_bucket": "gte_90d", "kind": "desktop", "outcome": "failed",
+        "from_version_age_bucket": "gte_90d", "kind": "desktop", "outcome": "failed", "failure_class": "unknown",
     })]
     assert contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, rows[0][1])

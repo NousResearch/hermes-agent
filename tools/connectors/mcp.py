@@ -94,7 +94,9 @@ def _catalog_entry(name: str):
 
     entry = get_entry(name)
     if entry is None:
-        raise ValueError(f"no catalog entry '{name}'")
+        missing = ValueError(f"no catalog entry '{name}'")
+        missing.failure_class = "config_invalid"  # type: ignore[attr-defined]
+        raise missing
     return entry
 
 
@@ -138,11 +140,11 @@ class _CatalogBackend:
             entry = _catalog_entry(name)
             _check_declared(name, entry, env)
             return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit)
-        except Exception:
+        except Exception as exc:
             # An abandoned browser authorization is a cancel, not a failed install: only a flow
             # that cannot start is counted here.
             if fresh:
-                record_mcp_install("catalog", name, "failed")
+                record_mcp_install("catalog", name, "failed", error=exc)
             raise
 
     def install(self, name: str, env: Dict[str, str]) -> List[str]:
@@ -179,7 +181,9 @@ class _CatalogBackend:
         finally:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
-            raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected = RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
+            raise rejected
         _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
@@ -207,7 +211,9 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
     declared = {spec.name for spec in (entry.auth.env or [])}
     for key in env:
         if key not in declared:
-            raise ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared = ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared.failure_class = "config_invalid"  # type: ignore[attr-defined]
+            raise undeclared
         validate_env_var_name_for_write(key)
 
 

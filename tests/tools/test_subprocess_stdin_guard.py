@@ -86,3 +86,12 @@ def test_splatted_kwargs_helper_counts_only_when_it_sets_stdin():
     assert len(guard.find_subprocess_calls(unsafe_const, "x.py")) == 1
     assert len(guard.find_subprocess_calls(undefined, "x.py")) == 1
     assert [v["line"] for v in guard.find_subprocess_calls(unrelated_later, "x.py")] == [3]
+
+
+def test_call_with_arguments_on_the_next_line_is_checked():
+    """A call whose arguments start on the line after ``(`` is found and checked."""
+    guard = _load_guard()
+    multiline = "import subprocess\nsubprocess.run(\n    ['ffmpeg', '-y'],\n    check=True,\n)\n"
+    assert [v["line"] for v in guard.find_subprocess_calls(multiline, "x.py")] == [2]
+    fixed = multiline.replace("check=True,", "stdin=subprocess.DEVNULL, check=True,")
+    assert guard.find_subprocess_calls(fixed, "x.py") == []

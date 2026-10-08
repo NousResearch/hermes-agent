@@ -156,7 +156,7 @@ def test_docker_config_migrate_restores_backups_after_failed_migration(
     env_path.write_text(original_env, encoding="utf-8")
 
     monkeypatch.setattr(
-        module, "_read_config_version_stamp",
+        module, "read_config_version_stamp",
         lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
     monkeypatch.setattr(module, "get_config_path", lambda: config_path)
     monkeypatch.setattr(module, "get_env_path", lambda: env_path)
@@ -189,7 +189,7 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     env_path.write_text(original_env, encoding="utf-8")
 
     monkeypatch.setattr(
-        module, "_read_config_version_stamp",
+        module, "read_config_version_stamp",
         lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
     monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
     monkeypatch.setattr(module, "get_config_path", lambda: config_path)

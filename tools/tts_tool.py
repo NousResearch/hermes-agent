@@ -266,12 +266,42 @@ def _finalize_voice_delivery(
 
 
 # --- Main tool function ---
+_once_warnings: set = set()
+
+
+def _warn_ignored_tts_provider_override(requested: str, configured: str) -> None:
+    """Once-per-process (per distinct requested value) warning for ignored per-call provider
+    overrides — a stale session whose cached tool schema still advertises the param would
+    otherwise repeat it every call; and callers with no tts config at all are silent (nothing
+    to disagree WITH — default resolution just runs). See #90109."""
+    if not configured:
+        return
+    key = ("tts_provider_override", requested)
+    if key in _once_warnings:
+        return
+    _once_warnings.add(key)
+    logger.warning(
+        "Ignoring per-call TTS provider override %r; tts.provider is %r",
+        requested,
+        configured,
+    )
+
+
 def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
-    resolve the provider name."""
+    resolve the provider name. ``tts.provider`` in config.yaml is the authoritative backend
+    selector (#90109): the per-call argument stays for internal/test callers, but a value that
+    disagrees with the configured provider is ignored — the model-facing schema no longer
+    advertises the override, and a leaked platform hint passing one anyway must not reroute
+    speech to another vendor behind the operator's back."""
     if speed is not None:
         tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
+    configured_provider = _get_provider(tts_config)
+    if provider:
+        requested = provider.lower().strip()
+        if requested and requested != configured_provider:
+            _warn_ignored_tts_provider_override(requested, configured_provider)
+    return tts_config, configured_provider
 
 
 def _session_platform() -> tuple:
@@ -629,16 +659,6 @@ TTS_SCHEMA = {
                     "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
                     "voice-design servers). Silently ignored by backends that don't support it."
                 )
-            },
-            "provider": {
-                "type": "string",
-                "description": (
-                    "Optional TTS provider override. Accepts built-in names "
-                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
-                    "neutts, kittentts, piper), user-declared command provider "
-                    "names from tts.providers.<name>, or plugin-registered names. "
-                    "When omitted, the configured tts.provider from config.yaml is used."
-                )
             }
         },
         "required": ["text"]
@@ -651,7 +671,7 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        **{k: args.get(k) for k in ("output_path", "speed", "instructions", "provider")}),
+        **{k: args.get(k) for k in ("output_path", "speed", "instructions")}),
     check_fn=check_tts_requirements,
     emoji="🔊",
     dynamic_schema_overrides=_tts_schema_overrides)

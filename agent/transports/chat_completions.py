@@ -8,10 +8,9 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import MESSAGE_UID
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
@@ -487,12 +486,11 @@ class ChatCompletionsTransport(ProviderTransport):
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
 
         is_kimi = params.get("is_kimi", False)
-        is_lmstudio = params.get("is_lmstudio", False)
         supports_reasoning = params.get("supports_reasoning", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
-        # Kimi / TokenHub / LM Studio: top-level reasoning_effort (unless thinking disabled).
+        # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)
         if is_kimi and not thinking_off:
@@ -504,11 +502,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)
             )
         if params.get("is_tokenhub", False) and not thinking_off:
-            api_kwargs["reasoning_effort"] = "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
-        if is_lmstudio and supports_reasoning:
-            _lm_effort = resolve_lmstudio_effort(reasoning_config, params.get("lmstudio_reasoning_options"))
-            if _lm_effort is not None:
-                api_kwargs["reasoning_effort"] = _lm_effort
+            api_kwargs["reasoning_effort"] = tokenhub_effort(_e)
 
         extra_body: dict[str, Any] = {}
         is_openrouter = params.get("is_openrouter", False)
@@ -523,8 +517,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if is_kimi:
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
-        # LM Studio is handled above via top-level reasoning_effort.
-        if supports_reasoning and not is_lmstudio:
+        if supports_reasoning:
             if params.get("is_github_models", False):
                 if params.get("github_reasoning_extra") is not None:
                     extra_body["reasoning"] = params["github_reasoning_extra"]
@@ -565,11 +558,15 @@ class ChatCompletionsTransport(ProviderTransport):
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
+        # LM Studio's probed allowed_options ride only when present, so plugin hooks written
+        # against the older keyword set (no ``**context``) keep working.
+        _lm_options = params.get("lmstudio_reasoning_options")
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
             session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+            **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
 

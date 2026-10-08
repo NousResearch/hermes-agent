@@ -112,6 +112,10 @@ def transition(tmp_path):
                  package / "update_lock.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    (package / "gitlock.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "convert_treeless_checkout_first = lambda root: event('convert')\n"
+    )
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(
@@ -151,6 +155,22 @@ def transition(tmp_path):
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
         "def record_stage(*args, **kwargs): pass\n"
+        "def record_build_stage(*args, **kwargs): pass\n"
+        "def record_skip(*args, **kwargs): pass\n"
+        "TAIL_FOLLOWUPS = frozenset({'dependencies', 'launchers', 'build', 'maintenance', 'profile_sync',\n"
+        "                            'config_migration', 'completion'})\n"
+        "finalized_receipt = lambda update_id: None\n"
+        "def record_followup(step, reason, **kwargs):\n"
+        "    print(f'  ⚠ Update follow-up {step!r} did not finish: {reason}')\n"
+        "    r = _current.get()\n"
+        "    if r is not None: r.data.setdefault('followups', []).append({'step': step, 'reason': reason})\n"
+        "def amend_terminal_followup(*args): pass\n"
+        "def record_user_action(*args): pass\n"
+        "def _receipt_dir():\n"
+        "    return pathlib.Path(os.environ['HERMES_HOME']) / 'logs/update_receipts'\n"
+        "def read_run_record(update_id):\n"
+        "    for path in _receipt_dir().glob(f'update_*_{update_id}.json'):\n"
+        "        return path, json.loads(path.read_text(encoding='utf-8-sig'))\n"
         "def finalize_pending_update_receipt(code, reason):\n"
         "    r = _current.get()\n"
         "    if r is None: return\n"
@@ -218,6 +238,10 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     by_name = {event["name"]: event for event in events}
     assert by_name["activate"]["pid"] == by_name["build"]["pid"]
     assert by_name["prepare"]["pid"] != by_name["build"]["pid"]
+    # A treeless checkout converts before the dependency work, where a pre-fix Desktop's history
+    # walks filled disks (#129514).
+    names = [e["name"] for e in events]
+    assert by_name["convert"]["pid"] == by_name["prepare"]["pid"] and names.index("convert") < names.index("tools")
     assert Path(by_name["build"]["python"]).is_relative_to(root.parent / "selected-python")
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}
@@ -227,13 +251,11 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     assert [e["name"] for e in events].index("exit_marker") < [e["name"] for e in events].index("restart")
 
 
-@pytest.mark.parametrize("code", [0, 23])
-def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transition, monkeypatch, code):
+def _run_cmd_update(monkeypatch, request, capsys):
+    """``hermes update --gateway`` whose impl hands this request to the real post-commit completion."""
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_receipt, update_lock
+    from hermes_cli import main, update_cmd, update_receipt
 
-    root, git, old, new, request = transition
-    (root / "hermes_cli/update_completion.py").write_text(f"import os\nos._exit({code})\n")
     monkeypatch.setenv("HERMES_HOME", request["home"])
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
@@ -245,18 +267,127 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
         update_cmd._complete_source_update(request)
 
     monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
-    with pytest.raises(SystemExit) as error:
+    try:
         main.cmd_update(SimpleNamespace(gateway=True))
-    assert error.value.code == (code or 1)
-    receipt = update_receipt.read_latest_receipt()
-    assert receipt["outcome"] == "failed"
-    assert receipt["exit_code"] == (code or 1)
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    return code, update_receipt.read_latest_receipt(), capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", [0, 23, -9])
+def test_missing_child_result_is_an_owed_completion_and_releases_lock(transition, monkeypatch, capsys, code):
+    """Review P2 (invariant 3): the tree already moved, so a completion that died without a result
+    (exit 0/23 with no answer, SIGKILL/OOM) is an owed ``completion`` follow-up, never "Update failed".
+
+    Was exit ``code or 1``, receipt ``failed``, ``.update_exit_code`` 1 and the paused gateways left
+    paused: that pinned the failure invariant 3 forbids.
+    """
+    from hermes_cli import update_lock
+
+    root, git, old, new, request = transition
+    die = f"os._exit({code})" if code >= 0 else "os.kill(os.getpid(), 9)"
+    (root / "hermes_cli/update_completion.py").write_text(f"import os\n{die}\n", encoding="utf-8")
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 0, out
     assert receipt["update_id"] == request["receipt"]["update_id"]
-    assert request["windows_resume"]["resume_needed"] is True
-    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "1"
+    assert receipt["outcome"] == "success"
+    assert receipt["exit_code"] == 0
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert "Update failed" not in out
+    # The Desktop hand-off scripts must not read this as a plain "Update complete." (review P4).
+    assert "Desktop app build owed: the update completion did not finish" in out
+    # This process resumes what the lost child never did, and the gateway watcher hears success.
+    assert request["windows_resume"]["resume_needed"] is False
+    assert (Path(request["home"]) / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
     lock = update_lock.UpdateLock()
     assert lock.acquire()
     lock.release()
+
+
+def test_completion_spawn_failure_after_commit_is_owed(transition, monkeypatch, capsys):
+    """Review P2: an OSError while starting the completion (temporary directory, request file,
+    Popen) after the commit point is the same owed ``completion`` follow-up and exit 0."""
+    import tempfile
+
+    root, git, old, new, request = transition
+
+    def no_temporary_directory(*args, **kwargs):
+        raise FileNotFoundError(2, "No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", no_temporary_directory)
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 0, out
+    assert receipt["outcome"] == "success"
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert "No usable temporary directory" in receipt["followups"][0]["reason"]
+    assert (Path(request["home"]) / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
+
+
+def test_lost_completion_with_parked_local_changes_stays_partial(transition, monkeypatch, capsys):
+    """The one documented exception survives the owed path: parked user changes still exit 1."""
+    from hermes_cli import update_cmd
+
+    root, git, old, new, request = transition
+    (root / "hermes_cli/update_completion.py").write_text("import os\nos._exit(0)\n", encoding="utf-8")
+    notice = "⚠ Your local changes are parked in stash@{0}; re-apply them by hand."
+    monkeypatch.setattr(update_cmd, "_unrestored_autostash_notice", lambda: notice)
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 1, out
+    assert receipt["outcome"] == "partial"
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert notice in out
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("never_built", ["dependencies", "refused", "died"])
+@pytest.mark.parametrize("desktop", [True, False])
+def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsys, never_built, desktop):
+    """Review P4 (F6): the hand-off scripts read ``Desktop app build owed:`` to tell the user the app is
+    stale. The builder prints it only when the build fails; a run whose build never ran (dependency
+    sync failed, the tail refused by the update lock, the prepared child died) must print it too."""
+    scripts = Path(update_completion.__file__).parents[1] / "scripts/desktop-update"
+    for script in ("posix.sh", "windows.ps1"):  # the exact prefix the hand-off scripts match
+        assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8-sig")
+    assert update_completion.DESKTOP_BUILD_OWED == "Desktop app build owed:"
+    root, git, old, new, request = transition
+    request["desktop"] = desktop
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    if never_built == "dependencies":
+        (root / "pm/__init__.py").write_text("def sync_venv(**kw): raise RuntimeError('dependency refused')\n",
+                                            encoding="utf-8")
+    elif never_built == "refused":
+        (root / "hermes_cli/source_completion.py").write_text(
+            "def complete_source_checkout(*args, **kwargs):\n"
+            "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n", encoding="utf-8")
+    else:
+        (root / "hermes_cli/source_completion.py").write_text(
+            "import os\n"
+            "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), 9)  # posix-only test\n",
+            encoding="utf-8")
+    result = update_completion.run_completion(request)
+    out = capsys.readouterr().out
+    assert result["exit_code"] == 0, out
+    owed = [line.strip() for line in out.splitlines() if line.strip().startswith("Desktop app build owed: ")]
+    assert len(owed) == (1 if desktop else 0), out
+
+
+def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkeypatch):
+    """Review P1: the bootstrap's gateway status write is best effort, like
+    ``_write_gateway_update_exit_code``; the committed run still answers its result with exit 0."""
+    from hermes_cli import venv_sync
+
+    monkeypatch.setattr(venv_sync, "arm_completion", lambda root: None)
+    receipt = {"update_id": "u1", "outcome": "success", "finished_at": "now"}
+    monkeypatch.setattr(update_completion, "_read_terminal_receipt", lambda request: receipt)
+    home = tmp_path / "home-is-a-file"
+    home.write_text("x", encoding="utf-8")
+    result = tmp_path / "result.json"
+    request = {"source": str(tmp_path), "receipt": {"update_id": "u1"}, "gateway_mode": True,
+               "home": str(home), "pm_receipt": None}
+    assert update_completion._settle_after_commit(request, result, "dependencies", "pip failed") == 0
+    answer = json.loads(result.read_text(encoding="utf-8-sig"))
+    assert answer["exit_code"] == 0 and answer["receipt"] == receipt
 
 
 @pytest.mark.parametrize("cleanup_failure", [None, "kill", "wait"])
@@ -326,21 +457,28 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
         monkeypatch.setattr(subprocess, "Popen", capture_child)
         update_cmd._complete_source_update(request)
 
-    monkeypatch.setattr(sys, "stdout", Interrupt())
+    stdout = Interrupt()
+    monkeypatch.setattr(sys, "stdout", stdout)
     monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
-    with pytest.raises(KeyboardInterrupt) as error:
+    # Was KeyboardInterrupt + a ``failed`` receipt: Ctrl-C after the commit point is an interrupt
+    # (exit 130), and the receipt keeps the truth the child already wrote (C3, item 5).
+    with pytest.raises(SystemExit) as error:
         main.cmd_update(SimpleNamespace(gateway=True))
+    assert error.value.code == 130
     assert interrupted, "child never published success before cancellation"
     assert children[0].poll() is not None
     assert children[0].stdout.closed
     assert waits and all(timeout is not None and timeout > 0 for timeout in waits)
+    assert isinstance(error.value.__cause__, KeyboardInterrupt)
     if cleanup_failure:
-        assert error.value.__cause__ is cleanup_error
+        assert error.value.__cause__.__cause__ is cleanup_error
+    assert "Interrupted after the code was updated" in stdout.getvalue()
     receipt = update_receipt.read_latest_receipt()
     assert receipt["update_id"] == request["receipt"]["update_id"]
-    assert receipt["outcome"] == "failed"
-    assert receipt["exit_code"] == 1
+    assert receipt["outcome"] == "interrupted"  # the child was stopped before it closed the run
+    assert receipt["exit_code"] == 130
     assert receipt["stop_reason"].startswith("KeyboardInterrupt:")
+    # The gateway watcher still hears the interrupt (a non-zero exit is fine for Ctrl-C).
     assert marker.read_text().strip() == "1"
     lock = update_lock.UpdateLock()
     assert lock.acquire()
@@ -358,11 +496,17 @@ def test_killed_selected_python_returns_signal_exit_status(transition):
         "def build_update_products(*a, **kw): os.kill(os.getpid(), signal.SIGKILL)\n"
     )
     result = update_completion.run_completion(request)
-    assert result["exit_code"] == 137
+    # Was 137: the tree already moved, so a prepared child that dies without a result is an owed
+    # ``completion`` follow-up (C3/A6), the tail obligation armed for the next launch.
+    assert result["exit_code"] == 0
+    assert result["receipt"]["outcome"] == "success"
+    assert [f["step"] for f in result["receipt"]["followups"]] == ["completion"]
+    assert "exited 137" in result["receipt"]["followups"][0]["reason"]
     assert result["pm_receipt"]["update_id"] == request["receipt"]["update_id"]
 
 
-def test_failed_build_preserves_exit_status_without_maintenance(transition):
+def test_failed_build_after_commit_is_a_followup_and_later_steps_still_run(transition):
+    """Contract C3: the code is committed, so a failed product build cannot fail the update."""
     from hermes_cli import update_completion
 
     root, git, old, new, request = transition
@@ -372,18 +516,28 @@ def test_failed_build_preserves_exit_status_without_maintenance(transition):
         "def build_update_products(*a, **kw): raise subprocess.CalledProcessError(23, ['builder'])\n"
     )
     result = update_completion.run_completion(request)
-    assert result["exit_code"] == 23
-    assert result["receipt"]["outcome"] == "failed"
+    # Was 23 / "failed": a post-commit build failure exits 0 with a success receipt.
+    assert result["exit_code"] == 0
+    assert result["receipt"]["outcome"] == "success"
+    # The failure is not silent: it is a named receipt follow-up.
+    assert [f["step"] for f in result["receipt"]["followups"]] == ["build"]
+    # The tail obligation stays armed so the next launch / `hermes update` rebuilds.
     assert (Path(request["home"]) / "completion-pending").read_text() == "owed"
     events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
-    assert "maintenance" not in events
-    assert "restart" not in events
-    assert "emergency_resume" in events
+    # Was "not in": the failed build no longer skips maintenance (config migration) ...
+    assert "maintenance" in events
+    # ... nor the gateway restart and its verification.
+    assert "restart" in events and "verify" in events
+    # The tail was not complete, so the install stamp is not written.
+    assert "stamp" not in events
+    # The gateway watcher hears success: the code it runs is the committed code.
+    assert {"name": "exit_marker", "ok": True}.items() <= next(
+        json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()
+        if json.loads(line)["name"] == "exit_marker").items()
 
 
-def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch):
-    from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_completion, update_receipt
+def test_prepare_failure_preserves_correlated_pm_receipt(transition):
+    from hermes_cli import update_completion
 
     root, git, old, new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -392,24 +546,17 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch
     )
     with (root / "pm/receipt.py").open("a") as stream:
         stream.write("last_for_update = lambda update_id: {'update_id': update_id, 'outcome': 'refused', 'refusal': {'reason': 'dependency refused'}}\n")
-    monkeypatch.setenv("HERMES_HOME", request["home"])
-    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
-    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
-    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
-
-    def complete(args, gateway_mode):
-        update_receipt.begin_update_receipt()
-        request["receipt"] = update_receipt._current.get().data
-        update_cmd._complete_source_update(request)
-
-    monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
-    with pytest.raises(SystemExit) as error:
-        main.cmd_update(SimpleNamespace(gateway=True))
-    assert error.value.code == 1
-    receipt = update_receipt.read_latest_receipt()
-    assert receipt["update_id"] == request["receipt"]["update_id"]
-    assert receipt["pm_sync_outcome"] == "refused"
-    assert receipt["pm_refusal"] == {"reason": "dependency refused"}
+    result = update_completion.run_completion(request)
+    # Was exit 1 / no receipt: the dependency sync runs after the tree moved, so its failure is a
+    # ``dependencies`` follow-up (A6) with the tail obligation armed — and the correlated pm
+    # refusal still travels back for the receipt.
+    assert result["exit_code"] == 0
+    assert result["receipt"]["outcome"] == "success"
+    assert [f["step"] for f in result["receipt"]["followups"]] == ["dependencies"]
+    assert "dependency refused" in result["receipt"]["followups"][0]["reason"]
+    assert (Path(request["home"]) / "completion-pending").read_text() == "owed"
+    assert result["pm_receipt"] == {"update_id": request["receipt"]["update_id"], "outcome": "refused",
+                                    "refusal": {"reason": "dependency refused"}}
 
 
 def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, monkeypatch):

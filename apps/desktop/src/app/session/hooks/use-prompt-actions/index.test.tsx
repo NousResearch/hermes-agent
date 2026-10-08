@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
-import { textPart, toChatMessages } from '@/lib/chat-messages'
+import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -6257,15 +6257,19 @@ describe('usePromptActions live-owner refusal (#106217)', () => {
   })
 })
 
-describe('usePromptActions stale multi-window guard (#65047)', () => {
+describe('usePromptActions send from a window behind the stored transcript', () => {
   afterEach(() => {
     cleanup()
     $notifications.set([])
     setSessions(() => [])
   })
 
-  it('refuses prompt.submit when the local transcript is behind and refreshes it', async () => {
-    const storedId = 'stored-stale-submit'
+  it('sends without a pre-send transcript read or a warning, even when another view is ahead (#65047)', async () => {
+    // The backend owns the model's context: a second window shares the live
+    // session, and each turn folds rows other surfaces wrote into the model
+    // history before it runs. The window being behind is only a stale view,
+    // so the send goes out as typed.
+    const storedId = 'stored-behind-submit'
     setSessions(() => [sessionInfo({ id: storedId, profile: 'work-vps', title: 'Remote chat' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -6278,13 +6282,11 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     })
 
     const requestGateway = vi.fn(async () => ({}) as never)
-    const seeds: Record<string, unknown>[] = []
     let handle: HarnessHandle | null = null
 
     await actRender(
       <Harness
         onReady={h => (handle = h)}
-        onSeedState={state => seeds.push(state)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         seedMessages={[
@@ -6295,118 +6297,14 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       />
     )
 
-    expect(await handle!.submitText('stale send from secondary window')).toBe(false)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-
-    const last = seeds.at(-1) as { awaitingResponse?: boolean; busy?: boolean; messages?: unknown[] } | undefined
-    expect(last?.busy).toBe(false)
-    expect(last?.awaitingResponse).toBe(false)
-    expect(last?.messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
-  })
-
-  it('allows prompt.submit when the authoritative transcript is not ahead', async () => {
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: RUNTIME_SESSION_ID,
-      messages: [
-        { content: 'a', role: 'user', timestamp: 1 },
-        { content: 'b', role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={[
-          { id: 'u1', role: 'user', parts: [textPart('a')] },
-          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
-        ]}
-      />
-    )
-
-    expect(await handle!.submitText('fresh enough')).toBe(true)
+    expect(await handle!.submitText('send from a window that missed a turn')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough' },
+      expect.objectContaining({ text: 'send from a window that missed a turn' }),
       1_800_000
     )
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
-  })
-
-  it('does not refuse when raw session rows are longer only because tools fold into chat messages', async () => {
-    const remoteSessionMessages = [
-      { content: 'check the repo', role: 'user' as const, timestamp: 1 },
-      {
-        content: 'Looking.',
-        role: 'assistant' as const,
-        timestamp: 2,
-        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{"command":"ls"}' } }]
-      },
-      {
-        content: '{"output":"ok"}',
-        role: 'tool' as const,
-        tool_call_id: 'tc-1',
-        tool_name: 'terminal',
-        timestamp: 3
-      },
-      { content: 'Done.', role: 'assistant' as const, timestamp: 4 }
-    ]
-
-    const localChat = toChatMessages(remoteSessionMessages)
-
-    expect(remoteSessionMessages.length).toBeGreaterThan(localChat.length)
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: RUNTIME_SESSION_ID,
-      messages: remoteSessionMessages
-    })
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={localChat}
-      />
-    )
-
-    expect(await handle!.submitText('follow-up after tools')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' },
-      1_800_000
-    )
-  })
-
-  it('does not refuse when the authoritative transcript read fails', async () => {
-    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('wrong backend'))
-
-    const requestGateway = vi.fn(async () => ({}) as never)
-    let handle: HarnessHandle | null = null
-
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-        seedMessages={[{ id: 'u1', role: 'user', parts: [textPart('a')] }]}
-      />
-    )
-
-    expect(await handle!.submitText('send anyway')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
-      1_800_000
-    )
   })
 
   it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {

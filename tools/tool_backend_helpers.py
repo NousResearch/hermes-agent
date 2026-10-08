@@ -233,6 +233,19 @@ def read_selection(section: str) -> str | None:
     return None
 
 
+def read_web_capability_selection(capability: Optional[str] = None) -> str | None:
+    """Stored selection that decides ONE web capability (``"search"`` / ``"extract"``):
+    ``web.<capability>_backend`` when set (``"nous"`` = managed gateway, a vendor name =
+    that vendor direct), else the shared :func:`read_selection`. Lets search and extract
+    each choose between the user's own key and the Nous Tool Gateway."""
+    if capability:
+        raw = _raw_section("web") or {}
+        pin = str(raw.get(f"{capability}_backend") or "").strip().lower()
+        if pin:
+            return pin
+    return read_selection("web")
+
+
 def selection_exists(section: str) -> bool:
     """True when ANY selection signal was ever written for the section (wider than
     read_selection: per-capability web keys count too)."""

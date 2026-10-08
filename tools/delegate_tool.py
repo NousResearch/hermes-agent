@@ -110,6 +110,10 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # tools can finish.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
+# After the stale verdict ends the wait, keep polling the worker this long for its real
+# result (#113222): a child that already wrote its final answer often finishes unwinding a
+# moment later, and that recorded result must be collected instead of a synthesized timeout.
+_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""

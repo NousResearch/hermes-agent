@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
+from hermes_state_errors import is_malformed_db_error
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
@@ -1287,7 +1288,7 @@ class SessionSearchMixin:
                 try:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('optimize')")
                     optimized += 1
-                except sqlite3.OperationalError as exc:
+                except sqlite3.DatabaseError as exc:  # SQLITE_CORRUPT is not an OperationalError
                     logger.warning("FTS optimize failed for %s: %s", tbl, exc)
         return optimized
 
@@ -1326,9 +1327,15 @@ class SessionSearchMixin:
                         self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
                         self._conn.commit()
                         rebuilt += 1
-                    except sqlite3.OperationalError as exc:
+                    except sqlite3.DatabaseError as exc:  # SQLITE_CORRUPT is not an OperationalError (#133375)
                         self._conn.rollback()
-                        logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
+                        if is_malformed_db_error(exc):
+                            logger.error(
+                                "FTS rebuild failed with a corruption-class error for %s: %s; "
+                                "run 'hermes sessions repair' (or 'hermes doctor --fix') to rebuild the index offline",
+                                tbl, exc)
+                        else:
+                            logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
         return rebuilt
 
     def _merge_fts_incrementally(self, *, max_pages: int, max_commands: Optional[int] = None) -> int:

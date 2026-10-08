@@ -51,7 +51,9 @@ def run_cmd(cmd: list[str], *, dry_run: bool = False) -> tuple[int, str]:
     if dry_run:
         return 0, "[dry-run]"
     log(f"$ {' '.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False)
+    # health: allow HX006 -- node installs and multi-GB model downloads have no fair upper bound
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                          check=False, stdin=subprocess.DEVNULL)
     out = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode, out
 

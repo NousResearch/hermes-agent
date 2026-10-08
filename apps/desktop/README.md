@@ -119,7 +119,8 @@ publishes Windows and macOS packages; Linux desktop legs are disabled.
 The bundled app carries the Electron shell, native React chat surface, and
 local agent payload. It runs the payload directly from resources. User data
 lives in `HERMES_HOME` outside the app. Bootstrap builds instead provision a
-source installation; Light is a remote-only variant without a local runtime.
+source installation. A remote-only Light variant exists as a build target but
+is not published.
 
 The app has three boundaries:
 

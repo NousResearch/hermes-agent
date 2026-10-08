@@ -325,12 +325,12 @@ def _probe_options(manifest: dict) -> dict:
 
 
 def _run_capability_probe(
-    plugin_dir: Path, manifest: dict, probe: Optional[Tuple[Path, Dict[str, str]]] = None,
+    plugin_dir: Path, manifest: dict, probe: Optional[Tuple[List[str], Dict[str, str]]] = None,
 ) -> Tuple[Optional[dict], str]:
     """Run the recording probe in a scratch subprocess.
 
-    *probe* is ``(interpreter, env)`` of the dependency environment to import the plugin from;
-    None probes this interpreter.
+    *probe* is ``(python argv prefix, env)`` of the dependency environment to import the plugin
+    from (``pm.environments.venv_command``); None probes this interpreter.
 
     Returns ``(recorded, error)`` — exactly one is meaningful: *recorded*
     is the ``{tools, hooks, middleware, commands, providers}`` dict on
@@ -342,7 +342,7 @@ def _run_capability_probe(
         try:
             result = subprocess.run(
                 [
-                    str(probe[0]) if probe else sys.executable,
+                    *(probe[0] if probe else [sys.executable]),
                     "-c",
                     _PROBE_SCRIPT,
                     str(plugin_dir),
@@ -479,10 +479,10 @@ def _check_builtin_collisions(
 
 
 def validate_plugin_dir(
-    plugin_dir: Path, probe: Optional[Tuple[Path, Dict[str, str]]] = None,
+    plugin_dir: Path, probe: Optional[Tuple[List[str], Dict[str, str]]] = None,
 ) -> ValidationReport:
     """Run every admission check against *plugin_dir* and return the report. *probe* is
-    ``(interpreter, env)`` for the capability probe (see ``_run_capability_probe``)."""
+    ``(python argv prefix, env)`` for the capability probe (see ``_run_capability_probe``)."""
     report = ValidationReport()
     plugin_dir = Path(plugin_dir)
 
@@ -643,6 +643,10 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    for server_name, config in package.mcp_servers.items():
+        if config.get("trust") == "untrusted":
+            report.add(f"server trust: {server_name}", True,
+                       "untrusted (Hermes asks before every write-capable tool call)")
     for server_name, server_decl in package.server_declarations.items():
         result = availability(server_decl.declaration)
         detail = result.state

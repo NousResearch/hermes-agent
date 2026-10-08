@@ -33,7 +33,7 @@ def _agent(provider, model):
     return SimpleNamespace(
         provider=provider, model=model, session_id="s1", tools=tools,
         valid_tool_names={"read_file", "todo"}, log_prefix="", _invalid_tool_retries=0, _invalid_json_retries=0,
-        _uniquify_tool_call_ids=lambda calls: None,
+        _uniquify_tool_call_ids=lambda calls, taken=(): None,
         _repair_tool_call=lambda name: "read_file" if name == "Read_File" else None,
         _vprint=lambda *a, **k: None, _buffer_vprint=lambda *a, **k: None, _flush_status_buffer=lambda: None,
         _build_assistant_message=lambda message, finish_reason: {"role": "assistant", "content": ""},

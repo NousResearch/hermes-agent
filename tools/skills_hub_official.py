@@ -356,14 +356,26 @@ class HermesIndexSource(SkillSource):
         if not entry:
             return None
         repo, path = entry.get("repo", ""), entry.get("path", "")
+        github, slug = self._get_github(), path.rstrip("/").rsplit("/", 1)[-1]
+        skills_sh = entry.get("source") in {"skills.sh", "skills-sh"}
         candidates = [entry.get("resolved_github_id")] + ([f"{repo}/{path}"] if repo and path else [])
         for github_id in filter(None, candidates):
-            bundle = self._get_github().fetch(github_id)
-            if bundle:
-                bundle.source = entry.get("source", "hermes-index")
-                bundle.identifier = identifier
-                return bundle
-        return None
+            if bundle := github.fetch(github_id):
+                break
+        else:
+            # skills.sh rows carry the slug as ``path``; when no build resolved it, find the skill in
+            # the repo tree (a slug-named dir, a lone generic ``skills/``, or the repo root) instead
+            # of reporting a live skill as a stale entry (#130129). A concrete GitHub path that is
+            # gone stays gone: never substitute whatever skill remains in that repo.
+            found = skills_sh and repo and slug and (
+                github._find_skill_in_repo_tree(repo, slug) or github._find_repo_root_skill(repo))
+            if not (found and (bundle := github.fetch(found))):
+                return None
+        if skills_sh and bundle.name == "skills":  # same name resolved or not, never a shared "skills/"
+            bundle.name = slug
+        bundle.source = entry.get("source", "hermes-index")
+        bundle.identifier = identifier
+        return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Return metadata from the index (zero API calls)."""

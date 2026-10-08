@@ -50,7 +50,7 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
-    "hermes.cron.jobs.overdue",
+    "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
 )
 
 

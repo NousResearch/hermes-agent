@@ -283,9 +283,31 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
+@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5"])
+@pytest.mark.parametrize("scope", ["", "us.", "global."])
+def test_bedrock_claude_opus_5_prices_like_direct_anthropic(bare, scope):
+    """Regression for #100848: Bedrock bills Claude at Anthropic's per-token
+    rates, so a Bedrock Opus 5 / 5.5 session must price from the snapshot at
+    the direct-Anthropic rates instead of falling through to ``unknown``."""
+    direct = get_pricing_entry(bare, provider="anthropic")
+    scoped = get_pricing_entry(f"{scope}anthropic.{bare}", provider="bedrock")
+    assert direct is not None and scoped is not None
+    assert scoped.source == "official_docs_snapshot"
+    for field in ("input", "output", "cache_read", "cache_write"):
+        attr = f"{field}_cost_per_million"
+        assert getattr(scoped, attr) == getattr(direct, attr), attr
 
 
+def test_static_bedrock_catalog_claude_models_price_from_snapshot():
+    """Every Claude id Hermes offers in the offline Bedrock picker must price
+    from the official snapshot; a missing row records $0 / ``unknown``."""
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
+    claude_ids = [m for m in _PROVIDER_MODELS["bedrock"] if "anthropic.claude" in m]
+    assert claude_ids
+    for model in claude_ids:
+        entry = get_pricing_entry(model, provider="bedrock")
+        assert entry is not None and entry.source == "official_docs_snapshot", model
 
 
 def test_fireworks_router_fast_tier_prices_distinctly():

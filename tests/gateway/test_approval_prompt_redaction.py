@@ -1,10 +1,9 @@
 """Regression test for approval prompt credential redaction (issue #48456).
 
-When Tirith flags a command for containing a credential-shaped pattern, the
-gateway approval prompt must redact the credential from the command text
-before sending it to the chat platform. Without this fix, the raw command
-(with the credential in plaintext) is sent verbatim to Telegram/Discord/etc.,
-undoing Tirith's redaction one layer up.
+When a flagged command contains a credential-shaped value, the gateway approval
+prompt must redact the credential from the command text before sending it to
+the chat platform. Without this fix, the raw command (with the credential in
+plaintext) is sent verbatim to Telegram/Discord/etc.
 
 The redaction is wired through the module-level ``_redact_approval_command``
 seam. These tests bind that seam -- the production wiring -- not just the

@@ -4,10 +4,11 @@
 Behavior tests: tests/ci/test_required_results.py
 
 Input: the JSON ``toJSON(needs)`` of the all-checks-pass job on stdin.
-Any non-``success`` result fails the gate. ``skipped`` additionally fails in
-release mode unless the job is in :data:`EXCLUDED_JOBS` (PR-only jobs that
-cannot run on a tag event, plus the deferred Desktop E2E). The OSV scan is
-advisory in its findings only — its execution is required.
+Failures always fail the gate. A skipped or missing update/E2E consumer also
+fails whenever ``detect.outputs`` selects its lane. Other skips additionally
+fail in release mode unless the job is in :data:`EXCLUDED_JOBS` (PR-only jobs
+that cannot run on a tag event, plus the deferred Desktop E2E). The OSV scan
+is advisory in its findings only — its execution is required.
 
     echo "$NEEDS" | python3 scripts/ci/required_results.py [--release]
 """
@@ -28,6 +29,15 @@ EXCLUDED_JOBS = frozenset((*PR_ONLY_JOBS, *DEFERRED_JOBS))
 
 NEEDS_JSON_OUTPUT = "needs-json"
 
+# Reusable-workflow parents of the update/E2E consumers. The actual detect
+# outputs already arrive in toJSON(needs); a selected consumer cannot skip
+# merely because this is a PR rather than a release.
+_UPDATE_CONSUMER_LANES = {
+    "tests": ("python", "e2e", "e2e_upgrade"),
+    "tests-os": ("python", "desktop_updater", "e2e", "e2e_upgrade"),
+    "e2e-desktop-update": ("e2e_desktop_update",),
+}
+
 
 def evaluate_gate(
     needs: dict[str, dict[str, Any]] | None,
@@ -41,13 +51,17 @@ def evaluate_gate(
     failed: list[str] = []
     allowed_skips: list[str] = []
     entries = needs or {}
+    lanes = (entries.get("detect") or {}).get("outputs") or {}
+    required = {job for job, keys in _UPDATE_CONSUMER_LANES.items()
+                if any(lanes.get(key) in ("true", True) for key in keys)}
     if not entries:
         failed.append("<no-needs>")
+    failed.extend(required - entries.keys())
     for name, info in entries.items():
         result = (info or {}).get("result")
         if result == "success":
             continue
-        if result == "skipped" and (not release or name in EXCLUDED_JOBS):
+        if result == "skipped" and name not in required and (not release or name in EXCLUDED_JOBS):
             allowed_skips.append(name)
             continue
         failed.append(name)

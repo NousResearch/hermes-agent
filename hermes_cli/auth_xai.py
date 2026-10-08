@@ -534,7 +534,9 @@ def _xai_oauth_poll_device_token(
 
     def _error(response, error_payload) -> Exception:
         description = error_payload.get("error_description") or error_payload.get("error") or response.text
-        return _xai_err(f"xAI device-code token polling failed: {description}", "xai_device_token_failed")
+        err = _xai_err(f"xAI device-code token polling failed: {description}", "xai_device_token_failed")
+        err.oauth_error_code = str(error_payload.get("error") or "")  # a declined or expired code is a walk-away
+        return err
 
     return _poll_device_token_generic(
         lambda: client.post(

@@ -523,7 +523,7 @@ class GatewayProcess:
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
             "HERMES_GATEWAY_LOCK_DIR": str(self.root / "gateway-locks"),
             "TZ": "UTC", "PYTHONHASHSEED": "0", "PYTHONUNBUFFERED": "1", "C12_PARENT_PID": str(os.getpid()),
-            "HERMES_DISABLE_LAZY_INSTALLS": "1", "TIRITH_ENABLED": "false",
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
             "AWS_EC2_METADATA_DISABLED": "true", "HERMES_HONCHO_HOST": "hermes",
             "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}".rstrip(os.pathsep),
         })

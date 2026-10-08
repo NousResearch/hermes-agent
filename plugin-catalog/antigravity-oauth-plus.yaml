@@ -1,0 +1,22 @@
+name: antigravity-oauth-plus
+repo: https://github.com/taylorwtf/hermes-antigravity-oauth-plus
+sha: 33a82182303684a40b6ce1e0bd310ac8c2c29682
+version: "0.2.0"
+title: Antigravity OAuth Plus
+description: "Google Antigravity for Hermes with live account model discovery, Hermes-native context handling, cached quota in /usage, and an opt-in five-hour/weekly reset dock. Disclosure — Derived from antigravity-subscription-directsdk and antigravity-oauth; inference, /usage and /credits reads run through Google's official agy CLI and count against the Antigravity/Gemini subscription it is signed in to. The full Hermes system prompt and SOUL.md are written to a temp workspace GEMINI.md each turn. agy runs with Hermes's full environment in a per-session private temp HOME. The plugin symlinks agy's token file into that HOME, hard-links it or as a last resort copies it (copy2 reads the token bytes), and on macOS it also symlinks ~/Library/Keychains. A token refresh by agy through those links can update your real agy login. The plugin itself never writes the vendor store. It probes the OS keyring for presence only and may fall back to /root/.gemini/antigravity-cli when HOME has no token. The opt-in widget setup writes one adapter file to $HERMES_HOME/tui-widgets."
+maintainer: taylorwtf
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/taylorwtf/hermes-antigravity-oauth-plus/blob/33a82182303684a40b6ce1e0bd310ac8c2c29682/README.md
+screenshots:
+  - https://raw.githubusercontent.com/taylorwtf/hermes-antigravity-oauth-plus/33a82182303684a40b6ce1e0bd310ac8c2c29682/docs/usage-widget-redacted.png
+known_issues:
+  - "The provider reuses the official agy CLI credential store through the inherited isolated-HOME symlink/hardlink/copy fallback; see the README security disclosure for maintainer review."
+  - "Native /usage reads cached quota; refresh explicitly. The optional TUI widget requires explicit profile-local setup."
+  - "Unknown model context uses Hermes' native fallback and is not an authoritative Antigravity limit."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

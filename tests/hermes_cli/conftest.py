@@ -57,6 +57,27 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_repo_checkout_lock(monkeypatch, tmp_path_factory):
+    """``cmd_update`` locks the checkout it runs from: in tests, this repository, whose git
+    common dir every parallel test process (and, from a linked worktree, the live install's
+    ``hermes update``) shares. Give each test its own lock file for THIS repo; lock tests on
+    fixture checkouts are unaffected."""
+    from pathlib import Path
+
+    from hermes_cli import update_lock
+
+    repo = Path(update_lock.__file__).resolve().parents[1]
+    real = update_lock.checkout_lock_path
+    private = tmp_path_factory.mktemp("checkout-lock") / "hermes-update.lock"
+
+    def checkout_lock_path(install_root=None):
+        root = Path(install_root) if install_root else repo
+        return private if root.resolve() == repo else real(install_root)
+
+    monkeypatch.setattr(update_lock, "checkout_lock_path", checkout_lock_path)
+
+
+@pytest.fixture(autouse=True)
 def _source_channels_resolve_locally(request, monkeypatch):
     """Every unflagged ``hermes update`` resolves its channel through R2; tests must
     not reach the network for that. Default every channel to a ``source-branch``

@@ -827,34 +827,39 @@ async def cron_fire_webhook(request: Request):
     return JSONResponse(gateway_body, status_code=status_code, headers=headers)
 
 
-@router.get("/api/cron/blueprints")
-async def list_cron_blueprints(profile: Optional[str] = None):
-    """Blueprint catalog as form schemas; the ``deliver`` slot's options are
-    rewritten from the actually configured gateway platforms."""
-    try:
-        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+def _blueprint_catalog_sync(profile: Optional[str]) -> list:
+    """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
+    from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
+    this runs off the event loop, inside the profile scope that picks the plugin manager."""
+    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
 
+    with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
+        catalog = list_blueprints()
         deliver_options = None
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            with _config_profile_scope(profile):
-                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
-        except HTTPException:
-            raise  # an unknown ?profile= is the scope's 404, not a reason for static options
-        except Exception:
+        except Exception:  # health: allow BLE001 -- gateway targets are optional; static options are the fallback
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
 
-        entries = []
-        for r in CATALOG:
-            entry = blueprint_catalog_entry(r)
-            if deliver_options:
-                for f in entry.get("fields", []):
-                    if f.get("name") == "deliver":
-                        f["options"] = deliver_options
-            entries.append(entry)
-        return {"blueprints": entries}
+    entries = []
+    for r in catalog:
+        entry = blueprint_catalog_entry(r)
+        if deliver_options:
+            for f in entry.get("fields", []):
+                if f.get("name") == "deliver":
+                    f["options"] = deliver_options
+        entries.append(entry)
+    return entries
+
+
+@router.get("/api/cron/blueprints")
+async def list_cron_blueprints(profile: Optional[str] = None):
+    """Blueprint catalog (built-ins + the profile's plugin blueprints) as form schemas."""
+    try:
+        return {"blueprints": await _run_cron_dashboard_io(_blueprint_catalog_sync, profile)}
     except HTTPException:
         raise
     except Exception as e:
@@ -862,13 +867,20 @@ async def list_cron_blueprints(profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _blueprint_for_profile(key: str, profile: Optional[str]):
+    from cron.blueprint_catalog import get_blueprint
+
+    with _config_profile_scope(profile):
+        return get_blueprint(key)
+
+
 @router.post("/api/cron/blueprints/instantiate")
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint, get_blueprint
+        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
 
-        blueprint = get_blueprint(body.blueprint)
+        blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
         if blueprint is None:
             raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
         try:

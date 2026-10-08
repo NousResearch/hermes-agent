@@ -223,8 +223,12 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
     prompt_toolkit; silent deny in gateway sessions) and turns callback errors into a deny, whereas
     here a missing channel or failed prompt must stage instead.
 
-    See #15216.
+    ``hermes chat -q`` (and so every kanban worker), cron and unattended platforms can register a callback too,
+    but nobody answers it: stage at once instead of waiting the approval timeout. See #15216.
     """
+    from tools.approval_context import _no_user_can_answer
+    if _no_user_can_answer():
+        return None
     try:
         from tools.terminal_tool import _get_approval_callback
     except Exception:

@@ -9,14 +9,30 @@ overlap behind #102827. The worker's Future owns the teardown instead.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import subprocess
 import threading
 from typing import Optional
 
 
+def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
+    """Done-callback: close a SessionDB whose constructor finished after run_job's init timeout
+    (worker abandoned via ``shutdown(wait=False)``), else its .db/WAL/SHM handles leak to EMFILE.
+
+    If the constructor later completes inside that abandoned worker, the Future's result — an open
+    SessionDB holding .db / WAL / SHM file handles — would be orphaned and never closed, leaking
+    descriptors until EMFILE (#72782). This callback retrieves and closes that eventual late result.
+    """
+    with contextlib.suppress(Exception):
+        db = future.result()
+        if db is not None:
+            from hermes_state_registry import release_or_close
+            release_or_close(db)
+
+
 def defer_teardown_to_running_worker(
     future: Optional[concurrent.futures.Future], session_db, agent, job_id: str, job_name: str,
-    cron_session_id: str,
+    cron_session_id: str, workdir: Optional[str] = None,
 ) -> bool:
     """Return True when the worker is still running and its Future will finalize the session
     and tear the agent down on completion; False when the caller must do it now."""
@@ -27,7 +43,8 @@ def defer_teardown_to_running_worker(
     def _finish(_future) -> None:
         try:
             if session_db:
-                _finalize_cron_session(session_db, agent, job_id, job_name, cron_session_id)
+                _finalize_cron_session(session_db, agent, job_id, job_name, cron_session_id,
+                                       workdir=workdir)
         finally:
             _teardown_cron_agent(agent, job_id)
 

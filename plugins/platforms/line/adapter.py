@@ -342,9 +342,14 @@ def _truthy_env(name: str, default: bool = False) -> bool:
 def _credentials(config) -> Tuple[str, str]:
     """Return ``(channel_access_token, channel_secret)`` from scoped secrets, then ``extra``."""
     extra = getattr(config, "extra", {}) or {}
-    return (
-        _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", ""),
-        _get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret", ""))
+
+    def read(env: str, key: str) -> str:
+        # A whitespace-only or non-string value (YAML ``true``/``0``/null) reads as unset: it must
+        # not key the HMAC with blanks or a guessable str() form such as "True".
+        value = _get_scoped_secret(env) or extra.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return read("LINE_CHANNEL_ACCESS_TOKEN", "channel_access_token"), read("LINE_CHANNEL_SECRET", "channel_secret")
 
 
 def _coerce(cast: Callable[[Any], Any], value: Any, default: Any) -> Any:
@@ -894,7 +899,7 @@ def _unlink_quietly(path: str) -> None:
 
 
 def _env_credentials_present() -> bool:
-    return bool(_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET"))
+    return all(str(_get_scoped_secret(k) or "").strip() for k in ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"))
 
 
 def check_requirements() -> bool:
@@ -931,8 +936,7 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     """Out-of-process Push delivery for cron jobs detached from the gateway (no inbound event → no
     reply token). ``thread_id`` is ignored (no threads); ``media_files`` need the webhook server."""
-    extra = getattr(pconfig, "extra", {}) or {}
-    token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
+    token = _credentials(pconfig)[0]
     if not token or not chat_id:
         return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]

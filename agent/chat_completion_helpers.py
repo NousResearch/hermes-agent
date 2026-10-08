@@ -1505,6 +1505,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
+        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         qwen_session_metadata=_qwen_meta)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
@@ -1521,14 +1522,12 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
-        is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
         qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         provider_name=agent.provider,
     )
 
@@ -2094,81 +2093,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             continue
 
         try:
-            from agent.auxiliary_client import resolve_provider_client
-            from hermes_cli.fallback_config import resolve_entry_api_key
-            # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
-            # of falling through to OpenRouter defaults.
-            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-            fb_api_key_hint = resolve_entry_api_key(fb)
-            fb_api_mode_explicit, fb_api_mode = _fallback_api_mode_hint(fb, fb_provider, fb_base_url_hint)
-            # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
-            # substring — GHSA-76xc-57q6-vm5m.
-            if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-                from agent.secret_scope import get_secret
-                fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
-            # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-            fb_client, _resolved_fb_model = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
-            if fb_client is None:
+            from agent.route_binding import bind_route_entry
+            bound = bind_route_entry(agent, fb, fb_provider, fb_model)
+            if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
                 continue
-            if fb_provider == "moa":
-                # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
-                # ``/model <preset> --provider moa``. The chokepoint's client is the preset's
-                # aggregator: it only proves the preset resolves and the aggregator has credentials.
-                # Installing it as the acting client with the virtual identity is a hybrid nobody
-                # handles (#112525: preset name sent as model id → 404; #112623: every
-                # ``provider == "moa"`` guard and key misfires and the next rebuild swaps in the
-                # facade anyway). Bind the facade with the same pins every other MoA build site uses.
-                fb_base_url, fb_api_mode = "moa://local", "chat_completions"
-            else:
-                try:
-                    from hermes_cli.model_normalize import normalize_model_for_provider
-                    fb_model = normalize_model_for_provider(fb_model, fb_provider)
-                except Exception as _norm_err:
-                    logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
-
-                fb_base_url = str(fb_client.base_url)
-                from hermes_cli.providers import is_actual_route
-                if is_actual_route(fb_provider, fb_base_url):
-                    fb_api_mode = "chat_completions"
-                elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-                    fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
-
-            old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
-
-            # Clear the per-config context_length override so the fallback model's own context
-            # window is resolved instead of the previous model's stale value.
-            # See #22387.
-            agent._config_context_length = None
-            agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
-            agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
-            if hasattr(agent, "_transport_cache"):
-                agent._transport_cache.clear()
-            from agent.turn_recovery import reset_codex_reasoning_replay
-            reset_codex_reasoning_replay(agent)
-            agent._fallback_activated = True
-
-            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
-            if fb_provider == "moa":
-                from agent.moa_loop import bind_moa_runtime
-                bind_moa_runtime(agent, fb_model)
-            else:
-                from agent.client_lifecycle import _swap_fallback_clients
-                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
-
-            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-            sync_credential_pool_entry_id(agent)
-
-            agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-                provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
-            agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
-            _update_fallback_context_compressor(agent)
-            _reresolve_fallback_reasoning_config(agent)
-            _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            old_model, old_provider = bound
+            fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (

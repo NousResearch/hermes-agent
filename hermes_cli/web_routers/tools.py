@@ -382,6 +382,9 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                         "env_vars": env_vars,
                         "post_setup": prov.get("post_setup"),
                         "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                        # Set on the "Nous Subscription" rows: the GUI tells the gateway row apart
+                        # from a BYOK row of the same vendor (both carry web_backend "firecrawl").
+                        "managed_nous_feature": prov.get("managed_nous_feature"),
                         "is_active": is_active,
                         # Server-side readiness: zero-env-var rows are NOT
                         # automatically ready (logged-out Nous rows, never-run
@@ -402,17 +405,25 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                 "name": name, "has_category": cat is not None, "providers": providers,
                 "active_provider": active_provider}
             if name == "web":
-                # Resolve active backends exactly as the web_search/web_extract
-                # dispatchers do, so badges reflect what a call would hit now.
+                # Resolve active backends exactly as the web_search/web_extract dispatchers do, so badges
+                # reflect what a call would hit now — plus whether that call rides the Nous Tool Gateway
+                # or the user's own key (the managed and BYOK Firecrawl rows share one backend name).
                 try:
-                    from tools.web_tools import _get_extract_backend, _get_search_backend
+                    from plugins.web.firecrawl.provider import is_managed_route
+                    from tools.web_tools import _get_extract_backend, _get_search_backend, _managed_web_search
 
                     search_backend = _get_search_backend()
                     extract_backend = _get_extract_backend()
+                    search_managed = _managed_web_search() or (
+                        search_backend == "firecrawl" and is_managed_route("search"))
+                    extract_managed = extract_backend == "firecrawl" and is_managed_route("extract")
                 except Exception:
                     search_backend = extract_backend = None
+                    search_managed = extract_managed = False
                 payload["active_search_backend"] = search_backend
                 payload["active_extract_backend"] = extract_backend
+                payload["search_via_nous"] = bool(search_managed)
+                payload["extract_via_nous"] = bool(extract_managed)
         return payload
 
     return await asyncio.to_thread(_read)
@@ -536,7 +547,12 @@ async def select_toolset_provider(
                         raise _bad_request(f"Provider {body.provider!r} has no web backend key")
                     if body.capability not in web_provider_capabilities(backend):
                         raise _bad_request(f"{body.provider} does not support {body.capability}")
-                    _dict_section(config, "web")[f"{body.capability}_backend"] = backend
+                    # The managed row's web_backend names the vendor serving it ("firecrawl"); writing that
+                    # would read as the user's OWN Firecrawl key. Its pin is "nous" (gateway route).
+                    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
+                    _dict_section(config, "web")[f"{body.capability}_backend"] = (
+                        NOUS_MANAGED_PROVIDER if prov.get("managed_nous_feature") else backend)
                 else:
                     try:
                         apply_provider_selection(name, body.provider, config)

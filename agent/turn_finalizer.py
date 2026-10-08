@@ -751,6 +751,11 @@ def finalize_turn(
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
 
+    # A voice turn's model route ends with the turn: memory sync and the background review
+    # below (and the next turn) run on the session's main model.
+    from agent.voice_turn_route import end_voice_turn_route
+    end_voice_turn_route(agent)
+
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (
         agent._skill_nudge_interval > 0

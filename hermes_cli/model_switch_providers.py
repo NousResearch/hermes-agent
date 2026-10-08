@@ -165,17 +165,19 @@ def _fetch_picker_live_models(
 _picker_prewarm_done = _threading.Event()
 
 
-def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False, for_picker: bool = False) -> bool:
     """Whether *provider* has a credential that can be selected now.
 
     Legacy opaque ``auth.json`` pool values that do not deserialize into ``PooledCredential``
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
-    all-exhausted/dead pool is not authenticated."""
+    all-exhausted/dead pool is not authenticated. ``for_picker`` (human-facing pickers) also
+    accepts a pool whose entries are all in cooldown: a rate-limited provider is not a signed-out
+    one, and limits are per-model for many providers, so another model may still work."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
-            return pool.has_available()
+            return for_picker or pool.has_available()
     except Exception:
         pass
     return raw_pool_present
@@ -318,21 +320,21 @@ def _auth_store_has_provider(*keys: str) -> bool:
         return False
 
 
-def _raw_pool_usable(hermes_id: str) -> bool:
+def _raw_pool_usable(hermes_id: str, *, for_picker: bool = False) -> bool:
     """Section-1 pool check: only consult the pool when auth.json lists a raw entry."""
     try:
         from hermes_cli.auth import _load_auth_store
         store = _load_auth_store()
         if store and store.get("credential_pool", {}).get(hermes_id):
-            return _credential_pool_is_usable(hermes_id, raw_pool_present=True)
+            return _credential_pool_is_usable(hermes_id, raw_pool_present=True, for_picker=for_picker)
     except Exception:
         pass
     return False
 
 
-def _pool_usable(slug: str) -> bool:
+def _pool_usable(slug: str, *, for_picker: bool = False) -> bool:
     try:
-        return _credential_pool_is_usable(slug)
+        return _credential_pool_is_usable(slug, for_picker=for_picker)
     except Exception as exc:
         logger.debug("Credential pool check failed for %s: %s", slug, exc)
         return False
@@ -447,20 +449,23 @@ def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
 
 def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
     """Nous serves a huge live catalog; the picker shows ONLY the curated agentic list, augmented
-    with the Portal's free/paid recommendations (new models surface without a CLI release) and
-    narrowed by org policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
+    with the Portal's free/paid recommendations and paid-tier sale models, then narrowed by org
+    policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
     recommendation fetch still yields a policy-filtered curated list."""
     model_ids = curated.get("nous", [])
     try:
         from hermes_cli.models_pricing import get_pricing_for_provider
         from hermes_cli.models import (
             check_nous_free_tier,
+            union_with_nous_on_sale_models,
             union_with_portal_free_recommendations,
             union_with_portal_paid_recommendations,
         )
         from hermes_cli.auth import get_provider_auth_state
-        # Cache-only: both Portal unions below discard the pricing map (``model_ids, _ = ...``);
-        # only the appended ids matter, so a live catalog fetch here buys nothing but latency.
+        # Cache-only: a cold cache must not hold the picker open. The Portal unions only append ids;
+        # the on-sale union reads the rows the background prewarm filled under the same key the
+        # fetcher registers (base + credential fingerprint), so a logged-in account's cached_only
+        # read finds them.
         pricing = get_pricing_for_provider("nous", cached_only=True) or {}
         try:
             portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
@@ -470,6 +475,7 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
             model_ids, _ = union_with_portal_free_recommendations(model_ids, pricing, portal)
         else:
             model_ids, _ = union_with_portal_paid_recommendations(model_ids, pricing, portal)
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
     except Exception:
         pass
     try:
@@ -597,15 +603,20 @@ def _group_display_name(display_name: str) -> str:
 def _discover_endpoint_models(
     api_key: Any, api_url: str, native_catalog_provider: str, has_explicit_models: bool, *,
     headers: dict | None, api_mode: str | None, probe_live: bool, discovery_allowed: bool,
-    for_picker: bool) -> tuple[list | None, bool]:
+    fast_custom_probe: bool) -> tuple[list | None, bool]:
     """Return ``(models, native_catalog_empty)`` for a custom endpoint row.
 
     ``probe_live`` runs the native-aware picker fetch; otherwise, when discovery is allowed, a
     warm same-fingerprint cache entry still serves the full catalog with no round-trip.
     ``has_explicit_models`` gates the *probe* (a network-cost guard for keyless endpoints that
     declare a catalog), never the cache read — applying it to the read re-pins the endpoint to
-    its declared subset. Returns ``(None, False)`` when nothing usable was found."""
-    timeout = 1.5 if for_picker else 5.0
+    its declared subset. Returns ``(None, False)`` when nothing usable was found.
+
+    ``fast_custom_probe`` picks the discovery budget (1.5s fast / 5s full) independently of the
+    caller's exhausted-pool visibility flag: a picker that keeps cooldown providers visible
+    still deserves the full budget when it is the one surface that live-probes the current
+    custom endpoint."""
+    timeout = 1.5 if fast_custom_probe else 5.0
     if probe_live:
         try:
             live_models = _fetch_picker_live_models(
@@ -699,6 +710,10 @@ class _PickerBuild:
     refresh: bool
     excluded: set
     curated: dict
+    # Discovery budget override for custom endpoints (1.5s fast / 5s full). None keeps the
+    # historical coupling to for_picker; callers that only want exhausted-pool visibility set
+    # for_picker=True, fast_custom_probe=False so their probe budget is unchanged (#103843).
+    fast_custom_probe: bool | None = None
     # GUI read path: catalogs are read from cache only; stale/missing ones warm in the background.
     non_blocking_catalogs: bool = False
     results: list = field(default_factory=list)
@@ -715,6 +730,11 @@ class _PickerBuild:
     @property
     def current_base_url_norm(self) -> str:
         return self.current_base_url.rstrip("/").lower()
+
+    @property
+    def resolved_fast_custom_probe(self) -> bool:
+        """None defers to for_picker so pre-existing callers keep their timeout."""
+        return self.for_picker if self.fast_custom_probe is None else self.fast_custom_probe
 
     def can_probe_custom(self, *, row_is_current: bool) -> bool:
         return bool(self.probe_custom_providers or (self.probe_current_custom_provider and row_is_current))
@@ -789,7 +809,7 @@ class _PickerBuild:
         discovered, native_catalog_empty = _discover_endpoint_models(
             api_key, api_url, native_provider, has_explicit_models,
             headers=headers, api_mode=api_mode, probe_live=probe_live,
-            discovery_allowed=discovery_allowed, for_picker=self.for_picker)
+            discovery_allowed=discovery_allowed, fast_custom_probe=self.resolved_fast_custom_probe)
         return discovered, native_catalog_empty, probe_live
 
 
@@ -823,7 +843,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
         # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
-        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
+        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id, for_picker=b.for_picker)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated, non_blocking=b.non_blocking_catalogs)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -864,16 +884,8 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         # Full auto-seeding pool check catches external stores (Codex CLI ~/.codex/auth.json)
         # not yet in auth.json.
         try:
-            if _credential_pool_is_usable(hermes_slug):
+            if _credential_pool_is_usable(hermes_slug, for_picker=b.for_picker):
                 has_creds = True
-            elif b.for_picker:
-                # Show providers whose pool is entirely in cooldown: limits are per-model for
-                # many providers, so another model may work.
-                try:
-                    from agent.credential_pool import load_pool
-                    has_creds = load_pool(hermes_slug).has_credentials()
-                except Exception:
-                    pass
         except Exception as exc:
             logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
     if not has_creds and hermes_slug == "anthropic":
@@ -951,7 +963,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
+        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug, for_picker=b.for_picker) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
         if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
             # Subprocess-backed providers own their auth; the binary resolving is the credential
@@ -1035,27 +1047,53 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
 def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None:
     """Section 3b: ``model.provider: custom`` + ``model.base_url`` with no named
     providers:/custom_providers row — surface it so /model does not look like it ignored
-    config.yaml."""
-    if not (b.current_provider_norm == "custom" and b.current_base_url and "custom" not in b.seen_slugs):
+    config.yaml.
+
+    The endpoint comes from the caller's current-provider slice when the session is on it,
+    and otherwise from the static config.yaml ``model:`` block: the row used to appear only
+    while it happened to be the active provider, so switching away made it vanish and the
+    unconfigured-canonical fallback substituted a misleading 0-model placeholder (#59702).
+    ``is_current`` is then true only when the caller's slice points back at this URL."""
+    if "custom" in b.seen_slugs:
         return
+    base_url = default_model = ""
+    if b.current_provider_norm == "custom" and b.current_base_url:
+        base_url = b.current_base_url
+        default_model = b.current_model
+    else:
+        try:
+            from hermes_cli.config import load_config
+            cfg_model = load_config().get("model")
+        except Exception:  # health: allow BLE001 -- config.yaml may be user-edited or mid-migration; a read failure must degrade to "no row", never crash the picker
+            cfg_model = None
+        # config.model can be a bare string in older configs (see load_picker_context);
+        # only a mapping carries a provider/base_url to recover here.
+        if not isinstance(cfg_model, dict):
+            return
+        base_url = str(cfg_model.get("base_url") or "").strip()
+        if str(cfg_model.get("provider") or "").strip().lower() != "custom" or not base_url:
+            return
+        default_model = str(cfg_model.get("default", cfg_model.get("name", "")) or "").strip()
     if any(
-        isinstance(cp, dict) and _norm_url(_entry_base_url(cp)) == _norm_url(b.current_base_url)
+        isinstance(cp, dict) and _norm_url(_entry_base_url(cp)) == _norm_url(base_url)
         for cp in (custom_providers or [])):
         return
-    api_url = str(b.current_base_url).strip().rstrip("/")
-    models = [b.current_model] if b.current_model else []
+    api_url = base_url.strip().rstrip("/")
+    is_current = b.current_provider_norm == "custom" and b.current_base_url_norm == _norm_url(api_url)
+    models = [default_model] if default_model else []
     native_catalog_empty = False
     try:
         discovered, native_catalog_empty = _discover_endpoint_models(
             "", api_url, "custom", False, headers=None, api_mode=None,
-            probe_live=bool(b.refresh or b.probe_current_custom_provider), discovery_allowed=True,
-            for_picker=b.for_picker)
+            probe_live=bool(b.refresh or (b.probe_current_custom_provider and is_current)),
+            discovery_allowed=True,
+            fast_custom_probe=b.resolved_fast_custom_probe)
         if discovered is not None:
             models = discovered
     except Exception:
         pass
     b.add_endpoint_row(
-        "custom", "Custom endpoint", api_url, models, True, native_catalog_empty,
+        "custom", "Custom endpoint", api_url, models, is_current, native_catalog_empty,
         source="model-config", shown=_cap_models(models, b.max_models))
 
 
@@ -1189,7 +1227,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> List[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1201,7 +1239,10 @@ def list_authenticated_providers(
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
     the disk cache only and stale/missing ones warm in the background, so a degraded provider
-    never stalls the picker (#114215)."""
+    never stalls the picker (#114215). ``fast_custom_probe`` overrides the custom-endpoint
+    discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps the
+    historical coupling, ``False`` retains the full 5s budget for callers that only want
+    exhausted-pool visibility (#103843)."""
 
     from agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
@@ -1234,7 +1275,7 @@ def list_authenticated_providers(
         max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))
 

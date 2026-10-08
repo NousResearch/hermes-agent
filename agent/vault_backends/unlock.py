@@ -161,11 +161,7 @@ def is_unlocked(backend: str) -> bool:
 
 def can_prompt_here() -> bool:
     """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
-    from tools.approval_context import (
-        _is_cron_approval_context,
-        _is_single_query_approval_context,
-        _is_unattended_platform_approval_context,
-    )
-    if _is_cron_approval_context() or _is_unattended_platform_approval_context() or _is_single_query_approval_context():
+    from tools.approval_context import _no_user_can_answer
+    if _no_user_can_answer():
         return False
     return get_unlock_prompt_callback() is not None

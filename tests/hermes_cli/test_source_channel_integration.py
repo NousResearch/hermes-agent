@@ -52,7 +52,7 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
     return SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
 
 
@@ -125,11 +125,9 @@ def test_retirement_adopts_destination_only_after_success(source, monkeypatch, o
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: None)
     flags = ["--channel", name] if outcome == "transient" else []
     args = source.parser.parse_args(["update", "--yes", *flags])
-    if outcome == "failed":
-        with pytest.raises(SystemExit):
-            update_cmd._cmd_update_impl(args, False)
-    else:
-        update_cmd._cmd_update_impl(args, False)
+    # A completion that answered no terminal receipt ("failed") was SystemExit: after the commit
+    # point it is an owed completion, exit 0 (review P2) -- and still never adopts the destination.
+    update_cmd._cmd_update_impl(args, False)
     expected = {"success": "stable", "already-current": "stable", "failed": name,
                 "transient": name, "concurrent": "my-new-choice"}[outcome]
     assert saved(source)["channel"] == expected
@@ -352,7 +350,7 @@ def test_retirement_refuses_to_downgrade_newer_source(
         git(source.root.parent, "clone", "--depth=1", source.origin.as_uri(), str(source.root))
     if transport == "zip":
         (source.root / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n')
-        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     original = deepcopy(saved(source))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
@@ -382,7 +380,7 @@ def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty
         urls.append(url)
         shutil.copyfile(archive, filename)
     monkeypatch.setattr(urllib.request, "urlretrieve", download)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda req: completed.append(deepcopy(req)))
     if dirty:
@@ -430,11 +428,13 @@ def test_retirement_waits_for_correlated_completion_process(source, monkeypatch,
                "receipt": deepcopy(update_receipt._current.get().data),
                "channel_retirement": {"original": original, "destination": "stable"}}
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: None)
-    if outcome == "success":
-        update_cmd._complete_source_update(request)
-    else:
+    if outcome == "failure":  # the child itself answered a correlated failure
         with pytest.raises(SystemExit):
             update_cmd._complete_source_update(request)
+    else:
+        # An uncorrelated or missing answer was SystemExit: after the commit point it is an owed
+        # completion, exit 0 (review P2). Adoption still waits for a verified completion.
+        update_cmd._complete_source_update(request)
     assert saved(source)["channel"] == ("stable" if outcome == "success" else name)
     child_request = json.loads((source.home / "child-request.json").read_text())
     assert child_request["channel_retirement"]["original"] == original

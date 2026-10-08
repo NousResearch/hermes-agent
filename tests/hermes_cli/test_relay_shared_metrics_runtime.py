@@ -785,7 +785,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
     for package in package_payloads:
-        assert package["schema_version"] == "hermes.shared_metrics.v3"
+        assert package["schema_version"] == "hermes.shared_metrics.v4"
         for metric in package["metrics"]:
             key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
             package_values[key] = package_values.get(key, 0) + metric["value"]

@@ -137,6 +137,10 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
             pgid = getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
             pass
+    if pgid is not None and pgid != proc.pid:
+        # The child does not lead its own group, so it shares ours: killpg would
+        # signal the whole runner process tree. Signal the direct child only.
+        pgid = None
 
     def stop(sig: int, fallback: Callable[[], None]) -> None:
         if pgid is not None:

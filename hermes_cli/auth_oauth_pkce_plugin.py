@@ -54,6 +54,11 @@ class OAuthPKCEConfig:
     allowed_hosts: Tuple[str, ...] = ()
     timeout_seconds: float = 180.0
     label: str = ""
+    # Confidential client behind a broker: called with the grant fields (``grant_type``, ``code`` /
+    # ``refresh_token``, ``redirect_uri``, ``code_verifier``) INSTEAD of POSTing ``token_url``; returns
+    # the token-endpoint JSON or raises ``AuthError``. The broker holds the client secret, so the
+    # plugin owns that transport and ``token_url`` is unused.
+    token_request: Optional[Callable[[Dict[str, str]], Mapping[str, Any]]] = None
 
 
 def _err(provider: str, message: str, code: str):
@@ -78,6 +83,8 @@ def _endpoint_host(provider: str, name: str, url: str) -> str:
 
 def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
     """Refuse a misdeclared config before any network request (login AND refresh call this)."""
+    if cfg.token_request is not None:
+        return  # brokered: no client or token endpoint of our own to check
     if not str(cfg.client_id or "").strip():
         raise _err(provider, "OAuth client_id is missing.", "oauth_client_id_missing")
     authorize_host = _endpoint_host(provider, "authorize_url", cfg.authorize_url)
@@ -91,10 +98,13 @@ def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
 
 
 def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, code: str) -> Dict[str, Any]:
-    """POST the token endpoint and return the rotated pool fields; the payload is never logged."""
-    from hermes_cli.auth import _coerce_ttl_seconds, _default_verify, _utc_now_z
+    """POST the token endpoint (or the plugin's broker) and return the rotated pool fields; the payload
+    is never logged."""
+    from hermes_cli.auth import _default_verify
     from hermes_cli.auth_constants import httpx
 
+    if cfg.token_request is not None:
+        return _token_fields(provider, cfg.token_request(dict(data)), data, code)
     body = {**cfg.extra_token_params, **data, "client_id": cfg.client_id}
     if cfg.audience:
         body.setdefault("audience", cfg.audience)
@@ -105,7 +115,13 @@ def _post_token(provider: str, cfg: OAuthPKCEConfig, data: Dict[str, str], *, co
         raise _err(provider, f"OAuth token request failed: {type(exc).__name__}", code) from exc
     if response.status_code >= 400:
         raise _token_http_error(provider, response, code)
-    payload = response.json()
+    return _token_fields(provider, response.json(), data, code)
+
+
+def _token_fields(provider: str, payload: Mapping[str, Any], data: Dict[str, str], code: str) -> Dict[str, Any]:
+    """Pool fields from a token-endpoint payload; a response without ``refresh_token`` keeps the old one."""
+    from hermes_cli.auth import _coerce_ttl_seconds, _utc_now_z
+
     access_token = str(payload.get("access_token") or "").strip()
     if not access_token:
         raise _err(provider, "OAuth token response carried no access_token.", code)

@@ -1374,6 +1374,7 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     from hermes_cli import kanban_db_dispatch as kbd
     assert kb.get_current_board() == "default"
     board = "other-board"
+    kb.create_board(board)  # explicit creation; connect() must not create boards (#43243)
     conn = kbc.connect(board=board)
     try:
         tid = kb.create_task(conn, title="handoff", assignee="worker")

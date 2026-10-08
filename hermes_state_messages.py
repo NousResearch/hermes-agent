@@ -138,10 +138,18 @@ class SessionMessagesMixin:
         """Serialize list/dict content (multimodal parts) as a sentinel-prefixed JSON string (sqlite3 binds
         only scalars). Lone UTF-16 surrogates (unsanitized web-scraped tool results) are scrubbed here: left
         raw, sqlite3 raises UnicodeEncodeError and the session silently stops persisting. Pairs with
-        :meth:`_decode_content`."""
+        :meth:`_decode_content`.
+
+        A literal string carrying the reserved ``\\x00json:`` prefix is indistinguishable from
+        stored structured content, so it is JSON-string-wrapped (decoded back verbatim on read)
+        instead of written raw — a crafted import can't smuggle the marker in and have the read
+        path decode attacker-chosen structure."""
         if isinstance(content, str):
-            return _sanitize_surrogates(content)
-        if content is None or isinstance(content, (bytes, int, float)):
+            content = _sanitize_surrogates(content)
+            if not content.startswith(cls._CONTENT_JSON_PREFIX):
+                return content
+            # Fall through: escape the reserved prefix by double-encoding the literal.
+        elif content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)  # ensure_ascii escapes surrogates: bindable
@@ -150,7 +158,8 @@ class SessionMessagesMixin:
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+        """Reverse :meth:`_encode_content`; returns scalars unchanged. Fail closed: a reserved-prefix
+        string that isn't valid JSON (a legacy/malformed marker row) returns the raw string."""
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
             return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
                 "Failed to decode JSON-encoded message content; returning raw string")

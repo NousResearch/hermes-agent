@@ -97,9 +97,10 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
     elif platform == "macos":
+        version = channel_request["version"] if channel_request is not None else tag[1:]
         package = single(root.glob(f"*-mac-{arch}.zip"))
-        if not package.name.endswith(f"-{tag[1:]}-mac-{arch}.zip"):
-            raise ValueError("macOS artifact filename differs from release tag")
+        if not package.name.endswith(f"-{version}-mac-{arch}.zip"):
+            raise ValueError("macOS artifact filename differs from requested version")
         app = single(root.glob("mac*/*.app"))
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         signature = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], check=True, capture_output=True, text=True, encoding="utf-8")
@@ -113,8 +114,8 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         if stamp.get("receiverProtocol") == 1:
             row["receiverProtocol"] = 1
         row.update(identity=info["CFBundleIdentifier"], teamId=team.group(1), version=info["CFBundleShortVersionString"], filename=package.name)
-        if row["version"] != (channel_request["version"] if channel_request else tag[1:]):
-            raise ValueError("App version differs from release tag")
+        if row["version"] != version:
+            raise ValueError("App version differs from requested version")
     elif platform == "termux":
         package = single((root / "deb").glob("*.deb"))
         fields = subprocess.check_output(["dpkg-deb", "--field", str(package), "Package", "Version", "Architecture"], text=True, encoding="utf-8")

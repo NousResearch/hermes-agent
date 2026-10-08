@@ -196,6 +196,26 @@ class TestHoldInboundAcrossReconnect:
         assert adapter._held_inbound_events == []
 
     @pytest.mark.asyncio
+    async def test_late_teardown_salvage_on_retired_adapter_reaches_replacement(self):
+        """Teardown of a rebuilt-away adapter can salvage a batch after the replacement drained (#132829)."""
+        from contextvars import ContextVar
+        from plugins.platforms.telegram.update_admission import _Claim
+
+        old, new = _make_adapter(), _make_adapter()
+        old._update_admission = ContextVar("claim", default=_Claim("1:1", None))
+        old._mark_disconnected()
+        new.adopt_held_inbound(old)
+        old._pending_text_batches["k"] = _make_event("late-salvage")
+
+        await old._cancel_pending_delivery_tasks()
+        await new._held_inbound_redispatch_task
+
+        old.handle_message.assert_not_called()
+        assert [c.args[0].text for c in new.handle_message.call_args_list] == ["late-salvage"]
+        assert old._held_inbound_events == []
+        assert old._update_admission.get().accepted  # receipt recorded: no replay after restart
+
+    @pytest.mark.asyncio
     async def test_flush_during_disconnect_holds_popped_event(self):
         """After pop, drop-guard must hold — not destroy — the event.
 

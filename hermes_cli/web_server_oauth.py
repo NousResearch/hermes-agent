@@ -208,7 +208,9 @@ def _oauth_poller(label: str):
                 else:
                     _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
             except Exception as e:
+                from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
                 _log.warning("%s device-code poll failed (session=%s): %s", label, session_id, e)
+                note_oauth_failure(sess, e)
                 with _oauth_sessions_lock:
                     sess["status"] = "error"
                     sess["error_message"] = str(e)

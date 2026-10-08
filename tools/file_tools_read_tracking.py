@@ -11,8 +11,10 @@ full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
 task has paged through at one file version — contiguous pages that reach the last line
 count as a whole-file read), ``full_write_baselines`` (resolved paths whose
 whole-file content this task saw via unredacted read_file page(s) or wrote via
-write_file; required before write_file may overwrite an existing file — patch
-never qualifies) and ``not_found`` (short-TTL negative cache). Every
+write_file, or patched from a baseline it already held; required before write_file
+may overwrite an existing file), ``blind_patches`` (resolved path -> sha256 a patch
+of this task wrote without such a baseline, for the refusal wording) and
+``not_found`` (short-TTL negative cache). Every
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
@@ -52,7 +54,8 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines"):
+    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
+                "blind_patches"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -90,6 +93,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
         ("read_coverage", _READ_TIMESTAMPS_CAP),
         ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
+        ("blind_patches", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -281,6 +285,7 @@ def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str 
     with _read_tracker_lock:
         task_data = _task_data(task_id)
         task_data["full_write_baselines"][str(resolved)] = version
+        task_data["blind_patches"].pop(str(resolved), None)
         _cap_read_tracker_data(task_data)
 
 
@@ -289,6 +294,61 @@ def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
         task_data = _read_tracker.get(task_id) or {}
         baseline = task_data.get("full_write_baselines", {}).get(str(resolved))
     return baseline is not None and _file_version(resolved) == baseline
+
+
+def _known_full_content_sha256(resolved_paths, task_id: str) -> dict:
+    """``{resolved: sha256 hex}`` for each path whose recorded full-write baseline still
+    matches the bytes on disk. Call under the per-path locks, before a patch reads."""
+    with _read_tracker_lock:
+        baselines = dict((_read_tracker.get(task_id) or {}).get("full_write_baselines", {}))
+    known = {}
+    for resolved in {str(r) for r in resolved_paths if r}:
+        baseline = baselines.get(resolved)
+        if baseline is not None and _file_version(resolved) == baseline:
+            known[resolved] = baseline[-1].hex()
+    return known
+
+
+def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resolved: dict) -> None:
+    """After this task's own successful patch: keep the whole-file baseline of each written
+    path when the task knew the exact bytes the patch read (``known``, from
+    ``_known_full_content_sha256``) or the patch created the file (read sha ``""``). Then
+    the task knows every byte it wrote. ``writes`` is ``PatchResult._writes`` in order, so
+    a second edit of the same path chains from the first. The mark re-hashes the disk and
+    requires the bytes the patch wrote, so a writer landing after the patch leaves no
+    baseline. A write the task could not vouch for is noted in ``blind_patches``."""
+    lookup = {raw: r for raw, r in path_to_resolved.items() if r}
+    lookup.update({r: r for r in lookup.values()})
+    known = dict(known)
+    written: dict = {}
+    for path, read_sha, written_sha in writes:
+        resolved = lookup.get(path)
+        if resolved is None:
+            continue  # a backend-side path (sandbox, translated mount): no host baseline
+        vouched = read_sha == "" or (read_sha is not None and read_sha == known.get(resolved))
+        known[resolved] = written_sha if vouched else None
+        written[resolved] = written_sha
+    for resolved, written_sha in written.items():
+        if written_sha is None:
+            continue
+        if known[resolved] is not None:
+            _mark_full_write_baseline(resolved, task_id, written_sha)
+            continue
+        with _read_tracker_lock:
+            task_data = _task_data(task_id)
+            task_data["blind_patches"][resolved] = written_sha
+            _cap_read_tracker_data(task_data)
+
+
+def _is_own_blind_patch(resolved: str, task_id: str) -> bool:
+    """True when the bytes on disk are exactly what this task's own patch wrote without a
+    full-content baseline (a blind patch, or one after a partial view)."""
+    with _read_tracker_lock:
+        written_sha = ((_read_tracker.get(task_id) or {}).get("blind_patches") or {}).get(str(resolved))
+    if written_sha is None:
+        return False
+    version = _file_version(resolved)
+    return version is not None and version[-1].hex() == written_sha
 
 
 _READ_COVERAGE_RANGES_CAP = 256

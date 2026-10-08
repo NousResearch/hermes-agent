@@ -337,9 +337,6 @@ class TestDockerHostBindApproval:
         import tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
                                          has_host_access=False)
         assert res["approved"] is True
@@ -374,9 +371,6 @@ class TestDockerHostBindApproval:
         import tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
                                          has_host_access=True)
         # Must NOT take the silent container fast-path.

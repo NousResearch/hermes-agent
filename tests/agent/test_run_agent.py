@@ -1592,41 +1592,6 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
-    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
-        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        hook_calls = []
-        agent.session_id = "session-1"
-        agent._current_turn_id = "turn-1"
-        agent._current_api_request_id = "api-1"
-
-        def _capture_hook(hook_name, **kwargs):
-            hook_calls.append((hook_name, kwargs))
-            return []
-
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
-
-        with (
-            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
-
-        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
-        assert len(post_calls) == 1
-        assert post_calls[0]["tool_name"] == "web_search"
-        assert post_calls[0]["tool_call_id"] == "c1"
-        assert post_calls[0]["session_id"] == "session-1"
-        assert post_calls[0]["turn_id"] == "turn-1"
-        assert post_calls[0]["api_request_id"] == "api-1"
-        assert post_calls[0]["status"] == "cancelled"
-        assert post_calls[0]["error_type"] == "keyboard_interrupt"
-        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
-
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -3499,6 +3464,7 @@ class TestRunConversation:
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._custom_providers = [{"base_url": agent.base_url, "capabilities": {"answer_in_reasoning": True}}]
         agent.compression_enabled = True
         empty_resp = _mock_response(
             content=None,
@@ -3523,7 +3489,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
-
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""

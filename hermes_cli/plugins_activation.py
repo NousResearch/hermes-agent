@@ -190,12 +190,14 @@ def notify_serve_backend(name: str, home: Path) -> Optional[Dict[str, Any]]:
         import json
         import urllib.request
         from gateway import host_rendezvous as hr
+        from hermes_cli.url_utils import format_url_host
         record = _serve_backend_record()
         if record is None:
             return None
         token = hr.read_token(record.role)
         request = urllib.request.Request(
-            f"http://{hr.dial_host(record)}:{record.port}/api/dashboard/agent-plugins/activate",
+            f"http://{format_url_host(hr.dial_host(record))}:{record.port}"
+            "/api/dashboard/agent-plugins/activate",
             data=json.dumps({"name": name, "home": str(home)}).encode("utf-8"), method="POST",
             headers={"Content-Type": "application/json", "X-Hermes-Session-Token": token})
         with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 — loopback http

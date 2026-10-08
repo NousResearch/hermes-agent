@@ -20,8 +20,10 @@ STARTUP_IMPORTS = (
 )
 
 
-def validate_environment(python: Path, *, env: dict, cwd: Path) -> None:
-    """Run startup import checks in the candidate, never the repairing process."""
+def validate_environment(python: Path | list[str], *, env: dict, cwd: Path) -> None:
+    """Run startup import checks in the candidate, never the repairing process.
+
+    *python* is the candidate's interpreter or its argv prefix (``venv_command``)."""
     script = (
         "import importlib, importlib.metadata, pathlib, re, tomllib\n"
         "project = tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8-sig'))['project']\n"
@@ -41,7 +43,8 @@ def validate_environment(python: Path, *, env: dict, cwd: Path) -> None:
         "        bundle = pathlib.Path(loaded.where())\n"
         "        assert bundle.is_file() and bundle.stat().st_size >= 1024, 'CA bundle is missing'\n"
     )
-    result = subprocess.run([str(python), "-I", "-c", script], cwd=cwd, env=env,
+    command = [str(python), "-I"] if isinstance(python, (str, Path)) else [*python]
+    result = subprocess.run([*command, "-c", script], cwd=cwd, env=env,
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     if result.returncode:
         raise InstallError("venv", f"startup validation failed: {result.stderr.strip()[-1000:]}")

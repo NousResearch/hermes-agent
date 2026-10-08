@@ -576,7 +576,9 @@ def _listener_url(default_cfg, platform_value: str, profile: str) -> str:
     host = extra.get("host") or host
     port = extra.get("port") or port
     tail = {"api_server": "/v1/...", "webhook": "/webhooks/<route>"}.get(platform_value, "/...")
-    return f"http://{host}:{port}/p/{profile}{tail}"
+    from hermes_cli.url_utils import format_url_host
+
+    return f"http://{format_url_host(host)}:{port}/p/{profile}{tail}"
 
 
 def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object]) -> None:

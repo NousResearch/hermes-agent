@@ -100,7 +100,7 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
     monkeypatch.setattr(main, "_is_windows", forbidden)
     monkeypatch.setattr(os, "kill", forbidden)
 
-    def prepare_checkout():
+    def prepare_checkout(**_):
         reached.append("checkout")
         raise ReachedCheckout
 

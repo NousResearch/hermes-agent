@@ -31,7 +31,7 @@ from .shared_metrics_contract import (
 )
 
 
-_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v3"
+_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v4"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000

@@ -54,12 +54,17 @@ def _text_block_with_citations(text: Any, cits: Any) -> Dict[str, Any]:
     return block
 
 
-def _parse_tool_args(raw: Any) -> Any:
-    """JSON-decode a tool_call ``arguments`` string; non-strings pass through, bad JSON -> {}."""
+def _parse_tool_args(raw: Any) -> Dict[str, Any]:
+    """JSON-decode a tool_call ``arguments`` string into an input OBJECT. Anthropic wire schema
+    (and every Anthropic-compatible endpoint, e.g. MiniMax /anthropic) requires ``tool_use.input``
+    to be a dictionary: a model that emits valid-but-scalar JSON (``"code"``) or a list must not
+    leak through as ``input`` — the executor already rejects it, so ``{}`` preserves the turn.
+    Non-strings pass through only when they are dicts; bad/non-object JSON -> {}."""
     try:
-        return json.loads(raw) if isinstance(raw, str) else raw
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
     except (json.JSONDecodeError, ValueError):
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _strip_thinking(blocks: List[Any]) -> List[Any]:
@@ -118,7 +123,9 @@ def _sanitize_tool_id(tool_id: str) -> str:
 
 
 def _tool_use_block(tool_id: Any, name: Any, tool_input: Any) -> Dict[str, Any]:
-    return {"type": "tool_use", "id": _sanitize_tool_id(tool_id), "name": name, "input": tool_input}
+    # ``input`` must be a dict on the wire (400 "Input should be a valid dictionary" otherwise);
+    # stored replay blocks can carry any JSON the model once emitted. Dicts pass through untouched.
+    return {"type": "tool_use", "id": _sanitize_tool_id(tool_id), "name": name, "input": _parse_tool_args(tool_input)}
 
 
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:

@@ -723,7 +723,8 @@ def _system_blocks(content) -> List[Dict]:
 
 
 def _tool_use_block(tool_use_id, name, input_dict) -> Dict:
-    return {"toolUse": {"toolUseId": tool_use_id, "name": name, "input": input_dict}}
+    # stored blocks can carry any JSON the model once emitted; Converse requires a map.
+    return {"toolUse": {"toolUseId": tool_use_id, "name": name, "input": _parse_tool_args(input_dict)}}
 
 
 def _decode_redacted(encoded) -> Optional[bytes]:
@@ -765,12 +766,14 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
     return content_blocks
 
 
-def _parse_tool_args(args) -> Any:
-    """JSON-decode a tool-call argument string; {} on failure; non-str passes through."""
+def _parse_tool_args(args) -> Dict:
+    """JSON-decode a tool-call argument string; {} on failure or non-object. Converse ``toolUse.input``
+    must be a map (same invariant as the Anthropic Messages ``tool_use.input``)."""
     try:
-        return json.loads(args) if isinstance(args, str) else args
+        parsed = json.loads(args) if isinstance(args, str) else args
     except (json.JSONDecodeError, TypeError):
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:

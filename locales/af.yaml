@@ -435,6 +435,7 @@ gateway:
     last_activity: "**Laaste aktiwiteit:** {timestamp}"
     model: "**Model:** `{model}`"
     model_provider: "**Model:** `{model}` ({provider})"
+    route_source: "**Roetebron:** {source}"
     free_tier: "Nous · gratis vlak · nous/welcome · /login om aan te meld"
     context: "**Konteks:** {used} / {total} ({pct}%)"
     context_used: "**Konteks:** ~{used} tokens"

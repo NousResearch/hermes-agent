@@ -435,6 +435,7 @@ gateway:
     last_activity: "**Son etkinlik:** {timestamp}"
     model: "**Model:** `{model}`"
     model_provider: "**Model:** `{model}` ({provider})"
+    route_source: "**Rota kaynağı:** {source}"
     free_tier: "Nous · ücretsiz plan · nous/welcome · /login ile giriş yapın"
     context: "**Bağlam:** {used} / {total} ({pct}%)"
     context_used: "**Bağlam:** ~{used} token"

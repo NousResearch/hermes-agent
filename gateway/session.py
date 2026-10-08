@@ -465,6 +465,11 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
 
 # /model override keys safe to persist; ``api_key``/``api_mode`` must NEVER reach sessions.json.
 PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+# Provenance, not a route: the config.yaml (model.default, model.provider) the override was
+# recorded against. A later explicit config change supersedes the override (it predates the
+# change), so this is what the rehydrate guard compares against (#122016). A dict is the only
+# shape written; a legacy string form is tolerated on read.
+OVERRIDE_PROVENANCE_KEY = "config_default"
 
 
 def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -475,6 +480,13 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
         k: str(v) for k, v in override.items()
         if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
     }
+    provenance = override.get(OVERRIDE_PROVENANCE_KEY)
+    if isinstance(provenance, dict):
+        # Keep only the identity pair; anything else a caller stuffed in is dropped.
+        cleaned[OVERRIDE_PROVENANCE_KEY] = {
+            k: str(provenance.get(k) or "")
+            for k in ("model", "provider") if provenance.get(k) not in (None, "")
+        }
     return cleaned or None
 
 

@@ -435,6 +435,7 @@ gateway:
     last_activity: "**最終アクティビティ:** {timestamp}"
     model: "**モデル:** `{model}`"
     model_provider: "**モデル:** `{model}` ({provider})"
+    route_source: "**ルート参照元:** {source}"
     free_tier: "Nous · 無料プラン · nous/welcome · /login でログイン"
     context: "**コンテキスト:** {used} / {total} ({pct}%)"
     context_used: "**コンテキスト:** ~{used} トークン"

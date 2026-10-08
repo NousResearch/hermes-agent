@@ -43,6 +43,22 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _gateway_config_model_target() -> tuple[str, str]:
+    """``(model.default, model.provider)`` pinned by config.yaml, explicit-only: unset (or provider
+    ``auto``) yields ``""`` so the pair compares equal to a provenance stamp recorded the same way.
+    Never falls back to env seeds — the rehydrate guard must only supersede on an EXPLICIT config
+    change, mirroring ``tui_gateway.server._config_model_target`` (#122016)."""
+    from gateway.run import _load_gateway_config
+    model_cfg = _load_gateway_config().get("model")
+    if not isinstance(model_cfg, dict):
+        return ("", "")
+    provider = str(model_cfg.get("provider") or "").strip()
+    return (
+        str(model_cfg.get("default") or "").strip(),
+        "" if provider.lower() == "auto" else provider,
+    )
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -148,8 +164,13 @@ class GatewayAgentCacheMixin:
     def _rehydrate_session_model_override(self, session_key: str) -> None:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
-        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists.
+
+        An override stamped with the config target it was recorded against (``config_default``)
+        is dropped when config.yaml's explicit model.default/provider has since changed: the
+        override predates the change, so the explicit config is authoritative again (#122016).
+        Legacy overrides without the stamp keep the old restore behavior."""
+        from gateway.run import _load_gateway_config, _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
             return
@@ -160,6 +181,24 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
+        provenance = persisted.get("config_default")
+        if isinstance(provenance, dict) and provenance:
+            recorded = (
+                str(provenance.get("model") or "").strip(),
+                str(provenance.get("provider") or "").strip(),
+            )
+            current = _gateway_config_model_target()
+            if recorded and current and recorded != current:
+                logger.info(
+                    "Dropping persisted /model override for session=%s: recorded against config "
+                    "default %s but config now pins %s",
+                    session_key, recorded, current,
+                )
+                try:
+                    store.set_model_override(session_key, None)
+                except Exception:
+                    logger.debug("Failed to clear superseded session model override", exc_info=True)
+                return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint

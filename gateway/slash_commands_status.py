@@ -98,22 +98,26 @@ def _quiet_sync(call, default=None):
 def _status_model_route(
     status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
 ):
-    """``(model, provider, context_used, context_total, route)`` for /status.
+    """``(model, provider, context_used, context_total, route, source_label)`` for /status.
 
     Order: live/cached agent route -> active session override -> persisted recent route ->
     SessionDB row -> gateway config (only loaded when something is still missing). ``route`` carries
     the ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
     lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
-    a winner without a ``base_url`` leaves the lookup on the default runtime route.
+    a winner without a ``base_url`` leaves the lookup on the default runtime route. ``source_label``
+    names which precedence slot won, so a stale-vs-config disagreement is visible instead of silent
+    (#122016).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
     routes: list[tuple[str, str, dict]] = []
+    sources: list[str] = []
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
                        _clean_str(getattr(status_agent, "provider", "")),
                        {"base_url": _clean_str(getattr(status_agent, "base_url", "")),
                         "api_key": _clean_str(getattr(status_agent, "api_key", ""))}))
+        sources.append("agent")
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
@@ -122,22 +126,30 @@ def _status_model_route(
                    _clean_str(active_override.get("provider")),
                    {"base_url": _clean_str(active_override.get("base_url")),
                     "api_key": _clean_str(active_override.get("api_key"))}))
+    sources.append("session override")
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider")), {}))
+    sources.append("persisted route")
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
-    model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
+    winning = next((i for i, r in enumerate(routes) if r[0] and r[1]), None)
+    source_label = sources[winning] if winning is not None else "config"
+    model_name, provider_name, route = row_route if winning is None else routes[winning]
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name:
         user_config = _quiet_sync(_load_gateway_config, {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
-    model_name = model_name or _resolve_gateway_model(user_config)
-    provider_name = provider_name or _clean_str(model_cfg.get("provider"))
+    if not model_name:
+        model_name = _resolve_gateway_model(user_config)
+        source_label = "config"
+    if not provider_name:
+        provider_name = _clean_str(model_cfg.get("provider"))
+        source_label = "config"
     # No raw ``model.context_length`` pin here: the resolver applies it only while the displayed
     # route still matches the configured one (a session /model switch must not inherit it).
-    return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
+    return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}, source_label
 
 
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
@@ -261,7 +273,7 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
-        model_name, provider_name, context_used, context_total, route = _status_model_route(
+        model_name, provider_name, context_used, context_total, route, route_source = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )
         if not context_total and model_name:
@@ -287,6 +299,10 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
+        # Name the winning precedence slot so a stale override shadowing config.yaml is visible
+        # instead of silent (#122016).
+        if route_source:
+            lines.append(t("gateway.status.route_source", source=route_source))
         try:
             from hermes_cli.anon_auth import free_tier_route
 

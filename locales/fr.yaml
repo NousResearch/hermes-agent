@@ -475,6 +475,7 @@ gateway:
     last_activity: "**Dernière activité :** {timestamp}"
     model: "**Modèle :** `{model}`"
     model_provider: "**Modèle :** `{model}` ({provider})"
+    route_source: "**Source de la route :** {source}"
     free_tier: "Nous · offre gratuite · nous/welcome · /login pour se connecter"
     context: "**Contexte :** {used} / {total} ({pct}%)"
     context_used: "**Contexte :** ~{used} jetons"

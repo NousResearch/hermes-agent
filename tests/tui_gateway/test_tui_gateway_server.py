@@ -4232,6 +4232,9 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         "stored-session",
         {
             "_branched_from": "root",
+            # Provenance stamp from _runtime_model_config (#122016): the config.yaml
+            # target this runtime was captured against — empty when no config is loaded.
+            "config_default": {"model": "", "provider": ""},
             "model": "gpt-5.4",
             "provider": "openai-codex",
             "base_url": "https://custom.example/v1",
@@ -10593,6 +10596,13 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
                 "key": "session-key",
                 "model": "new/model",
                 "config": {
+                    # Provenance stamp (#122016): the profile config.yaml default this
+                    # runtime was captured against, so a later config edit can tell an
+                    # inherited default from this deliberate per-chat switch.
+                    "config_default": {
+                        "model": "old/model",
+                        "provider": "custom:new-provider",
+                    },
                     "model": "new/model",
                     "provider": "custom:new-provider",
                     "base_url": profile_url,

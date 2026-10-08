@@ -435,6 +435,7 @@ gateway:
     last_activity: "**Gníomhaíocht is déanaí:** {timestamp}"
     model: "**Samhail:** `{model}`"
     model_provider: "**Samhail:** `{model}` ({provider})"
+    route_source: "**Foinse an bhealaigh:** {source}"
     free_tier: "Nous · plean saor in aisce · nous/welcome · /login chun síniú isteach"
     context: "**Comhthéacs:** {used} / {total} ({pct}%)"
     context_used: "**Comhthéacs:** ~{used} comhartha"

@@ -435,6 +435,7 @@ gateway:
     last_activity: "**최종 활동:** {timestamp}"
     model: "**모델:** `{model}`"
     model_provider: "**모델:** `{model}` ({provider})"
+    route_source: "**경로 출처:** {source}"
     free_tier: "Nous · 무료 요금제 · nous/welcome · /login 명령으로 로그인"
     context: "**컨텍스트:** {used} / {total} ({pct}%)"
     context_used: "**컨텍스트:** ~{used} 토큰"

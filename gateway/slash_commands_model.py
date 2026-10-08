@@ -84,6 +84,10 @@ class _ModelSwitchContext:
     # The provider actually configured/overridden (None = unset): ``current_provider`` defaults to
     # openrouter for switch_model, which must not label the configured model in metrics.
     route_provider: Optional[str] = None
+    # The config.yaml (model.default, model.provider) the switch was recorded against — provenance
+    # for the persisted override, so rehydrate can tell an inherited default (config may supersede)
+    # from a deliberate per-chat divergence (must survive config edits). #122016
+    config_default: Optional[dict] = None
     current_base_url: str = ""
     current_api_key: str = ""
     user_provs: Any = None
@@ -103,6 +107,13 @@ class _ModelSwitchContext:
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.route_provider = model_cfg.get("provider")
                 self.current_base_url = model_cfg.get("base_url", "")
+                # Provenance pair exactly as the rehydrate guard reads it back (strip + "" for
+                # unset / provider auto), so the comparison is a pure equality check.
+                _prov = str(model_cfg.get("provider") or "").strip()
+                self.config_default = {
+                    "model": str(model_cfg.get("default") or "").strip(),
+                    "provider": "" if _prov.lower() == "auto" else _prov,
+                }
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers
@@ -252,6 +263,11 @@ class GatewayModelCommandsMixin:
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
+        _config_default = getattr(ctx, "config_default", None)
+        if isinstance(_config_default, dict):
+            # Provenance, not a route: the config target the switch was recorded against (#122016).
+            # sanitize_model_override keeps only the identity pair; sessions.json never sees api_key.
+            self._session_model_overrides[ctx.session_key]["config_default"] = dict(_config_default)
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.

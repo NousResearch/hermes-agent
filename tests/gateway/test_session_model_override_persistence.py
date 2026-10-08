@@ -224,3 +224,65 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_rehydrate_drops_override_superseded_by_config_change(store_factory):
+    """/model pick persisted against one config default must not survive an explicit config.yaml
+    model.default/provider change: the override predates the change, so the explicit config is
+    authoritative again and rehydrate drops (and clears) it (#122016)."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "deepseek-flash", "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+        "config_default": {"model": "deepseek-flash", "provider": "deepseek"},
+    })
+
+    runner = _make_runner(store_factory())
+    with patch("gateway.run._load_gateway_config",
+               return_value={"model": {"default": "gpt-5.6-luna", "provider": "openai-codex"}}):
+        runner._rehydrate_session_model_override(session_key)
+
+    # Dropped in memory AND cleared in the store: a later rehydrate must not resurrect it.
+    assert runner._session_model_overrides.get(session_key) is None
+    assert store_factory().get_model_override(session_key) is None
+
+
+def test_rehydrate_keeps_explicit_pick_across_config_change(store_factory):
+    """An override that diverged from the config default it was recorded under is a deliberate
+    per-chat pick — a later config edit does not supersede it (#122016)."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "deepseek-flash", "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+        "config_default": {"model": "gpt-5.6-luna", "provider": "openai-codex"},
+    })
+
+    runner = _make_runner(store_factory())
+    with patch("gateway.run._load_gateway_config",
+               return_value={"model": {"default": "gpt-5.6-luna", "provider": "openai-codex"}}), \
+         patch("gateway.run._resolve_runtime_agent_kwargs_for_provider",
+               return_value={"api_key": "sk-re...hy", "base_url": "https://api.deepseek.com/v1"}):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert (override["model"], override["provider"]) == ("deepseek-flash", "deepseek")
+
+
+def test_rehydrate_legacy_override_without_stamp_still_restores(store_factory):
+    """Overrides persisted before the provenance stamp have no config_default: keep the old
+    restore behavior — a partial stamp must not become a silent drop (#122016)."""
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "gpt-5o", "provider": "openai", "base_url": "https://api.openai.example/v1"})
+
+    runner = _make_runner(store_factory())
+    with patch("gateway.run._load_gateway_config",
+               return_value={"model": {"default": "gpt-5.6-luna", "provider": "openai-codex"}}), \
+         patch("gateway.run._resolve_runtime_agent_kwargs_for_provider",
+               return_value={"api_key": "sk-fre...hain", "base_url": "https://api.openai.example/v1"}):
+        runner._rehydrate_session_model_override(session_key)
+
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-5o"

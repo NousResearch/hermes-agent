@@ -89,8 +89,17 @@ async function main() {
   const jobs = gh(['api', '--paginate', `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`,
     '--jq', '.jobs[] | {name, conclusion, html_url, steps: [.steps[]? | {name, conclusion}]}'])
     .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-  const open = JSON.parse(gh(['api', `repos/${repo}/issues?labels=${LABEL}&state=open&per_page=5`]))
-    .filter((/** @type {any} */ i) => !i.pull_request);
+  let open = [];
+  try {
+    open = JSON.parse(gh(['api', `repos/${repo}/issues?labels=${LABEL}&state=open&per_page=5`]))
+      .filter((/** @type {any} */ i) => !i.pull_request);
+  } catch (error) {
+    // Issue tracking is auxiliary. Forks may intentionally have Issues disabled;
+    // never turn an already-completed E2E result red because the notification
+    // sink is unavailable.
+    console.warn(`Issue tracking unavailable; leaving the E2E result untouched: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   const openIssue = open.length ? { number: open[0].number } : null;
   const plan = planTracker(run, jobs, openIssue);
   console.log(`run ${runId}: conclusion=${run.conclusion} red-legs=${jobs.filter((j) => RED.has(String(j.conclusion))).length} open-tracker=${openIssue ? `#${openIssue.number}` : 'none'} -> ${plan.action}`);
@@ -109,7 +118,6 @@ async function main() {
   } else if (plan.action === 'close' && openIssue) {
     gh(['issue', 'comment', String(openIssue.number), '--repo', repo, '--body', String(plan.body)]);
     gh(['issue', 'close', String(openIssue.number), '--repo', repo]);
-    console.log(`closed #${openIssue.number}`);
   }
 }
 

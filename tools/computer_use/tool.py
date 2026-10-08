@@ -22,6 +22,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from tools.computer_use.runtime_metrics import (
+    ComputerUseTelemetry, mark_backend_rebound, observe_backend, observe_capture, phase, set_aux_vision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,16 +211,22 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
                 backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
+                observe_backend(backend, cache_hit=False, rebound=False)
+                with phase("backend_start"):
+                    backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
             from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
             if (_backend_permission_modes.get(sid, "standard") == permission_mode
                     and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
+                observe_backend(cached, cache_hit=True, rebound=False)
                 return cached
             # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
             # (or moved) after this backend was cached, replaces only this session's backend.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
-        _stop_backend(cached, stale_lock, lambda e: None)
+        observe_backend(cached, cache_hit=True)
+        mark_backend_rebound()
+        with phase("backend_rebind"):
+            _stop_backend(cached, stale_lock, lambda e: None)
 
 @contextlib.contextmanager
 def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
@@ -231,12 +240,15 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
 
     sid = _scoped_sid(session_id)
     while True:
-        backend = _get_backend(session_id=session_id)
+        with phase("backend_resolve"):
+            backend = _get_backend(session_id=session_id)
         with _backend_lock:
             if _backends.get(sid) is not backend:
                 continue
             call_lock = _backend_call_locks[sid]
-        with call_lock:
+        with contextlib.ExitStack() as call:
+            with phase("dispatch_lock_wait"):
+                call.enter_context(call_lock)
             with _backend_lock:
                 if (_backends.get(sid) is not backend
                         or _backend_call_locks.get(sid) is not call_lock):
@@ -314,35 +326,57 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
-    """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
-    blocks (_reject_unsafe) -> approval scopes (destructive action, then 'bring_to_front' — persistent focus is a
-    separate visible side effect with its own scope) -> backend -> dispatch under the session call lock."""
+    """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`."""
     action = (args.get("action") or "").strip().lower()
-    if not action:
-        return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
+    telemetry = ComputerUseTelemetry(
+        action, session_id=session_id, task_id=str(kwargs.get("task_id") or "")
+    )
+    with telemetry:
+        return _handle_computer_use(args, action, session_id, telemetry)
+
+
+def _handle_computer_use(args: Dict[str, Any], action: str, session_id: str,
+                         telemetry: ComputerUseTelemetry) -> Any:
+    """Run one computer-use call inside the content-free telemetry scope."""
+    if not action:
+        telemetry.set_outcome("failed")
+        return json.dumps({"error": "missing `action`"})
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
     from tools.bot_desktop import lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
     def _refused(e: Exception) -> str:
+        telemetry.set_outcome("blocked")
         return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
     try:
-        admitted = _bd_lease.assert_agent_may_act()
+        with phase("admission"):
+            admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
-    if (err := _reject_unsafe(action, args)) is not None:
+    with phase("admission"):
+        err = _reject_unsafe(action, args)
+    if err is not None:
+        telemetry.set_outcome("blocked")
         return err
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
     for scope in scopes:
-        if (err := _request_approval(scope, args)) is not None:
+        with phase("approval_wait"):
+            err = _request_approval(scope, args)
+        if err is not None:
+            telemetry.set_outcome("blocked")
             return err
     # Acquire separately so startup errors retain the install hint; the stack
     # releases the admitted call lock on every dispatch return or exception.
     call = contextlib.ExitStack()
     try:
-        backend = call.enter_context(_backend_for_call(session_id))
+        # Keep the observer independent of provider-specific error rendering.
+        try:
+            backend = call.enter_context(_backend_for_call(session_id))
+        except Exception:
+            telemetry.set_outcome("unavailable")
+            raise
     except Exception as e:
         from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
         hint = ({"hint": "If the cua-driver binary is missing, run `hermes computer-use install`. If a Python "
@@ -370,10 +404,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             _fence()  # input actions never receive fence=; refuse before the device op starts
             result = _dispatch(backend, action, args, fence=_fence, session_id=session_id or None)
             _fence()
+            telemetry.set_result(result)
             return result
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
     except Exception as e:
+        telemetry.set_outcome("failed")
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
@@ -438,8 +474,10 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
-    cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
-    fence()
+    with phase("capture"):
+        cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+        fence()
+        observe_capture(cap)
     return _capture_response(cap, session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
@@ -510,8 +548,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], fe
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the lease fence and the dedup session key ride
     # only on read handlers (delivery kwargs would leak into backend input calls, and vice versa).
-    res = spec.handler(backend, action, args, **(dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
-                                                 if spec.input else dict(fence=fence, session_id=session_id)))
+    handler_kwargs = (dict(delivery_mode=args.get("delivery_mode"), bring_to_front=bool(args.get("bring_to_front")))
+                      if spec.input else dict(fence=fence, session_id=session_id))
+    with contextlib.nullcontext() if action == "capture" else phase("input" if spec.input else "backend_call"):
+        res = spec.handler(backend, action, args, **handler_kwargs)
     return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")), fence,
                                                                          session_id=session_id)
 
@@ -636,23 +676,26 @@ _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(e
 def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     """One capture's derived facts, computed once for every response branch: ``visible`` is the capped element list,
     ``dims_omitted`` an image below the provider minimum."""
-    visible, dims = cap.elements[:max_elements], None
-    with contextlib.suppress(Exception):  # (width, height) of the inline PNG/JPEG screenshot, else the backend's
-        dims = image_dimensions_from_bytes(base64.b64decode(cap.png_b64, validate=False)) if cap.png_b64 else None
-    width, height = dims or (cap.width, cap.height)
-    scale, note = _bounds_hints(visible, width, height)
-    # Capped labels / capped element array: spill the complete tree for on-demand reads.
-    lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
-    too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
-    has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
-    # The driver's own AX walk may have stopped at the ``max_elements`` the backend sent: then the spill file is
-    # NOT the full tree, and the hint must not promise one.
-    ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
+    with phase("element_processing"):
+        visible, dims = cap.elements[:max_elements], None
+        with contextlib.suppress(Exception):  # (width, height) of the inline PNG/JPEG screenshot, else the backend's
+            dims = image_dimensions_from_bytes(base64.b64decode(cap.png_b64, validate=False)) if cap.png_b64 else None
+        width, height = dims or (cap.width, cap.height)
+        scale, note = _bounds_hints(visible, width, height)
+        # Capped labels / capped element array: spill the complete tree for on-demand reads.
+        lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
+        too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
+        has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
+        # The driver's own AX walk may have stopped at the ``max_elements`` the backend sent: then the spill file is
+        # NOT the full tree, and the hint must not promise one.
+        ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
+    with phase("capture_persist"):
+        elements_file = _spill_elements_to_file(cap) if lost_detail else None
+        screenshot_path = _persist_capture_image(cap) if has_image else None
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
                            ax_capped=cap.ax_max_elements if ax_capped else 0,
-                           elements_file=_spill_elements_to_file(cap) if lost_detail else None,
-                           screenshot_path=_persist_capture_image(cap) if has_image else None,
+                           elements_file=elements_file, screenshot_path=screenshot_path,
                            dims_omitted=dims if too_small else None, has_image=has_image)
 
 def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
@@ -695,6 +738,7 @@ def _capture_digest(cap: CaptureResult) -> str:
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
                       session_id: Optional[str] = None) -> Any:
+    observe_capture(cap)
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
@@ -709,24 +753,31 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
-        if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
-            return {
-                "_multimodal": True,
-                "content": [{"type": "text", "text": summary},
-                            {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
-                "text_summary": summary,
-                "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
-                         **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
-            }
+        with phase("aux_vision"):
+            route_aux_vision = _should_route_through_aux_vision()
+        set_aux_vision(route_aux_vision)
+        if not route_aux_vision:  # envelope carrying the screenshot (not the elements array, so no truncation note)
+            with phase("response_shape"):
+                return {
+                    "_multimodal": True,
+                    "content": [{"type": "text", "text": summary},
+                                {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
+                    "text_summary": summary,
+                    "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
+                             **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
+                }
         # Decide whether to hand the screenshot to the auxiliary.vision pipeline (text-only result) or keep
         # the multimodal envelope (main model handles vision natively). Issue #24015: previously the
         # multimodal envelope was returned unconditionally, so non-vision main models tripped HTTP 404 / 400
         # at the provider boundary even when auxiliary.vision was explicitly configured to handle this.
-        routed = _route_capture_through_aux_vision(
-            cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
-            elements_file=v.elements_file, screenshot_path=v.screenshot_path)
+        with phase("aux_vision"):
+            routed = _route_capture_through_aux_vision(
+                cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
+                elements_file=v.elements_file, screenshot_path=v.screenshot_path)
         if routed is not None:
-            return routed
+            set_aux_vision(True)
+            with phase("response_shape"):
+                return routed
         # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could
         # now break with a provider error, so degrade to text.
         lines.append("  (vision unavailable: the auxiliary vision model could not be reached; screenshot "
@@ -735,7 +786,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     if v.truncated:  # text paths carry the `elements` array, so the truncation note applies
         lines.append(f"  (response truncated to {len(v.visible)} of {v.total} elements; the full tree is in "
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")
-    return _text_capture_payload(v, "\n".join(lines), extra)
+    with phase("response_shape"):
+        return _text_capture_payload(v, "\n".join(lines), extra)
 
 def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
                           fence: Callable[[], None] = lambda: None, session_id: Optional[str] = None) -> Any:
@@ -746,12 +798,14 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         # Recapture the exact window when known: on Linux several unrelated windows may share an app name, so
         # app-only recapture can switch targets.
         exact = {k: (getattr(backend, "_last_target", None) or {}).get(k) for k in ("pid", "window_id")}
-        cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
-                                                            else {"app": getattr(backend, "_last_app", None)}))
+        with phase("capture"):
+            cap = backend.capture(mode=_capture_after_mode(), **(exact if None not in exact.values()
+                                                                else {"app": getattr(backend, "_last_app", None)}))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
+    fence()  # a frame taken after a takeover never reaches any observer or output sink
+    observe_capture(cap)
     resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.

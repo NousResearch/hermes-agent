@@ -96,13 +96,46 @@ def _ext_to_mime(ext: str) -> str:
     return mime_for_ext(ext, fallback="application/octet-stream")
 
 
+def _find_ffmpeg() -> Optional[str]:
+    """Locate ffmpeg on PATH, falling back to common Homebrew/local prefixes on macOS dev hosts."""
+    return shutil.which("ffmpeg") or next(
+        (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
+         if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+
+
+def _transcode_to_voice_note(audio_path: str) -> Optional[str]:
+    """Transcode an audio file to AAC in an M4A container for a native Signal voice note.
+
+    Signal clients render an attachment as an inline voice note only when it is AAC (what the
+    official apps record) *and* the send carries ``voiceNote``; Opus/Ogg TTS output with the flag
+    still arrives as a downloadable file. Returns the path of a new temporary ``.m4a`` the caller
+    must delete, or ``None`` when ffmpeg is missing or fails (caller sends the input unchanged)."""
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        logger.debug("Signal: ffmpeg not found, sending audio as a plain attachment")
+        return None
+    fd, dst_path = tempfile.mkstemp(prefix="hermes-signal-voice-", suffix=".m4a")
+    os.close(fd)
+    try:
+        proc = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", audio_path, "-vn", "-c:a", "aac",
+                               "-b:a", "48k", "-movflags", "+faststart", dst_path], capture_output=True, timeout=60)
+        if proc.returncode == 0 and os.path.getsize(dst_path) > 0:
+            return dst_path
+        logger.warning("Signal: voice-note transcode failed (ffmpeg exit %d): %s",
+                       proc.returncode, proc.stderr.decode("utf-8", "replace")[:300])
+    except subprocess.TimeoutExpired:
+        logger.warning("Signal: voice-note transcode timed out (>60s)")
+    except Exception:
+        logger.exception("Signal: voice-note transcode error")
+    with suppress(OSError):
+        os.unlink(dst_path)
+    return None
+
+
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
     """Losslessly remux raw ADTS AAC (Android voice notes, rejected by most STT APIs) to .m4a.
     Returns ``(m4a_bytes, ".m4a")``, or ``None`` when ffmpeg is missing/fails (caller keeps the input)."""
-    # Fall back to common Homebrew/local prefixes on macOS dev hosts.
-    ffmpeg = shutil.which("ffmpeg") or next(
-        (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
-         if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    ffmpeg = _find_ffmpeg()
     if not ffmpeg:
         logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
         return None
@@ -875,15 +908,18 @@ class SignalAdapter(BasePlatformAdapter):
                 "oversize": f"Image too large ({detail} bytes)"}[reason])
         return await self._send_file(chat_id, file_path, caption, "RPC send with attachment failed")
 
-    async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str) -> SendResult:
-        """Send one local file as a Signal attachment via the ``send`` RPC."""
-        params = await self._with_target(
-            {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
+    async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str,
+                         voice_note: bool = False) -> SendResult:
+        """Send one local file as a Signal attachment via the ``send`` RPC (``voiceNote`` when asked)."""
+        params: Dict[str, Any] = {"account": self.account, "message": caption or "", "attachments": [file_path]}
+        if voice_note:
+            params["voiceNote"] = True
+        params = await self._with_target(params, chat_id)
         _, err = await self._rpc_send(params, fail_error)
         return err or SendResult(success=True)
 
     async def _send_attachment(self, chat_id: str, file_path: str, media_label: str,
-                               caption: Optional[str] = None) -> SendResult:
+                               caption: Optional[str] = None, voice_note: bool = False) -> SendResult:
         """Send any local file as a Signal attachment (shared by send_document/image_file/voice/video)."""
         await self._stop_typing_indicator(chat_id)
         try:
@@ -892,7 +928,8 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"{media_label} file not found: {file_path}")
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
-        return await self._send_file(chat_id, file_path, caption, f"RPC send {media_label.lower()} failed")
+        return await self._send_file(chat_id, file_path, caption, f"RPC send {media_label.lower()} failed",
+                                     voice_note=voice_note)
 
     async def send_document(self, chat_id, file_path, caption=None, filename=None, **kwargs) -> SendResult:
         return await self._send_attachment(chat_id, file_path, "File", caption)
@@ -902,8 +939,25 @@ class SignalAdapter(BasePlatformAdapter):
         return await self._send_attachment(chat_id, image_path, "Image", caption)
 
     async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        """Audio attachment — Signal has no distinct voice-message API."""
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        """Native Signal voice note: AAC/M4A plus signal-cli's ``voiceNote`` flag.
+
+        Non-AAC input (e.g. Opus TTS) is transcoded first; without ffmpeg, or when the transcode
+        fails, the original file goes out as a plain audio attachment rather than not at all."""
+        try:
+            with open(audio_path, "rb") as f:
+                container = sniff_container(f.read(16))
+        except OSError:  # missing/unreadable: _send_attachment reports it
+            return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        if container in ("m4a", "aac"):
+            return await self._send_attachment(chat_id, audio_path, "Audio", caption, voice_note=True)
+        voice_path = await asyncio.to_thread(_transcode_to_voice_note, audio_path)
+        if voice_path is None:
+            return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        try:
+            return await self._send_attachment(chat_id, voice_path, "Audio", caption, voice_note=True)
+        finally:
+            with suppress(OSError):
+                os.unlink(voice_path)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
         return await self._send_attachment(chat_id, video_path, "Video", caption)

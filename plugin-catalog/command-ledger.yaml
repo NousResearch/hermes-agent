@@ -1,6 +1,6 @@
 name: command-ledger
 repo: https://github.com/olric3015/hermes-plugins
-sha: d5a4f5eb38bad6d6be9736e66fe8fe76c54ba92d
+sha: f2aa337e6c730d6efd93331940c6d3d6a0fd481b
 subdir: command-ledger
 description: "Local ledger of the slash commands you run in Hermes (built-in commands in the CLI, built-in and plugin commands on messaging platforms): /command-log shows how often each command was used, its share, in how many sessions and when last, per command, platform or surface, for the last 24 hours, any number of hours or days, the latest session or everything recorded; /command-log recent lists the newest commands with the alias typed. Disclosure — writes command metadata (command name, alias typed, surface, platform, a 12-digit hash of the session key; no arguments, session key or user id) to plugin-data/command-ledger/commands.jsonl, trimmed to 5,000 rows past 2 MB; observer only, cannot block or change a command; no network"
 maintainer: olric3015
@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/command-ledger
 version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/f2aa337e6c730d6efd93331940c6d3d6a0fd481b/docs/command-ledger-card.png
 platforms: []
 capabilities:
   provides_tools: []

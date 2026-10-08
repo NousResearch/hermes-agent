@@ -21,7 +21,7 @@ class SingletonSlot(Generic[T]):
     The factory runs at most once under concurrent first calls; if it raises, nothing is cached
     and the next call retries. ``_slot.get(lambda: Honcho(**resolve(config)))``."""
 
-    __slots__ = ("_lock", "_value", "_set")
+    __slots__ = ("_lock", "_set", "_value")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()

@@ -13,7 +13,7 @@ Usage:
 # ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -44,7 +44,7 @@ import sys
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
-from hermes_cli import _startup_fast  # noqa: E402
+from hermes_cli import _startup_fast
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
 # before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
@@ -1208,7 +1208,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
     except Exception as exc:
         logger.warning("startup model cost guard could not load config: %s", exc)
         config = {}
-    _dict = lambda v: v if isinstance(v, dict) else {}  # noqa: E731
+    _dict = lambda v: v if isinstance(v, dict) else {}
     config = _dict(config)
     model_cfg = _dict(config.get("model"))
     security_cfg = _dict(config.get("security"))
@@ -2084,7 +2084,7 @@ def select_provider_and_model(args=None):
         flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
         if flow is None and _is_profile_plugin_flow_provider(selected_provider):
             # Registered plugin profile with no bespoke flow: the generic one, keyed by its auth_type.
-            flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)  # noqa: E731
+            flow = lambda c, m, a: _model_flow_plugin_provider(c, selected_provider, m)
         if flow is not None:
             flow(config, current_model, args)
         elif (
@@ -2324,11 +2324,14 @@ def _update_preflight_handled(args) -> bool:
     """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
     from hermes_cli.config import is_managed, managed_error
     from hermes_cli.update_channel import handle_metadata_args
+    from hermes_cli.update_cmd_common import _record_stop
 
     if handle_metadata_args(args, PROJECT_ROOT):
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
+        if not any(getattr(args, flag, False) for flag in ("plan", "check", "list_venv_holders")):
+            _record_stop("managed_install", without_receipt="refused")  # an update attempt: a metrics row only
         return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
@@ -2358,15 +2361,10 @@ def _update_preflight_handled(args) -> bool:
             sys.exit(VENV_HOLDERS_EXIT)
         return True
 
-    # Image/package-managed admission gate: baked provenance marker first
-    # (fail-closed on malformed), then docker/nix/apt heuristics. Records a
-    # `refused` receipt and exits 2 (refused-by-contract, distinct from errors).
-    # Image-managed / package-managed admission gate (#91277 Phase 3): one shared decision for every
-    # mutation surface. Prints the real update command, records a `refused` receipt so fleet tooling sees
-    # the blocked attempt, and exits 2 (refused-by-contract, distinct from exit 1 errors).
-    # Shared admission gate (#91277 Phase 3): same marker-first decision as the apply path, so --check can
-    # never report git state for an install whose real update mechanism is an image pull.
-    # The response keeps the pre-existing per-kind error codes the dashboard UI already keys on. See #91277.
+    # Image/package-managed admission gate (#91277 Phase 3): baked provenance marker first (fail-closed
+    # on malformed), then docker/nix/apt heuristics; one shared decision for every mutation surface, so
+    # --check never reports git state for an image-managed install. Prints the real update command,
+    # records a `refused` receipt and exits 2 (refused-by-contract, distinct from exit 1 errors).
     from hermes_cli.update_contract import (
         evaluate_update_admission,
         record_refusal_receipt,
@@ -2423,8 +2421,9 @@ def cmd_update(args):
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
+        from hermes_cli.update_cmd_common import _record_stop
+        _record_stop("lock_held", without_receipt="refused")  # no receipt: latest.json is the holder's
         sys.exit(UPDATE_EXIT_CONCURRENT)
-
 
     from hermes_cli.update_cmd import _cmd_update_impl
     from pm import InstallError
@@ -2609,8 +2608,8 @@ def _require_dashboard_web_deps() -> None:
     embedded runtime gets the policy guidance instead, so users stop looping on
     repair for a block repair can never lift (#63796)."""
     try:
-        import fastapi  # noqa: F401
-        import uvicorn  # noqa: F401
+        import fastapi
+        import uvicorn
     except ImportError as e:
         from hermes_cli.main_dep_hints import (
             missing_optional_deps_message,
@@ -3057,7 +3056,7 @@ def _guard_noninteractive_user_config(args) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
-    setattr(args, "_noninteractive_config_validated", True)
+    args._noninteractive_config_validated = True
 
 
 def _set_chat_arg_defaults(args) -> None:
@@ -3246,7 +3245,7 @@ def _try_termux_fast_cli_launch() -> bool:
         interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         if interactive_prompt:
             # Reach the prompt first; agent-only discovery on the first turn.
-            setattr(args, "compact", True)
+            args.compact = True
             os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"
             os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
             if getattr(args, "accept_hooks", False):
@@ -3389,7 +3388,7 @@ def _build_cli_parser():
     try:
         from agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
-    except Exception as _lsp_err:  # noqa: BLE001
+    except Exception as _lsp_err:
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     build_setup_parser(subparsers, cmd_setup=cmd_setup)

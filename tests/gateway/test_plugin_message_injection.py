@@ -420,7 +420,6 @@ def test_scheduler_rejects_submission_failure():
 
     def _reject(coro, _target_loop, **_kwargs):
         coro.close()
-        return None
 
     with patch("gateway.run.safe_schedule_threadsafe", side_effect=_reject):
         assert (

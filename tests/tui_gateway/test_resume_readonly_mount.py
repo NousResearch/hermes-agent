@@ -190,7 +190,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     }
     server._sessions["child-sid"] = session
     # Cut the turn right after admission (the reopen runs BEFORE admission).
-    import tui_gateway.prompt_turn as prompt_turn
+    from tui_gateway import prompt_turn
     monkeypatch.setattr(server, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(prompt_turn, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     out = io.StringIO()

@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.worker_bootstrap import WORKER_MARKER
+from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -520,6 +520,7 @@ from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
+from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -560,8 +561,8 @@ def _is_cron_silence_response(text: str) -> bool:
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
 # per-profile config key — a single process-global pool is sized by whichever profile ticked first
 # and then imposes that limit on all the others.
-_parallel_pools: Dict[str, concurrent.futures.ThreadPoolExecutor] = {}
-_parallel_pool_max_workers: Dict[str, Optional[int]] = {}
+_parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+_parallel_pool_max_workers: dict[str, Optional[int]] = {}
 
 
 def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple:
@@ -578,7 +579,7 @@ def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple
 # Home key -> the real home Path that produced it. ``hermes_home_key`` normcases (it lower-cases on
 # Windows), so ``Path(key[0])`` is a case-folded path that matches nothing else on disk; bookkeeping
 # that needs the profile home reads it here instead of reconstructing it from the key.
-_inflight_home_paths: Dict[str, Path] = {}
+_inflight_home_paths: dict[str, Path] = {}
 
 
 def _remember_inflight_home(home: Path) -> Path:
@@ -1190,33 +1191,6 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
             _interrupted_job_ids.discard(key)
             hit = True
         return hit
-
-
-def _inactivity_watchdog_loop(
-    *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
-    future_done: Callable[[], bool], meter: Optional[AwakeIdleMeter] = None,
-) -> bool:
-    """Poll idle time until limit (-> True), stop, or the future completes (-> False). Uses
-    ``threading.Event.wait``, not asyncio, so a blocked event loop cannot disable the watchdog.
-
-    Driven by ``threading.Event.wait`` (a kernel timeout), not asyncio, so a blocked event-loop /
-    ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
-    of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
-    observed.
-    """
-    # A sleeping host freezes the job with it, so time asleep never counts as inactivity.
-    if meter is None:
-        meter = AwakeIdleMeter()
-    while not stop.wait(poll_s):
-        if future_done():
-            return False
-        try:
-            idle = float(get_idle_seconds() or 0.0)
-        except Exception:
-            idle = 0.0
-        if meter.measure(idle) >= limit_s:
-            return True
-    return False
 
 
 def _cron_inactivity_seconds() -> float:
@@ -2026,6 +2000,10 @@ def _run_agent_with_watchdog(
 
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
+    # Ledger progress stamps: the stale-claim sweep measures silence since the last stamp.
+    _progress = ExecutionProgressStamper(
+        str(job.get("execution_id") or ""), job_name, idle_seconds=_idle_seconds,
+        every_seconds=_RUN_CLAIM_HEARTBEAT_SECONDS)
     try:
         if _cron_inactivity_limit is not None:
             # Separate daemon thread so a hung get_activity_summary can't stop the limit firing.
@@ -2047,6 +2025,7 @@ def _run_agent_with_watchdog(
                     break
                 _abort_if_fire_claim_lost()
                 _heartbeat_run_claim_if_due()
+                _progress.tick()
     except Exception:
         _cron_pool.shutdown(wait=False, cancel_futures=True)
         raise
@@ -2627,7 +2606,7 @@ def run_job(
         return True, output, final_response, None
 
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)}"
+        error_msg = f"{type(e).__name__}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
         # the model was never reached (transient network/DNS, zero API calls) so the bookkeeping
@@ -3471,7 +3450,7 @@ def _run_one_job_body(
 
         return _finish_completed_run(d, fire_owner, execution_id)
 
-    except BaseException as e:  # noqa: BLE001 — deliberate: see below
+    except BaseException as e:
         # BaseException, not Exception: CancelledError/KeyboardInterrupt/SystemExit propagate here.
         # Without mark_job_run(False) a finite one-shot is wedged: claim_dispatch consumed
         # repeat.completed but last_run_at is never written. Record first, then re-raise
@@ -4063,7 +4042,7 @@ def create_job_with_scheduler_registration(**kwargs) -> dict:
 # ticks every profile each cycle, and a process-global slot would let the
 # first profile starve all the others.
 _DEAD_OWNER_REAP_INTERVAL_SECONDS = 300.0
-_last_dead_owner_reap_at: Dict[str, float] = {}
+_last_dead_owner_reap_at: dict[str, float] = {}
 
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
@@ -4071,7 +4050,7 @@ _last_worktree_maintenance_at: Optional[float] = None
 _worktree_maintenance_lock = threading.Lock()
 
 
-def _worktree_maintenance_repos() -> List[str]:
+def _worktree_maintenance_repos() -> list[str]:
     """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout plus job workdir repo roots,
     filtered to those that actually have a ``.worktrees/`` dir."""
     repos: set = set()
@@ -4406,26 +4385,26 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
         _f.add_done_callback(_on_done)
 
 
-from cron.scheduler_tick import tick  # noqa: E402
+from cron.scheduler_tick import tick
 
 
 # ---------------------------------------------------------------------------
 # Split modules. Imported at the bottom (import cycle: they late-bind ``cron.scheduler`` as
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
-from cron.scheduler_delivery import (  # noqa: E402
+from cron.scheduler_delivery import (
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
-from cron.scheduler_script import (  # noqa: E402
+from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )
-from cron.scheduler_prompt import (  # noqa: E402
+from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
     _parse_wake_gate,
 )
-from cron.scheduler_preflight import (  # noqa: E402
+from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
     _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
 )
@@ -4435,6 +4414,7 @@ from cron.scheduler_preflight import (  # noqa: E402
 # tick paths see every name they need.
 if __name__ == "__main__":
     if "--external-worker-file" in sys.argv:
+        finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse
 
         parser = argparse.ArgumentParser(add_help=False)

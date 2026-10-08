@@ -20,7 +20,7 @@ import pytest
 
 from pm.lock import Lockfile
 from pm.store import current_target
-from tests.pm._fixtures import _wheel, make_tar, served  # noqa: F401 -- shared HTTP fixture
+from tests.pm._fixtures import _wheel, make_tar, served
 
 
 pytestmark = pytest.mark.platforms("posix")

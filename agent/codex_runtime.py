@@ -592,7 +592,7 @@ def _codex_turn_service_tier(agent) -> str | None:
     return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
-def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
+def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
     or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
@@ -659,7 +659,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
+def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
 
@@ -693,7 +693,7 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     return flush_ok is True
 
 
-def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
+def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
                        should_review_memory: bool) -> dict[str, Any]:
     """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
@@ -718,8 +718,8 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     return usage_result
 
 
-def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
+def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
+                              effective_task_id: str, should_review_memory: bool = False) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
@@ -764,8 +764,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     )
 
 
-def _turn_result(interrupt: tuple[bool, Any], messages: List[Dict[str, Any]], *, api_calls: int, completed: bool,
-                 error: Any, final_response: Any, **extra: Any) -> Dict[str, Any]:
+def _turn_result(interrupt: tuple[bool, Any], messages: list[dict[str, Any]], *, api_calls: int, completed: bool,
+                 error: Any, final_response: Any, **extra: Any) -> dict[str, Any]:
     """Result shape shared with the chat_completions path (``partial`` == ``not completed``)."""
     user_interrupted, interrupt_message = interrupt
     return {
@@ -862,15 +862,15 @@ class _CodexResponseAssembler:
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
-        self.output_items: List[Any] = []
+        self.output_items: list[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
         self.text_deltas, self.commentary_text_deltas = [], []
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
-        self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
-        self.announced_output_order: Dict[str, tuple] = {}
+        self.pending_function_calls: dict[str, dict[str, Any]] = {}
+        self.announced_output_order: dict[str, tuple] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -1009,7 +1009,7 @@ class _CodexResponseAssembler:
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
-    def _settled_output(self) -> List[Any]:
+    def _settled_output(self) -> list[Any]:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
         for pending in self.pending_function_calls.values():
@@ -1031,7 +1031,7 @@ class _CodexResponseAssembler:
 
     def result(self) -> SimpleNamespace:
         # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
+        output: list[Any] = list(self.output_items)
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]

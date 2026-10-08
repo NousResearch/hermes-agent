@@ -1011,7 +1011,7 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
              {"goal": "review PR 3 thoroughly and report", "group": "g"}]
@@ -1030,7 +1030,7 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
     and a unit must not be judged stalled for time it spent waiting to start."""
     _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
     started, release = [], threading.Event()
-    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+    frozen = lambda: (((0, None, None),), False)
 
     def blocker(uid):
         def run():

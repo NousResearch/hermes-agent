@@ -146,9 +146,9 @@ class DesktopStatus:
     memory_available_mb: Optional[int] = None
     memory_limit_mb: Optional[int] = None
     placement: str = "gateway"  # "gateway" | "terminal:<backend>" — where Xvnc runs
-    image_switch: Optional[Dict[str, object]] = None  # pending default-image switch the pane can approve
+    image_switch: Optional[dict[str, object]] = None  # pending default-image switch the pane can approve
 
-    def as_dict(self) -> Dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         return dict(self.__dict__)
 
 
@@ -341,7 +341,7 @@ def _allocate_display() -> int:
         return _pick_display()
 
 
-def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
     Pure: never starts anything (it is called from env builders, status probes and tests)."""
@@ -401,7 +401,7 @@ def tool_placement() -> str:
     return placement.TERMINAL
 
 
-def _should_auto_start(env: Dict[str, str]) -> bool:
+def _should_auto_start(env: dict[str, str]) -> bool:
     if not is_supported_host() or env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
         return False
     if missing_binaries():
@@ -465,7 +465,7 @@ def stop_if_idle() -> bool:
     return stop()
 
 
-def published_env() -> Dict[str, str]:
+def published_env() -> dict[str, str]:
     """Variables the launcher wrote once Xfce's private bus existed; empty when the desktop is down.
 
     Pure file reads on the common path: this is called from every browser / cua-driver env builder, so it
@@ -479,7 +479,7 @@ def published_env() -> Dict[str, str]:
     raw = _read(state_dir() / "env")
     if not raw:
         return {}
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for line in raw.splitlines():
         key, sep, value = line.partition("=")
         if sep:
@@ -742,7 +742,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
             child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
         # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
-        log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
+        log = open(sd / "launcher.log", "wb")
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)
@@ -799,7 +799,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     return status()
 
 
-def _sandbox_published_env() -> Dict[str, str]:
+def _sandbox_published_env() -> dict[str, str]:
     """Published env of a sandbox-hosted screen (the caller saw the host-side marker written at start)."""
     from tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)

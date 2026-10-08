@@ -592,7 +592,7 @@ def format_steer_marker(steer_text: str) -> str:
 STEER_DISPLAY_KIND = "steer"
 
 
-def steer_user_row(steer_text: str) -> Dict[str, Any]:
+def steer_user_row(steer_text: str) -> dict[str, Any]:
     """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
     result). Its own row — never smeared onto the already-persisted tool row, which append-only
     persistence would leave divergent from the live request — and typed so the alternation repair
@@ -1001,7 +1001,7 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
 def _format_backend_probe(output: str) -> str:
     """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
-    known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
+    known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None
     os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
     return f"  OS: {os_line}" if os_line else ""
 
@@ -1014,7 +1014,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if formatted is None:
         formatted = ""
         try:
-            import tools.terminal_tool as terminal_tool  # heavy; only needed for non-local backends
+            from tools import terminal_tool  # heavy; only needed for non-local backends
         except Exception as e:
             logger.debug("Backend probe unavailable (import failed): %s", e)
         else:
@@ -1315,6 +1315,38 @@ def _skill_should_show(
     )
 
 
+def _plugin_skill_prompt_rows(
+    disabled: "set[str]", available_tools: "set[str] | None", available_toolsets: "set[str] | None",
+    session_platform: "str | None",
+) -> "list[tuple[str, str]]":
+    """``(qualified_name, description)`` for every skill registered by an ENABLED plugin
+    (``ctx.register_skill``), filtered through the same offer-time gates as on-disk skills.
+    Plugin skills live in the plugin-manager registry — never under the profile skills tree —
+    so the disk scans above cannot see them; this is their one path into ``<available_skills>``.
+    The qualified ``plugin:skill`` name is exactly what ``skill_view`` resolves, and disabling
+    or unloading a plugin removes its registry entries, so enablement gating is inherent."""
+    rows: "list[tuple[str, str]]" = []
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
+        for meta in get_plugin_manager().list_plugin_skill_metadata():
+            name = str(meta.get("name") or "")
+            if not name or name in disabled:
+                continue
+            frontmatter = meta.get("frontmatter") or {}
+            if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
+                    and skill_matches_apps(frontmatter)):
+                continue
+            if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
+                                      available_toolsets, session_platform):
+                continue
+            desc = str(meta.get("description") or "").strip() or extract_skill_description(frontmatter)
+            rows.append((name, desc))
+    except Exception:
+        logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
+    return rows
+
+
 def _current_session_platform_hint() -> str:
     """Active platform without importing the gateway package on CLI startup."""
     platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
@@ -1476,12 +1508,15 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
+    # root — the snapshot manifest can't see them change, so they participate in the cache key.
+    plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
     cache_key = (
         str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(),
+        _oneshot_prompt_variant(), tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir)
     app_gated = snapshot is not None and any(
@@ -1532,6 +1567,14 @@ def _build_skills_system_prompt_inner(
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
     _label_visible_entries(visible_entries, skills_by_category)
+    if plugin_rows:
+        # Same category label skills_list gives registry skills; qualified names are already
+        # namespaced (plugin:skill) so they cannot collide with on-disk load_names.
+        listed = {name for entries in skills_by_category.values() for name, _ in entries}
+        for name, desc in plugin_rows:
+            if name not in listed:
+                listed.add(name)
+                skills_by_category.setdefault("plugin", []).append((name, desc))
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:

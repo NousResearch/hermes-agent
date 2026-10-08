@@ -92,7 +92,7 @@ def test_named_profile_install_and_start_refuse_without_force_when_no_multiplexe
     (root / "gateway_state.json").write_text(json.dumps(
         {"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
          "served_profiles": ["default", "coder"]}))
-    import gateway.status as status
+    from gateway import status
     real_cmdline = status._read_process_cmdline
     status._read_process_cmdline = lambda pid: (
         "python -m hermes_cli.main gateway run" if pid == os.getpid() else real_cmdline(pid))

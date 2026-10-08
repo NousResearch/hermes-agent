@@ -18,6 +18,7 @@ import json
 import asyncio
 import logging
 import os
+import shutil
 import sqlite3
 from datetime import timedelta
 
@@ -111,8 +112,8 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     save_jobs([_due_job(), _half_paused_job()] + ([once] if with_once else []))
     before = load_jobs()
     if junk:  # load_jobs() drops a non-object entry and persists that repair: the save must not abort the tick
-        raw = json.loads(cronjobs.JOBS_FILE.read_text())
-        cronjobs.JOBS_FILE.write_text(json.dumps(dict(raw, jobs=raw["jobs"] + [42])))
+        raw = json.loads(cronjobs.JOBS_FILE.read_text(encoding="utf-8-sig"))
+        cronjobs.JOBS_FILE.write_text(json.dumps(dict(raw, jobs=raw["jobs"] + [42])), encoding="utf-8")
     ran, sweeps = [], []
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)
@@ -249,6 +250,13 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
         assert [d["id"] for d in get_due_jobs()] == ["once"]
     save_jobs(load_jobs())  # second recovery
     assert [d["id"] for d in get_due_jobs()] == ["once"]
+    # Its fire claim never landed: the live run claim skips it (that saved scan ends the
+    # recovery window), and once the claim expires it still fires instead of staying stuck.
+    assert get_due_jobs() == []
+    clock["now"] += timedelta(seconds=cronjobs._oneshot_run_claim_ttl_seconds() + 60)
+    assert [d["id"] for d in get_due_jobs()] == ["once"]
+    cronjobs.clear_run_claim("once")  # its dispatch failed (pool shut down): still not missed
+    assert [d["id"] for d in get_due_jobs()] == ["once"]
     stale = dict(once, id="stale")  # due during the outage, first scanned after the recovery scan
     save_jobs(load_jobs() + [stale])
     assert "stale" not in [d["id"] for d in get_due_jobs()]
@@ -270,7 +278,7 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
-    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [])
+    monkeypatch.setattr(scheduler, "get_due_jobs", list)
     enospc = OSError(errno.ENOSPC, "No space left on device")
     probe_result = [enospc]
     monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_result[0])
@@ -347,7 +355,8 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
 
     target = cron_store / "ro" / "jobs.json"  # the save follows a symlinked jobs.json to its target
     target.parent.mkdir()
-    target.write_text((cron_dir / "jobs.json").read_text())
+    payload = (cron_dir / "jobs.json").read_text(encoding="utf-8-sig")
+    target.write_text(payload, encoding="utf-8")
     (cron_dir / "jobs.json").unlink()
     (cron_dir / "jobs.json").symlink_to(target)
     os.chmod(target, 0o400)
@@ -357,6 +366,13 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     finally:
         os.chmod(target.parent, 0o700)
         os.chmod(target, 0o600)
+    lock = cron_dir / ".tick.lock"  # only the tick lock is unwritable (root-owned): every tick skips
+    lock.write_text("", encoding="utf-8")
+    os.chmod(lock, 0o400)
+    try:
+        assert store_health.probe_store(cron_dir).filename == str(lock)
+    finally:
+        os.chmod(lock, 0o600)
 
     sent = []
     gate = asyncio.Event()
@@ -368,7 +384,10 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         return True
 
     home = SimpleNamespace(chat_id="c1", thread_id=None)
-    runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": cron_store},
+    profile = cron_store / "profile"  # its cron/ is a symlink to the store on another disk
+    profile.mkdir()
+    (profile / "cron").symlink_to(cron_dir, target_is_directory=True)
+    runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": profile},
                              _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
     monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
     # A manual loop clock: the real one-hour "recovered" window only elapses when the test says
@@ -436,3 +455,14 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]
     assert any(r.levelname == "WARNING" and "unwritable notice for" in r.getMessage() for r in caplog.records)
+    from cron import scheduler_ownership  # the profile leaves this gateway, its home already deleted
+    monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
+    sibling = cron_store / "sibling"  # a second profile whose cron/ reaches the same store
+    sibling.mkdir()
+    (sibling / "cron").symlink_to(cron_dir, target_is_directory=True)
+    scheduler_ownership.register_ticked_homes([profile, sibling])
+    scheduler_ownership.register_ticked_homes([profile])  # sibling leaves; the store is still ticked
+    assert store_health.degraded_record(cron_dir) is not None
+    shutil.rmtree(profile)  # removes the cron/ symlink, never the store it points at
+    scheduler_ownership.register_ticked_homes([])
+    assert store_health.degraded_record(cron_dir) is None

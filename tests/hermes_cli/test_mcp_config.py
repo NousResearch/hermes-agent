@@ -407,7 +407,7 @@ class TestContextVarInterpolation:
     def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
         import os
 
-        import tools.file_tools_paths as file_tools_paths
+        from tools import file_tools_paths
         from tools.mcp_tool_config import _workspace_folder
 
         monkeypatch.setattr(

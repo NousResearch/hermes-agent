@@ -562,8 +562,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
 
 def emit(values: dict, env: dict) -> None:
     with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
-        for key, value in values.items():
-            file.write(f"{key}={value if isinstance(value, str) else json.dumps(value, separators=(',', ':'))}\n")
+        file.writelines(f"{key}={value if isinstance(value, str) else json.dumps(value, separators=(',', ':'))}\n" for key, value in values.items())
 
 
 def read_candidate(env: dict) -> dict:

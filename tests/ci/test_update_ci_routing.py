@@ -26,12 +26,13 @@ import os
 import re
 import subprocess
 import sys
-from functools import lru_cache
+from functools import lru_cache, cache
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
 
@@ -49,7 +50,19 @@ _spec.loader.exec_module(cc)
 # bash is Git Bash: the replay, its dispatch chain and the ineffective-step controls carry this
 # marker so a green Windows job has run them on that layout (review F81-R). Not "any": macOS
 # bash 3.2 is not a host the replay has been run on.
-_NATIVE_WINDOWS_TOO = pytest.mark.platforms("linux", "windows")
+_NATIVE_WINDOWS_PLATFORMS = pytest.mark.platforms("linux", "windows")
+# Not Windows on arm64: Git for Windows ships an x86-64 MSYS bash.exe there, run under emulation,
+# and with the os-tests lane's 16 workers it dies with 0xC000026F (STATUS_WX86_INTERNAL_ERROR) or
+# 0xC0000005 before running a line, on replays of unchanged workflows: one copy of this file red
+# in ~3 when 16 run at once, against 0/64 on x64 Windows under the same load. The emulator's
+# crash is not the replay's to assert on; the x64 Windows row runs the same layout natively.
+_EMULATED_BASH = pytest.mark.skipif(
+    sys.platform == "win32" and native_arch() == "arm64",
+    reason="Git Bash is x86-64 under emulation on Windows arm64 and crashes under parallel load")
+
+
+def _NATIVE_WINDOWS_TOO(test):
+    return _NATIVE_WINDOWS_PLATFORMS(_EMULATED_BASH(test))
 _lister_spec = importlib.util.spec_from_file_location("list_os_marked", _REPO / "scripts/ci/list_os_marked_tests.py")
 assert _lister_spec is not None and _lister_spec.loader is not None
 lister = importlib.util.module_from_spec(_lister_spec)
@@ -72,7 +85,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 # -- workflow replay ---------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
@@ -631,7 +644,7 @@ def _module_file(module: str) -> Path | None:
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _imports(path: Path) -> frozenset[str]:
     """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
     try:
@@ -666,7 +679,7 @@ def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
     return sorted(hits)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _importers() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in _product_python():
@@ -820,5 +833,5 @@ def test_windows_install_update_dispatch_alone_sets_strict():
 def test_run_tests_forwards_the_strict_switch():
     """run_tests.sh starts pytest under `env -i`: an unlisted variable never arrives."""
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
-    allow = re.search(r"for _test_var in (.*?); do", text, re.S)
+    allow = re.search(r"for _test_var in (.*?); do", text, re.DOTALL)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()

@@ -267,4 +267,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

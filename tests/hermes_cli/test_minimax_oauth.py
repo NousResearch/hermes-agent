@@ -619,7 +619,7 @@ def test_concurrent_refresh_rotates_token_once_and_keeps_login(tmp_path, monkeyp
             barrier.wait()
             try:
                 results[name] = ("ok", provider())
-            except Exception as exc:  # noqa: BLE001 -- test witness, recorded not swallowed
+            except Exception as exc:
                 results[name] = ("error", repr(exc))
 
         threads = [threading.Thread(target=_provider_call, args=(f"t{i}",)) for i in range(2)]

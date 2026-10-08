@@ -257,7 +257,7 @@ class TestSkillsShSource:
         index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
                  "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
         shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
-        calls: List[str] = []
+        calls: list[str] = []
 
         def fake_get(url, *, timeout, headers=None):
             calls.append(url)
@@ -297,7 +297,7 @@ class TestSkillsShSource:
             if url.endswith("/contents/"):
                 # Root listing for shallow scan — return empty so it falls through
                 resp.status_code = 200
-                resp.json = lambda: []
+                resp.json = list
                 return resp
             if "/contents/" in url:
                 # All contents API calls fail (candidate paths miss)
@@ -1432,7 +1432,7 @@ class TestInstallPathSafety:
         # process then sees this test's tmp dir as the skills root. Set the
         # override attribute directly and delete it on teardown so the
         # module returns to dynamic resolution.
-        setattr(hub, "SKILLS_DIR", skills_dir)
+        hub.SKILLS_DIR = skills_dir
         try:
             yield skills_dir
         finally:
@@ -1947,7 +1947,7 @@ class _FakeSource(SkillSource):
     def source_id(self) -> str:
         return self._sid
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         self.calls += 1
         if self._sleep:
             time.sleep(self._sleep)

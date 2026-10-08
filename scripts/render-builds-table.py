@@ -53,7 +53,7 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning  # noqa: E402
+from scripts.releases import handoff, r2, semver, stable, versioning
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"

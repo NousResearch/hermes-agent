@@ -438,7 +438,7 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
     monkeypatch.setitem(
         server._CHANGE_WATCHES,
         "cron.changed",
-        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), lambda: {}),
+        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), dict),
     )
     _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)

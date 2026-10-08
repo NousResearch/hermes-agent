@@ -56,7 +56,7 @@ class GatewayVoiceMixin:
             adapter._voice_input_callback = functools.partial(
                 self._handle_voice_channel_input, adapter=adapter)
 
-    def _load_voice_modes(self) -> Dict[str, str]:
+    def _load_voice_modes(self) -> dict[str, str]:
         try:
             data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -434,7 +434,7 @@ class GatewayVoiceMixin:
                 with suppress(OSError):
                     os.unlink(p)
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
+    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)

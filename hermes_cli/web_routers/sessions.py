@@ -124,7 +124,7 @@ def _prune_sessions(body: SessionPrune):
 _ACTIVE_WINDOW_S = 300
 
 
-def _csv(value: Optional[str]) -> List[str]:
+def _csv(value: Optional[str]) -> list[str]:
     """Split a comma-separated query param into stripped, non-empty items."""
     return [s.strip() for s in (value or "").split(",") if s.strip()]
 

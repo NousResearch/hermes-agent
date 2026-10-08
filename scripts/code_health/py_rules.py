@@ -735,9 +735,7 @@ def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
         if not isinstance(node, ast.Call) or id(node) in bounded:
             continue
         head, _, leaf = _call_name(node).rpartition(".")
-        if head == "subprocess" and leaf in _SUBPROCESS_WAITS and not _deadline(node):
-            yield node.lineno
-        elif leaf == "urlopen" and not _deadline(node, "timeout", 2):
+        if head == "subprocess" and leaf in _SUBPROCESS_WAITS and not _deadline(node) or leaf == "urlopen" and not _deadline(node, "timeout", 2):
             yield node.lineno
         elif leaf in _PROCESS_WAITS and id(node) in kinds:
             if kinds[id(node)] == "async" or not _deadline(node, "timeout", _PROCESS_WAITS[leaf]):

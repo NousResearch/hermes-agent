@@ -27,7 +27,6 @@ class _RecordingProvider:
 
     def claim_fire(self, job_id):
         self.claimed.append(job_id)
-        return None  # decline the claim so no thread is spawned
 
     def fire_claimed(self, *a, **k):  # pragma: no cover - never reached
         raise AssertionError("fire_claimed must not run when claim declined")

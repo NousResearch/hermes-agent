@@ -148,7 +148,7 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
         if snap is not None:
             try:
                 shutil.copytree(pre_dir, snap)
-            except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
+            except Exception as exc:
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
         target = create_targets.get(nm) if pre is None else None
         snapshots[nm] = (pre_dir, snap, target is not None and target.is_dir())
@@ -207,7 +207,7 @@ def _rollback(snapshots, find_skill, results):
             post = find_skill(nm)
             _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
                               dir_pre_existed, written)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
@@ -271,7 +271,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                                               task_id=task_id, session_id=session_id)
                 try:
                     parsed = json.loads(raw)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)

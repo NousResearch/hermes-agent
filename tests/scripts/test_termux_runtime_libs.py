@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "termux"))
 
-import stage_runtime_libs as srl  # noqa: E402
+import stage_runtime_libs as srl
 
 PREFIX = srl.PREFIX_REL
 

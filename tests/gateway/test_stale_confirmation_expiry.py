@@ -39,7 +39,7 @@ def _make_history_with_confirmation(
     confirmation_message: str,
     confirmation_at: float,
     assistant_action_at: float,
-) -> List[Dict]:
+) -> list[dict]:
     """Build a synthetic conversation history with a confirmation text.
 
     Uses the real gateway's "timestamp" field (epoch seconds, as set in

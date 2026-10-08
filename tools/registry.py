@@ -687,6 +687,18 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Direct, plugin and sandbox callers share this effect boundary.
+            from toolsets import get_allowed_toolsets, resolve_toolset
+
+            allowed = get_allowed_toolsets()
+            if (
+                allowed is not None and entry.toolset not in allowed
+                and not any(name in resolve_toolset(toolset) for toolset in allowed)
+            ):
+                return tool_error(
+                    f"Tool '{name}' is denied by the service toolset allowlist.",
+                    error_type="toolset_not_allowed", tool=name,
+                )
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))

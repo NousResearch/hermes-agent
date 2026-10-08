@@ -181,6 +181,12 @@ Each enabled instance gets its own `hermes-agent-<name>.service`,
 Instance names must contain lowercase letters, digits, and hyphens. The
 instances module is native-only; use the singleton module for container mode.
 
+`allowedToolsets` limits schema assembly and is checked again before registered
+tool handlers execute, including calls through plugins and code-execution tools.
+`null` leaves toolsets unrestricted; an empty list permits no registered tools.
+This is not an operating-system capability sandbox: allowing `terminal` or code
+execution still grants the programs and files accessible to the instance user.
+
 ### Container-aware CLI
 
 :::info

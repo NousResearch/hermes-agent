@@ -93,8 +93,50 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_task_parses_a_reply_with_a_raw_newline_in_the_body(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    p, _ = _patch_aux_client('{\n  "title": "Refined",\n  "body": "**Goal**\n- [ ] a"\n}')
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert outcome.ok is True
+    assert (task.title, task.body) == ("Refined", "**Goal**\n- [ ] a")
 
 
+@pytest.mark.parametrize("reply", [
+    '{"title": "Refined", "body": "cut off mid-sent',
+    '```json\n{"title": "Refined", "body": "x",}\n```',
+])
+def test_specify_task_never_writes_unparsable_json_as_the_body(kanban_home, reply):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    p, _ = _patch_aux_client(reply)
+    with p:
+        outcome = spec.specify_task(tid)
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert outcome.ok is False
+    assert (task.status, task.title, task.body) == ("triage", "rough", None)
+
+
+def test_specify_task_still_uses_a_prose_reply_as_the_body(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    p, _ = _patch_aux_client("**Goal**\nA plain prose spec.")
+    with p:
+        outcome = spec.specify_task(tid)
+
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert outcome.ok is True
+    assert task.body == "**Goal**\nA plain prose spec."
 
 
 # ---------------------------------------------------------------------------

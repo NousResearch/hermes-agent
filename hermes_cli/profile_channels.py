@@ -450,46 +450,62 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     )
 
 
-def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
-    """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
-    tokens: Dict[str, str] = {}
-    if not config_path.is_file():
-        return tokens
-    from hermes_cli.config import read_user_config_raw
-    raw = read_user_config_raw(config_path)
-    gateway: dict = raw["gateway"] if isinstance(raw.get("gateway"), dict) else {}
-    for section in (raw.get("platforms"), gateway.get("platforms")):
-        if not isinstance(section, dict):
+def _profile_channel_claims(home: Path) -> dict[tuple, str]:
+    """Use the gateway's enabled, profile-scoped identities rather than matching any secret key."""
+    from hermes_cli.gateway_migrate import _credential_claims, _profile_gateway_config
+
+    config = _profile_gateway_config(home)
+    # EmailAdapter does not consume PlatformConfig.token; its identity is the inbox below.
+    claims = {claim: pid for claim, pid in _credential_claims(config).items() if pid != "email"}
+    for platform, settings in config.platforms.items():
+        if platform.value != "email" or not settings.enabled:
             continue
-        for pid, block in section.items():
-            if isinstance(block, dict):
-                token = block.get("token") or block.get("api_key")
-                if isinstance(token, str) and token.strip():
-                    tokens[str(pid)] = token.strip()
-    return tokens
+        extra = settings.extra or {}
+        address = extra.get("address")
+        host = extra.get("imap_host")
+        # Email consumes UNSEEN from INBOX: app passwords are authentication, not mailbox identity.
+        # SMTP-only tool credentials do not constitute an inbound adapter.
+        if address and host and extra.get("smtp_host") and _env_values(home / ".env").get("EMAIL_PASSWORD"):
+            claims[("email", host.strip().lower(), address.strip())] = "email"
+    return claims
 
 
 def shared_channel_credentials(profile_dir: Path, source_dir: Path) -> List[str]:
-    """Platforms whose CONNECTING credential (bot token / app id / account) in ``profile_dir`` is
-    byte-identical to ``source_dir``'s — the bots that will collide. Pure file reads: no secret
-    manager, no gateway config load, so ``hermes profile list`` can afford it per profile."""
-    wanted = credential_env_keys()
-    mine = _env_values(profile_dir / ".env", wanted)
-    theirs = _env_values(source_dir / ".env", wanted)
-    shared = {wanted[key] for key in mine if theirs.get(key) == mine[key]}
-    mine_cfg = _config_platform_tokens(profile_dir / "config.yaml")
-    theirs_cfg = _config_platform_tokens(source_dir / "config.yaml")
-    shared.update(pid for pid, token in mine_cfg.items() if theirs_cfg.get(pid) == token)
-    return sorted(shared)
+    """Enabled channels that claim the same bot or inbox in two profiles.
+
+    Reuse the migration/gateway loader so disabled channels and profile-local ${VAR} expansion
+    agree with runtime. No adapters are connected and no mailbox or provider is contacted.
+    """
+    from hermes_cli.gateway_migrate import _multiplex_read_mode
+
+    with _multiplex_read_mode():
+        mine = _profile_channel_claims(profile_dir)
+        theirs = _profile_channel_claims(source_dir)
+    return sorted({mine[claim] for claim in mine.keys() & theirs.keys()})
 
 
-def shared_credential_warning(profile: str, platforms: List[str], source: str = "default") -> str:
-    return (
-        f"⚠ Profile '{profile}' shares its {', '.join(platforms)} credential with {source}: the bot can "
-        f"only belong to one profile. Give '{profile}' its own bot (hermes -p {profile} setup, or the "
-        f"dashboard Messaging page) or remove the token from '{profile}'; a multiplexed gateway parks "
-        f"the duplicate and `hermes gateway migrate --multiplex` refuses until it is gone."
+def shared_credential_warning(
+    profile: str, platforms: List[str], source: str = "default", *, multiplexed: bool = False,
+) -> str:
+    if platforms == ["email"]:
+        return (
+            f"⚠ Profile '{profile}' and {source} poll the same email INBOX: concurrent pollers can "
+            "consume each other's unread messages, even with different app passwords. Use separate "
+            "inboxes or enable the inbound email channel in only one profile; SMTP/tool credentials "
+            "can still be shared."
+        )
+    warning = (
+        f"⚠ Profile '{profile}' shares its {', '.join(platforms)} credential with {source}: "
+        "concurrent gateways can compete for the same bot or inbox. "
+        f"Give '{profile}' its own channel identity (hermes -p {profile} setup, or the dashboard "
+        "Messaging page), or enable the shared channel in only one profile."
     )
+    if multiplexed:
+        warning += (
+            " The running multiplexed gateway parks duplicate bot credentials; "
+            "`hermes gateway migrate --multiplex` refuses those duplicates."
+        )
+    return warning
 
 
 def format_stripped_notice(profile: str, platforms: List[str], clone_flag: str = "--clone") -> List[str]:

@@ -141,9 +141,14 @@ hermes profile create twin --clone --clone-channels   # keep the source's bots a
 `--clone-channels` is refused when a running multiplexed gateway already serves the source
 (the copy would be parked immediately) — from the CLI, the dashboard and the TUI alike — and
 otherwise prints a warning naming the platforms now shared with the source. It is an error
-without a clone flag. `hermes profile list` prints the same warning for any existing
-profile whose bot credential is byte-identical to the default's, so older clones surface
-before they bite.
+without a clone flag. `hermes profile list` checks enabled channels using each profile's
+resolved configuration, so disabled adapters, SMTP/tool-only email settings, and identical
+`${VAR}` placeholders resolving to different tokens do not produce collision warnings.
+A shared password alone does not identify an email channel: two inbound email adapters
+polling the same IMAP host and mailbox compete for unread INBOX messages even with different
+app passwords. Share SMTP/tool credentials freely, but use separate inboxes or enable the
+inbound adapter in only one profile. Bot-token collisions still warn for standalone gateways;
+only a verified running multiplexer adds the duplicate-parking/migration explanation.
 
 **What counts as a channel setting** — the inventory is ownership-based and is judged in the
 *source* profile's plugin scope (its private `plugins/` adapters included):

@@ -175,6 +175,8 @@ def _shared_credential_warnings(profiles) -> list:
     if default is None:
         return []
     lines = []
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    multiplexed = bool(recorded_served_profiles(default.path))
     for p in profiles:
         if p.is_default:
             continue
@@ -183,7 +185,7 @@ def _shared_credential_warnings(profiles) -> list:
         except Exception:
             continue
         if shared:
-            lines.append(shared_credential_warning(p.name, shared))
+            lines.append(shared_credential_warning(p.name, shared, multiplexed=multiplexed))
     return lines + ([""] if lines else [])
 
 

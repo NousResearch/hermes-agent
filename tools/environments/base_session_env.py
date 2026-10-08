@@ -29,7 +29,7 @@ from typing import Iterable
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
     "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT|"
-    "HERMES_RPC_|HERMES_KERNEL_DIR)")
+    "HERMES_RPC_|HERMES_KERNEL_DIR|HERMES_KANBAN_)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -68,7 +68,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     extra_unset = "".join(f" {shlex.quote(name)}" for name in sorted(safe_names))
     return (
         "{ ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
-        "${!HERMES_BROWSER_CONTROL_*} "
+        "${!HERMES_BROWSER_CONTROL_*} ${!HERMES_KANBAN_*} "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers re-exported
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.

@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This is a backend-only implementation for Grok's later frontend wiring. No renderer, GUI, styles, mobile code, live configuration or services changed. Nothing was deployed or visibly rendered. The parent must independently review and rerun the backend tests before integration.
+This is a backend-only implementation for Grok's later frontend wiring. No renderer, GUI, styles, mobile code, live configuration or services changed. Nothing was deployed or visibly rendered. Dr. Eggbot reviewed the backend diff and independently reran all four green test selections reported below. Deployment requires Michael's separate authorization. Until the candidate is deployed, the live server does not provide the new tool or routes.
 
 The implementation adds `publish_html` and two authenticated JSON reads. It reuses canonical `state.db` message persistence and the existing post-flush `tool.complete` event. It does not create an artifact database, another delegation tool or another task store. `delegate_task` and its lifecycle code are unchanged.
 
@@ -94,7 +94,7 @@ A delegated child's `publish_html` belongs to the child conversation. It must no
 
 ## Authenticated retrieval
 
-Implemented routes:
+Implemented routes are registered on `hermes_cli.web_server.app` through `hermes_cli.web_routers.sessions.manage_router`. They are not new `/v1` routes on the platform API server and are not gateway RPC methods. Send these reads to the connection's authenticated Hermes web-server origin, not automatically to its JSON-RPC transport or platform API port. If a client only connects to the platform API, it needs an authorized web-server connection before retrieving content. This candidate does not add that deployment wiring, a proxy or a new listener.
 
 ```text
 GET /api/sessions/{stored_session_id}/artifacts?profile={owner_profile}

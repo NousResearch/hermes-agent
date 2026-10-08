@@ -592,12 +592,48 @@ class TestGemini3ToolCallIds:
         )
         parts = [p for c in request["contents"] for p in c["parts"]]
         assert any(p.get("functionCall", {}).get("id") == "call_1" for p in parts)
+        assert any(p.get("thoughtSignature") == "skip_thought_signature_validator" for p in parts)
 
         request_old = build_gemini_request(
             messages=self._history(), model="gemini-2.5-flash"
         )
         parts_old = [p for c in request_old["contents"] for p in c["parts"]]
         assert all("id" not in p.get("functionCall", {}) for p in parts_old)
+        assert all("thoughtSignature" not in p for p in parts_old)
+
+    def test_thought_signature_handled_for_gemini3(self):
+        from agent.gemini_native_adapter import _SKIP_SIGNATURE, _build_gemini_contents
+
+        # Unsigned tool calls get _SKIP_SIGNATURE
+        contents, _ = _build_gemini_contents(
+            self._history(), include_tool_call_ids=True, is_gemini3=True
+        )
+        signatures = [
+            p.get("thoughtSignature")
+            for c in contents for p in c["parts"] if "functionCall" in p
+        ]
+        assert signatures == [_SKIP_SIGNATURE, _SKIP_SIGNATURE]
+
+        # Signed tool calls preserve their signature
+        history_signed = self._history()
+        history_signed[1]["tool_calls"][0]["extra_content"] = {"google": {"thought_signature": "custom_sig"}}
+        contents_signed, _ = _build_gemini_contents(
+            history_signed, include_tool_call_ids=True, is_gemini3=True
+        )
+        signatures_signed = [
+            p.get("thoughtSignature")
+            for c in contents_signed for p in c["parts"] if "functionCall" in p
+        ]
+        assert signatures_signed == ["custom_sig", _SKIP_SIGNATURE]
+
+    def test_thought_signature_omitted_for_older_gemini(self):
+        from agent.gemini_native_adapter import _build_gemini_contents
+
+        contents, _ = _build_gemini_contents(self._history(), is_gemini3=False)
+        for c in contents:
+            for p in c["parts"]:
+                if "functionCall" in p:
+                    assert "thoughtSignature" not in p
 
     def test_response_preserves_provider_tool_call_id(self):
         from agent.gemini_native_adapter import translate_gemini_response

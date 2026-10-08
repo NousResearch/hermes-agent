@@ -134,6 +134,20 @@ def test_stream_hook_queue_drops_oldest_pending_event_when_full(monkeypatch):
     assert delivered == ["first", "third"]
 
 
+def test_observer_dispatch_drops_an_oversized_event_without_truncating(monkeypatch):
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
+
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 256, raising=False)
+    delivered = []
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [delivered.append]})
+
+    assert enqueue_plugin_observer_hook(
+        "memory_prefetch", query="q" * 512, context_sha256="digest", turn_id="turn"
+    ) is False
+    assert enqueue_plugin_observer_hook("memory_prefetch", unsupported=object()) is False
+    assert delivered == []
+
+
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
 

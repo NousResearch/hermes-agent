@@ -54,7 +54,7 @@ export const arChrome = {
     resetAll: 'إعادة تعيين الكل',
     pressKey: 'اضغط مفتاحا...',
     set: 'مضبوط',
-    conflictWith: label => `مرتبط أيضا بـ “${label}”`,
+    conflictWith: label => `مرتبط أيضًا بـ “${label}”`,
     categories: {
       composer: 'المحرّر',
       profiles: 'الملفات الشخصية',
@@ -517,7 +517,7 @@ export const arChrome = {
     zoneMenuLabel: title => `خيارات المنطقة لـ ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
     lastTabKeptBody:
-      'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
+      'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولًا، أو اطو الشريط الجانبي بأكمله.',
     toggleStripTab: title => `تبديل تبويب ${title}`,
     minimize: 'تصغير',
     restore: 'استعادة',

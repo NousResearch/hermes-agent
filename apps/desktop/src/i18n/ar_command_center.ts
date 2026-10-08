@@ -371,7 +371,7 @@ export const arCommandCenter = {
       },
       WHATSAPP_ENABLED: {
         label: 'تفعيل جسر WhatsApp',
-        help: 'يُضبط تلقائيا عبر المفتاح أدناه. اتركه دون تغيير ما لم تكن متأكدا من حاجتك إليه.'
+        help: 'يُضبط تلقائيًا عبر المفتاح أدناه. اتركه دون تغيير ما لم تكن متأكدا من حاجتك إليه.'
       },
       WHATSAPP_MODE: {
         label: 'وضع الجسر'
@@ -573,7 +573,7 @@ export const arCommandCenter = {
     topOfHour: 'في بداية كل ساعة',
     everyHourAt: minute => `كل ساعة عند :${minute}`,
     newCron: 'مهمة مجدولة جديدة',
-    emptyDescNew: 'أنشئ مهمة مجدولة لتشغيل Hermes تلقائيا.',
+    emptyDescNew: 'أنشئ مهمة مجدولة لتشغيل Hermes تلقائيًا.',
     emptyDescSearch: 'لا توجد مهام تطابق البحث.',
     emptyTitleNew: 'لا توجد مهام مجدولة',
     emptyTitleSearch: 'لا توجد نتائج',
@@ -594,7 +594,7 @@ export const arCommandCenter = {
     edit: 'تحرير',
     deleteTitle: 'حذف المهمة',
     deleteDescPrefix: 'سيؤدي هذا إلى إزالة ',
-    deleteDescSuffix: ' نهائيا. سيتوقف عن العمل فورا.',
+    deleteDescSuffix: ' نهائيا. سيتوقف عن العمل فورًا.',
     deleting: 'جار الحذف...',
     resumed: 'تم الاستئناف',
     paused: 'تم الإيقاف مؤقتا',
@@ -610,7 +610,7 @@ export const arCommandCenter = {
     editTitle: 'تحرير المهمة المجدولة',
     createTitle: 'إنشاء مهمة مجدولة',
     editDesc: 'عدل الجدول والرسالة.',
-    createDesc: 'اضبط مهمة يشغلها Hermes تلقائيا.',
+    createDesc: 'اضبط مهمة يشغلها Hermes تلقائيًا.',
     nameLabel: 'الاسم',
     namePlaceholder: 'مثال: الملخص الصباحي',
     promptLabel: 'الرسالة',

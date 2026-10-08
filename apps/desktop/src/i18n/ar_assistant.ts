@@ -99,12 +99,12 @@ export const arAssistant = {
       command: 'الأمر',
       moreOptions: 'خيارات إضافية',
       allowSession: 'السماح لهذه الجلسة',
-      alwaysAllowMenu: 'السماح دائما',
+      alwaysAllowMenu: 'السماح دائمًا',
       jumpToApproval: 'الموافقة مطلوبة',
       reject: 'رفض',
-      alwaysTitle: 'السماح دائما',
-      alwaysDescription: pattern => `السماح دائما بالأوامر المطابقة لـ ${pattern}`,
-      alwaysAllow: 'السماح دائما'
+      alwaysTitle: 'السماح دائمًا',
+      alwaysDescription: pattern => `السماح دائمًا بالأوامر المطابقة لـ ${pattern}`,
+      alwaysAllow: 'السماح دائمًا'
     },
     clarify: {
       notReady: 'غير جاهز',

@@ -1413,10 +1413,12 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.text_verbosity = _verbosity or None
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
-    # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
+    # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section,
+    # and the system-prompt block opt-outs (#37253).
     for _key in (
         "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
         "environment_probe", "bot_mode_protocol",
+        "help_guidance", "profile_hint", "timestamp_line", "environment_hints",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.

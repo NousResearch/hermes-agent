@@ -748,20 +748,30 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
     _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    # Gated by config.yaml ``agent.help_guidance`` (default True); the empty
+    # string preserves the slot index for the variant swap below.
+    if getattr(agent, "_help_guidance", True):
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    else:
+        stable_parts.append("")  # preserve slot index for downstream code
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
-        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+        if getattr(agent, "_help_guidance", True):
+            stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
-    environment_hints = _pb.build_environment_hints()
+    # Gated by config.yaml ``agent.environment_hints`` (default True).
+    if getattr(agent, "_environment_hints", True):
+        environment_hints = _pb.build_environment_hints()
+    else:
+        environment_hints = ""
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent)
@@ -786,8 +796,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     # The profile line names this home's path, so it rides in the volatile tier: the stable
     # prefix then stays byte-identical across every profile (and home) on the host.
-    volatile_parts.append(_active_profile_line(agent))
-    volatile_parts.append(_timestamp_line(agent))
+    # Gated by config.yaml ``agent.profile_hint`` (default True).
+    if getattr(agent, "_profile_hint", True):
+        volatile_parts.append(_active_profile_line(agent))
+    # Gated by config.yaml ``agent.timestamp_line`` (default True).
+    if getattr(agent, "_timestamp_line", True):
+        volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
     if environment_hints:

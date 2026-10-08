@@ -29,12 +29,16 @@ _SSH_MULTIPLEX = os.name != "nt"
 _load_hermes_env_vars = load_hermes_env_vars
 
 
-def _ensure_ssh_available() -> None:
-    """Fail fast with a clear error when the SSH client is unavailable."""
-    for tool in ("ssh", "scp"):
-        if not shutil.which(tool):
-            raise RuntimeError(f"{tool.upper()} is not installed or not in PATH. "
-                               "Install OpenSSH client: apt install openssh-client")
+def _ensure_ssh_available(*, require_scp: bool = True) -> None:
+    """Fail fast when clients required by the selected mode are unavailable."""
+    if not shutil.which("ssh"):
+        raise RuntimeError(
+            "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
+    if require_scp and not shutil.which("scp"):
+        raise RuntimeError(
+            "SCP is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
 
 
 def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
@@ -71,7 +75,7 @@ class SSHEnvironment(BaseEnvironment):
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
-        _ensure_ssh_available()
+        _ensure_ssh_available(require_scp=sync_files)
         self._establish_connection()
         if probe_only:
             self._sync_manager = None

@@ -867,6 +867,9 @@ class Migrator:
         # OpenClaw's extensions/migrate-hermes/apply.ts "blocked by earlier
         # apply conflict" sequencing.
         self._config_apply_blocked: bool = False
+        # Set once an unreadable-but-present openclaw.json has been recorded,
+        # so repeated load_openclaw_config() calls don't double-count it.
+        self._unreadable_config_reported: bool = False
 
         # Resolve the configured workspace directory from openclaw.json.
         # Many users (especially those who started before the OpenClaw rebrand)
@@ -1411,12 +1414,39 @@ class Migrator:
             if config_path.exists():
                 try:
                     # errors="replace" means read_text() cannot raise
-                    # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                    # UnicodeDecodeError.
                     data = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))
                     return data if isinstance(data, dict) else {}
-                except (json.JSONDecodeError, OSError):
+                except PermissionError:
+                    # exists() already passed, so the file is present but this
+                    # process may not read it (e.g. mode 600 owned by another
+                    # user).  Swallowing it into {} turned every downstream
+                    # lookup into a "not found" skip with error=0/exit 0, so
+                    # a fully-failed migration read as a fully-successful one.
+                    self._report_unreadable_config(config_path)
+                    return {}
+                except json.JSONDecodeError:
+                    continue
+                except OSError:
+                    # Vanished between the exists() probe and read().
                     continue
         return {}
+
+    def _report_unreadable_config(self, config_path: Path) -> None:
+        # load_openclaw_config() runs once during __init__ and again from
+        # several migrate_* steps; record the failure once so the summary
+        # error count stays meaningful.
+        if self._unreadable_config_reported:
+            return
+        self._unreadable_config_reported = True
+        self.record(
+            "openclaw-config",
+            config_path,
+            None,
+            STATUS_ERROR,
+            "Config file exists but cannot be read (permission denied); "
+            "fix read access and re-run the migration",
+        )
 
     def load_openclaw_env(self) -> Dict[str, str]:
         """Load the OpenClaw .env file for secrets that live there instead of config."""
@@ -1787,6 +1817,16 @@ class Migrator:
                             secret_additions["OPENAI_API_KEY"] = api_key.strip()
                         elif "anthropic" in name_lower and "ANTHROPIC_API_KEY" not in secret_additions:
                             secret_additions["ANTHROPIC_API_KEY"] = api_key.strip()
+            except PermissionError:
+                # exists() already passed: the credentials file is there but
+                # unreadable.  Dropping it silently loses every key it holds.
+                self.record(
+                    "provider-keys",
+                    auth_profiles_path,
+                    self.target_root / ".env",
+                    STATUS_ERROR,
+                    "auth-profiles.json exists but cannot be read (permission denied)",
+                )
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -3152,7 +3192,9 @@ def main() -> int:
     # human-readable terminal recap.  Useful for CI and scripted wrappers.
     if getattr(args, "json_output", False):
         print(json.dumps(redact_migration_value(report), indent=2, ensure_ascii=False))
-        return 0
+        # Same contract as the human-readable mode below: scripted consumers
+        # rely on a non-zero exit to notice a failed migration.
+        return 0 if report["summary"].get("error", 0) == 0 else 1
 
     # ── Human-readable terminal recap ─────────────────────────
     s = report["summary"]

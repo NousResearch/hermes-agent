@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 SCRIPT_PATH = (
@@ -694,6 +698,103 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     assert items and items[0]["status"] == "migrated"
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "123456789" in env_text
+
+
+def _deny_read(path: Path) -> None:
+    """Make a file unreadable, skipping the test when the runner is privileged."""
+    os.chmod(path, 0)
+    try:
+        path.read_text(encoding="utf-8")
+    except PermissionError:
+        return
+    os.chmod(path, 0o644)
+    pytest.skip("chmod 0 is still readable on this runner (privileged user)")
+
+
+def test_unreadable_openclaw_json_records_error_not_silent_skip(tmp_path: Path):
+    """A present-but-unreadable openclaw.json must surface as an error row.
+
+    load_openclaw_config() swallowed PermissionError into {}; with the config
+    gone, every workspace-anchored source path resolved under source_root and
+    was skipped as "Source file not found" — a migrated=0/error=0/exit-0
+    report that scripted consumers read as success.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(tmp_path / "ws")}}}),
+        encoding="utf-8",
+    )
+    _deny_read(source / "openclaw.json")
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=False,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+    )
+    report = migrator.migrate()
+
+    config_items = [i for i in report["items"] if i["kind"] == "openclaw-config"]
+    # Recorded exactly once despite load_openclaw_config() running repeatedly.
+    assert len(config_items) == 1
+    assert config_items[0]["status"] == mod.STATUS_ERROR
+    assert "cannot be read" in config_items[0]["reason"]
+    assert report["summary"]["error"] >= 1
+
+
+def test_unreadable_openclaw_json_fails_json_mode_with_nonzero_exit(tmp_path: Path):
+    """--json must not report a zero-exit success when the config is unreadable."""
+    source = tmp_path / "openclaw"
+    target = tmp_path / "hermes"
+    source.mkdir()
+    target.mkdir()
+    (source / "openclaw.json").write_text("{}", encoding="utf-8")
+    _deny_read(source / "openclaw.json")
+
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPT_PATH),
+            "--source", str(source),
+            "--target", str(target),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    payload = json.loads(result.stdout)
+    config_items = [i for i in payload["items"] if i["kind"] == "openclaw-config"]
+    assert config_items and config_items[0]["status"] == "error"
+    assert result.returncode == 1
+
+
+def test_unreadable_auth_profiles_records_provider_keys_error(tmp_path: Path):
+    """An unreadable auth-profiles.json must not silently drop its credentials."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+    (source / "openclaw.json").write_text("{}", encoding="utf-8")
+    profiles = source / "agents" / "main" / "agent" / "auth-profiles.json"
+    profiles.parent.mkdir(parents=True)
+    profiles.write_text("{}", encoding="utf-8")
+    _deny_read(profiles)
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=False,
+        workspace_target=None, overwrite=False, migrate_secrets=True, output_dir=None,
+    )
+    report = migrator.migrate()
+
+    errors = [
+        i for i in report["items"]
+        if i["kind"] == "provider-keys" and i["status"] == mod.STATUS_ERROR
+    ]
+    assert len(errors) == 1
+    assert "cannot be read" in errors[0]["reason"]
 
 
 

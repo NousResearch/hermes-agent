@@ -97,6 +97,7 @@ def _fake_psutil_tree(tree, venv_exe, worker_exe, dead=None):
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.real_windows_gateway_respawn
 def test_pause_stops_launcher_after_worker_drain(
     monkeypatch,
     tmp_path,

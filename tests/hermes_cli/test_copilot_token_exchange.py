@@ -67,6 +67,57 @@ class TestExchangeCopilotToken:
             exchange_copilot_token("gho_test123")
 
 
+def test_exchange_cache_is_profile_scoped_a_b_a(tmp_path, monkeypatch):
+    """The same raw token must not carry an exchanged account route between profiles."""
+    import hermes_cli.copilot_auth as mod
+    from hermes_constants import (
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    homes = {name: tmp_path / name for name in ("profile-a", "profile-b")}
+    for home in homes.values():
+        home.mkdir()
+    responses = {
+        hermes_home_key(homes["profile-a"]): (
+            "capi_profile_a",
+            "https://api.a.enterprise.githubcopilot.com",
+        ),
+        hermes_home_key(homes["profile-b"]): (
+            "capi_profile_b",
+            "https://api.b.enterprise.githubcopilot.com",
+        ),
+    }
+    exchange_calls = []
+
+    def fake_exchange(_req, _timeout, _fingerprint):
+        home_key = hermes_home_key()
+        exchange_calls.append(home_key)
+        api_token, base_url = responses[home_key]
+        return {
+            "token": api_token,
+            "expires_at": time.time() + 1800,
+            "endpoints": {"api": base_url},
+        }
+
+    monkeypatch.setattr(mod, "_fetch_exchange_with_retry", fake_exchange)
+    observed = []
+    for profile in ("profile-a", "profile-b", "profile-a"):
+        home_token = set_hermes_home_override(homes[profile])
+        try:
+            api_token, _expires_at, base_url = mod.exchange_copilot_token("gho_shared_account")
+            observed.append((api_token, base_url))
+        finally:
+            reset_hermes_home_override(home_token)
+
+    assert observed == [responses[hermes_home_key(homes[p])] for p in ("profile-a", "profile-b", "profile-a")]
+    assert exchange_calls == [
+        hermes_home_key(homes["profile-a"]),
+        hermes_home_key(homes["profile-b"]),
+    ]
+
+
 class TestCallerIntegration:
     """Test that callers correctly use token exchange."""
 

@@ -1407,6 +1407,79 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
+def test_load_pool_copilot_credentials_follow_profile_scope_a_b_a(tmp_path, monkeypatch):
+    """A multiplexed pool must resolve and exchange the active profile's Copilot account."""
+    from agent import secret_scope
+    from agent.credential_pool import load_pool
+    from hermes_cli import copilot_auth
+    from hermes_constants import (
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    homes = {name: tmp_path / name for name in ("profile-a", "profile-b")}
+    for home in homes.values():
+        home.mkdir()
+        (home / "auth.json").write_text(
+            json.dumps({"version": 1, "credential_pool": {}}), encoding="utf-8"
+        )
+        (home / "config.yaml").write_text(
+            "model:\n  provider: copilot\n  default: gpt-5.4\n", encoding="utf-8"
+        )
+
+    raw_tokens = {"profile-a": "gho_profile_a", "profile-b": "gho_profile_b"}
+    exchanged = {
+        "gho_profile_a": ("capi_profile_a", "https://api.a.enterprise.githubcopilot.com"),
+        "gho_profile_b": ("capi_profile_b", "https://api.b.enterprise.githubcopilot.com"),
+    }
+    exchange_calls = []
+
+    def fake_exchange(req, _timeout, _fingerprint):
+        raw_token = req.get_header("Authorization").removeprefix("token ")
+        exchange_calls.append((hermes_home_key(), raw_token))
+        api_token, base_url = exchanged[raw_token]
+        return {
+            "token": api_token,
+            "expires_at": time.time() + 1800,
+            "endpoints": {"api": base_url},
+        }
+
+    # The process environment belongs to A. B must read its bound secret scope instead.
+    monkeypatch.setenv("HERMES_HOME", str(homes["profile-a"]))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", raw_tokens["profile-a"])
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr(copilot_auth, "_fetch_exchange_with_retry", fake_exchange)
+    copilot_auth._jwt_cache.clear()
+    copilot_auth._exchange_failure_cache.clear()
+    copilot_auth._exchange_locks.clear()
+
+    observed = []
+    try:
+        for profile in ("profile-a", "profile-b", "profile-a"):
+            home = homes[profile]
+            home_token = set_hermes_home_override(home)
+            scope_token = secret_scope.set_secret_scope(
+                {"COPILOT_GITHUB_TOKEN": raw_tokens[profile]}, profile_home=str(home)
+            )
+            try:
+                entry = load_pool("copilot").entries()[0]
+                observed.append((entry.access_token, entry.base_url))
+            finally:
+                secret_scope.reset_secret_scope(scope_token)
+                reset_hermes_home_override(home_token)
+    finally:
+        copilot_auth._jwt_cache.clear()
+        copilot_auth._exchange_failure_cache.clear()
+        copilot_auth._exchange_locks.clear()
+
+    assert observed == [exchanged["gho_profile_a"], exchanged["gho_profile_b"], exchanged["gho_profile_a"]]
+    assert exchange_calls == [
+        (hermes_home_key(homes["profile-a"]), "gho_profile_a"),
+        (hermes_home_key(homes["profile-b"]), "gho_profile_b"),
+    ]
+
+
 def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
     """A suppressed copilot source must NOT run the token exchange.
 

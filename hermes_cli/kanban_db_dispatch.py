@@ -2374,9 +2374,11 @@ def _dispatch_lane_task(
             claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *injectable]))
         if skipped_skills:
             record_skipped_injected_skills(conn, claimed.id, skipped_skills, claimed.assignee)
-        # Every name the HARNESS chose for this run (injected or skipped) is advisory too, so an
-        # injected name can never be the reason a run dies at INIT.
-        advisory_skills.extend(injected)
+        # ADVISORY is scoped to the names that did NOT resolve for the assignee: those are recorded
+        # on the card and skipped (never handed to the worker), so one of them can never be the
+        # reason a run dies at INIT. A name the probe RESOLVED is a HARD request — it rides
+        # ``--skills`` — so a load failure for it is real drift / a probe defect and must stay loud.
+        advisory_skills.extend(skipped_skills)
 
     if advisory_skills:
         try:

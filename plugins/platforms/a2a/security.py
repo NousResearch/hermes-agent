@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
@@ -175,14 +179,42 @@ def redact_outbound(text: str) -> str:
     return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
 
 
-# Blocked even in localhost-only mode — a remote peer must not make us probe internal services
-# (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
-_BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
-                     "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
+def _literal_ip(hostname: str):
+    """IP the host string already is, including the integer and hex forms ``inet_aton`` accepts.
+
+    ``ipaddress`` only parses dotted quad and textual IPv6. ``urllib`` later asks
+    ``getaddrinfo``, which accepts ``2852039166`` and ``0x7f000001`` as IPv4.
+    """
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(hostname))
+    except OSError:
+        return None
+
+
+_IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
+
+
+def _ip_allowed(ip, *, localhost_mode: bool) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip in _IPV4_TRANSLATED:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.is_loopback:
+        return bool(localhost_mode)
+    return bool(ip.is_global and not ip.is_multicast)
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
-    """True when a push callback URL is http(s) and not internal/private/loopback."""
+    """True when a push callback URL is http(s) and not internal/private/loopback.
+
+    Hostnames are resolved. One internal address, or a name that does not resolve,
+    rejects the URL: a metadata A record must not pass because the text looked public.
+    """
     if localhost_mode is None:
         localhost_mode = localhost_only()
     try:
@@ -192,19 +224,155 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
     hostname = (parsed.hostname or "") if parsed and parsed.scheme in ("http", "https") else ""
     if not hostname:
         return False
-    hostname_lower = hostname.lower()
-    if hostname_lower == "localhost":
+    if hostname.lower() == "localhost":
         return localhost_mode
-    for prefix in _BLOCKED_PREFIXES:
-        if hostname_lower.startswith(prefix.lower()):
-            return bool(localhost_mode and prefix in ("127.", "::1"))
+    literal = _literal_ip(hostname)
+    if literal is not None:
+        return _ip_allowed(literal, localhost_mode=localhost_mode)
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            return bool(localhost_mode and ip.is_loopback)
-    except ValueError:
-        pass  # a hostname, not an IP
-    return True
+        infos = socket.getaddrinfo(hostname, None)
+    except OSError:
+        return False
+    addresses = []
+    for info in infos:
+        try:
+            addresses.append(ipaddress.ip_address(info[4][0]))
+        except ValueError:
+            return False
+    if not addresses:
+        return False
+    return all(_ip_allowed(ip, localhost_mode=localhost_mode) for ip in addresses)
+
+
+def _dial_checked(host, port, timeout, source_address, *, localhost_mode: bool):
+    """Connect to an address this call already checked.
+
+    ``urllib`` would resolve the name again inside ``socket.create_connection``.
+    A name that answered with a public address for ``is_safe_callback_url`` can
+    answer with a loopback address for that second lookup. One ``getaddrinfo``
+    here both decides and supplies the sockaddr.
+    """
+    literal = _literal_ip(host)
+    if literal is not None:
+        if not _ip_allowed(literal, localhost_mode=localhost_mode):
+            raise OSError(f"refusing callback to {host}")
+        return socket.create_connection((str(literal), port), timeout, source_address)
+    if str(host).lower() == "localhost" and not localhost_mode:
+        raise OSError("refusing callback to localhost")
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        raise
+    chosen = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError as exc:
+            raise OSError(f"unreadable callback address for {host}") from exc
+        if not _ip_allowed(ip, localhost_mode=localhost_mode):
+            raise OSError(f"refusing callback address {ip} for {host}")
+        chosen.append(info[4][:2])
+    if not chosen:
+        raise OSError(f"callback host {host} did not resolve")
+    return socket.create_connection(chosen[0], timeout, source_address)
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, localhost_mode: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._localhost_mode = bool(localhost_mode)
+        mode = self._localhost_mode
+
+        def _dial(address, timeout, source_address):
+            return _dial_checked(
+                address[0], address[1], timeout, source_address, localhost_mode=mode,
+            )
+
+        self._create_connection = _dial
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, localhost_mode: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._localhost_mode = bool(localhost_mode)
+        mode = self._localhost_mode
+
+        def _dial(address, timeout, source_address):
+            return _dial_checked(
+                address[0], address[1], timeout, source_address, localhost_mode=mode,
+            )
+
+        self._create_connection = _dial
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, localhost_mode: bool):
+        super().__init__()
+        self._localhost_mode = localhost_mode
+
+    def http_open(self, req):
+        mode = self._localhost_mode
+
+        def factory(host, **kwargs):
+            return _PinnedHTTPConnection(host, localhost_mode=mode, **kwargs)
+
+        return self.do_open(factory, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, localhost_mode: bool):
+        super().__init__()
+        self._localhost_mode = localhost_mode
+
+    def https_open(self, req):
+        mode = self._localhost_mode
+
+        def factory(host, **kwargs):
+            return _PinnedHTTPSConnection(host, localhost_mode=mode, **kwargs)
+
+        return self.do_open(factory, req, context=self._context)
+
+
+def callback_opener(*, localhost_mode: bool) -> urllib.request.OpenerDirector:
+    """POST opener that pins the checked address and re-checks each redirect.
+
+    A public URL must not bounce onto metadata, and a name must not be
+    resolved once for the check and again for the socket.
+    """
+
+    class _RecheckRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not is_safe_callback_url(newurl, localhost_mode=localhost_mode):
+                raise urllib.error.HTTPError(newurl, code, "unsafe redirect", headers, fp)
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if redirected is None:
+                return None
+            defaults = {"http": 80, "https": 443}
+
+            def origin(url):
+                parsed = urllib.parse.urlparse(url)
+                scheme = parsed.scheme.lower()
+                return (
+                    scheme,
+                    (parsed.hostname or "").lower().rstrip("."),
+                    parsed.port if parsed.port is not None else defaults.get(scheme),
+                )
+
+            target = urllib.parse.urljoin(req.full_url, newurl)
+            if origin(target) != origin(req.full_url):
+                for name, _value in list(redirected.header_items()):
+                    if name.lower() not in {"accept", "user-agent"}:
+                        redirected.remove_header(name)
+            return redirected
+
+    return urllib.request.build_opener(
+        # A proxy would resolve and connect to the callback itself, bypassing
+        # the address validated and pinned by _dial_checked.
+        urllib.request.ProxyHandler({}),
+        _PinnedHTTPHandler(localhost_mode),
+        _PinnedHTTPSHandler(localhost_mode),
+        _RecheckRedirect,
+    )
 
 
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:

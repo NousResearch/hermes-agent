@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import (
+    _configured_fallbacks, _direct_served_by, _fallback_metadata, _keyed_fallbacks, _policy_blocked_result,
+    _rescue_eligible, _rescue_extract,
+)
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -146,37 +149,76 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
+async def _call_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+    """Apply the same dispatch timeout to primary and fallback providers."""
+    import inspect
+    timeout = _extract_timeout_seconds()
+    if inspect.iscoroutinefunction(provider.extract):
+        coro = provider.extract(fetch_urls, format=format)
+    else:
+        coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
+    return await asyncio.wait_for(coro, timeout=timeout) if timeout > 0 else await coro
+
+
+async def _keyed_extract(provider, urls: List[str], results: List[dict], format: Optional[str]):
+    """Try keyed candidates for whole-batch failure, never partial or policy failures.
+
+    None leaves the existing primary-error/rescue path intact. A successful
+    fallback batch is returned directly and never cached under the primary.
+    """
+    current_name = provider.name
+    if (not results or len(results) != len(urls) or not all(r.get("error") for r in results)
+            or any(_policy_blocked_result(r) for r in results)):
+        return None
+    for candidate in _keyed_fallbacks("extract", provider.name):
+        logger.info("web_extract backend '%s' failed all %d URL(s) (%s); trying keyed fallback '%s'",
+                    current_name, len(urls), str(results[0].get("error", ""))[:200], candidate.name)
+        try:
+            results = await _call_extract(candidate, urls, format)
+        except Exception as exc:  # noqa: BLE001 — try the next configured provider
+            results = [_result_entry(u, str(exc) or type(exc).__name__) for u in urls]
+        current_name = candidate.name
+        if (not results or len(results) != len(urls) or not all(r.get("error") for r in results)
+                or any(_policy_blocked_result(r) for r in results)):
+            for result in results:
+                if not result.get("error") and not _policy_blocked_result(result):
+                    _fallback_metadata(result, candidate.name, provider.name)
+            return results
+    return None
+
+
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
     failed (backend outage, not per-page problems). Rescued batches are never cached.
     """
-    import inspect
     from tools.web_result_cache import extract_cache_put
     timeout = _extract_timeout_seconds()
     try:
-        if inspect.iscoroutinefunction(provider.extract):
-            coro = provider.extract(fetch_urls, format=format)
-        else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
-        if timeout > 0:
-            results = await asyncio.wait_for(coro, timeout=timeout)
-        else:
-            results = await coro
+        results = await _call_extract(provider, fetch_urls, format)
     except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
         logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
                        provider.name, timeout, len(fetch_urls))
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
                   for u in fetch_urls]
+        fallback = await _keyed_extract(provider, fetch_urls, failed, format)
+        if fallback is not None:
+            return fallback
         if not _rescue_eligible(provider):
             return failed
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
+        failed = [_result_entry(u, str(exc)) for u in fetch_urls]
+        fallback = await _keyed_extract(provider, fetch_urls, failed, format)
+        if fallback is not None:
+            return fallback
         if not _rescue_eligible(provider):
             raise
-        failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+    fallback = await _keyed_extract(provider, fetch_urls, results, format)
+    if fallback is not None:
+        return fallback
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
@@ -186,7 +228,10 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
     requested = set(fetch_urls)
+    annotate = bool(_configured_fallbacks("extract"))
     for fetched in results:
+        if annotate and not fetched.get("error") and not _policy_blocked_result(fetched):
+            _fallback_metadata(fetched, served_by=_direct_served_by(provider))
         meta = fetched.get("metadata")
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
@@ -213,6 +258,8 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
             _policy_block = None
         hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
         if hit is not None:
+            if _configured_fallbacks("extract"):
+                _fallback_metadata(hit, served_by=_direct_served_by(provider))
             cached_results[position] = hit
         else:
             fetch_urls.append(url)

@@ -17,6 +17,63 @@ _RING_KEY_VARS = {
 }
 
 
+def _configured_fallbacks(capability: str) -> list:
+    from tools.web_tools import _load_web_config
+    value = _load_web_config().get(f"{capability}_fallbacks", [])
+    return value if isinstance(value, list) else []
+
+
+def _keyed_fallbacks(capability: str, primary: str):
+    """Configured, distinct, available providers; never enter the anonymous ring here."""
+    from agent.web_search_provider import get_provider_env
+    from agent.web_search_registry import get_provider
+    from plugins.web.keyless_mcp import use_keyless
+    configured = _configured_fallbacks(capability)
+    key_vars = {**_RING_KEY_VARS, "tavily": "TAVILY_API_KEY",
+                "brave-free": "BRAVE_SEARCH_API_KEY", "searxng": "SEARXNG_URL"}
+    seen = {primary}
+    for item in configured:
+        if not isinstance(item, str):
+            continue
+        name = item.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            provider = get_provider(name)
+            if provider is None or not getattr(provider, f"supports_{capability}")():
+                continue
+            # Ring vendors can be ready for an anonymous endpoint. Require a
+            # direct key here so they cannot recursively walk the ring.
+            if name in key_vars:
+                key = get_provider_env(key_vars[name])
+                if not key or (name in _RING_KEY_VARS and use_keyless(name, key)):
+                    continue
+            if provider.is_available():
+                yield provider
+        except Exception as exc:  # noqa: BLE001 — broken optional fallback
+            logger.debug("keyed web fallback %r unavailable: %s", name, exc)
+
+
+def _fallback_metadata(result: dict, served_by: str | None = None, fallback_from: str | None = None):
+    """Attach known provenance; never attribute a ring response to the primary."""
+    if served_by is None and fallback_from is None:
+        return
+    if not isinstance(result.get("metadata"), dict):
+        result["metadata"] = {}
+    if served_by is not None:
+        result["metadata"]["served_by"] = served_by
+    if fallback_from is not None:
+        result["metadata"]["fallback_from"] = fallback_from
+
+
+def _direct_served_by(provider):
+    """The configured name is not a serving identity when it delegates to the ring."""
+    if provider.name in _RING_KEY_VARS and _ring_vendor_keyless(provider.name):
+        return None
+    return provider.name
+
+
 def _keyless_rescue_enabled() -> bool:
     """``web.keyless_rescue`` (default on), implicitly off when the keyless tier is disabled."""
     from tools.web_tools import _load_web_config

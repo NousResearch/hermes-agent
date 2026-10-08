@@ -2728,6 +2728,10 @@ web:
   search_backend: "searxng"
   extract_backend: "firecrawl"
 
+  # Optional ordered keyed fallbacks (default: []). Tried before keyless rescue.
+  search_fallbacks: [tavily, exa]
+  extract_fallbacks: [tavily, exa]
+
   # Keyless free-tier fallback (default: true). With no backend configured
   # and no API keys present, web tools rotate across the Exa/Parallel/
   # Firecrawl/Keenable free tiers. Set false to disable.
@@ -2756,6 +2760,8 @@ web:
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
 **Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits (and, for search, on vendor refusals) — see the [Web Search guide](./features/web-search.md) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+
+**Keyed fallback chains:** `web.search_fallbacks` and `web.extract_fallbacks` accept ordered lists of registered backend names. Unavailable, duplicate, unknown, and capability-incompatible entries are skipped; anonymous ring vendors require a key and must not be pinned to the free tier. Search retries on a failed response or exception; extraction retries only when the entire fetched batch fails, never a partial success or a website-policy refusal. Each extract attempt retains `web.extract_timeout`. A successful keyed fallback adds `metadata.served_by` and `metadata.fallback_from` (inside `data` for search), and is not cached under the primary provider. If all candidates fail, the existing managed/keyless rescue path still runs. Empty or omitted lists preserve existing routing. `hermes tools` displays both configured chains; edit them in `config.yaml`.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](./features/web-search.md) for Docker setup instructions.
 

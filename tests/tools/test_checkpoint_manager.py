@@ -1404,10 +1404,29 @@ class TestIndexReseed:
     def _index_for(work_dir: Path) -> Path:
         return _index_path(_store_path(), _project_hash(str(work_dir)))
 
-    def test_repeat_snapshot_does_not_reseed_the_index(self, mgr, work_dir, monkeypatch):
+    def test_repeat_snapshot_reseeds_the_index_by_default(self, mgr, work_dir, monkeypatch):
         """``read-tree`` wipes the index stat cache, so the next ``add -A`` re-hashes the whole
-        directory (measured: ~9s on 44k files vs ~0.2s warm).  Our own previous snapshot left the
-        index at the ref tip, so the reseed is a content no-op and must be skipped."""
+        directory (measured: ~9s on 44k files vs ~0.2s warm).  Skipping that no-op reseed is
+        unsafe to do implicitly: git's stat cache is only (ctime, mtime, size), and a rewrite
+        that restores the original mtime and keeps the byte length is invisible to a warm index
+        (Windows indexed ctime is the file's creation time).  The default must reseed so the
+        edited content is always captured; skipping is strictly opt-in."""
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('v2')\n")
+
+        calls = self._spy_run_git(monkeypatch)
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is True
+
+        assert [c for c in calls if c and c[0] == "read-tree"], calls
+        assert [c for c in calls if c and c[0] == "add"]  # the snapshot still staged
+        latest = mgr.list_checkpoints(str(work_dir))[0]
+        assert latest["reason"] == "second"
+
+    def test_repeat_snapshot_skips_reseed_only_when_opted_in(self, mgr, work_dir, monkeypatch):
+        """With ``HERMES_CHECKPOINT_SKIP_RESeed=1`` and an index that already matches the ref
+        tip, the content no-op reseed is skipped to keep the stat cache speedup."""
+        monkeypatch.setenv("HERMES_CHECKPOINT_SKIP_RESeed", "1")
         assert mgr.ensure_checkpoint(str(work_dir), "first") is True
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('v2')\n")
@@ -1464,7 +1483,7 @@ class TestIndexReseed:
 
     def test_new_turn_resets_dedup_without_losing_the_index(self, mgr, work_dir, monkeypatch):
         """``new_turn()`` clears the per-directory dedup only: an unchanged directory is still
-        reported as "nothing to snapshot", and a changed one is staged without a reseed."""
+        reported as "nothing to snapshot", and a changed one is staged (with the reseed)."""
         assert mgr.ensure_checkpoint(str(work_dir), "first") is True
         assert mgr.ensure_checkpoint(str(work_dir), "same iteration") is False  # deduped
         mgr.new_turn()
@@ -1474,5 +1493,5 @@ class TestIndexReseed:
         (work_dir / "main.py").write_text("print('v2')\n")
         calls = self._spy_run_git(monkeypatch)
         assert mgr.ensure_checkpoint(str(work_dir), "after change") is True
-        assert not [c for c in calls if c and c[0] == "read-tree"], calls
+        assert [c for c in calls if c and c[0] == "read-tree"], calls
         assert mgr.list_checkpoints(str(work_dir))[0]["reason"] == "after change"

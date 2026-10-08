@@ -63,7 +63,7 @@ from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from utils import env_int, rmtree_readonly
+from utils import env_bool, env_int, rmtree_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -1383,15 +1383,25 @@ class CheckpointManager:
                 # directory, vs 0.2s when the index still carries its stat cache).
                 # Our own previous snapshot leaves the index matching the ref tip, so
                 # when ``diff-index --cached`` already agrees the reseed is a content
-                # no-op — skip it and keep the stat cache.  Real edits still stage:
-                # --cached compares the index against the tree, not the worktree.
+                # no-op, we *could* skip it and keep the stat cache.  We do NOT do
+                # that by default: git's stat cache is only (ctime, mtime, size), and
+                # on Windows the indexed ctime is the file's **creation** time, which
+                # does not advance when a file is overwritten in place.  A rewrite
+                # that restores the original mtime and keeps the byte length is then
+                # invisible to a warm index:``tar -x``, ``rsync -a``, ``unzip -o``,
+                # ``cp -p`` or any re-stamping build step never stages, so the edited
+                # content is silently absent from the snapshot and cannot be rolled
+                # back.  Skipping the reseed is therefore strictly opt-in (via
+                # ``HERMES_CHECKPOINT_SKIP_RESeed=1``) and only when the index
+                # already matches the ref tree content-wise; the default keeps the
+                # reseed so rollback never misses a same-length, same-mtime write.
                 ok_same, _, _ = _run_git(
                     ["diff-index", "--cached", "--quiet", ref_commit],
                     store, working_dir,
                     index_file=index_file,
                     allowed_returncodes={1},
                 )
-                if not ok_same:
+                if not ok_same or not env_bool("HERMES_CHECKPOINT_SKIP_RESeed", False):
                     _run_git(
                         ["read-tree", ref_commit],
                         store, working_dir,

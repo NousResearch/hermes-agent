@@ -784,6 +784,62 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
     )
 
 
+def _apply_plugin_model_route(
+    agent: Any, *, user_message: Any, task_id: str, turn_id: str,
+) -> None:
+    """Apply one validated plugin route before prompt and provider setup for this turn."""
+    if getattr(agent, "_persist_disabled", False):
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        proposals = invoke_hook(
+            "pre_model_route", session_id=agent.session_id, task_id=task_id,
+            turn_id=turn_id, user_message=user_message,
+            provider=agent.provider, model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except Exception:
+        logger.warning("pre_model_route hook failed", exc_info=True)
+        return
+    for proposal in proposals or []:
+        if not isinstance(proposal, dict):
+            continue
+        provider, model = proposal.get("provider"), proposal.get("model")
+        if not isinstance(provider, str) or not provider.strip():
+            continue
+        if not isinstance(model, str) or not model.strip():
+            continue
+        provider, model = provider.strip(), model.strip()
+        if (provider, model) == (agent.provider, agent.model):
+            return
+        try:
+            from hermes_cli.inventory import load_picker_context
+            from hermes_cli.model_switch import switch_model as validate_model_switch
+            from agent.agent_runtime_helpers import switch_model as switch_agent_model
+
+            picker = load_picker_context()
+            result = validate_model_switch(
+                model, current_provider=agent.provider, current_model=agent.model,
+                current_base_url=getattr(agent, "base_url", "") or "",
+                current_api_key=getattr(agent, "api_key", "") or "",
+                explicit_provider=provider, user_providers=picker.user_providers,
+                custom_providers=picker.custom_providers,
+            )
+            if not result.success:
+                logger.warning("pre_model_route rejected provider/model: %s", result.error_message)
+                continue
+            switch_agent_model(
+                agent, result.new_model, result.target_provider,
+                api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
+                capabilities=result.runtime_capabilities,
+            )
+            _publish_runtime_main(agent)
+            return
+        except Exception:
+            logger.warning("pre_model_route model switch failed", exc_info=True)
+
+
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
     messages: List[Any], conversation_history: Optional[List[Any]],
@@ -1076,6 +1132,9 @@ def build_turn_context(
         persist_user_timestamp, persist_user_platform_id,
     )
     _reset_per_turn_agent_state(agent)
+    _apply_plugin_model_route(
+        agent, user_message=user_message, task_id=effective_task_id, turn_id=turn_id,
+    )
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")

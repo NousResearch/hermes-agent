@@ -184,6 +184,65 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_plugin_model_route_runs_before_prompt_construction():
+    agent = _FakeAgent()
+    agent._cached_system_prompt = None
+    seen = []
+
+    def apply_route(agent, **kwargs):
+        seen.append('route')
+        agent.provider = 'provider-b'
+        agent.model = 'model-b'
+
+    def build_prompt(agent, *_args):
+        seen.append(('prompt', agent.provider, agent.model))
+        agent._cached_system_prompt = 'SYSTEM'
+
+    with patch('agent.turn_context._apply_plugin_model_route', side_effect=apply_route):
+        _build(agent, restore_or_build_system_prompt=build_prompt)
+
+    assert seen == ['route', ('prompt', 'provider-b', 'model-b')]
+
+
+def test_plugin_model_route_switches_verified_provider_and_model():
+    from agent.turn_context import _apply_plugin_model_route
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    agent = _FakeAgent()
+    route = {'provider': 'provider-b', 'model': 'model-b'}
+    validated = ModelSwitchResult(
+        success=True, target_provider='provider-b', new_model='model-b',
+        api_key='secret-b', base_url='https://example.com/v1', api_mode='chat_completions',
+    )
+    picker = types.SimpleNamespace(user_providers={}, custom_providers=[])
+    with patch('hermes_cli.lifecycle.invoke_hook', return_value=[route]) as hook, \
+         patch('hermes_cli.inventory.load_picker_context', return_value=picker), \
+         patch('hermes_cli.model_switch.switch_model', return_value=validated) as validate, \
+         patch('agent.agent_runtime_helpers.switch_model') as swap:
+        _apply_plugin_model_route(agent, user_message='hello', task_id='task-1', turn_id='turn-1')
+
+    hook.assert_called_once()
+    assert hook.call_args.args == ('pre_model_route',)
+    assert 'api_key' not in hook.call_args.kwargs
+    assert validate.call_args.kwargs['explicit_provider'] == 'provider-b'
+    swap.assert_called_once_with(
+        agent, 'model-b', 'provider-b', api_key='secret-b',
+        base_url='https://example.com/v1', api_mode='chat_completions', capabilities=None,
+    )
+
+
+def test_plugin_model_route_ignores_incomplete_directive():
+    from agent.turn_context import _apply_plugin_model_route
+
+    agent = _FakeAgent()
+    with patch('hermes_cli.lifecycle.invoke_hook', return_value=[{'model': 'model-b'}]), \
+         patch('hermes_cli.model_switch.switch_model') as validate, \
+         patch('agent.agent_runtime_helpers.switch_model') as swap:
+        _apply_plugin_model_route(agent, user_message='hello', task_id='task-1', turn_id='turn-1')
+    validate.assert_not_called()
+    swap.assert_not_called()
+
+
 def test_preflight_timeout_stops_turn_before_provider_boundary():
     """An unchanged payload above the model window must not escape turn construction (a request that
     still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""

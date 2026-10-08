@@ -453,6 +453,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
+| [`pre_model_route`](#pre_model_route) | Directive/control | Once at turn start, before the system prompt and provider request are built; the first validated `{"provider": ..., "model": ...}` pair switches the live client for this turn. Invalid or failed proposals are skipped. | `session_id`, `task_id`, `turn_id`, `user_message`, `provider`, `model`, `platform` | Full current user message; no API key is passed to the hook. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
@@ -672,6 +673,20 @@ def register(ctx):
 ```
 
 ---
+
+### `pre_model_route`
+
+Use this Python plugin hook to choose a provider and model from the active profile before a user turn begins. Return both fields as non-empty strings:
+
+```python
+def choose_model(**kwargs):
+    return {"provider": "provider-a", "model": "model-a"}
+
+def register(ctx):
+    ctx.register_hook("pre_model_route", choose_model)
+```
+
+The host validates the pair through its normal model-switch path, resolves credentials itself, and rebuilds the client before prompt construction. No credential is included in the callback payload. The hook is timeout-bounded and fails open: a missing, malformed, rejected, or failed route leaves the current client in place. It does not change the saved profile default. Shell hooks cannot register this event because their response format cannot express a provider/model pair.
 
 ### `pre_llm_call`
 

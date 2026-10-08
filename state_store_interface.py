@@ -50,16 +50,31 @@ class StateStoreInterface(Protocol):
         ...
 
     def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set a title with ``user`` authority; False when the row is untouched."""
+        """Set a title with ``user`` authority; False when the row is missing.
+
+        Raises ValueError for a sanitized title over ``SessionDB.MAX_TITLE_LENGTH``,
+        a title held by another live owner (including a hidden canonical
+        Bot Chat), or a rename of that hidden canonical Bot Chat itself.
+        """
         ...
 
     def set_auto_title(self, session_id: str, title: str, *, source: str) -> bool:
-        """Set an automatic title; False when a higher-authority title holds the row."""
+        """Set an automatic title from ``derived`` or ``llm`` provenance.
+
+        Raises ValueError for any other source, a sanitized title over
+        ``SessionDB.MAX_TITLE_LENGTH``, or a title held by another live owner
+        (including a hidden canonical Bot Chat). Returns False without changing
+        a missing row, a title of equal or higher authority, or a hidden
+        canonical Bot Chat's title.
+        """
         ...
 
     @staticmethod
     def sanitize_title(title: Optional[str]) -> Optional[str]:
-        """Normalize a title (strip control chars, collapse whitespace); None when empty."""
+        """Normalize a title (strip control chars, collapse whitespace); None when empty.
+
+        Raises ValueError when the normalized title exceeds ``SessionDB.MAX_TITLE_LENGTH``.
+        """
         ...
 
     # ``"llm"`` — the automatic-title source a titler writes with.

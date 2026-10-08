@@ -22,7 +22,9 @@ import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-v
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import {
+  $threadScrolledUpBySession,
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
   onScrollToBottomRequest,
@@ -224,13 +226,19 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
 // be applied in this commit. A reader who moved the viewport themselves owns it:
 // applying the intent re-pins them to the target — measured live at #132776 as a
 // 1982 → 8649 px write on a settled transcript change while the reader sat still.
+//
+// Ownership is checked twice on purpose. The ref is dropped when the transcript is
+// re-created (a refresh remounts it), and that is exactly when the re-pin was measured
+// dragging a reader: 0 → 14131 px after such a remount. The session-scoped store
+// survives the remount, so it decides as well.
 export function shouldApplyLoadIntent(opts: {
   paneVisible: boolean
   readerOwnsViewport: boolean
+  scrolledUpInStore: boolean
   restoreFromBottom: number | null
   liveKind: 'bottom' | 'offset'
 }): boolean {
-  if (!opts.paneVisible || opts.readerOwnsViewport) {
+  if (!opts.paneVisible || opts.readerOwnsViewport || opts.scrolledUpInStore) {
     return false
   }
 
@@ -764,6 +772,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
+
+  // Ownership also lives in the session-scoped store: a refresh re-creates the
+  // transcript, the ref goes with it, and the reader is still up there. Measured live
+  // at #132776: a 0 → 14131 px re-pin right after such a remount.
+  const readerScrolledUpInStore = useStoreSelector($threadScrolledUpBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
   useEffect(() => {
     const atBottom = isAtBottom && !isHistorical
     const publisher = { paneVisible, sessionId: scrollSessionId }
@@ -1530,6 +1545,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       shouldApplyLoadIntent({
         paneVisible,
         readerOwnsViewport: readerOwnsViewportRef.current,
+        scrolledUpInStore: readerScrolledUpInStore,
         restoreFromBottom,
         liveKind: liveScrollStateRef.current.kind
       })

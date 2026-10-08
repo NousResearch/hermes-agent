@@ -18,7 +18,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from hermes_cli.web_deps import late
-from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
@@ -39,7 +38,6 @@ _forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway", "hermes_cl
 _gateway_intentionally_stopped = late("_gateway_intentionally_stopped", "hermes_cli.web_server_cron")
 _notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile", "hermes_cli.web_server_cron")
 _call_cron_for_profile = late("_call_cron_for_profile", "hermes_cli.web_server_cron")
-load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -747,18 +745,14 @@ async def cron_fire_webhook(request: Request):
     and its response passed through (the gateway re-verifies the JWT). Gateway
     unreachable -> 503 so NAS retries; deliberately NO local-execution fallback.
     """
-    from plugins.cron_providers.chronos.verify import get_fire_verifier
+    from plugins.cron_providers.chronos.verify import fire_verification_settings, get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = await asyncio.to_thread(load_config)
-    claims = get_fire_verifier()(
-        token=token,
-        expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-        jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-        issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
-    )
+    # Same launch-home settings the gateway re-verifies with; never the job's profile config.
+    settings = await asyncio.to_thread(fire_verification_settings)
+    claims = get_fire_verifier()(token=token, **settings)
     if claims is None:
         return JSONResponse({"error": "invalid fire token"}, status_code=401)
 

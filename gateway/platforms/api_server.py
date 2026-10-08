@@ -3986,17 +3986,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         a long turn never trips NAS's timeout; the store CAS claim guards double-fire on retry."""
         # Startup-wait budget starts here so a slow JWKS fetch cannot outlast the forwarder timeout.
         received_at = asyncio.get_running_loop().time()
-        from hermes_cli.config import cfg_get, load_config
-        from plugins.cron_providers.chronos.verify import get_fire_verifier
+        from plugins.cron_providers.chronos.verify import fire_verification_settings, get_fire_verifier
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        cfg = load_config()
         verifier = get_fire_verifier()
-        verify_kwargs = dict(
-            token=token,
-            expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-            jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None)
+        # Launch-home settings even under a /p/<profile>/ scope: the token identifies the instance.
+        verify_kwargs = dict(token=token, **fire_verification_settings())
         try:
             claims = await _call_verifier(verifier, **verify_kwargs)
         except Exception:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -409,3 +410,37 @@ def test_sole_credential_reset_is_clamped_to_the_short_cooldown(tmp_path, monkey
     entry = pool.select()
     assert entry is not None
     assert entry.id == "cred-1"
+
+
+def test_subscription_retry_after_429_is_recorded_then_clamped_for_a_sole_credential(tmp_path, monkeypatch):
+    """End-to-end: the 429 the transport sees reaches the clamp, not just a hand-built row.
+
+    The tests above start from a persisted entry. This one starts from the
+    error: ``extract_api_error_context`` reads the subscription-period
+    ``Retry-After`` header, ``_normalize_error_context`` turns it into the stored
+    ``last_error_reset_at``, and ``_exhausted_until`` caps the bench for a lone
+    non-billing credential (#119163).
+    """
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS, _normalize_error_context
+    from agent.credential_pool_cooldowns import _exhausted_until
+
+    three_days = 3 * 24 * 60 * 60
+    err = Exception("HTTP 429: The usage limit has been reached")
+    err.response = MagicMock(headers={"retry-after": str(three_days)})
+
+    context = extract_api_error_context(err)
+    reset_at = _normalize_error_context(context)["reset_at"]
+    assert abs(reset_at - (time.time() + three_days)) < 5
+
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=90, failure_reason="rate_limit", reset_at=reset_at)],
+    )
+    (entry,) = pool.entries()
+    until = _exhausted_until(entry, sole_credential=True)
+    assert until is not None
+    assert until <= time.time() + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS + 5
+    assert pool.has_available() is True
+    assert pool.select().id == "cred-1"

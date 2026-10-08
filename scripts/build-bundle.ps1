@@ -52,7 +52,10 @@ function Fail([string]$Message) {
 }
 
 function Find-Python {
-  if ($Python) { return $Python }
+  if ($Python) {
+    if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { Fail "-Python '$Python' is not a file." }
+    return $Python
+  }
   foreach ($name in 'python', 'python3') {
     foreach ($command in @(Get-Command $name -CommandType Application -ErrorAction SilentlyContinue)) {
       # The WindowsApps python.exe is a Store stub. Over ssh it fails with "Access is denied".
@@ -128,7 +131,9 @@ try {
     if ($LASTEXITCODE) { Fail "could not create claim tag $claim" }
     $claimObject = @(Git-Lines rev-parse "refs/tags/$claim")[0]
     # Every architecture's Store package derives its 4-part version from this one timestamp.
-    $claimEpoch = [int64]((@(Git-Lines cat-file -p $claimObject) | Where-Object { $_ -match '^tagger ' })[0] -replace '^tagger .* (\d+) [+-]\d{4}$', '$1')
+    $taggerLine = @(@(Git-Lines cat-file -p $claimObject) | Where-Object { $_ -match '^tagger ' })[0]
+    if ($taggerLine -notmatch ' (\d+) [+-]\d{4}$') { Fail "claim tag $claim has no tagger timestamp" }
+    $claimEpoch = [int64]$Matches[1]
     $env:RELEASE_CLAIM_TAG = $claim
     $env:RELEASE_CLAIM_OBJECT = $claimObject
     $env:HERMES_PAYLOAD_TAG = "v$version"

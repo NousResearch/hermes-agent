@@ -139,19 +139,30 @@ hermes plugins enable <name>
 ```
 
 The install prompt shows the entry's capability summary — declared tools,
-hooks, and required env vars — before anything is cloned.
+hooks, and required env vars — before anything is cloned. In a terminal it
+then asks "Enable now?", so the two commands above are one step when you
+answer yes (`--enable` / `--no-enable` answer it for scripts).
 
-The catalog name and the plugin's own manifest name can differ; `hermes
-plugins install` prints the installed name, and `enable` takes that one. For
-example the `touchdesigner` entry (a portable Agent Plugins v1 package that
-bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
-`td`, kept short so its generated MCP tool names stay under provider
-function-name limits:
+The catalog name and the plugin's own manifest name can differ. Every later
+command (`enable`, `disable`, `show`, `capabilities`, `update`, `remove`)
+accepts either one: the catalog name resolves through the install record
+Hermes wrote when it cloned the entry, never through a file in the plugin's
+own repo. For example the `touchdesigner` entry (a portable Agent Plugins v1
+package that bundles the twozero MCP server with the `touchdesigner-mcp`
+skill) installs as `td`, kept short so its generated MCP tool names stay
+under provider function-name limits:
 
 ```bash
 hermes plugins install touchdesigner
-hermes plugins enable td
+hermes plugins enable touchdesigner   # same as: hermes plugins enable td
 ```
+
+In the Desktop app a package with both an agent half and a Desktop half
+(`desktop/plugin.js`) is one row with one switch per half. Turning the
+package on (the install dialog's **Enable agent plugin after install**, or
+the row's **Agent** switch) turns its Desktop half on as well, unless you
+switched that half off yourself. Turning it off stays per half, because the
+Desktop half is shared by every profile.
 
 Portable packages can also carry a stdio MCP server. The `snyk` entry pins the
 Snyk CLI (`npx -y snyk@<version> mcp`) and bundles the `snyk-security-scan`

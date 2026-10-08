@@ -123,6 +123,8 @@ hermes chat -c
 
 This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
 
+It also considers the Desktop app and TUI transcripts in the same workspace, since those surfaces write into the same `state.db`: if your most recent conversation there is newer than the newest CLI one, `hermes -c` continues it. Both sides are workspace-scoped, so a Desktop chat from another project is never picked up. `hermes --tui -c` keeps its own order (`tui` first, then `cli`) and never adopts a Desktop session.
+
 #### Per-Terminal Continue
 
 A bare `-c` is terminal-aware: each CLI session drops a small breadcrumb file under `~/.hermes/terminal-sessions/` keyed by the terminal it runs in (tty device, tmux pane, kitty window, wezterm pane, Zellij pane, Windows Terminal session, ...). When you run `hermes -c` again in the *same* terminal, Hermes resumes that terminal's own session — so two panes side by side each continue their own conversation instead of both grabbing the globally most-recent one. If there's no breadcrumb for the terminal (first use, deleted session, or a stale breadcrumb older than 30 days), `-c` falls back to the most-recent-session behavior. `-c "name"` and `--resume` are unaffected. Disable with `session.terminal_continue: false` in `config.yaml`.

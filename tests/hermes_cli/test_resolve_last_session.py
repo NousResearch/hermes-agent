@@ -112,3 +112,121 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
     assert _resolve_last_session("cli") == "oneshot_run"
     assert _resolve_last_session("tui") == "tui_chat"
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface resume: `hermes -c` also continues the workspace's Desktop chat.
+# ---------------------------------------------------------------------------
+
+
+def _cross_surface_db(tmp_path, monkeypatch, rows):
+    """Install a real SessionDB with the given (id, source, started_at) rows."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    import hermes_state
+    from pathlib import Path
+
+    state_db = Path(tmp_path / "state.db")
+    real_db = hermes_state.SessionDB
+    db = real_db(db_path=state_db)
+    try:
+        for sid, source, started in rows:
+            db.create_session(sid, source=source, cwd=str(tmp_path))
+            with db._lock:
+                db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started, sid))
+                db._conn.commit()
+    finally:
+        db.close()
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda **kw: real_db(db_path=state_db, **kw))
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: str(tmp_path))
+    return real_db, state_db
+
+
+def test_cli_continue_reaches_a_newer_desktop_session(monkeypatch, tmp_path):
+    """A Desktop conversation newer than the CLI's is what `hermes -c` continues.
+
+    Both surfaces write into the same workspace of the same state.db, and the Desktop
+    session is the one every picker shows, so a bare `-c` that skipped it looked like
+    the CLI had "lost" the recent conversation.
+    """
+    from hermes_cli.main import _latest_session_id
+
+    _cross_surface_db(tmp_path, monkeypatch, [
+        ("cli_session", "cli", 100.0),
+        ("desktop_session", "desktop", 9000.0),
+    ])
+    assert _latest_session_id(use_tui=False) == "desktop_session"
+
+
+def test_cli_continue_prefers_the_cli_family_over_an_older_desktop_session(monkeypatch, tmp_path):
+    """Control: the CLI family still wins when it is the newer one.
+
+    Without this, a fix that simply appended `desktop` to the source list would pass the
+    test above while regressing ordinary `-c`.
+    """
+    from hermes_cli.main import _latest_session_id
+
+    _cross_surface_db(tmp_path, monkeypatch, [
+        ("cli_session", "cli", 9000.0),
+        ("desktop_session", "desktop", 100.0),
+    ])
+    assert _latest_session_id(use_tui=False) == "cli_session"
+
+
+def test_cli_continue_keeps_chaining_a_oneshot_over_a_desktop_session(monkeypatch, tmp_path):
+    """Control: #112550's `hermes -z … --resume latest` chain is not displaced.
+
+    A one-shot run is CLI history; when it is the newest thing in the workspace it must
+    still be what `-c` picks, even with a Desktop session present.
+    """
+    from hermes_cli.main import _latest_session_id
+
+    _cross_surface_db(tmp_path, monkeypatch, [
+        ("oneshot_run", "oneshot", 9000.0),
+        ("desktop_session", "desktop", 5000.0),
+    ])
+    assert _latest_session_id(use_tui=False) == "oneshot_run"
+
+
+def test_cli_continue_ignores_a_desktop_session_from_another_workspace(monkeypatch, tmp_path):
+    """Control: another project's Desktop chat must not win a bare `-c`.
+
+    The UI lookup is workspace-only, so it cannot fall back to the global MRU and drag
+    an unrelated workspace's conversation into this one. The second project is a sibling
+    directory, not a subdirectory — a workspace key matches its own subtree by design.
+    """
+    from hermes_cli.main import _latest_session_id
+
+    real_db, state_db = _cross_surface_db(tmp_path, monkeypatch, [
+        ("cli_session", "cli", 100.0),
+    ])
+    other = tmp_path.parent / (tmp_path.name + "-other-project")
+    other.mkdir(exist_ok=True)
+    db = real_db(db_path=state_db)
+    try:
+        db.create_session("other_desktop", source="desktop", cwd=str(other))
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (9999.0, "other_desktop"))
+            db._conn.commit()
+    finally:
+        db.close()
+
+    assert _latest_session_id(use_tui=False) == "cli_session"
+
+
+def test_tui_continue_does_not_adopt_the_desktop_session(monkeypatch, tmp_path):
+    """Control: a TUI launch keeps its own order and never hijacks the Desktop window.
+
+    TUI and Desktop are two live surfaces of the same transport family; `hermes --tui -c`
+    stealing the Desktop's conversation would move it out from under that window.
+    """
+    from hermes_cli.main import _latest_session_id
+
+    _cross_surface_db(tmp_path, monkeypatch, [
+        ("cli_session", "cli", 100.0),
+        ("tui_chat", "tui", 200.0),
+        ("desktop_session", "desktop", 9000.0),
+    ])
+    assert _latest_session_id(use_tui=True) == "tui_chat"

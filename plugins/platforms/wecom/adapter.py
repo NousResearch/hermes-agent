@@ -46,6 +46,18 @@ from plugins.platforms.wecom.streaming import (
 
 logger = logging.getLogger(__name__)
 
+# req_id passive-reply window is ~6 min (see streaming.py). A cached req_id older than this is dead
+# (errcode 846604); treat it as absent so we go straight to the proactive APP_CMD_SEND path instead
+# of a guaranteed-fail passive attempt. Fixes cron reports reusing a days-old inbound req_id.
+# Age out exactly at the window streaming.py already models: a *stricter* local value would refuse
+# req_ids WeCom still accepts, turning a deliverable reply into a guaranteed failure.
+REQ_ID_MAX_AGE_SECONDS = STREAM_SAFE_DURATION_SECONDS
+
+# A send can also die on a socket-level error (ConnectionResetError / BrokenPipeError are OSError),
+# not only on TimeoutError/RuntimeError. Retrying only the latter let the very first attempt escape
+# as a final failure — precisely the transient drop this fallback exists to prevent.
+_TRANSIENT_SEND_ERRORS = (asyncio.TimeoutError, OSError, RuntimeError)
+
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
@@ -147,6 +159,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         self._stream_keepalive_interval_seconds = _extra_float("stream_keepalive_interval_seconds", STREAM_KEEPALIVE_INTERVAL_SECONDS)
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        self._last_chat_req_ids_ts: Dict[str, float] = {}  # chat_id → when its req_id was recorded
         # Turns keyed f"{chat_id}:{req_id|turn_id}"; expired chats clear on the next inbound req_id.
         self._stream_turns: Dict[str, StreamTurn] = {}
         self._stream_expired_chats, self._group_chat_ids = set(), set()  # groups can't receive proactive APP_CMD_SEND
@@ -549,6 +562,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         chat_id, req_id = str(chat_id or "").strip(), str(req_id or "").strip()
         if chat_id and req_id:
             bounded_put(self._last_chat_req_ids, chat_id, req_id, DEDUP_MAX_SIZE)
+            bounded_put(self._last_chat_req_ids_ts, chat_id, time.time(), DEDUP_MAX_SIZE)
             self._stream_expired_chats.discard(chat_id)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
@@ -556,8 +570,27 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return None if not normalized or normalized.startswith("quote:") else self._reply_req_ids.get(normalized)
 
     def _cached_reply_req_id(self, chat_id: str, reply_to: Optional[str]) -> Optional[str]:
-        """Explicit reply_to mapping, else the chat's last inbound req_id."""
-        return self._reply_req_id_for_message(reply_to) or self._last_chat_req_ids.get(chat_id)
+        """Explicit reply_to mapping, else the chat's last inbound req_id — but ONLY while that
+        req_id's passive reply window is still live. Returns None (→ proactive APP_CMD_SEND) when the
+        chat's stream is known-expired or the req_id is older than REQ_ID_MAX_AGE_SECONDS, instead of
+        a guaranteed 846604/846609 failure. Fixes cron reports reusing a days-old inbound req_id.
+
+        Group chats are exempt from both gates: a group can only be answered inside its req_id's
+        passive window (see ``_group_chat_ids``), so ageing its req_id out here would convert "may
+        still be deliverable" into a guaranteed local drop. Group expiry is discovered by the send
+        itself (846604/846609) and falls back from there."""
+        explicit = self._reply_req_id_for_message(reply_to)
+        if explicit:
+            return explicit
+        cached = self._last_chat_req_ids.get(chat_id)
+        if chat_id in self._group_chat_ids:
+            return cached
+        if chat_id in self._stream_expired_chats:
+            return None
+        recorded_at = self._last_chat_req_ids_ts.get(chat_id)
+        if recorded_at is not None and (time.time() - recorded_at) > REQ_ID_MAX_AGE_SECONDS:
+            return None
+        return cached
 
     async def _force_reconnect_on_stale_subscription(self, errcode: int) -> None:
         """On 846609 (subscription lost) drop req_ids bound to the dead session. Do NOT close the
@@ -590,6 +623,24 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     async def _send_proactive_markdown(self, chat_id: str, content: str) -> Dict[str, Any]:
         return await self._send_request(APP_CMD_SEND, {"chatid": chat_id, **self._markdown_body(content)})
 
+    async def _send_proactive_with_retry(self, chat_id: str, content: str, attempts: int = 3) -> Dict[str, Any]:
+        """Proactive APP_CMD_SEND with bounded retries. A transient WeCom/network hiccup (846609,
+        timeout, dropped socket) must not silently drop a cron report — the passive path has already
+        failed by the time we fall back here (a missed 09:29 10:01 巡检报告 was this class of failure)."""
+        last: Optional[Exception] = None
+        for i in range(attempts):
+            try:
+                response = await self._send_proactive_markdown(chat_id, content)
+            except _TRANSIENT_SEND_ERRORS as exc:
+                last = exc
+            else:
+                if not self._response_error(response):
+                    return response
+                last = RuntimeError(f"proactive send error: {self._response_error(response)}")
+            if i < attempts - 1:
+                await asyncio.sleep(1.5 * (i + 1))
+        raise last if last is not None else RuntimeError("proactive send failed")
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send standalone markdown (never touches active streams); serialized per chat for the 30 msgs/min
         limit (846607). ``metadata["is_approval_prompt"]`` uses the control lane."""
@@ -610,15 +661,19 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             if reply_req_id:
                 try:
                     response = await self._send_reply_markdown(reply_req_id, content)
-                except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                except _TRANSIENT_SEND_ERRORS as passive_err:
                     # req_id may be stale after a reconnect — proactive send needs none.
                     logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
-                    response = await self._send_proactive_markdown(chat_id, content)
+                    response = await self._send_proactive_with_retry(chat_id, content)
             elif chat_id in self._group_chat_ids:
+                # WeCom rejects APP_CMD_SEND in groups, so there is no proactive path to fall back
+                # on and a clear error beats a doomed wire attempt (see test_wecom.TestSend).
+                # Reaching here means the group has no req_id at all: _cached_reply_req_id
+                # deliberately exempts groups from the staleness gates above.
                 logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
                 return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
             else:
-                response = await self._send_proactive_markdown(chat_id, content)
+                response = await self._send_proactive_with_retry(chat_id, content)
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:

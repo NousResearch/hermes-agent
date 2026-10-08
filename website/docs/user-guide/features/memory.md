@@ -97,6 +97,16 @@ The agent uses the `memory` tool with these actions:
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 
+Every tool call requires a top-level `target`: `"memory"` for agent notes or `"user"`
+for the user profile. A batch uses that one target for every operation:
+
+```json
+{"target": "user", "operations": [{"action": "add", "content": "User prefers metric units"}]}
+```
+
+Missing or null targets and targets inside operations return an error before writing
+or staging approval. Correct the payload and retry; use separate calls to update both stores.
+
 ### Substring Matching
 
 The `replace` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:

@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -1175,18 +1176,7 @@ class _CodexStreamGuard:
             self.no_progress_timeout = float(no_progress_timeout)
         else:
             self.no_progress_timeout = _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
-        # Progress-aware stream deadlines (supersedes the old single absolute kill at ``total_timeout``).
-        # Three regimes: 1. First token: the stream must produce its first substantive payload within
-        # ``no_progress_timeout`` (60s default) or we fail fast and let the caller's normal retry/fallback
-        # chain run — a dead (or keepalive-only zombie) Codex stream no longer holds the full 300s
-        # compression budget before falling back (masoria report, Aug 2026: 3 stacked 300s waits -> 20+ min
-        # stuck on "Summarizing"). 2. Streaming: every substantive event re-arms the deadline by
-        # ``no_progress_timeout`` — a live stream is never killed by an absolute total, so a long reasoning
-        # summary that is actually producing tokens completes instead of timing out at 300s and falling back
-        # (#54915's original complaint, fixed properly). Keepalive/lifecycle frames do NOT re-arm, mirroring
-        # the commit-fence progress gating (#96707). 3. Hard ceiling: an absolute backstop from
-        # ``_aux_stream_total_ceiling`` (max(600s, 4x configured timeout) — the same bound the streamed
-        # chat.completions path uses) so a pathological one-token-per-59s drip still terminates.
+        # Progress extends the idle window; the hard ceiling still bounds a trickling stream.
         if total_timeout is not None:
             self.no_progress_timeout = min(self.no_progress_timeout, float(total_timeout))
         self.hard_deadline = self._start + _aux_stream_total_ceiling(total_timeout)
@@ -1211,7 +1201,6 @@ class _CodexStreamGuard:
         self._protected_cancel_check = _capture_aux_cancel_check() if _aux_interrupt_protected() else None
         self._attempt_stream_lock = threading.Lock()
         self._attempt_stream: Any = None
-        # The request-driving thread owns the transport FDs — see _close_client_on_timeout.
         self._owner_tid = threading.get_ident()
 
     def effective_deadline(self) -> float:
@@ -1317,6 +1306,10 @@ class _CodexStreamGuard:
             logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
 
     def check_cancelled(self) -> None:
+        if self.timed_out.is_set():
+            if self.cancel_requested():
+                raise AuxiliaryExplicitCancellation()
+            raise TimeoutError(self.timeout_message())
         if self.total_timeout is not None and time.monotonic() >= self.effective_deadline():
             if not self.timed_out.is_set():
                 self._close_client_on_timeout()
@@ -1579,6 +1572,7 @@ class _CodexCompletionsAdapter:
             if guard.timed_out.is_set() and guard.cancel_requested():
                 guard.close_attempt_stream("late cancelled attempt stream close failed")
             try:
+                guard.check_cancelled()
                 # Some Codex-compatible hosts accept ``stream=True`` but return a completed
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
@@ -1589,6 +1583,7 @@ class _CodexCompletionsAdapter:
                     )
             finally:
                 guard.release_stream(event_stream)
+            guard.check_cancelled()
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             from agent.auxiliary_codex_response import _parse_codex_final_response
@@ -6071,6 +6066,11 @@ def _get_cached_client(
         # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
         # False and vision tools vanish for the process lifetime (#87654).
         return client, model or default_model
+    # Watchdog shutdown must not sever another call sharing this transport.
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        weakref.finalize(client, _close_quietly, client._real_client,
+                         "uncached Codex client close failed")
+        return client, _compat_model(client, model, default_model)
     if client is not None:
         with _client_cache_lock:
             if cache_key not in _client_cache:
@@ -8193,17 +8193,7 @@ def _call_llm_impl(
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
     def _primary(**validate_kw: Any) -> Any:
-        # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
-        # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
-        # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
-        # matters for pinned auxiliary calls like MoA reference advisors, where "fallback to another
-        # provider" is not a meaningful recovery (the advisor is a specific model), so a transient blip that
-        # isn't retried simply loses that advisor for the turn (root of the run2 double-advisor "Connection
-        # error" collapse — a genuine upstream blip hitting both parallel advisors at once). Attempts are
-        # bounded and use exponential backoff. Count is configurable via auxiliary.transient_retries
-        # (default 2 retries → 3 total attempts); a second/third failure or any non-transient error falls
-        # through to ``first_err`` and the existing fallback handling unchanged. Unified home for the
-        # transient retry every auxiliary task shares. (PR #16587)
+        # Retry transient failures before provider fallback, including pinned MoA advisors.
         return _validate_llm_response(
             _relay_sync_completion(
                 client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
@@ -8232,6 +8222,11 @@ def _call_llm_impl(
                             "retrying same provider after %.1fs before fallback: %s",
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
+                if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) and _is_timeout_error(_last_transient):
+                    client, _ = _get_cached_client(
+                        req.resolved_provider, req.resolved_model, base_url=req.resolved_base_url,
+                        api_key=req.resolved_api_key, api_mode=req.resolved_api_mode,
+                        main_runtime=retry_kwargs["main_runtime"], task=task)
                 try:
                     return _primary()
                 except Exception as retry_transient:
@@ -8384,6 +8379,11 @@ async def _async_call_llm_impl(
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
+            if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) and _is_timeout_error(transient_err):
+                client, _ = _get_cached_client(
+                    req.resolved_provider, req.resolved_model, async_mode=True,
+                    base_url=req.resolved_base_url, api_key=req.resolved_api_key,
+                    api_mode=req.resolved_api_mode, main_runtime=retry_kwargs["main_runtime"], task=task)
             return await _primary()
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:

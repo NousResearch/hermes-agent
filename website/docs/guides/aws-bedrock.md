@@ -41,6 +41,8 @@ Use the exact model ID returned by your Mantle catalog. This endpoint uses only
 `AWS_BEARER_TOKEN_BEDROCK` as Bearer authentication. It does not fall back to
 Anthropic API keys, OAuth, Claude Code credentials, or IAM signing. Other models
 selected in the API Key flow retain the named OpenAI-compatible Mantle provider.
+Auxiliary title and vision calls also preserve the dots in Mantle model IDs;
+native Anthropic endpoints retain their usual model-name normalization.
 
 To select a Mantle workspace, add `bedrock.mantle_workspace_id: proj_YOURPROJECT`
 to `config.yaml`, or set `BEDROCK_MANTLE_WORKSPACE_ID` (takes precedence). Hermes

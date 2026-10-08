@@ -39,7 +39,7 @@ def _mount(monkeypatch, db, home, tmp_path):
 
     def _record(sid, session, key):
         scheduled.append(key)
-        return {"attempt": 1}
+        return {"attempt": 1, "interrupted_at": 100.0}
 
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", _record)
     return scheduled, built

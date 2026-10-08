@@ -766,16 +766,46 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _bridge_unavailable(self) -> Optional[str]:
         return "Not connected" if not self._running or not self._http_session else (await self._check_managed_bridge_exit() or None)
 
+    # Errors from a failed connection attempt itself (never reached the bridge, or the bridge
+    # refused outright): these are exactly what Telegram's own _send_path_degraded flag guards
+    # against, so they get the shared vocabulary (send_path_degraded/retryable=True) the base
+    # adapter's _send_with_retry() and the delivery ledger already know how to redeliver on
+    # reconnect. A response we DID get back with a real, non-connectivity error (e.g. WhatsApp
+    # itself rejected the payload) is intentionally NOT reclassified here — retrying a rejected
+    # send would just get rejected again.
+    _BRIDGE_TRANSPORT_ERROR_PATTERNS = (
+        "not connected to whatsapp", "not connected",
+        "connectionreseterror", "connectionrefused", "cannot connect to host",
+        "connectorerror", "clientconnectorerror", "server disconnected",
+    )
+
+    @classmethod
+    def _is_bridge_transport_error(cls, error: str) -> bool:
+        """True when ``error`` describes the bridge/socket itself being unreachable —
+        WhatsApp's own connection dropped mid-flap (see #63277) — rather than the bridge
+        rejecting the payload it received."""
+        lowered = (error or "").strip().lower()
+        return any(pat in lowered for pat in cls._BRIDGE_TRANSPORT_ERROR_PATTERNS)
+
     async def _post_bridge_message(self, path: str, payload: Dict[str, Any], *, timeout: float) -> SendResult:
-        """POST to the bridge; 200 → SendResult(messageId, raw_response), else the error text."""
+        """POST to the bridge; 200 → SendResult(messageId, raw_response). A transport-level
+        failure (bridge mid-reconnect, refused connection) is normalized to the shared
+        ``send_path_degraded`` signal so the base adapter's retry/ledger machinery treats a
+        WhatsApp reconnect exactly like a Telegram one; any other rejection keeps its own text."""
         try:
             async with self._bridge_req("post", path, timeout, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
-                return SendResult(success=False, error=await resp.text())
+                text = await resp.text()
+                if resp.status == 503 or self._is_bridge_transport_error(text):
+                    return SendResult(success=False, error="send_path_degraded", retryable=True)
+                return SendResult(success=False, error=text)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            error_str = str(e)
+            if self._is_bridge_transport_error(error_str):
+                return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(success=False, error=error_str)
 
     @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -793,7 +823,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
-                    return SendResult(success=False, error=result.error)
+                    return result
                 last_message_id = result.message_id
                 if last_message_id:
                     sent_message_ids.append(str(last_message_id))
@@ -808,9 +838,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         try:
             async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
-                return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
+                if resp.status == 200:
+                    return SendResult(success=True, message_id=message_id)
+                text = await resp.text()
+                if resp.status == 503 or self._is_bridge_transport_error(text):
+                    return SendResult(success=False, error="send_path_degraded", retryable=True)
+                return SendResult(success=False, error=text)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            error_str = str(e)
+            if self._is_bridge_transport_error(error_str):
+                return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(success=False, error=error_str)
 
     @_needs_bridge
     async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:

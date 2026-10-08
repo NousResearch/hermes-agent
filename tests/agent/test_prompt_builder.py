@@ -254,6 +254,19 @@ class TestParseSkillFile:
 # =========================================================================
 
 
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """This module covers the LEGACY flat skills index renderer.
+
+    The index is RETIRED by default (card t_cc3c6951, operator ruling 2026-09-30): the curated
+    hierarchical surface each lane's SOUL carries is the routing surface now. The renderer that
+    these tests exercise still exists behind the explicit escape hatch and must keep working for a
+    profile that opts back in, so the hatch is pinned ON here. The DARK default is guarded by
+    tests/agent/test_skills_index_deprecated.py.
+    """
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
+
+
 class TestBuildSkillsSystemPrompt:
     @pytest.fixture(autouse=True)
     def _clear_skills_cache(self):

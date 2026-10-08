@@ -41,8 +41,10 @@ def prune_oneshot_tools(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 ONESHOT_SKILLS_LOAD_GUIDANCE = (
     "## Skills\n"
-    "Scan the skills below and load one with skill_view(name) only when it carries domain knowledge you lack "
-    "for THIS task (an API, a tool's commands, a project's conventions). Do not load general process skills "
+    "The flat skills index is RETIRED (2026-09-30). Load a skill by NAME with skill_view(name) "
+    "when it carries domain knowledge you lack for THIS task (an API, a tool's commands, a project's "
+    "conventions) — the names come from this profile's curated surface (`## Skills — your curated "
+    "surface` in its SOUL), not from a list to scan. Do not load general process skills "
     "(testing, debugging, review methodology) for work you already know how to do, and do not create or edit "
     "skills: this is a one-shot run with no later session to reuse them.\n"
 )

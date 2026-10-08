@@ -378,10 +378,12 @@ def display_skill_create_dir() -> str:
     return create_dir.as_posix() + "/"
 
 
-# Cross-directory precedence, lowest tier wins: trusted project > local profile > skills.create_dir >
-# skills.external_dirs. Inside ONE tier two different skills sharing a name stay ambiguous — refused,
-# never guessed (59da8ec4e) — while identical copies under one root resolve to the shallowest.
-TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
+# Cross-directory precedence, lowest tier wins: profile-local > skills.create_dir > skills.external_dirs
+# > trusted project. The curated tiers sit ABOVE the repo checkout: a project dir may never silently
+# shadow a curated (profile or shared) skill. Inside ONE tier two different skills sharing a name stay
+# ambiguous — refused, never guessed (59da8ec4e) — while identical copies under one root resolve to the
+# shallowest.
+TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT = range(4)
 # Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
 AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
 # (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
@@ -393,19 +395,20 @@ def get_skill_search_roots(local: Optional[Path] = None, *, include_project: boo
     """``(tier, dir)`` for every skill root in precedence order — the ONE ordering the skills list,
     prompt index, slash commands, skill_view, preload and cron share. *local* overrides the profile
     skills dir (skills_tool passes its live root); that entry is kept even when missing."""
-    roots = [(TIER_PROJECT, d) for d in get_project_skills_dirs()] if include_project else []
-    roots.append((TIER_LOCAL, Path(local) if local is not None else get_skills_dir()))
+    roots = [(TIER_LOCAL, Path(local) if local is not None else get_skills_dir())]
     create_dir = get_skill_create_dir()
     if create_dir is not None and create_dir.is_dir():
         roots.append((TIER_CREATE_DIR, create_dir))
     roots += [(TIER_EXTERNAL, d) for d in get_external_skills_dirs()]
+    if include_project:
+        roots += [(TIER_PROJECT, d) for d in get_project_skills_dirs()]
     seen: Set[Path] = set()
     return [(t, d) for t, d in roots if not (d in seen or seen.add(d))]
 
 
 def get_all_skills_dirs() -> List[Path]:
     """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
-    Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
+    Trusted project dirs are NOT included (they are the LOWEST tier; see get_project_skills_dirs)."""
     return [d for _tier, d in get_skill_search_roots(include_project=False)]
 
 
@@ -479,7 +482,7 @@ def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 _SHADOW_CHECKED.add(key)
                 if not any(provably_same_skill([e["path"], out[j]["path"]]) for j in higher):
                     logger.warning("Skill '%s' at %s is shadowed by a higher-precedence copy "
-                                   "(project > local > create_dir > external_dirs)", name, e["path"])
+                                   "(profile > create_dir > external_dirs > project)", name, e["path"])
         elif winner[name] == i:
             e.update(status="unique", load_name=name)
         else:
@@ -489,9 +492,10 @@ def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 # Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
 # .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
-# they load only when the root is in ``skills.trusted_project_dirs``; then they
-# override same-named profile/bundled skills. cwd + trust list are session-fixed
-# so the skills index stays byte-stable.
+# they load only when the root is in ``skills.trusted_project_dirs``. The tier ladder is
+# deterministic and curated-first — profile-local > external (shared) > project-local —
+# so a repo checkout can never silently shadow a curated skill; cwd + trust list are
+# session-fixed so the skills index stays byte-stable.
 
 PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"))
 
@@ -819,7 +823,7 @@ def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, 
     return resolved
 
 
-SKILL_PROMPT_DESC_LIMIT = 60
+SKILL_PROMPT_DESC_LIMIT = 60  # legacy index-line budget; no longer a routing gate
 
 
 def _normalize_skill_description(frontmatter: Dict[str, Any]) -> str:

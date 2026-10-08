@@ -2,7 +2,21 @@
 
 import sys
 
+import pytest
+
 from hermes_platform import declaration
+
+
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """This module renders the LEGACY flat skills index.
+
+    The index is RETIRED by default (card t_cc3c6951, operator ruling 2026-09-30); the curated
+    hierarchical surface is the routing surface now. This test exercises the renderer that still
+    exists behind the explicit escape hatch, so it is pinned ON here. The DARK default is guarded by
+    tests/agent/test_skills_index_deprecated.py.
+    """
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
 
 
 def test_application_gate_rechecks_snapshot_without_losing_description(tmp_path, monkeypatch):

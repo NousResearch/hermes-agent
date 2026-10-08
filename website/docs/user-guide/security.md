@@ -33,9 +33,9 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 approvals:
   mode: smart                     # smart | manual | off
   timeout: 300                    # seconds to wait for user response (default: 300)
-  cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
-  single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
-  unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
+  cron_mode: deny                 # deny | ask | approve — what cron jobs do when they hit a dangerous command
+  single_query_mode: deny         # deny | ask | approve — what single-query (-q) sessions do on a dangerous command
+  unattended_mode: deny           # deny | ask | approve — what webhook/API sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -46,9 +46,9 @@ The full set of keys:
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
 | `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
-| `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
-| `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
-| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Mirrors `cron_mode`. |
+| `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context; `ask` pauses the job on your selected [approval transport](./features/plugins.md#approval-transports) (a phone push, for example) and resumes on your answer — see [Pausing unattended runs for review](#pausing-unattended-runs-for-review). |
+| `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context, `ask` routes the prompt to the selected approval transport. Mirrors `cron_mode`. |
+| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path), `approve` auto-approves everything in unattended context, and `ask` routes the prompt to the selected approval transport. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -267,6 +267,22 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 - Reply **no**, **n**, **deny**, or **cancel** to deny
 
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+
+### Pausing unattended runs for review {#pausing-unattended-runs-for-review}
+
+Cron jobs, `hermes chat -q` turns and webhook/API sessions have no chat to post an approval card into, so by default (`deny`) a flagged action is blocked instantly and the agent looks for another path. Setting the matching mode to `ask` makes the run **pause for review instead**: the request is delivered through the [approval transport](./features/plugins.md#approval-transports) you selected under `security.approval.transport` (the [`ntfy-approval`](https://github.com/AhmetArif0/hermes-ntfy-approval) catalog plugin pushes it to your phone with Approve once / Approve for session / Deny buttons), and the job resumes with your answer.
+
+```yaml
+approvals:
+  cron_mode: ask          # flagged commands in cron jobs wait for a phone tap
+  unattended_mode: ask    # same for webhook / API sessions
+
+security:
+  approval:
+    transport: ntfy       # which plugin presents the request
+```
+
+The same host rules apply as on an attended surface: hardline commands are blocked before any transport sees them, `approvals.deny` rules still win, the request is redacted and bound to a one-time digest, no answer within `approvals.timeout` is a deny, and **Approve for session** / **Always** persist exactly like a CLI answer. `ask` with no transport selected behaves as `deny` (there is nobody to ask, so nothing waits) and logs a warning naming the missing key. The `request.surface` a transport receives is `cron`, `single_query` or `unattended` so it can label the notification.
 
 ### Permanent Allowlist
 

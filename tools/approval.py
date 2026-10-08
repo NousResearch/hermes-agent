@@ -632,9 +632,61 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
+def _unattended_ask(ctx: _Unattended, *, command: str, description: str, pattern_key: str,
+                    pattern_keys: list[str], session_key: str) -> dict | None:
+    """``approvals.<ctx>_mode: ask`` — pause the unattended run on the operator's SELECTED plugin
+    approval transport (the one surface a cron job / webhook turn can reach a human on) and turn
+    the answer into a gate result. ``None`` when no transport is selected: the caller then treats
+    the context as ``deny`` — "ask" with nobody to ask never waits and never auto-approves.
+
+    Mirrors the attended transport path (digest-bound request, host timeout, ``session``/``always``
+    persisted through :func:`_persist_choice`); a transport failure denies unless the operator opted
+    into ``transport_fallback: builtin``, which here still means deny (there IS no builtin surface).
+    """
+    attempt = _present_with_selected_transport(
+        command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
+        session_key=session_key, surface=ctx.name, allow_session=True, allow_permanent=True,
+    )
+    if not attempt.get("selected"):
+        return None
+    if attempt.get("failure") and attempt.get("fallback") == "builtin":
+        # ``_transport_choice`` would hand the prompt to a builtin surface; an unattended run has none.
+        attempt = {**attempt, "fallback": None}
+    choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
+    if denied is not None:
+        return denied
+    if choice not in ("once", "session", "always"):
+        _record_denial(session_key)
+        return _denied(
+            f"BLOCKED: User denied this action through the selected approval transport ({ctx.scope}). "
+            "The user has NOT consented. Do NOT retry or attempt the same outcome through another route."
+            f"{_denial_breaker_addendum(session_key)}",
+            pattern_key=pattern_key, description=description, outcome="denied")
+    _persist_choice(session_key, str(choice), pattern_keys)
+    return _user_approved(session_key, description)
+
+
+def _unattended_ask_mode(ctx: _Unattended, *, command: str, description: str, pattern_key: str,
+                         pattern_keys: list[str], session_key: str) -> dict | None:
+    """Resolve ``ask`` for *ctx*: the transport's verdict, or ``None`` meaning "treat as deny" (mode is
+    not ``ask``, or no transport is selected). Every unattended gate calls this before its deny branch
+    so the three contexts cannot drift."""
+    if ctx.mode() != "ask":
+        return None
+    if is_approved(session_key, pattern_key):
+        return _approved()  # an earlier transport answer of "session"/"always" still holds
+    result = _unattended_ask(ctx, command=command, description=description, pattern_key=pattern_key,
+                             pattern_keys=pattern_keys, session_key=session_key)
+    if result is None:
+        logger.warning("approvals.%s: ask but no approval transport is selected (security.approval.transport); "
+                       "treating as deny", ctx.cfg_key)
+    return result
+
+
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
-    """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
-    if ctx.mode() != "deny":
+    """Deny/ask-mode handling for one unattended context (cron / -q / webhook); None = allow."""
+    mode = ctx.mode()
+    if mode == "approve":
         return None
 
     def block(subject: str) -> dict:
@@ -643,12 +695,16 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             advice="Find an alternative approach that avoids this command.")}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if is_dangerous and not _is_permanently_approved(pattern_key):
-        result = block(f"Command flagged as dangerous ({description})")
-        if ctx.name == "single_query":
-            result.update(pattern_key=pattern_key, description=description)
-        return result
-    return None
+    if not is_dangerous or _is_permanently_approved(pattern_key):
+        return None
+    asked = _unattended_ask_mode(ctx, command=command, description=description, pattern_key=pattern_key,
+                                 pattern_keys=[pattern_key], session_key=get_current_session_key())
+    if asked is not None:
+        return asked
+    result = block(f"Command flagged as dangerous ({description})")
+    if ctx.name == "single_query":
+        result.update(pattern_key=pattern_key, description=description)
+    return result
 
 
 # --- Human-decision engine shared by the three gates ----------------------------------------------------------------
@@ -961,7 +1017,12 @@ def _run_approval_gate(
             "unattended": unattended_deny_message,
         }
         for ctx in _unattended_contexts():
-            if ctx.mode() == "deny":
+            if ctx.mode() != "approve":
+                asked = _unattended_ask_mode(ctx, command=display_target, description=description,
+                                             pattern_key=pattern_key, pattern_keys=[pattern_key],
+                                             session_key=session_key)
+                if asked is not None:
+                    return asked
                 message = deny_messages[ctx.name]
                 if not message and ctx.name == "unattended":
                     # Platform contexts keep the generic wording (historical shape).
@@ -1189,9 +1250,15 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
     # No user is present to approve arbitrary code in -q / cron / unattended
-    # sessions: the first active context resolves instantly from its mode.
+    # sessions: the first active context resolves instantly from its mode ("ask" pauses on the
+    # selected plugin transport, the one surface such a run can reach a human on).
     for ctx in _unattended_contexts():
-        if ctx.mode() == "deny":
+        if ctx.mode() != "approve":
+            asked = _unattended_ask_mode(ctx, command=f"execute_code <<'PY'\n{code}\nPY",
+                                         description=description, pattern_key=pattern_key,
+                                         pattern_keys=[pattern_key], session_key=get_current_session_key())
+            if asked is not None:
+                return asked
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,

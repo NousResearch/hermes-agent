@@ -282,7 +282,9 @@ def register(ctx):
 `present` may be synchronous or async. Hermes runs it on a bounded worker and
 enforces the canonical `approvals.timeout` even if the plugin does not. The
 request is immutable and contains redacted display text, its host presentation
-class (`cli` or `gateway`), the host timeout, allowed choices, and an opaque
+class (`cli` or `gateway` for attended sessions; `cron`, `single_query` or
+`unattended` when an [`approvals.<context>_mode: ask`](../security.md#pausing-unattended-runs-for-review)
+run pauses on the transport), the host timeout, allowed choices, and an opaque
 request ID/digest.
 Return the result of
 `request.respond(choice)`; unbound dictionaries and stale or changed request

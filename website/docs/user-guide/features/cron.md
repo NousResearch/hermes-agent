@@ -1388,3 +1388,13 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+### Dangerous commands in cron jobs
+
+A cron job has nobody watching, so when the agent reaches a command the [approval system](../security.md#dangerous-command-approval) would normally prompt for, `approvals.cron_mode` decides what happens:
+
+| `cron_mode` | Behavior |
+|---|---|
+| `deny` (default) | The command is blocked instantly and the agent is told to find another path. |
+| `ask` | The job **pauses for review**: the request goes out through your selected [approval transport](./plugins.md#approval-transports) (for example a phone push via the `ntfy-approval` plugin) and the job resumes with your answer. No transport selected means `deny`. See [Pausing unattended runs for review](../security.md#pausing-unattended-runs-for-review). |
+| `approve` | Every flagged command is auto-approved — only for a profile whose cron jobs you fully trust. |

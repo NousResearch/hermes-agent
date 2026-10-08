@@ -287,29 +287,38 @@ def approval_timeout_notice_kwargs() -> dict:
 
 
 def _binary_approval_mode(key: str) -> str:
-    """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
+    """Read ``approvals.<key>`` as 'approve', 'ask' or 'deny' (default deny).
+
+    ``ask`` pauses the unattended run on the operator's selected plugin approval transport
+    (``security.approval.transport``, e.g. a phone push) instead of resolving from config — the
+    one surface a cron job or webhook turn can reach a human on. Inspired by Perplexity
+    Computer's Automations, which "pause for review before consequential actions"; without a
+    selected transport ``ask`` degrades to ``deny`` (there is nobody to ask, so nothing waits).
+    """
     try:
         from hermes_cli.config import load_config_readonly
         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
-        return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "ask" if mode == "ask" else "deny"
     except Exception:
         return "deny"
 
 
 def _get_cron_approval_mode() -> str:
-    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    """Read the cron approval mode from config. Returns 'deny', 'ask' or 'approve'."""
     return _binary_approval_mode("cron_mode")
 
 
 def _get_single_query_approval_mode() -> str:
-    """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
+    """Read the single-query (-q) approval mode from config. Returns 'deny', 'ask' or 'approve'."""
     return _binary_approval_mode("single_query_mode")
 
 
 def _get_unattended_approval_mode() -> str:
     """Approval mode for webhook / msgraph_webhook / api_server sessions; default
-    deny — an unattended session never silently runs a flagged action unless the
-    operator explicitly trusts it."""
+    deny — an unattended session never silently trusts a flagged action unless the
+    operator explicitly trusts it ('approve') or routes it to a phone ('ask')."""
     return _binary_approval_mode("unattended_mode")
 
 

@@ -1655,13 +1655,13 @@ DEFAULT_CONFIG = {
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
-    # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
-    #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
-    #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
-    #   deny blocks instantly so the agent finds another way instead of waiting out the
-    #   timeout and failing closed.
-    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
-    #   proved too tight for Telegram/Discord push notifications, hence 300.
+    # cron_mode / single_query_mode / unattended_mode: deny | ask | approve — what to do when a cron job,
+    #   a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended platform (webhook,
+    #   msgraph_webhook, api_server; no /approve channel) hits one. deny blocks instantly so the agent
+    #   finds another way; ask pauses on the SELECTED plugin approval transport (security.approval.transport,
+    #   e.g. a phone push) and resumes on the answer — no transport selected means deny.
+    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway); 60s proved too tight
+    #   for Telegram/Discord push notifications, hence 300.
     "approvals": {
         # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
         # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer

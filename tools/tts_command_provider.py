@@ -61,22 +61,30 @@ def quote_command_placeholder(value: str, quote_context: Optional[str]) -> str:
 
 
 def render_command_template(command_template: str, placeholders: Dict[str, str]) -> str:
-    """Replace ``{name}`` placeholders (quote-aware) while preserving ``{{``/``}}``."""
+    """replace {name} placeholders in a single pass while preserving doubled braces."""
+    if not command_template:
+        return ""
+    if not placeholders:
+        return re.sub(r"\{\{|\}\}", lambda m: "{" if m.group(0) == "{{" else "}", command_template)
+
     names = "|".join(re.escape(name) for name in placeholders)
-    pattern = re.compile(rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
-    replacements: list[tuple[str, str]] = []
+    pattern = re.compile(r"(\{\{|\}\}|(?<!\$)\{(?P<name>" + names + r")\})")
 
     def replace_match(match: re.Match[str]) -> str:
-        name = match.group("double") or match.group("single")
-        token = f"__HERMES_CMD_PLACEHOLDER_{len(replacements)}__"
-        quoted = quote_command_placeholder(placeholders[name], shell_quote_context(command_template, match.start()))
-        replacements.append((token, quoted))
-        return token
+        matched = match.group(0)
+        if matched == "{{":
+            return "{"
+        if matched == "}}":
+            return "}"
+        name = match.group("name")
+        if name and name in placeholders:
+            return quote_command_placeholder(
+                placeholders[name],
+                shell_quote_context(command_template, match.start()),
+            )
+        return matched
 
-    rendered = pattern.sub(replace_match, command_template).replace("{{", "{").replace("}}", "}")
-    for token, value in replacements:
-        rendered = rendered.replace(token, value)
-    return rendered
+    return pattern.sub(replace_match, command_template)
 
 
 def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> None:

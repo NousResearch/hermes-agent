@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 
 import pytest
@@ -74,6 +75,73 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_opted_in_adapter_binds_a_per_speaker_browser_principal():
+    """Only adapters that declare a transport family may bind browser control."""
+    runner = object.__new__(GatewayRunner)
+    adapter = type("BrowserAdapter", (), {
+        "browser_control_transport_family": "example-relay",
+    })()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    def context(user_id):
+        return SessionContext(
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="browser-room",
+                chat_type="group",
+                user_id=user_id,
+                user_name="alice",
+            ),
+            connected_platforms=[],
+            home_channels={},
+        )
+
+    expected = lambda user_id: "principal:telegram:" + hashlib.sha256(
+        f"telegram\x00{user_id}".encode()
+    ).hexdigest()[:32]
+    first = runner._set_session_env(context("alice-id"))
+    try:
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == expected("alice-id")
+        assert get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY") == "example-relay"
+    finally:
+        clear_session_vars(first)
+
+    second = runner._set_session_env(context("bob-id"))
+    try:
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == expected("bob-id")
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") != expected("alice-id")
+    finally:
+        clear_session_vars(second)
+
+
+def test_browser_control_fields_clear_without_opt_in_or_identity():
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: type("BrowserAdapter", (), {
+        "browser_control_transport_family": "example-relay",
+    })()}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="browser-room",
+        chat_type="group",
+        user_id=None,
+    )
+    tokens = runner._set_session_env(SessionContext(source=source, connected_platforms=[], home_channels={}))
+    try:
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == ""
+        assert get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY") == ""
+    finally:
+        clear_session_vars(tokens)
+
+    runner.adapters = {Platform.TELEGRAM: object()}
+    source.user_id = "alice-id"
+    tokens = runner._set_session_env(SessionContext(source=source, connected_platforms=[], home_channels={}))
+    try:
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == ""
+        assert get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY") == ""
+    finally:
+        clear_session_vars(tokens)
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):
@@ -315,4 +383,3 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     assert seen["chat_id"] == "c1"
     # Bound only for the handler call, not leaked past dispatch
     assert get_session_env("HERMES_SESSION_KEY") == ""
-

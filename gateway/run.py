@@ -13,6 +13,7 @@ except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the 
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -4209,6 +4210,16 @@ class GatewayRunner(
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        browser_control_transport_family = (
+            getattr(_adapter, "browser_control_transport_family", "") or ""
+        )
+        browser_control_principal = ""
+        if browser_control_transport_family and context.source.user_id:
+            platform = context.source.platform.value
+            raw_principal = f"{platform}\x00{context.source.user_id}"
+            browser_control_principal = (
+                f"principal:{platform}:{hashlib.sha256(raw_principal.encode()).hexdigest()[:32]}"
+            )
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -4224,6 +4235,10 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            browser_control_principal=browser_control_principal,
+            browser_control_transport_family=(
+                browser_control_transport_family if browser_control_principal else ""
+            ),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:

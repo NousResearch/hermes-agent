@@ -46,6 +46,14 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     return ensure("npm", base_env=env, explicit=explicit).env
 
 
+def _tools_recorded(name: str) -> bool:
+    """Every package in ``name``'s closure has a current recorded install (no re-hash)."""
+    from pm.install import is_installed
+    from pm.registry import walk
+
+    return all(is_installed(package.name) for package in walk([name]))
+
+
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
     """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
     it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
@@ -159,7 +167,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
         def node_dependencies() -> None:
             # Acquiring npm is part of this step: its failure must be reported like the install's.
-            env.update(source_build_env(explicit=True))
+            # The install/update's own PM step verified these tools moments ago; recorded facts
+            # are enough here, as at startup. Only a missing tool takes the explicit install.
+            env.update(source_build_env(explicit=not _tools_recorded("npm")))
             prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
 
         # Every product compiles from these node_modules: without them there is nothing to build.

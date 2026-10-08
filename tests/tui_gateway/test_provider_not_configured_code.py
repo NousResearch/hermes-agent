@@ -97,9 +97,14 @@ def test_failed_build_logs_traceback_without_changing_client_error(monkeypatch, 
         expected["code"] = "provider_not_configured"
     assert errors == [expected]
     logged = logfile.read_text(encoding="utf-8")
-    assert "Traceback (most recent call last)" in logged
-    assert "_raise" in logged
-    assert type(exc).__name__ in logged
+    if isinstance(exc, ProviderNotConfiguredError):
+        assert "Traceback (most recent call last)" not in logged
+        assert str(exc) in logged
+        assert len(logged.splitlines()) == 1
+    else:
+        assert "Traceback (most recent call last)" in logged
+        assert "_raise" in logged
+        assert type(exc).__name__ in logged
     assert "sid" in logged
 
 

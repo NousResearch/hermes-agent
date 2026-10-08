@@ -1207,8 +1207,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
-            logger.exception("Deferred agent build failed for session %s", sid)
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
+            logger.error("Deferred agent build failed for session %s: %s", sid, e,
+                         exc_info=not isinstance(e, ProviderNotConfiguredError))
             current["agent_error"] = str(e)
             # A client can route "no provider is set up" to its setup flow instead of a dead-end
             # error toast — but only if it can tell. The sentence is for the reader, the code is

@@ -21,7 +21,17 @@ def test_a_failed_resume_hydration_logs_its_traceback(monkeypatch, caplog):
     session = {"history": [], "history_lock": threading.RLock(), "resume_hydrating": True,
                "resume_history_ready": threading.Event(), "agent_ready": threading.Event()}
     monkeypatch.setitem(server._sessions, "sid-resume", session)
-    monkeypatch.setattr(server, "_emit", lambda *a, **kw: True)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    workers = []
+    real_thread = threading.Thread
+
+    def start_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(server.threading, "Thread", start_thread)
 
     def _malformed(*_a, **_kw):
         raise sqlite3.DatabaseError("database disk image is malformed")
@@ -30,8 +40,14 @@ def test_a_failed_resume_hydration_logs_its_traceback(monkeypatch, caplog):
 
     server._schedule_resume_hydration("sid-resume", "stored-id", object())
 
-    assert session["agent_ready"].wait(5)
+    workers[0].join(timeout=10)
+    assert not workers[0].is_alive()
+    assert session["agent_ready"].is_set()
+    assert session["resume_history_ready"].is_set()
+    assert session["resume_hydrating"] is False
+    assert "sid-resume" not in server._sessions
     assert "malformed" in session["resume_history_error"]
+    assert emitted[-1] == ("error", "sid-resume", {"message": session["resume_history_error"]})
     [record] = _error_records(caplog)
     assert "sid-resume" in record.getMessage() and "stored-id" in record.getMessage()
     assert record.exc_info and record.exc_info[0] is sqlite3.DatabaseError

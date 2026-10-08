@@ -26,18 +26,17 @@ Hermes 刻意将以下内容分离：
 
 ## 已缓存的系统 prompt 层
 
-已缓存的系统 prompt 大致按以下顺序组装：
+已缓存的系统 prompt 按三个有序层级组装（见 `agent/system_prompt.py`）：
 
-1. agent 身份 — 优先使用 `HERMES_HOME` 中的 `SOUL.md`，否则回退到 `prompt_builder.py` 中的 `DEFAULT_AGENT_IDENTITY`
-2. 工具感知行为指导
-3. Honcho 静态块（激活时）
-4. 可选系统消息
-5. 冻结的 MEMORY 快照
-6. 冻结的 USER 配置文件快照
-7. skills 索引
-8. 上下文文件（`AGENTS.md`、`.cursorrules`、`.cursor/rules/*.mdc`）— 若 SOUL.md 已在第 1 步作为身份加载，则此处**不**再包含它
-9. 时间戳 / 可选会话 ID
-10. 平台提示
+1. **stable** — 身份（`SOUL.md` 或回退内容）、工具/模型指导、编码操作简报
+2. **context** — 调用方提供的 `system_message`、项目上下文文件（`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`），随后是依赖工作树的 git 工作区快照和操作指令
+3. **volatile** — skills 索引、内置记忆快照（`MEMORY.md`）、用户配置文件快照（`USER.md`）、外部记忆提供方块、平台提示、时间戳/会话/模型/提供方行，最后是运行时环境提示（主机 / home / **当前工作目录**）
+
+最终系统 prompt 按 `stable` → `context` → `volatile` 拼接。
+
+skills 索引和记忆/用户配置文件快照都属于 **volatile** 层，但仍是已缓存系统 prompt 的一部分，并非临时的轮次内覆盖层。
+平台提示位于共享的 skills 和记忆内容之后，因此采用相同编码模式的不同平台可以复用包含这两部分的前缀。
+时间戳/身份段落仍紧邻运行时环境块之前，供已存储 prompt 的验证逻辑读取。
 
 当设置了 `skip_context_files`（例如子 agent 委托）时，不会加载 SOUL.md，而是使用硬编码的 `DEFAULT_AGENT_IDENTITY`。
 
@@ -107,13 +106,13 @@ This is the atlas project. Use pytest for testing. The main
 entry point is src/atlas/main.py. Always run `make lint` before
 committing.
 
-# Layer 9: Timestamp + session
-Current time: 2026-03-30T14:30:00-07:00
-Session: abc123
-
-# Layer 10: Platform hint
+# Layer 9: Platform hint
 You are a CLI AI Agent. Try not to use markdown but simple text
 renderable inside a terminal.
+
+# Layer 10: Timestamp + session
+Current time: 2026-03-30T14:30:00-07:00
+Session: abc123
 ```
 
 ## SOUL.md 在 prompt 中的位置

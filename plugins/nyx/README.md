@@ -31,7 +31,7 @@ conversa de verdade.
 | `barramento.py` | cada hook vira uma linha em `$HERMES_HOME/nyx/eventos.jsonl` (só-acréscimo, encurtado a 200 linhas quando passa de 256 KB) |
 | `dashboard/plugin_api.py` | `GET /api/plugins/nyx/eventos` (SSE que segue o arquivo) e `POST /api/plugins/nyx/ensaio` |
 | `dashboard/dist/index.js` | a aba: monta a cena e liga o SSE |
-| `dashboard/dist/nyx.js` | a cena Three.js: silhueta, orelhas e queixo medidos na foto de referência; busto de ~1,2 milhão de grãos (fios, contas e névoa, gerados em ~1 s); galáxia, satélite, cometas e o redutor de estado (`reduzir`, `alvoGalaxia`: funções puras) |
+| `dashboard/dist/nyx.js` | a cena Three.js: silhueta, orelhas e queixo medidos na foto de referência; busto em pontilhismo, ~3 milhões de pontos (gerados em ~1,2 s) cuja densidade visível segue a luz; galáxia, satélite, cometas e o redutor de estado (`reduzir`, `alvoGalaxia`: funções puras) |
 | `dashboard/dist/vendor/` | Three.js r181 (MIT) e os addons usados, com os imports reescritos pra caminhos relativos (sem npm, sem CDN) |
 
 Os hooks só observam: nenhum devolve diretiva, nenhuma ferramenta é adicionada ao modelo, e nada do

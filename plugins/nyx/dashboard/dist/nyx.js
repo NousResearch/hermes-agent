@@ -1,6 +1,6 @@
 // Nyx — avatar de partículas do Hermes (módulo ES carregado pelo painel do dashboard).
 //
-// Em repouso só o busto: ~1,2 milhão de grãos de luz em fios finos, contas e névoa, como na foto de referência.
+// Em repouso só o busto: ~3 milhões de pontos de luz, em pontilhismo (a luz vira densidade de pontos).
 // Os eventos do Hermes (barramento do plugin) dirigem o resto:
 //   pensando        → a galáxia nasce do crânio pra fora (3 braços em espiral, disco inclinado)
 //   ferramenta      → um cometa sai do disco e orbita a cabeça enquanto a ferramenta roda
@@ -95,14 +95,23 @@ function criarAleatorio(semente) {
   return { rnd, gauss };
 }
 
-// row() pré-calculado a cada 1/4 px: com milhões de grãos a interpolação de Catmull-Rom vira o gargalo.
+// row() pré-calculado a cada 1/4 px: com milhões de pontos a interpolação de Catmull-Rom vira o gargalo.
+// A tabela é medida, então tem degraus de ~1 px a cada linha; a média móvel de 10 px (uma linha da tabela)
+// tira esse ruído, que no pontilhismo vira listras (a densidade de pontos segue a inclinação da superfície).
 // Devolve sempre o mesmo array [w, d, c]: quem chama copia os valores antes da próxima chamada.
 const LUTS = new Map(), PASSO = 4, _r = [0, 0, 0];
 function rowR(T, y) {
   let L = LUTS.get(T);
   if (!L) {
     const y0 = T[0][0], n = (T[T.length - 1][0] - y0) * PASSO + 1, w = new Float32Array(n), d = new Float32Array(n), c = new Float32Array(n);
-    for (let i = 0; i < n; i++) { const r = row(T, y0 + i / PASSO); w[i] = r[0]; d[i] = r[1]; c[i] = r[2]; }
+    const bw = new Float32Array(n), bd = new Float32Array(n), bc = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const r = row(T, y0 + i / PASSO); bw[i] = r[0]; bd[i] = r[1]; bc[i] = r[2]; }
+    for (let i = 0; i < n; i++) {
+      const R = Math.min(20, i, n - 1 - i);      // janela simétrica que encolhe nas pontas: o alto da cabeça e o queixo ficam no lugar
+      let sw = 0, sd = 0, sc = 0;
+      for (let j = i - R; j <= i + R; j++) { sw += bw[j]; sd += bd[j]; sc += bc[j]; }
+      w[i] = sw / (2 * R + 1); d[i] = sd / (2 * R + 1); c[i] = sc / (2 * R + 1);
+    }
     L = { y0, n, w, d, c };
     LUTS.set(T, L);
   }
@@ -140,11 +149,11 @@ function insideBody(x, y, z) {                // px; a parte de baixo da mandíb
 
 const AX = 832.5;                             // eixo da figura na foto
 const QUEIXO = [[832, 649], [850, 646], [870, 640.5], [890, 630.5], [910, 615.5], [930, 602], [950, 584], [966, 558]];
-const MARCAS = [                              // [tabela, curva, fios no feixe, brilho do grão]
-  [HEAD, QUEIXO, 12, 0.15],                                                              // contorno do queixo
-  [BODY, [[957, 600], [956, 700], [957, 780], [961, 800], [973, 820], [995, 840], [1003, 846]], 12, 0.26],  // lado do pescoço → trapézio
-  [BODY, [[878, 662], [872, 720], [862, 780], [850, 840], [838, 892]], 5, 0.1],          // esternocleidomastoide até o esterno
-  [BODY, [[930, 849], [970, 851], [1003, 846], [1052, 840], [1100, 828], [1150, 820], [1195, 823]], 12, 0.3],  // clavícula
+const MARCAS = [                              // [tabela, curva, pontos a mais por px de curva]
+  [HEAD, QUEIXO, 18],                                                                    // contorno do queixo
+  [BODY, [[957, 600], [956, 700], [957, 780], [961, 800], [973, 820], [995, 840], [1003, 846]], 18],   // lado do pescoço → trapézio
+  [BODY, [[878, 662], [872, 720], [862, 780], [850, 840], [838, 892]], 9],               // esternocleidomastoide até o esterno
+  [BODY, [[930, 849], [970, 851], [1003, 846], [1052, 840], [1100, 828], [1150, 820], [1195, 823]], 18],  // clavícula
 ];
 const queixoY = (ax) => {                     // y do contorno do queixo na meia-largura |x| (px)
   const x = AX + Math.abs(ax);
@@ -159,8 +168,10 @@ const suave = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a)
 function sombraPescoco(x, y, z) {
   if (z < 0) return 1;
   let s = 1;
-  const dq = y - queixoY(x);
-  if (Math.abs(x) < 130 && dq > 0 && dq < 50) s *= 0.15 + 0.85 * suave(4, 50, dq);
+  if (Math.abs(x) < 130) {
+    const dq = y - queixoY(x);
+    if (dq > 0 && dq < 50) s *= 0.15 + 0.85 * suave(4, 50, dq);
+  }
   if (y > 650 && y < 905) {
     const meia = 40 - 34 * (y - 650) / 255;      // o V: ~40 px de meia-largura sob o queixo, fecha no esterno
     s *= 0.22 + 0.78 * suave(meia * 0.55, meia * 1.2, Math.abs(x));
@@ -191,33 +202,34 @@ function naOrelha(sg, t, r) {
   return [sg * (cranio(ey, ez) + abre * r ** 1.5), ey, ez];
 }
 
-// O busto só com partículas, como na foto, em três camadas:
-//  - fios: linhas finas e contínuas (grãos a cada 0,4 px), retas por uns 10 px e então dobram, como trilhas;
-//  - contas: pontos claros e nítidos que a maioria dos fios carrega a cada ~5,5 px (as correntinhas da foto);
-//  - névoa: grãos fracos espalhados, o azul-marinho entre os fios.
-// Nada de contorno desenhado: cada grão guarda a normal da superfície e o shader acende os grãos vistos de
-// raspão e apaga os de trás, então a borda e o volume aparecem pela luz. Cabeça e pescoço não se atravessam.
+// O busto é pontilhismo: milhões de pontos na superfície, espalhados por igual (faixa a faixa de y, em
+// intervalos de arco de mesma área, com sorteio dentro de cada intervalo), e o shader decide quais aparecem
+// pela luz do lugar (VS_BUSTO): o tom vira densidade de pontos, não brilho de linha. Por cima, correntinhas
+// de contas (os riscos pontilhados da foto) e as marcas do pescoço como faixas um pouco mais densas.
+// Cada ponto guarda a normal da superfície; cabeça e pescoço não se atravessam.
 // Tudo vai direto pra arrays tipados (posição, cor em bytes, brilho/semente/tamanho, normal em bytes).
-const FIOS = 500000, NEVOA = 700000, PASSO_FIO = 0.4, VAO_CONTA = 5.5;
+const PONTOS = 3000000, CONTAS = 45000, VAO_CONTA = 5.5;
 function gerarBusto(densidade) {
   const { rnd, gauss } = criarAleatorio(7);
-  const cap = Math.ceil((FIOS + NEVOA + 160000) * densidade) + 40000;
-  const pos = new Float32Array(cap * 3), col = new Uint8Array(cap * 3), inf = new Float32Array(cap * 3), nor = new Int8Array(cap * 3);
+  const cap = Math.ceil((PONTOS + CONTAS + 120000) * densidade) + 60000;
+  // 3 milhões de pontos: tudo que dá vai em bytes (cor, normal e [brilho/2, semente, tamanho/1,5], que o
+  // shader desfaz com uInf); só a posição fica em float. ~21 bytes por ponto
+  const pos = new Float32Array(cap * 3), col = new Uint8Array(cap * 3), inf = new Uint8Array(cap * 3), nor = new Int8Array(cap * 3);
   let n = 0;
-  const ouro = (x, y, z) => (z > 40 ? 1 : 0) * Math.exp(-((x / 46) ** 2 + ((y - 548) / 50) ** 2));   // frente baixa do rosto
+  const ouro = (x, y, z) => (z > 40 && y > 400 && y < 700 ? Math.exp(-((x / 46) ** 2 + ((y - 548) / 50) ** 2)) : 0);   // frente baixa do rosto
   const put = (x, y, z, nx, ny, nz, b, sz, cor) => {
     if (n >= cap) return;
     const i = n * 3;
     pos[i] = x * U; pos[i + 1] = -(y - Y0) * U; pos[i + 2] = z * U;
     col[i] = cor[0] * 255; col[i + 1] = cor[1] * 255; col[i + 2] = cor[2] * 255;
-    inf[i] = b; inf[i + 1] = rnd(); inf[i + 2] = sz;
+    inf[i] = Math.min(255, b * 127.5); inf[i + 1] = rnd() * 255; inf[i + 2] = Math.min(255, sz * 170);
     nor[i] = nx * 127; nor[i + 1] = ny * 127; nor[i + 2] = nz * 127;
     n++;
   };
   const fadeY = (y) => (y < 932 ? 1 : Math.max(0, 1 - (y - 932) / 9));   // só a borda de baixo se desfaz
   // ponto da casca e a normal de verdade: inclui a inclinação vertical (topo dos ombros, queixo, alto da
   // cabeça), senão uma rampa acende como se estivesse de frente pra câmera. sy e sp: quanto a superfície
-  // anda por px de y e por radiano de φ (os fios andam com passo constante na superfície, não no mapa).
+  // anda por px de y e por radiano de φ (as correntinhas andam com passo constante na superfície).
   const P = { x: 0, z: 0, dy: 0, nx: 0, ny: 0, nz: 0, sy: 1, sp: 1 };
   const naCasca = (T, y, ph, t) => {
     let r = rowR(T, y + 1); const w1 = r[0], d1 = r[1], c1 = r[2];
@@ -227,20 +239,64 @@ function gerarBusto(densidade) {
     const ayx = (w1 - w0) / 2 * sn, ayz = (c1 - c0) / 2 + (d1 - d0) / 2 * cs;   // ∂P/∂y (y da cena = -y da foto)
     const apx = w * cs, apz = -d * sn;                                         // ∂P/∂φ
     let nx = -apz, ny = ayz * apx - ayx * apz, nz = apx;                       // ∂P/∂y × ∂P/∂φ
-    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;   // sqrt em vez de hypot: aqui roda mais de um milhão de vezes
+    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;   // sqrt em vez de hypot: aqui roda milhões de vezes
     nx /= nl; ny /= nl; nz /= nl;
     if (nx * sn * w + nz * cs * d < 0) { nx = -nx; ny = -ny; nz = -nz; }    // pra fora
     P.x = w * sn + nx * t; P.z = c + d * cs + nz * t; P.dy = -ny * t; P.nx = nx; P.ny = ny; P.nz = nz;
     P.sy = Math.sqrt(1 + ayx * ayx + ayz * ayz); P.sp = Math.max(6, Math.sqrt(apx * apx + apz * apz));
     return P;
   };
-  // φ com a mesma densidade por área: nos ombros (largos e rasos) φ uniforme amontoaria grãos nas pontas
-  const sortearPh = (T, y) => {
-    const [w, d] = rowR(T, y), m = Math.max(w, d);
-    for (;;) { const ph = rnd() * 6.283185, a = w * Math.cos(ph), b = d * Math.sin(ph); if ((rnd() * m) ** 2 < a * a + b * b) return ph; }
+  const corPonto = () => { const r = rnd(); return r < 0.12 ? DEEP : r < 0.67 ? BLUE : r < 0.95 ? CYAN : WHITE; };
+  // o fundo: faixas de 0,5 px de y; em cada uma, o perímetro em k intervalos de mesmo arco, um ponto sorteado
+  // dentro de cada (e a origem do arco gira de faixa pra faixa), então não há bolos nem buracos
+  const pontilhar = (T, total, fora, sombra, ganho) => {
+    const ya = T === HEAD ? 143 : 520, yb = T === HEAD ? 649 : 940, H = 0.5, M = 96;
+    const areas = [];
+    let soma = 0;
+    for (let y = ya; y < yb; y += H) {
+      const [w, d] = rowR(T, y + H / 2), [wa, da, ca] = rowR(T, y - 0.5), [wb, db, cb] = rowR(T, y + H + 0.5);
+      const dw = (wb - wa) / (H + 1), dd = (db - da) / (H + 1), dc = (cb - ca) / (H + 1);
+      const a = Math.PI * (3 * (w + d) - Math.sqrt((3 * w + d) * (w + 3 * d))) * Math.sqrt(1 + 0.5 * (dw * dw + dd * dd) + dc * dc) * H;
+      areas.push(a); soma += a;
+    }
+    const arco = new Float64Array(M + 1);
+    let sobra = 0;
+    for (let f = 0; f < areas.length; f++) {
+      const y0 = ya + f * H, quer = areas[f] / soma * total * densidade + sobra, k = Math.floor(quer);
+      sobra = quer - k;
+      if (!k) continue;
+      const [w, d] = rowR(T, y0 + H / 2);
+      for (let j = 1; j <= M; j++) {
+        const ph = (j - 0.5) / M * 6.283185, a = w * Math.cos(ph), b = d * Math.sin(ph);
+        arco[j] = arco[j - 1] + Math.sqrt(a * a + b * b) * 6.283185 / M;
+      }
+      const per = arco[M], giro = rnd(), yc = y0 + H / 2;
+      let r = rowR(T, yc + 1); const w1 = r[0], d1 = r[1], c1 = r[2];
+      r = rowR(T, yc - 1); const w0 = r[0], d0 = r[1], c0 = r[2];
+      r = rowR(T, yc); const c = r[2];
+      const dw = (w1 - w0) / 2, dd = (d1 - d0) / 2, dc = (c1 - c0) / 2;
+      for (let i = 0, j = 0; i < k; i++) {
+        let u = (i + rnd()) / k + giro;
+        if (u >= 1) u -= 1;
+        const sArc = u * per;
+        while (j > 0 && arco[j] > sArc) j--;
+        while (j < M - 1 && arco[j + 1] < sArc) j++;
+        const ph = (j + (sArc - arco[j]) / (arco[j + 1] - arco[j] || 1)) * 6.283185 / M, y = y0 + rnd() * H;
+        // a casca e a normal, como em naCasca, mas com a linha da faixa já calculada (aqui roda milhões de vezes)
+        const sn = Math.sin(ph), cs = Math.cos(ph), ayz = dc + dd * cs, apx = w * cs, apz = -d * sn;
+        let nx = -apz, ny = ayz * apx - dw * sn * apz, nz = apx;
+        const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1, t = -0.5 + (rnd() - rnd()) * 1.4;
+        nx /= nl; ny /= nl; nz /= nl;
+        if (nx * sn * w + nz * cs * d < 0) { nx = -nx; ny = -ny; nz = -nz; }
+        const px = w * sn + nx * t, pz = c + d * cs + nz * t;
+        if (fora(px, y, pz) || (y > 932 && rnd() > fadeY(y)) || rnd() > sombra(px, y, pz)) continue;
+        const g = ouro(px, y, pz), dourado = g > 0 && rnd() < g;
+        put(px, y - ny * t, pz, nx, ny, nz, (0.9 + 0.4 * rnd()) * (dourado ? 0.8 : ganho), 0.45 + 0.15 * rnd(), dourado ? GOLD : corPonto());   // tamanho < 0,75: o shader lê ≥ 0,75 como conta
+      }
+    }
   };
-  // ocupação em voxels de 5 px: cada fio nasce onde a vizinhança (~15 px) está mais vazia entre 8 candidatos,
-  // então os fios se espalham por igual, sem os bolos e buracos do sorteio puro
+  // ocupação em voxels de 5 px: cada correntinha nasce onde a vizinhança (~15 px) está mais vazia entre 8
+  // candidatos, então elas se espalham por igual
   const VX = 5, GX = 252, GY = 196, GZ = 126, ocup = new Uint8Array(GX * GY * GZ);
   const voxel = (x, y, z) => {
     const i = Math.floor(x / VX) + 126, j = Math.floor(y / VX), k = Math.floor(z / VX) + 63;
@@ -254,102 +310,79 @@ function gerarBusto(densidade) {
     }
     return soma;
   };
-  const corConta = (g, branco) => (rnd() < g * 0.4 ? GOLD : rnd() < branco ? WHITE : CYAN);
-  // um fio: anda na superfície com passo de 0,4 px, quase reto, e de vez em quando dobra seco
-  const fios = (T, alvo, fora, sombra, ganho) => {
-    const pick = sampler(rnd, T, T === HEAD ? 143 : 520, T === HEAD ? 649 : 940), yMin = T[0][0] + 1, yMax = T[T.length - 1][0];
-    for (let feitos = 0; feitos < alvo * densidade;) {
+  // φ com a mesma densidade por área: nos ombros (largos e rasos) φ uniforme amontoaria pontos nas pontas
+  const sortearPh = (T, y) => {
+    const [w, d] = rowR(T, y), m = Math.max(w, d);
+    for (;;) { const ph = rnd() * 6.283185, a = w * Math.cos(ph), b = d * Math.sin(ph); if ((rnd() * m) ** 2 < a * a + b * b) return ph; }
+  };
+  // correntinha: contas a cada ~5,5 px por um caminho quase reto que de vez em quando dobra seco (só as
+  // contas: não há linha entre elas)
+  const correntes = (T, total, fora, sombra, ganho) => {
+    const pick = sampler(rnd, T, T === HEAD ? 143 : 520, T === HEAD ? 649 : 940), yMin = T[0][0] + 1, yMax = T[T.length - 1][0], PASSO = 0.5;
+    for (let feitas = 0; feitas < total * densidade;) {
       let y = 0, ph = 0, menor = 1e9, dir = rnd() * 6.283185;
       for (let c = 0; c < 8; c++) {
         const yc = pick(), pc = sortearPh(T, yc), q = naCasca(T, yc, pc, 0), oc = vizinhos(q.x, yc, q.z);
         if (oc < menor) { menor = oc; y = yc; ph = pc; }
       }
-      const comContas = rnd() < 0.7, L = comContas ? 18 + 30 * rnd() : 10 + 30 * rnd(), t0 = -1.2 + gauss() * 1.8;
-      const bF = (comContas ? 0.07 + 0.07 * rnd() : 0.035 + 0.025 * rnd()) * ganho, r0 = rnd(), corF = r0 < 0.45 ? BLUE : r0 < 0.9 ? CYAN : DEEP;
-      let conta = comContas ? rnd() * VAO_CONTA : Infinity;
-      for (let s = 0; s < L; s += PASSO_FIO, feitos++) {
+      const L = 18 + 30 * rnd(), t0 = -0.5 + gauss() * 0.8;
+      let conta = rnd() * VAO_CONTA, feitasAqui = 0;
+      for (let s = 0; s < L; s += PASSO) {
         if (y < yMin || y > yMax) break;
-        const p = naCasca(T, y, ph, t0 + gauss() * 0.12);
+        const p = naCasca(T, y, ph, t0);
         const sy = p.sy, sp = p.sp;
-        if (!fora(p.x, y, p.z) && rnd() < fadeY(y)) {
+        if (!fora(p.x, y, p.z)) {
           const v = voxel(p.x, y, p.z);
           if (v >= 0 && ocup[v] < 255) ocup[v]++;
-          const g = ouro(p.x, y, p.z), sb = sombra(p.x, y, p.z);
-          put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, bF * sb, 0.7 + 0.2 * rnd(), rnd() < g * 0.6 ? GOLD : corF);
-          if (s >= conta) {
+          if (s >= conta && rnd() < fadeY(y) * sombra(p.x, y, p.z)) {
             conta += VAO_CONTA * (0.85 + 0.3 * rnd());
-            put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, (1.0 + 0.6 * rnd()) * sb * Math.sqrt(ganho), 0.85 + 0.35 * rnd(), corConta(g, T === HEAD ? 0.6 : 0.4));   // no corpo da foto as contas são mais azuis
+            const g = ouro(p.x, y, p.z);
+            put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, (0.9 + 0.3 * rnd()) * ganho, 0.8 + 0.15 * rnd(), rnd() < g * 0.4 ? GOLD : rnd() < 0.5 ? WHITE : CYAN);
+            feitasAqui++;
           }
         }
-        dir += gauss() * 0.03 + (rnd() < 0.036 ? (rnd() < 0.5 ? -1 : 1) * (0.6 + 1.0 * rnd()) : 0);
-        y += Math.sin(dir) * PASSO_FIO / sy;
-        ph += Math.cos(dir) * PASSO_FIO / sp;
+        dir += gauss() * 0.04 + (rnd() < 0.045 ? (rnd() < 0.5 ? -1 : 1) * (0.6 + 1.0 * rnd()) : 0);
+        y += Math.sin(dir) * PASSO / sy;
+        ph += Math.cos(dir) * PASSO / sp;
       }
-    }
-  };
-  const nevoa = (T, alvo, fora, sombra, ganho) => {
-    const pick = sampler(rnd, T, T === HEAD ? 143 : 520, T === HEAD ? 649 : 940);
-    for (let i = 0; i < alvo * densidade; i++) {
-      const y = pick(), p = naCasca(T, y, sortearPh(T, y), -1.2 + gauss() * 1.8);
-      if (fora(p.x, y, p.z) || rnd() > fadeY(y)) continue;
-      const g = ouro(p.x, y, p.z), dourado = rnd() < g;   // o brilho dourado da boca é névoa
-      put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, (0.02 + 0.02 * rnd()) * (dourado ? 4 : 1) * sombra(p.x, y, p.z) * ganho, 1.0 + 0.5 * rnd(), dourado ? GOLD : rnd() < 0.5 ? DEEP : BLUE);
+      feitas += Math.max(1, feitasAqui);
     }
   };
   const semSombra = () => 1;
-  fios(HEAD, FIOS * 0.42, insideBody, semSombra, 1);
-  fios(BODY, FIOS * 0.58, insideHead, sombraPescoco, 1.6);      // na foto pescoço e ombros brilham mais que o rosto
-  nevoa(HEAD, NEVOA * 0.42, insideBody, semSombra, 1);
-  nevoa(BODY, NEVOA * 0.58, insideHead, sombraPescoco, 1.4);
-  // marcas da foto, medidas como cristas de brilho (lado direito, px da foto; o esquerdo é o espelho).
-  // Cada uma é um feixe de fios que segue a curva com desvio e ondulação próprios, assentado na
-  // superfície: acende e apaga com a mesma luz de raspão do resto do corpo.
-  for (const [T, curva, nFios, br] of MARCAS) {
+  pontilhar(HEAD, PONTOS * 0.4, insideBody, semSombra, 1);
+  pontilhar(BODY, PONTOS * 0.6, insideHead, sombraPescoco, 1.3);   // na foto pescoço e ombros brilham mais que o rosto
+  correntes(HEAD, CONTAS * 0.42, insideBody, semSombra, 1);
+  correntes(BODY, CONTAS * 0.58, insideHead, sombraPescoco, 1.1);
+  // marcas da foto, medidas como cristas de brilho (lado direito, px da foto; o esquerdo é o espelho): uma
+  // faixa de ~5 px de pontos fracos ao longo da curva. São do tamanho das contas, então o filtro de luz deixa
+  // mais deles aparecerem: a marca se lê como um pontilhado discreto, não como linha
+  for (const [T, curva, porPx] of MARCAS) {
     for (const sg of [-1, 1]) {
-      for (let m = 0; m < nFios; m++) {
-        const o = gauss() * 1.8, fase = rnd() * 6.283185, fr = 0.04 + 0.1 * rnd(), amp = 0.3 + 0.9 * rnd(), t0 = -0.6 + gauss() * 0.5;
-        const bM = br * (0.7 + 0.6 * rnd());
-        let conta = m % 2 === 0 ? rnd() * VAO_CONTA : Infinity, s = 0;
-        const passo = PASSO_FIO / Math.sqrt(densidade);
-        for (let i = 0; i < curva.length - 1; i++) {
-          const [x0, y0] = curva[i], [x1, y1] = curva[i + 1], len = Math.hypot(x1 - x0, y1 - y0);
-          const ux = -(y1 - y0) / len, uy = (x1 - x0) / len;
-          for (let a = 0; a < len; a += passo, s += passo) {
-            const lat = o + amp * Math.sin(s * fr + fase), t = a / len;
-            const xp = (x0 + (x1 - x0) * t + ux * lat - AX) * sg, y = y0 + (y1 - y0) * t + uy * lat;
-            const w = rowR(T, y)[0], ph = Math.asin(Math.max(-1, Math.min(1, xp / Math.max(1, w))));
-            const p = naCasca(T, y, ph, t0 + gauss() * 0.15);
-            put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, bM, 0.7 + 0.2 * rnd(), rnd() < 0.7 ? CYAN : BLUE);
-            if (s >= conta) {
-              conta += VAO_CONTA * (0.85 + 0.3 * rnd());
-              put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, 1.0 + 0.5 * rnd(), 0.85 + 0.3 * rnd(), rnd() < 0.4 ? WHITE : CYAN);
-            }
-          }
+      for (let i = 0; i < curva.length - 1; i++) {
+        const [x0, y0] = curva[i], [x1, y1] = curva[i + 1], len = Math.hypot(x1 - x0, y1 - y0);
+        const ux = -(y1 - y0) / len, uy = (x1 - x0) / len;
+        for (let k = 0; k < len * porPx * densidade; k++) {
+          const t = rnd(), o = gauss() * 2.2;
+          const xp = (x0 + (x1 - x0) * t + ux * o - AX) * sg, y = y0 + (y1 - y0) * t + uy * o;
+          const w = rowR(T, y)[0], ph = Math.asin(Math.max(-1, Math.min(1, xp / Math.max(1, w))));
+          const p = naCasca(T, y, ph, -0.5 + gauss() * 0.6);
+          put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, 0.45 + 0.2 * rnd(), 0.76 + 0.08 * rnd(), rnd() < 0.7 ? CYAN : WHITE);
         }
       }
     }
   }
-  // orelhas: hélice (feixe de fios claros com contas), antélice mais fraca e concha escura. Sem normal:
-  // a orelha é fina e se vê das duas faces, então o brilho dela não depende do ângulo
+  // orelhas: faixas de pontos na hélice (mais densa), na antélice e na concha (rala). Sem normal: a orelha é
+  // fina e se vê das duas faces, então o filtro de luz trata ela como meio-tom fixo
   for (const sg of [-1, 1]) {
-    const linha = (r, ta, tb, b, comContas) => {
-      const dr = gauss() * 0.06, dx = gauss() * 1.8;
-      let conta = comContas ? rnd() * VAO_CONTA : Infinity;
-      for (let t = ta, s = 0; t < tb; ) {
-        const [x, y, z] = naOrelha(sg, t, r + dr);
-        put(x + sg * dx, y, z, 0, 0, 0, b * (0.8 + 0.4 * rnd()), 0.7 + 0.2 * rnd(), rnd() < 0.4 ? WHITE : CYAN);
-        if (s >= conta) { conta += VAO_CONTA * (0.85 + 0.3 * rnd()); put(x + sg * dx, y, z, 0, 0, 0, 0.9 + 0.5 * rnd(), 0.85 + 0.3 * rnd(), rnd() < 0.7 ? WHITE : CYAN); }
-        const raio = Math.max(8, Math.hypot(ORELHA.meiaAltura * Math.cos(t), ORELHA.meiaFundo * Math.sin(t)) * r);   // aproximado: só regula o passo
-        const dt = PASSO_FIO / raio / Math.sqrt(densidade);
-        t += dt; s += PASSO_FIO / Math.sqrt(densidade);
+    const faixa = (qtd, r0, dr, ta, tb, b, cor) => {
+      for (let i = 0; i < qtd * densidade; i++) {
+        const t = ta + (tb - ta) * rnd(), [x, y, z] = naOrelha(sg, t, Math.max(0, r0 + gauss() * dr));   // r < 0 daria NaN em r ** 1,5
+        put(x + sg * gauss() * 1.2, y, z, 0, 0, 0, b * (0.8 + 0.4 * rnd()), 0.45 + 0.15 * rnd(), cor());
       }
     };
-    for (let m = 0; m < 16; m++) linha(0.95, -0.7 * Math.PI, 0.75 * Math.PI, 0.42, m < 8);   // hélice
-    for (let m = 0; m < 4; m++) linha(0.6, -0.25 * Math.PI, 0.65 * Math.PI, 0.15, m < 2);    // antélice
-    for (let i = 0; i < 6000 * densidade; i++) {                                                 // concha
-      const [x, y, z] = naOrelha(sg, rnd() * 6.283185, Math.sqrt(rnd()) * 0.9);
-      put(x, y, z, 0, 0, 0, 0.02 + 0.02 * rnd(), 1.0 + 0.5 * rnd(), DEEP);
-    }
+    faixa(20000, 0.95, 0.04, -0.7 * Math.PI, 0.75 * Math.PI, 1.0, () => (rnd() < 0.45 ? WHITE : CYAN));   // hélice
+    faixa(2500, 0.6, 0.03, -0.25 * Math.PI, 0.65 * Math.PI, 0.9, () => CYAN);                           // antélice
+    faixa(1500, 0.45, 0.25, -Math.PI, Math.PI, 0.6, () => (rnd() < 0.6 ? DEEP : BLUE));                  // concha
   }
   return { n, pos, col, inf, nor };
 }
@@ -400,7 +433,11 @@ const corDaFerramenta = (nome) => COR_POR_FERRAMENTA[nome] ?? (nome.startsWith('
 const VS_COMUM = `
   attribute vec3 color, aInf;                 // cor · brilho, semente, tamanho
   uniform float uTime, uSize, uC, uScale, uPensa, uFala, uExpo;
+  uniform vec3 uInf;                          // escala de aInf: o busto guarda em bytes (0..1), o resto em float
+  #define INF (aInf * uInf)
   varying vec3 vCol;
+  // ponto de tamanho 0 vira ponto de 1 px (o WebGL arredonda pro mínimo): pra sumir de verdade, sai da tela
+  void esconder() { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0; vCol = vec3(0.0); }
   vec3 fimDoPonto(vec3 p, float sd, float b, vec3 cor) {
     p += vec3(sin(uTime * (0.4 + sd * 0.5) + sd * 40.0), cos(uTime * (0.33 + sd * 0.4) + sd * 27.0), sin(uTime * 0.37 + sd * 19.0)) * 0.012;
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -412,28 +449,37 @@ const VS_COMUM = `
     vCol = cor * b * mix(0.28, 1.15, k) * tw * boca * 0.42 * uExpo;
     gl_Position = projectionMatrix * mv;
     float persp = uScale / -mv.z;
-    gl_PointSize = uSize * aInf.z * mix(0.7, 1.2, k) * persp * (1.0 + 0.4 * (tw - 1.0));
+    gl_PointSize = uSize * INF.z * mix(0.7, 1.2, k) * persp * (1.0 + 0.4 * (tw - 1.0));
     return p;
   }`;
 const VS_BUSTO = VS_COMUM + `
   attribute vec3 aNor;
   void main() {
-    // grão visto de frente apaga, de raspão acende: a borda e o volume saem da luz, não de um contorno
-    float luz = 0.8, branco = 0.0;
+    // pontilhismo: a luz do lugar vira densidade. Cada ponto tem um limiar próprio (tirado da semente) e só
+    // aparece se a fração visível dali passar dele; os que aparecem têm quase o mesmo brilho. De frente fica
+    // ~2% dos pontos (separados, dá pra contar), no raspão e com luz de cima quase todos (a borda e o volume),
+    // o lado de trás quase some. A orelha não tem normal: meio-tom fixo.
+    float vis = 0.2, branco = 0.0, raspao = 1.0, frente = 1.0;
     if (dot(aNor, aNor) > 0.25) {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       vec3 nv = normalize(normalMatrix * aNor);
       float fd = dot(nv, normalize(-mv.xyz));
-      float de = pow(abs(fd), 0.55);
-      luz = mix(2.0, 0.22, de);                // luz de recorte: só o raspão acende de verdade
-      luz = mix(luz, mix(1.4, 0.6, de), step(0.5, aInf.x));    // contas: menos contraste (a foto tem pontos claros no meio do rosto)
-      luz *= 0.85 + 0.45 * max(0.0, nv.y);     // luz de cima: alto da cabeça, testa e topo dos ombros mais claros, como na foto
-      if (fd < 0.0) luz *= 0.12;              // o lado de trás quase some: lê como superfície, não como nuvem
+      float luz = mix(2.0, 0.22, pow(abs(fd), 0.55));   // luz de recorte: só o raspão acende de verdade
+      luz *= 0.85 + 0.45 * max(0.0, nv.y);            // luz de cima: alto da cabeça, testa e topo dos ombros
+      if (fd < 0.0) luz *= 0.12;
+      frente = step(0.0, fd);
+      float l = clamp(luz / 2.0, 0.0, 1.0);
+      // bem de raspão a superfície se empilha em poucos px (de perfil, o topo do ombro inteiro): menos pontos
+      // ali, e menos ainda atrás do centro da cabeça, senão estoura em branco
+      vis = pow(l, 1.7) * mix(0.3, 1.0, smoothstep(0.0, 0.25, abs(fd))) * mix(0.35, 1.0, smoothstep(-2.3, 2.1, mv.z - uC));
       float ouroG = step(0.9, color.r) * step(color.b, 0.3) * step(0.0, fd);
-      luz = mix(luz, 1.1, ouroG);              // o dourado é luz própria do rosto: não apaga de frente
-      branco = smoothstep(0.5, 0.05, fd) * step(0.0, fd) * (1.0 - ouroG) * 0.8;     // a borda da foto é quase branca
+      vis = mix(vis, max(vis, 0.3), ouroG);           // o dourado é luz própria do rosto: não some de frente
+      branco = smoothstep(0.5, 0.05, fd) * step(0.0, fd) * (1.0 - ouroG) * 0.35;  // a borda da foto é quase branca
+      raspao = mix(0.35, 1.0, smoothstep(0.0, 0.5, abs(fd)));   // bem de raspão os pontos se empilham: cada um brilha menos
     }
-    fimDoPonto(position, aInf.y, aInf.x * luz, mix(color, vec3(0.72, 0.9, 1.0), branco));
+    vis = mix(vis, 0.25 + 0.75 * vis, step(0.75, INF.z) * frente);   // contas e marcas (pontos maiores) aparecem mais, só do lado de cá
+    fimDoPonto(position, INF.y, INF.x * (0.7 + 0.5 * vis) * raspao, mix(color, vec3(0.72, 0.9, 1.0), branco));
+    if (fract(INF.y * 91.7) > vis) esconder();
   }`;
 const VS_BRACOS = VS_COMUM + `
   uniform float uGal, uTilt, uR0, uR1, uGiro;
@@ -448,8 +494,8 @@ const VS_BRACOS = VS_COMUM + `
     vec3 d = vec3(cos(th) * r, position.z, sin(th) * r);
     float ct = cos(uTilt), st = sin(uTilt);
     vec3 p = vec3(d.x, d.y * ct - d.z * st, d.y * st + d.z * ct) * 0.01 + uCentro;
-    fimDoPonto(p, aInf.y, aInf.x * g, color);
-    if (g <= 0.001) gl_PointSize = 0.0;
+    fimDoPonto(p, INF.y, INF.x * g, color);
+    if (g <= 0.001) esconder();
   }`;
 const VS_COMETAS = VS_COMUM + `
   uniform vec4 uCometa[${SLOTS}];             // início, fim (ou -1), cor, inclinação
@@ -470,27 +516,27 @@ const VS_COMETAS = VS_COMUM + `
     float inc = 0.35 + 0.5 * fract(c.w * 7.0);
     float ct = cos(inc), st = sin(inc);
     vec3 p = vec3(d.x, d.y * ct - d.z * st, d.y * st + d.z * ct) + uCentro;
-    fimDoPonto(p, sd, aInf.x * ativo * (1.0 - fim) * 1.8, color);
+    fimDoPonto(p, sd, INF.x * ativo * (1.0 - fim) * 1.8, color);
     vCol *= uCores[int(c.z + 0.5)];            // color é branco nos cometas: a cor vem da ferramenta
-    if (ativo * (1.0 - fim) <= 0.001) gl_PointSize = 0.0;
+    if (ativo * (1.0 - fim) <= 0.001) esconder();
   }`;
 const FS = `
   varying vec3 vCol;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
-    float r = length(c) * 2.0;                             // ponto de luz redondo: miolo nítido, borda curta
+    float r = length(c) * 2.0;                             // ponto redondo e nítido, como de caneta
     if (r >= 1.0) discard;
-    float a = smoothstep(1.0, 0.35, r);
-    gl_FragColor = vec4(vCol * a * a * 1.5, 1.0);
+    float a = smoothstep(1.0, 0.55, r);
+    gl_FragColor = vec4(vCol * a * 1.4, 1.0);
   }`;
 
 function pontos(dados, material) {
   const g = new THREE.BufferGeometry();
-  if (dados.n !== undefined) {                // busto: arrays tipados, cor e normal em bytes normalizados
+  if (dados.n !== undefined) {                // busto: arrays tipados; cor, brilho/semente/tamanho e normal em bytes normalizados
     const k = dados.n * 3;
     g.setAttribute('position', new THREE.BufferAttribute(dados.pos.subarray(0, k), 3));
     g.setAttribute('color', new THREE.BufferAttribute(dados.col.subarray(0, k), 3, true));
-    g.setAttribute('aInf', new THREE.BufferAttribute(dados.inf.subarray(0, k), 3));
+    g.setAttribute('aInf', new THREE.BufferAttribute(dados.inf.subarray(0, k), 3, true));
     g.setAttribute('aNor', new THREE.BufferAttribute(dados.nor.subarray(0, k), 3, true));
   } else {
     g.setAttribute('position', new THREE.Float32BufferAttribute(dados.pos, 3));
@@ -522,13 +568,13 @@ export function montar(el, { densidade = 1 } = {}) {
 
   const uniforms = {
     uTime: { value: 0 }, uSize: { value: 2.6 * pr }, uC: { value: 0 }, uScale: { value: DIST },
-    uPensa: { value: 0 }, uFala: { value: 0 }, uExpo: { value: 1 },
+    uPensa: { value: 0 }, uFala: { value: 0 }, uExpo: { value: 1 }, uInf: { value: new THREE.Vector3(1, 1, 1) },
   };
   const material = (vs, extra = {}) => new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
     uniforms: { ...uniforms, ...extra }, vertexShader: vs, fragmentShader: FS,
   });
-  group.add(pontos(gerarBusto(densidade), material(VS_BUSTO)));
+  group.add(pontos(gerarBusto(densidade), material(VS_BUSTO, { uInf: { value: new THREE.Vector3(2, 1, 1.5) } })));
 
   const centro = { value: CABECA.clone() };
   const galaxia = material(VS_BRACOS, {
@@ -547,7 +593,7 @@ export function montar(el, { densidade = 1 } = {}) {
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.38, 0.05, 0.3);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.18, 0.05, 0.4);
   composer.addPass(bloom);
   const ajustar = () => {
     const w = Math.max(1, el.clientWidth), h = Math.max(1, el.clientHeight);

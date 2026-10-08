@@ -65,7 +65,7 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     entryPoints: [join(source, 'apps/desktop/electron/entry.ts')],
     format: 'esm',
     outfile: join(out, 'electron-main.mjs'),
-    banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner },
+    banner: { js: "import { createRequire as __hermesBundleCreateRequire } from 'module'; const require = __hermesBundleCreateRequire(import.meta.url);" + envBanner },
   })
   await build({
     ...common,

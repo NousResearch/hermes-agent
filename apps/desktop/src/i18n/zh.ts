@@ -475,6 +475,24 @@ export const zhOverrides = {
   },
 
   settings: {
+    remoteControl: {
+      title: '跨设备控制',
+      description: '允许在此执行终端和文件命令，由发起设备批准。关闭 Desktop 或更换网关后注册失效。',
+      authorize: '授权远程控制',
+      revoke: '撤销远程控制',
+      origin: '使用此设备批准请求',
+      refresh: '刷新设备',
+      authorized: '已授权的来源设备',
+      off: '远程控制已关闭',
+      devices: '此网关上的设备',
+      originDescription: '先注册此设备，再授权其他设备接收命令。',
+      approves: '批准请求',
+      receives: '接收命令',
+      offline: '离线',
+      openChat: '打开此网关上的聊天以管理注册。',
+      revoked: '已撤销此设备的远程控制。',
+      cleanupPending: '已在本地撤销访问，无法确认网关清理结果。'
+    },
     subpages: {
       appearanceTheme: '主题',
       appearanceTypography: '字体与缩放',

@@ -701,6 +701,25 @@ export const deOverrides = {
     noResults: 'Keine Sprachen gefunden'
   },
   settings: {
+    remoteControl: {
+      title: 'Geräteübergreifende Steuerung',
+      description:
+        'Terminal- und Dateibefehle hier zulassen, mit Freigaben auf dem Ursprungsgerät. Die Registrierung endet beim Schließen von Desktop oder Gateway-Wechsel.',
+      authorize: 'Fernsteuerung autorisieren',
+      revoke: 'Fernsteuerung widerrufen',
+      origin: 'Dieses Gerät für Freigaben verwenden',
+      refresh: 'Geräte aktualisieren',
+      authorized: 'Autorisierte Ursprungsgeräte',
+      off: 'Fernsteuerung ist aus',
+      devices: 'Geräte an diesem Gateway',
+      originDescription: 'Dieses Gerät registrieren, bevor ein anderes Gerät Befehle empfangen darf.',
+      approves: 'Genehmigt Anfragen',
+      receives: 'Empfängt Befehle',
+      offline: 'Offline',
+      openChat: 'Einen Chat an diesem Gateway öffnen, um die Registrierung zu verwalten.',
+      revoked: 'Fernsteuerung auf diesem Gerät widerrufen.',
+      cleanupPending: 'Lokaler Zugriff widerrufen. Die Bereinigung am Gateway konnte nicht bestätigt werden.'
+    },
     subpages: {
       appearanceTheme: 'Design',
       appearanceTypography: 'Typografie',

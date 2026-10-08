@@ -701,6 +701,25 @@ export const frOverrides = {
     noResults: 'Aucune langue trouvée'
   },
   settings: {
+    remoteControl: {
+      title: 'Contrôle entre appareils',
+      description:
+        'Autoriser ici les commandes de terminal et de fichiers, avec approbation sur l’appareil d’origine. L’autorisation expire à la fermeture de Desktop ou au changement de passerelle.',
+      authorize: 'Autoriser le contrôle à distance',
+      revoke: 'Révoquer le contrôle à distance',
+      origin: 'Utiliser cet appareil pour approuver',
+      refresh: 'Actualiser les appareils',
+      authorized: 'Appareils sources autorisés',
+      off: 'Le contrôle à distance est désactivé',
+      devices: 'Appareils sur cette passerelle',
+      originDescription: 'Enregistrer cet appareil avant d’autoriser un autre appareil à recevoir des commandes.',
+      approves: 'Approuve les demandes',
+      receives: 'Reçoit les commandes',
+      offline: 'Hors ligne',
+      openChat: 'Ouvrez une discussion sur cette passerelle pour gérer l’autorisation.',
+      revoked: 'Contrôle à distance révoqué sur cet appareil.',
+      cleanupPending: 'Accès révoqué localement. Le nettoyage de la passerelle n’a pas pu être confirmé.'
+    },
     subpages: {
       appearanceTheme: 'Thème',
       appearanceTypography: 'Typographie',

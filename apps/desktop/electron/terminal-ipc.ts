@@ -16,8 +16,11 @@ import { buildInteractiveSshArgs } from './ssh-connection'
 import { createTerminalOutputGate } from './terminal-output-gate'
 import { applyWindowsMsysBashEnvDefaults } from './windows-msys-bash-env'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
+import { registerPcIpc } from './pc-ipc'
+import { registerRemoteIpc } from './remote-ipc'
 
 export interface TerminalIpcDeps {
+  pcConnectionScope: (senderId: number) => string
   isWindows: boolean
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
@@ -50,6 +53,7 @@ export function terminalLcCtype(
 }
 
 export function registerTerminalIpc({
+  pcConnectionScope,
   isWindows,
   findOnPath,
   rememberLog,
@@ -303,6 +307,116 @@ export function registerTerminalIpc({
     }
   }
 
+
+  registerPcIpc(pcConnectionScope)
+
+  const executeDesktopCommand = async (payload: Record<string, unknown> = {}) => {
+    const command = String(payload?.command || '').trim()
+    const cwd = safeTerminalCwd(payload?.cwd)
+    const timeout = Math.max(1, Math.min(Number(payload?.timeout) || 10, 60)) * 1000
+
+    if (!command) {
+      return {
+        success: false,
+        returncode: 2,
+        output: '',
+        error: 'No command was provided.'
+      }
+    }
+
+    const requestedShell = String(payload?.shell || '').trim().toLowerCase()
+
+    let shell: string
+    let name: string
+    let args: string[]
+
+    if (requestedShell === 'bash') {
+      const bashPath = isWindows
+        ? process.env.HERMES_GIT_BASH_PATH
+        : (isExecutableFile('/bin/bash') ? '/bin/bash' : findOnPath('bash'))
+
+      if (!bashPath) {
+        return {
+          success: false,
+          returncode: 127,
+          output: '',
+          cwd,
+          shell: 'bash',
+          error: isWindows ? 'HERMES_GIT_BASH_PATH is not configured.' : 'Bash is not installed on this device.'
+        }
+      }
+
+      shell = bashPath
+      name = 'bash'
+      // Keep Windows argv short. Read the complete script before evaluating it,
+      // so commands inside it see EOF rather than consuming later script lines.
+      args = ['-c', 'eval "$(cat)"']
+    } else {
+      const terminalShell = terminalShellCommand()
+      shell = terminalShell.command
+      name = terminalShell.name
+
+      if (name.startsWith('pwsh') || name.startsWith('powershell')) {
+        args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command]
+      } else if (name.startsWith('cmd')) {
+        args = ['/d', '/s', '/c', command]
+      } else {
+        args = ['-c', command]
+      }
+    }
+
+    return await new Promise(resolve => {
+      const child = execFile(
+        shell,
+        args,
+        {
+          cwd,
+          env: terminalShellEnv(),
+          encoding: 'utf8',
+          timeout,
+          windowsHide: true,
+          maxBuffer: 1024 * 1024
+        },
+        (error, stdout, stderr) => {
+          const output = `${stdout || ''}${stderr || ''}`
+
+          if (!error) {
+            resolve({
+              success: true,
+              returncode: 0,
+              output,
+              cwd,
+              shell: name
+            })
+            return
+          }
+
+          const execError = error as NodeJS.ErrnoException & {
+            code?: number | string
+            killed?: boolean
+          }
+
+          resolve({
+            success: false,
+            returncode: typeof execError.code === 'number' ? execError.code : 1,
+            output,
+            cwd,
+            shell: name,
+            error: execError.message,
+            timed_out: Boolean(execError.killed)
+          })
+        }
+      )
+      if (requestedShell === 'bash') {
+        child.stdin?.on('error', () => { /* execFile reports process failures. */ })
+        child.stdin?.end(command, 'utf8')
+      }
+    })
+  }
+
+  ipcMain.handle('hermes:desktop:exec', (_event, payload = {}) => executeDesktopCommand(payload))
+  registerRemoteIpc(pcConnectionScope, executeDesktopCommand)
+
   ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
     ensureNodePtySpawnHelper()
 
@@ -423,3 +537,5 @@ export function registerTerminalIpc({
 
   return { disposeTerminalSession, disposeTerminalSessionsForSshScope, disposeAllTerminalSessions }
 }
+
+

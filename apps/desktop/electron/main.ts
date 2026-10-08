@@ -221,6 +221,8 @@ import {
 } from './dashboard-token'
 import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { createLoginSingleFlight } from './login-singleflight'
+
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -7537,7 +7539,16 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(
+const runLoginOnce = createLoginSingleFlight<any>()
+
+function openOauthLoginWindow(baseUrl, options: any = {}) {
+  const partition = resolveOauthPartitionForUrl(baseUrl, options)
+  const visibility = options.background || !canShowInteractiveOauthLogin() ? 'hidden' : 'visible'
+  const scope = JSON.stringify([partition, normalizeRemoteBaseUrl(baseUrl), visibility])
+  return runLoginOnce(scope, () => createOauthLoginWindow(baseUrl, options))
+}
+
+function createOauthLoginWindow(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
@@ -18632,6 +18643,7 @@ registerMcpOauthCallbackIpc()
 
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
+  pcConnectionScope: senderId => JSON.stringify({ route: windowConnectionRoutes.get(senderId) ?? null, config: readDesktopConnectionConfig() }),
   isWindows: IS_WINDOWS,
   findOnPath,
   rememberLog,

@@ -104,7 +104,7 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * would win the race, so the tool reports "no preview tab / no terminal" while
  * the owner's pane is open (#113348).
  */
-const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+const WINDOW_OWNED_REQUESTS = new Set(['desktop.pc', 'desktop.exec', 'preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
 /**
  * A window not hosting the session declines instead of staying silent. The
@@ -695,10 +695,76 @@ const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   )
 }
 
+const desktopPc: Handler = ({ deps, request, sessionId, isActiveSession }) => {
+  if (!isActiveSession || !sessionId) {
+    answerValue(request, { isError: true, content: [{ type: 'text', text: 'Keep the owning conversation visible for PC control.' }] })
+    return
+  }
+  const desktop = window.hermesDesktop?.desktop
+  if (!desktop?.pc) {
+    answerValue(request, { isError: true, content: [{ type: 'text', text: 'This Desktop build does not provide PC control.' }] })
+    return
+  }
+  const p = request.params
+  void desktop.pc({ sessionId: deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId, action: str(p.action), arguments: (p.arguments ?? {}) as Record<string, unknown> }).then(
+    result => answerValue(request, result),
+    error => answerValue(request, { isError: true, content: [{ type: 'text', text: String(error) }] })
+  )
+}
+const desktopRemote: Handler = ({ deps, request, sessionId, isActiveSession }) => {
+  const p = request.params as unknown as Record<string, unknown>
+  if (!sessionId || (p.action !== 'execute' && !isActiveSession)) {
+    answerValue(request, { error: 'Keep the originating or enrollment conversation visible.' })
+    return
+  }
+  const desktop = window.hermesDesktop?.desktop
+  if (!desktop?.remote) {
+    answerValue(request, { error: 'This Desktop build does not support cross-device commands.' })
+    return
+  }
+  void desktop.remote({ sessionId: deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId,
+    action: str(p.action), arguments: (p.arguments ?? {}) as Record<string, unknown> }).then(
+    result => answerValue(request, result),
+    error => answerValue(request, { error: String(error) })
+  )
+}
+const desktopExec: Handler = ({ request }) => {
+  const p = request.params
+  const desktop = window.hermesDesktop?.desktop
+
+  if (!desktop?.exec) {
+    answerValue(request, {
+      success: false,
+      error: 'This Hermes Desktop build does not provide local command execution.'
+    })
+
+    return
+  }
+
+  void desktop
+    .exec({
+      command: str(p.command),
+      cwd: p.cwd ? str(p.cwd) : undefined,
+      shell: p.shell === 'bash' ? 'bash' : undefined,
+      timeout: Number(p.timeout || 10)
+    })
+    .then(
+      result => answerValue(request, result),
+      error =>
+        answerValue(request, {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        })
+    )
+}
+
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
+  'desktop.pc': desktopPc,
+  'desktop.exec': desktopExec,
+  'desktop.remote': desktopRemote,
   'display.install.sudo': displayInstallSudo,
   'preview.act': previewAct,
   'preview.read': previewRead,
@@ -792,3 +858,4 @@ export function handleServerRequest(
 
   return true
 }
+

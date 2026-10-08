@@ -14,6 +14,24 @@ export const zhHantSettings = {
   },
 
   settings: {
+    remoteControl: {
+      title: '跨裝置控制',
+      description: '允許在此執行終端機和檔案命令，由發起裝置批准。關閉 Desktop 或更換閘道後註冊失效。',
+      authorize: '授權遠端控制',
+      revoke: '撤銷遠端控制',
+      origin: '使用此裝置批准要求',
+      refresh: '重新整理裝置',
+      authorized: '已授權的來源裝置',
+      off: '遠端控制已關閉',
+      devices: '此閘道上的裝置',
+      originDescription: '先註冊此裝置，再授權其他裝置接收命令。',
+      approves: '批准要求',
+      receives: '接收命令',
+      offline: '離線',
+      openChat: '開啟此閘道上的聊天以管理註冊。',
+      revoked: '已撤銷此裝置的遠端控制。',
+      cleanupPending: '已在本機撤銷存取，無法確認閘道清理結果。'
+    },
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',

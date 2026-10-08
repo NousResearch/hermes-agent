@@ -45,6 +45,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
+import { RemoteControlSection } from './remote-control-section'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -180,6 +181,7 @@ export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsPr
     return (
       <SettingsContent>
         <ConnectionsRegistrySection />
+        <RemoteControlSection />
       </SettingsContent>
     )
   }

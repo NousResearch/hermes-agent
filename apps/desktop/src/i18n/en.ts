@@ -1002,6 +1002,9 @@ export const en: Translations = {
       chatLineSpacingTitle: 'Chat Line Spacing',
       chatLineSpacingDesc:
         "Sets how far apart the lines sit in the conversation, as a share of the theme's leading. 100% keeps the theme's spacing.",
+      chatParagraphSpacingTitle: 'Chat Paragraph Spacing',
+      chatParagraphSpacingDesc:
+        "Sets the gap between paragraphs — and before headings — in the conversation, as a share of the app's own paragraph spacing. 100% keeps the app's spacing.",
       title: 'Appearance',
       intro: 'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
       colorMode: 'Color Mode',

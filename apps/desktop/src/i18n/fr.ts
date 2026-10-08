@@ -1033,6 +1033,9 @@ export const frOverrides = {
       chatLineSpacingTitle: 'Interligne du chat',
       chatLineSpacingDesc:
         'Définit l’espacement des lignes de la conversation en proportion de l’interligne du thème. 100 % conserve l’espacement du thème.',
+      chatParagraphSpacingTitle: 'Espacement des paragraphes du chat',
+      chatParagraphSpacingDesc:
+        'Définit l’espacement entre les paragraphes — et avant les titres — de la conversation en proportion de l’espacement de l’application. 100 % conserve l’espacement de l’application.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',

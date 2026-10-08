@@ -17,6 +17,11 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatLineSpacing, CHAT_LINE_SPACING_PRESETS, setChatLineSpacing } from '@/store/chat-line-spacing'
+import {
+  $chatParagraphSpacing,
+  CHAT_PARAGRAPH_SPACING_PRESETS,
+  setChatParagraphSpacing
+} from '@/store/chat-paragraph-spacing'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -428,6 +433,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
   const chatLineSpacing = useStore($chatLineSpacing)
+  const chatParagraphSpacing = useStore($chatParagraphSpacing)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
@@ -722,6 +728,23 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 title={a.chatLineSpacingTitle}
               />
 
+              <ListRow
+                action={
+                  <SegmentedControl
+                    // Five presets on the default single-row track, like the
+                    // Chat Line Spacing row above.
+                    onChange={value => {
+                      triggerHaptic('selection')
+                      setChatParagraphSpacing(Number(value))
+                    }}
+                    options={CHAT_PARAGRAPH_SPACING_PRESETS.map(value => ({ id: String(value), label: `${value}%` }))}
+                    value={String(chatParagraphSpacing)}
+                  />
+                }
+                description={a.chatParagraphSpacingDesc}
+                id={settingElementId(ids.chatParagraphSpacing)}
+                title={a.chatParagraphSpacingTitle}
+              />
 
               <div id={settingElementId(ids.chatFont)}>
                 <ChatFontSetting />

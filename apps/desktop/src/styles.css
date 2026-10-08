@@ -538,9 +538,23 @@
        where a surface opts into a faint hint of the affordance. */
     --disclosure-caret-rest: 0;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
-       markdown block and between consecutive prose parts. Single knob; tweak
-       freely. */
-    --paragraph-gap: 0.7rem;
+       markdown block and between consecutive prose parts. This is the BASE the
+       transcript scales by the user's Paragraph Spacing multiplier (see the
+       derived-token block further down, next to line spacing); stated as the
+       resolved token immediately after so an out-of-transcript consumer — or one
+       inside a surface that never re-derives it — degrades to the base rather
+       than an invalid value. */
+    --paragraph-gap-base: 0.7rem;
+    --paragraph-gap: var(--paragraph-gap-base);
+    /* Gap BEFORE a heading. A heading opens a section, so it sits further from
+       the block above than prose does — but it rides the same Paragraph Spacing
+       multiplier, off this base, so the heading-to-prose ratio holds at every
+       step. Base/resolved pair for the same reason as paragraph spacing: an
+       out-of-transcript consumer degrades to the base, not to nothing. The snug
+       gap AFTER a heading (to its own text) is not a paragraph gap and stays
+       literal in the heading rule below. */
+    --heading-gap-base: 1rem;
+    --heading-gap: var(--heading-gap-base);
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
@@ -1688,6 +1702,18 @@ body.guest-pointer-lock :is(webview, iframe) {
   --conversation-message-line-height: calc(var(--dt-line-height, 1.5) * var(--chat-line-spacing, 1));
 }
 
+/* Chat paragraph spacing (Appearance → Typography), the same shape again for the
+   gap between prose paragraphs. The multiplier scales the base the ACTIVE surface
+   painted — the app's `--paragraph-gap-base`, or the HUD dock's tighter one — so
+   each surface keeps its own 100% and neither base can clobber the other, and the
+   root block's `--paragraph-gap: var(--paragraph-gap-base)` still covers anything
+   rendering prose outside the transcript. The gap before a heading is the same
+   rhythm, so it derives off its own base here; the gap AFTER a heading is the
+   heading's own leading-in and stays fixed. */
+[data-slot='aui_thread-content'] {
+  --paragraph-gap: calc(var(--paragraph-gap-base) * var(--chat-paragraph-spacing, 1));
+  --heading-gap: calc(var(--heading-gap-base) * var(--chat-paragraph-spacing, 1));
+}
 
 [data-slot='aui_assistant-message-content'] {
   padding-left: var(--message-text-indent);
@@ -1728,6 +1754,37 @@ body.guest-pointer-lock :is(webview, iframe) {
   margin-block: var(--paragraph-gap) 0;
 }
 
+/* The same Typography trap, for the rest of the reply's furniture. A list is
+   rendered with `my-1` (0.25rem) but `.prose :where(ul, ol) { margin-block:
+   1.25em }` ties it on specificity and wins on source order, so lists ignored
+   the multiplier entirely: a real 9-block reply measured 17.875px list gaps at
+   50%, 100% and 300% alike — WIDER than the paragraph gap at every step below
+   175%, which is why a list-heavy answer made the control look dead. Reclaim
+   lists and quotes here off the base each already painted and scale them, so
+   the whole reply's rhythm moves together. Both block edges scale, unlike the
+   paragraphs' top-only gap: zeroing a list's bottom margin would collapse a
+   list→paragraph gap onto the paragraph's own top margin and change the 100%
+   rendering.
+   Nested lists are excluded on purpose: `.prose :where(ul ul, ul ol, ol ul,
+   ol ol)` gives them a tighter 0.75em, so matching them here would inflate
+   them at 100% and break the no-op. The setting moves the reply's block
+   rhythm; a list's own inner rhythm is the line-spacing control's business. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(ul, ol):not(li *) {
+  margin-block: calc(1.25em * var(--chat-paragraph-spacing, 1));
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md :where(blockquote) {
+  margin-block: calc(1.6em * var(--chat-paragraph-spacing, 1));
+}
+
+/* Same freeze for the table card: `.aui-md-table` carries `my-2` (0.5rem) and
+   the table inside it is margin-zeroed, so a table's only gap sat at a fixed 8px
+   at every step. Scale it off that same 0.5rem. (Code fences already ride
+   `--paragraph-gap` via the code-card rules below, so they follow the setting
+   without touching them.) */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
+  margin-block: calc(0.5rem * var(--chat-paragraph-spacing, 1));
+}
 
 /* Same Typography trap for images: `.prose :where(img) { margin: 2em }` ties
    `m-0` on specificity (0,1,0) and wins on source order. Inside the framed
@@ -1742,9 +1799,13 @@ body.guest-pointer-lock :is(webview, iframe) {
 /* Headings are section breaks, so they own a larger top gap than prose — a
    leading `# title` (common in re-entered/delegated turns) no longer butts
    against the block above. Top-owned + bottom snug; the first-child reset
-   below still flushes a leading heading. */
+   below still flushes a leading heading.
+   The top gap is `--heading-gap`, so the space before a heading tracks the
+   user's Paragraph Spacing like the paragraphs around it do (1rem at 100%,
+   unchanged). The bottom is the heading's own leading-in — snug by design, not
+   a paragraph gap, so it stays literal. */
 [data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
-  margin-block: 1rem 0.25rem;
+  margin-block: var(--heading-gap) 0.25rem;
 }
 
 /* First rendered element of a prose block is flush — the block-level gap above
@@ -3486,7 +3547,10 @@ button[data-slot='aui_msg-reactions'] svg {
      them. Same knobs the app uses, just smaller here. */
   --conversation-turn-gap: 0.1875rem;
   --turn-block-gap: 0.375rem;
-  --paragraph-gap: 0.4rem;
+  /* The base, not the resolved token: the transcript's derive multiplies whatever
+     base is in scope, so the user's Paragraph Spacing still applies here and the
+     dock keeps this tighter rhythm as its own 100%. */
+  --paragraph-gap-base: 0.4rem;
   --composer-shell-pad-block-end: 0px;
   /* The viewport fills the band, period. The app's calc shortens the viewport
      to leave the dock's strips visible below it; the HUD hides those strips, so

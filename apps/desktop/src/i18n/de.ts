@@ -1032,6 +1032,9 @@ export const deOverrides = {
       chatLineSpacingTitle: 'Zeilenabstand im Chat',
       chatLineSpacingDesc:
         'Bestimmt den Abstand zwischen den Zeilen der Unterhaltung als Anteil am Zeilenabstand des Themes. 100 % behält den Abstand des Themes bei.',
+      chatParagraphSpacingTitle: 'Absatzabstand im Chat',
+      chatParagraphSpacingDesc:
+        'Bestimmt den Abstand zwischen den Absätzen – und vor Überschriften – der Unterhaltung als Anteil am Absatzabstand der App. 100 % behält den Abstand der App bei.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',

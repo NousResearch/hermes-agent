@@ -362,6 +362,21 @@ so a theme's leading ratio stays the baseline, and a message rendered outside th
 transcript falls back to that ratio. Tool rows, captions, tickers and the composer
 keep their own leading.
 
+**Chat Paragraph Spacing** (100% by default; 100% is the no-op) is that shape once
+more, for the gap between prose paragraphs. The multiplier scales
+`--paragraph-gap-base` — the app's own base, or the HUD dock's tighter one,
+whichever surface the transcript is in — so every surface keeps its own 100% and
+neither base is clobbered. It drives the paragraph-to-paragraph gap, the gap
+between consecutive prose parts of one turn, the top spacing of code blocks, and
+the block gaps around the rest of a reply's furniture — the top-level list and
+blockquote rhythms (their own 1.25em/1.6em bases; nested lists keep their
+tighter stock 0.75em) and the table card's `my-2` — which Typography's
+`:where()` rules otherwise pin against the multiplier. Each of those derives
+from the gap that block already painted, so 100% renders the pre-setting reply
+byte for byte.
+The gap before a heading rides the same multiplier off its own
+`--heading-gap-base` (1rem), so the heading-to-prose ratio holds at every step
+while the snug gap after a heading — to its own text — stays fixed.
 
 ## Chat, tools & boot surfaces
 

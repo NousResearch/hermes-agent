@@ -2525,6 +2525,8 @@
     "settings.appearance.chatFontTitle",
     "settings.appearance.chatLineSpacingDesc",
     "settings.appearance.chatLineSpacingTitle",
+    "settings.appearance.chatParagraphSpacingDesc",
+    "settings.appearance.chatParagraphSpacingTitle",
     "settings.appearance.chatTextScaleDesc",
     "settings.appearance.chatTextScaleTitle",
     "settings.appearance.colorMode",

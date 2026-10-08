@@ -75,6 +75,11 @@ export const SETTINGS_MANIFEST = {
       ['line', 'spacing', 'leading', 'line height', 'readability', 'chat'],
       'chatLineSpacing'
     ),
+    chatParagraphSpacing: appearanceSetting(
+      'typography',
+      ['paragraph', 'spacing', 'gap', 'prose', 'readability', 'chat'],
+      'chatParagraphSpacing'
+    ),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',

@@ -404,6 +404,50 @@ class TestMcpAdd:
         assert "--env" in out and "--args" in out
         assert "Hermes environment variable" in out
 
+    def test_real_parser_reporter_argv_with_trailing_hermes_flag_warns(
+        self, capsys, monkeypatch
+    ):
+        """The confirmed reporter argv from #68944: a Hermes flag follows the pair.
+
+        ``--connect-timeout 90`` after ``--env NOTION_TOKEN=...`` is swallowed
+        by REMAINDER too, so the env pair is no longer the last thing in argv.
+        The guard must still fire; only a non-Hermes token (e.g. a docker image)
+        after the pair keeps it quiet.
+        """
+        import argparse as _argparse
+
+        from hermes_cli.subcommands.mcp import build_mcp_parser
+
+        parser = _argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        build_mcp_parser(subparsers, cmd_mcp=lambda _args: None)
+
+        tail = [
+            "-y", "@notionhq/notion-mcp-server",
+            "--env", "NOTION_TOKEN=xxx", "--connect-timeout", "90",
+        ]
+        parsed = parser.parse_args(
+            ["mcp", "add", "notion", "--command", "npx", "--args", *tail]
+        )
+        assert parsed.args == tail
+        assert parsed.connect_timeout is None
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("search", "Search")],
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(parsed)
+        out = capsys.readouterr().out
+        assert "Hermes environment variable" in out
+        assert "If the command takes its own --env, this is fine" in out
+        # Still a diagnostic only: argv is stored exactly as typed.
+        assert load_config()["mcp_servers"]["notion"]["args"] == tail
+
     def test_legitimate_trailing_child_env_warns_but_is_not_rewritten(
         self, capsys, monkeypatch
     ):

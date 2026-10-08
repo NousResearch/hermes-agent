@@ -615,6 +615,10 @@ def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[s
     return len(chosen_names)
 
 
+# `hermes mcp add` options; typed after `--args`, REMAINDER swallows these too.
+_MCP_ADD_FLAGS = ("--url", "--command", "--auth", "--preset", "--connect-timeout", "--env")
+
+
 def _trailing_env_in_args(cmd_args: list[str]) -> bool:
     """True when a ``--env KEY=VALUE`` was swallowed by greedy ``--args``.
 
@@ -622,14 +626,18 @@ def _trailing_env_in_args(cmd_args: list[str]) -> bool:
     captured into the child argv instead of populating the server's env
     (issue #68944).  A container runtime's own ``--env`` (e.g. ``docker run
     --env FOO=bar <image>``) is legitimate, so key on the specific footgun
-    shape: a trailing ``--env`` followed only by ``KEY=VALUE`` tokens.  For
-    ``docker`` the image name (no ``=``) trails the env pair, so it stays quiet.
+    shape: the last ``--env`` followed by ``KEY=VALUE`` tokens, then either
+    nothing or another ``hermes mcp add`` option (``... --connect-timeout 90``).
+    For ``docker`` the image name trails the env pair, so it stays quiet.
     """
     if "--env" not in cmd_args:
         return False
-    last = len(cmd_args) - 1 - cmd_args[::-1].index("--env")
-    tail = cmd_args[last + 1:]
-    return bool(tail) and all("=" in token for token in tail)
+    i = len(cmd_args) - cmd_args[::-1].index("--env")
+    if i == len(cmd_args) or "=" not in cmd_args[i]:
+        return False
+    while i < len(cmd_args) and "=" in cmd_args[i]:
+        i += 1
+    return i == len(cmd_args) or cmd_args[i].split("=", 1)[0] in _MCP_ADD_FLAGS
 
 
 def cmd_mcp_add(args):

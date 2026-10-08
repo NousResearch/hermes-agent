@@ -1802,6 +1802,238 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+# Skills injected into a REVIEW run on top of the card's own list. These names are written by the
+# HARNESS, never by an operator at a prompt, so two rules hold (both enforced in _dispatch_lane_task
+# and agent.skill_commands): (1) the name must be RESOLVED for the assignee's profile before spawn —
+# an unresolvable injected name is skipped and recorded on the card, because the worker's preload
+# loader raises ``Unknown skill(s)`` when nothing loaded and the run then dies at INIT, burning the
+# card's failure budget without a line of substantive work; (2) the worker is told which names were
+# injected (``HERMES_KANBAN_ADVISORY_SKILLS``) so its loader degrades an injected-but-missing name to
+# a warning instead of a crash. Overridable per host with ``kanban.review_skills`` (``[]`` = none).
+DEFAULT_REVIEW_SKILLS: tuple[str, ...] = ("sdlc-review",)
+
+
+def _kanban_config() -> dict:
+    """The ``kanban`` config block (empty when unreadable or malformed)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        block = cfg.get("kanban") if isinstance(cfg, dict) else None
+        return block if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
+def review_injected_skills() -> tuple[str, ...]:
+    """Skill names injected into a review run (``kanban.review_skills``; default ``sdlc-review``)."""
+    configured = _kanban_config().get("review_skills", DEFAULT_REVIEW_SKILLS)
+    if isinstance(configured, str):
+        configured = [configured]
+    if not isinstance(configured, (list, tuple)):
+        return DEFAULT_REVIEW_SKILLS
+    return tuple(str(name).strip() for name in configured if str(name).strip())
+
+
+def _match_lane_skills(mapping: dict, assignee: Optional[str]) -> tuple[str, ...]:
+    """Union the ``injected_skills`` buckets that apply to *assignee*, most specific first.
+
+    Keys are lane ids, prefix globs (``platform-*``) or the ``"*"`` default floor. Buckets are
+    UNIONED, so a lane bucket ADDS to the floor rather than replacing it. Prefix globs resolve
+    longest-first, so a narrower pattern wins the ordering.
+    """
+    lane = (assignee or "").strip()
+    order: list[str] = []
+    if lane and lane in mapping:
+        order.append(lane)
+    if lane:
+        order.extend(sorted(
+            (k for k in mapping
+             if isinstance(k, str) and k.endswith("*") and lane.startswith(k[:-1])),
+            key=len, reverse=True,
+        ))
+    if "*" in mapping:
+        order.append("*")
+    names: list[str] = []
+    for key in order:
+        value = mapping.get(key)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            continue
+        for name in value:
+            name = str(name).strip()
+            if name and name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def injected_skills_for(assignee: Optional[str]) -> tuple[str, ...]:
+    """Skills injected into EVERY run of *assignee*'s lane (``kanban.injected_skills``).
+
+    Shape: a lane-pattern -> skill-names mapping with ``"*"`` as the default floor; a flat list
+    is the floor. An absent or empty value returns ``()``, so a host that configures nothing sees
+    no behaviour change. Resolution happens at CLAIM time under the assignee's profile scope.
+    """
+    configured = _kanban_config().get("injected_skills")
+    if isinstance(configured, str):
+        return (configured.strip(),) if configured.strip() else ()
+    if isinstance(configured, (list, tuple)):
+        return tuple(n for n in (str(x).strip() for x in configured) if n)
+    if isinstance(configured, dict):
+        return _match_lane_skills(configured, assignee)
+    return ()
+
+
+def _profile_skill_resolvable(profile_home: Optional[str], name: str) -> bool:
+    """Whether *name* would preload for the profile rooted at *profile_home*."""
+    if not profile_home or not name:
+        return False
+    try:
+        from agent.skill_commands import preload_skill_resolvable
+
+        with _worker_profile_scope(profile_home):
+            return bool(preload_skill_resolvable(name))
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: skill probe for %r failed: %s", name, exc)
+        return False
+
+
+def lane_profile_home(assignee: Optional[str]) -> Optional[str]:
+    """The profile home a worker for *assignee* will run in (None when unresolvable)."""
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        return str(resolve_profile_env(normalize_profile_name(assignee or "")))
+    except Exception:
+        return None
+
+
+def resolve_lane_skills(
+    assignee: Optional[str], names: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Split *names* into ``(resolvable, unresolved)`` for the profile *assignee*.
+
+    Resolution runs under the ASSIGNEE's profile scope through the same loader the worker's preload
+    path uses, so "resolvable" means "loadable in the spawned worker" for everything the LANE owns.
+    It is deliberately NOT the last word: a worker also sees project-tier skills from its workspace
+    cwd, so a caller must never DELETE a requested name on this result alone — the dispatcher records
+    the unresolved ones and flags them advisory, and the worker's own loader decides.
+    """
+    names = [name for name in dict.fromkeys(names or ()) if name]
+    if not names:
+        return [], []
+    profile_home = lane_profile_home(assignee)
+    resolvable: list[str] = []
+    unresolved: list[str] = []
+    for name in names:
+        (resolvable if _profile_skill_resolvable(profile_home, name) else unresolved).append(name)
+    return resolvable, unresolved
+
+
+def resolve_review_injected_skills(assignee: Optional[str]) -> tuple[list[str], list[str]]:
+    """The configured review skills, split into ``(injectable, skipped)`` for *assignee*."""
+    return resolve_lane_skills(assignee, review_injected_skills())
+
+
+def _record_skill_note(
+    conn: sqlite3.Connection, task_id: str, event_kind: str, body: str, payload: dict,
+) -> None:
+    """Log AND record on the card — a skipped skill must never be a log line nobody reads."""
+    _kb._log.warning("kanban dispatcher: %s (task %s)", body, task_id)
+    try:
+        _kb._append_event(conn, task_id, event_kind, payload)
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: could not record %s on %s: %s", event_kind, task_id, exc)
+    try:
+        _kb.add_comment(conn, task_id, "dispatcher", f"**{body}**")
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: could not comment %s on %s: %s", event_kind, task_id, exc)
+
+
+def record_skipped_injected_skills(
+    conn: sqlite3.Connection, task_id: str, skipped: list[str], assignee: Optional[str],
+) -> None:
+    """Record, ON THE CARD, that a harness-injected lane skill was not injected into this run."""
+    names = ", ".join(skipped)
+    _record_skill_note(
+        conn, task_id, "injected_skill_skipped",
+        f"injected skill(s) — {names} — do not resolve for profile {assignee or '?'}: this run "
+        f"starts WITHOUT them. Install them in that profile's skills dir, or drop them from "
+        f"kanban.injected_skills.",
+        {"skills": skipped, "assignee": assignee},
+    )
+
+
+def record_unresolved_card_skills(
+    conn: sqlite3.Connection, task_id: str, unresolved: list[str], assignee: Optional[str],
+) -> None:
+    """Record, ON THE CARD, that skills the card names do not resolve for the assignee's LANE."""
+    names = ", ".join(unresolved)
+    _record_skill_note(
+        conn, task_id, "card_skill_unresolved",
+        f"skill(s) requested by this card — {names} — do not resolve for profile "
+        f"{assignee or '?'}: the worker starts WITHOUT them (they stay on the command line, so a "
+        f"workspace-tier copy can still load) instead of dying at INIT. Add them to that profile's "
+        f"skills dir, or drop them from the card.",
+        {"skills": unresolved, "assignee": assignee},
+    )
+
+
+_review_skill_readiness_checked = False
+
+
+def review_skill_readiness() -> list[dict]:
+    """Per-profile resolution of the injected review skills: ``[{profile, resolved, missing}]``.
+
+    Deterministic and read-only. A profile that cannot resolve an injected name is one whose review
+    runs would start without that skill, so the dispatcher reports it at BOOT (once per process)
+    instead of leaving each affected card to find out through two crashed runs.
+    """
+    report: list[dict] = []
+    injected = review_injected_skills()
+    if not injected:
+        return report
+    try:
+        from hermes_cli.profiles import list_profile_names, normalize_profile_name, resolve_profile_env
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: review-skill readiness unavailable: %s", exc)
+        return report
+    for profile in list_profile_names():
+        try:
+            home = str(resolve_profile_env(normalize_profile_name(profile)))
+        except Exception:
+            home = None
+        missing = [name for name in injected if not _profile_skill_resolvable(home, name)]
+        report.append({
+            "profile": profile,
+            "resolved": [name for name in injected if name not in missing],
+            "missing": missing,
+        })
+    return report
+
+
+def check_review_skill_readiness_once() -> None:
+    """Warn once per process when a review-capable profile cannot resolve an injected review skill."""
+    global _review_skill_readiness_checked
+    if _review_skill_readiness_checked:
+        return
+    _review_skill_readiness_checked = True
+    try:
+        report = review_skill_readiness()
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: review-skill readiness probe failed: %s", exc)
+        return
+    broken = [row for row in report if row["missing"]]
+    if broken:
+        _kb._log.warning(
+            "kanban dispatcher: review-skill readiness: %s — review runs on those profiles start "
+            "WITHOUT the missing skill(s). Install them in the profile's skills dir or set "
+            "kanban.review_skills.",
+            "; ".join(f"{row['profile']}: {', '.join(row['missing'])}" for row in broken),
+        )
+
+
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2116,10 +2348,43 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    # Skills the CARD names are advisory, never fatal: the worker also sees project-tier skills from
+    # its workspace cwd, so an unresolved name is RECORDED on the card and left on the command line
+    # for the worker's own loader to judge (which warns instead of raising for such a name).
+    card_skills = [name for name in (claimed.skills or []) if name]
+    advisory_skills: list[str] = []
+    if card_skills:
+        _, unresolved_card_skills = resolve_lane_skills(claimed.assignee, card_skills)
+        if unresolved_card_skills:
+            record_unresolved_card_skills(conn, claimed.id, unresolved_card_skills, claimed.assignee)
+            advisory_skills.extend(unresolved_card_skills)
+
+    # Skills the HARNESS injects for this lane's run: the lane's own `kanban.injected_skills`
+    # bucket for EVERY lane, plus the review list on a review run. The kanban lifecycle itself is
+    # already in every worker's system prompt via KANBAN_GUIDANCE. Only names that resolve for the
+    # assignee are injected — an unresolvable one is recorded on the card and SKIPPED, never handed
+    # to the worker's preload loader, which raises ``Unknown skill(s)`` when nothing loaded and
+    # kills the run at INIT (see DEFAULT_REVIEW_SKILLS).
+    injected = list(injected_skills_for(claimed.assignee))
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        injected.extend(name for name in review_injected_skills() if name not in injected)
+    if injected:
+        injectable, skipped_skills = resolve_lane_skills(claimed.assignee, injected)
+        if injectable:
+            claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *injectable]))
+        if skipped_skills:
+            record_skipped_injected_skills(conn, claimed.id, skipped_skills, claimed.assignee)
+        # ADVISORY is scoped to the names that did NOT resolve for the assignee: those are recorded
+        # on the card and skipped (never handed to the worker), so one of them can never be the
+        # reason a run dies at INIT. A name the probe RESOLVED is a HARD request — it rides
+        # ``--skills`` — so a load failure for it is real drift / a probe defect and must stay loud.
+        advisory_skills.extend(skipped_skills)
+
+    if advisory_skills:
+        try:
+            claimed.advisory_skills = tuple(dict.fromkeys(advisory_skills))  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - Task is a plain dataclass
+            pass
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2360,6 +2625,12 @@ def _dispatch_once_locked(
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    if review_rows:
+        # Boot-time self-check (once per process, cached): a review-capable profile that cannot
+        # resolve an injected review skill must be visible BEFORE its cards discover it through two
+        # crashed runs. Cheap and read-only; the per-spawn gate in _dispatch_lane_task is the
+        # backstop.
+        check_review_skill_readiness_once()
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
@@ -2887,6 +3158,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Skill names the HARNESS pre-flagged as ADVISORY for this run: the review skills it injected, and
+    # any card-requested name it could not resolve for this lane. The worker's preload loader treats an
+    # advisory name as non-fatal — it warns and continues instead of raising ``Unknown skill(s)`` and
+    # killing the run at INIT.
+    advisory_skills = tuple(getattr(task, "advisory_skills", ()) or ())
+    if advisory_skills:
+        from agent.skill_commands import ADVISORY_SKILLS_ENV as _advisory_skills_env
+
+        env[_advisory_skills_env] = ",".join(advisory_skills)
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

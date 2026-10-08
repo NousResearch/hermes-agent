@@ -645,10 +645,16 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    # The lane OWNS the review skill: resolution is per-lane and is what the gate consults, so this
+    # test pins the append (see test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card
+    # for the lane that does NOT own it).
+    monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: True)
     captured: list[list[str]] = []
+    advisory_seen: list[tuple[str, ...]] = []
 
     def spawn(task, workspace):
         captured.append(list(task.skills or []))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
         return None
 
     with kbc.connect() as conn:
@@ -683,6 +689,201 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
 
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [["domain-specific-review", "sdlc-review"]]
+    # The lane OWNS the review skill, so the probe resolved every injected name:
+    # nothing the harness injected is advisory -- a load failure for any of them
+    # is real drift and stays fatal.
+    assert advisory_seen == [()]
+
+
+def test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An injected review skill the lane does NOT own is skipped, recorded, and the run goes on.
+
+    Regression: the dispatcher force-loaded ``sdlc-review`` unconditionally, so a review card with
+    no skills of its own produced a worker that died at INIT with ``Unknown skill(s): sdlc-review``
+    — two crashed runs per card, no substantive work, card parked by the failure limit.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: False)
+    monkeypatch.setattr(kbd, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
+    captured: list[list[str]] = []
+    advisory_seen: list[tuple[str, ...]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="domain review", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, summary="ready", expected_run_id=implementation.current_run_id,
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        events = [
+            row[0] for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+        comments = [
+            row[0] for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+
+    # The run is NOT killed and no unresolvable name reaches the worker...
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [[]]
+    # ...but the harness still tells the worker which names it meant to inject.
+    assert advisory_seen == [("sdlc-review",)]
+    # ...and the skip is visible on the card, not only in a log line.
+    assert "injected_skill_skipped" in events
+    assert any("do not resolve for profile" in body for body in comments)
+
+
+def test_ready_dispatch_keeps_an_unresolvable_card_skill_and_records_it(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card naming a skill its lane does not own must not kill the run at INIT.
+
+    Same defect class as the injected review skill, seen live on the board: a card asking for a name
+    the assignee's surface lacks produced workers that died with ``Unknown skill(s): ...`` and a card
+    parked by the failure limit. The name stays on the command line — the worker also sees
+    workspace-tier skills, so only its own loader can decide — it is flagged ADVISORY so a missing
+    one warns instead of raising, and the card carries the reason.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *args, **kwargs: {"kanban": {}})
+    monkeypatch.setattr(kbd, "_profile_skill_resolvable", lambda _home, _name: False)
+    captured: list[list[str]] = []
+    advisory_seen: list[tuple[str, ...]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        advisory_seen.append(tuple(getattr(task, "advisory_skills", ()) or ()))
+        return None
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="card skill", assignee="worker", skills=["field-guide", "typo-skill"],
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        events = [
+            row[0] for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+        comments = [
+            row[0] for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id", (task_id,),
+            ).fetchall()
+        ]
+
+    # The run goes on, and the requested names are NOT silently dropped from the worker's argv...
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [["field-guide", "typo-skill"]]
+    # ...they are flagged, so the worker's loader warns instead of raising on the missing one...
+    assert advisory_seen == [("field-guide", "typo-skill")]
+    # ...and the reason is on the card, not only in a dispatcher log line.
+    assert "card_skill_unresolved" in events
+    assert any("do not resolve for profile worker" in body for body in comments)
+
+
+def test_review_injected_skills_config_can_disable_the_injection(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``kanban.review_skills: []`` stops the injection outright; the default stays ``sdlc-review``."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **kw: {"kanban": {"review_skills": []}})
+    monkeypatch.setattr(
+        kbd, "_profile_skill_resolvable",
+        lambda *_a: pytest.fail("no skill probe may run when the injection list is empty"),
+    )
+    assert kbd.review_injected_skills() == ()
+    assert kbd.resolve_review_injected_skills("reviewer") == ([], [])
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **kw: {"kanban": {}})
+    assert kbd.review_injected_skills() == ("sdlc-review",)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **kw: {"kanban": {"review_skills": "sdlc-review"}})
+    assert kbd.review_injected_skills() == ("sdlc-review",)
+
+
+def test_review_skill_readiness_names_profiles_that_cannot_resolve_it(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Boot self-check: every review-capable profile is probed and the broken ones are reported."""
+    import logging
+
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **kw: {"kanban": {"review_dispatch": True}})
+    monkeypatch.setattr(profmod, "list_profile_names", lambda: ["default", "platform-stl"])
+    monkeypatch.setattr(profmod, "resolve_profile_env", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(
+        kbd, "_profile_skill_resolvable", lambda home, _name: home == "/fake/default",
+    )
+
+    assert kbd.review_skill_readiness() == [
+        {"profile": "default", "resolved": ["sdlc-review"], "missing": []},
+        {"profile": "platform-stl", "resolved": [], "missing": ["sdlc-review"]},
+    ]
+    monkeypatch.setattr(kbd, "_review_skill_readiness_checked", False)
+    with caplog.at_level(logging.WARNING):
+        kbd.check_review_skill_readiness_once()
+    assert "platform-stl" in caplog.text
+    # Once per process: the cached flag stops the fleet-wide probe from repeating every tick.
+    assert kbd._review_skill_readiness_checked is True
+
+
+class _StopSpawn(Exception):
+    """Abort ``_default_spawn`` after the worker env is built so no process is created."""
+
+
+def test_worker_env_marks_the_harness_advisory_review_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker is TOLD which names the harness flagged, so its loader cannot raise on them."""
+    from agent.skill_commands import ADVISORY_SKILLS_ENV
+    from hermes_cli.kanban_db import Task
+    from tools import process_registry
+
+    home = tmp_path / "fakehome"
+    (home / ".hermes" / "profiles" / "reviewer").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+    captured: list[dict] = []
+
+    def _capture(env):
+        captured.append(dict(env))
+        raise _StopSpawn
+
+    monkeypatch.setattr(process_registry, "systemd_user_bus_env", _capture)
+
+    task = Task(
+        id="t1", title="t", body=None, assignee="reviewer", status="claimed", priority=0,
+        created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="dir", workspace_path=None, claim_lock=None, claim_expires=None,
+        tenant=None,
+    )
+    task.advisory_skills = ("sdlc-review",)  # spawn-scoped, not a row field  # type: ignore[attr-defined]
+    with pytest.raises(_StopSpawn):
+        kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert captured, "_default_spawn never built a worker env"
+    assert captured[0].get(ADVISORY_SKILLS_ENV) == "sdlc-review"
 
 
 def test_review_dispatch_honors_global_and_per_profile_caps(

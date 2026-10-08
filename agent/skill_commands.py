@@ -852,6 +852,48 @@ def build_preloaded_skills_prompt(
     return "\n\n".join(prompt_parts), loaded_names, missing
 
 
+# Names the SESSION'S HARNESS pre-flagged as ADVISORY: an injected review skill, or a
+# card-requested skill the dispatcher could not resolve for the target lane. They are never typed by
+# an operator at a prompt, so an unresolvable one must degrade to a warning: the preload path RAISES
+# ``Unknown skill(s)`` when nothing loaded, and such a name is then the whole reason a worker dies at
+# INIT — running twice before the card is parked.
+ADVISORY_SKILLS_ENV = "HERMES_KANBAN_ADVISORY_SKILLS"
+
+
+def harness_advisory_skills() -> set[str]:
+    """Skill names this session's harness pre-flagged as non-fatal (comma-separated env)."""
+    raw = os.getenv(ADVISORY_SKILLS_ENV) or ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def is_advisory_skill(identifier: str | None, advisory: set[str] | None = None) -> bool:
+    """Whether *identifier* names a skill the harness pre-flagged (by name or by lookup path leaf)."""
+    name = (identifier or "").strip()
+    if not name:
+        return False
+    names = harness_advisory_skills() if advisory is None else advisory
+    if not names:
+        return False
+    return name in names or Path(name).name in names
+
+
+def preload_skill_resolvable(identifier: str | None, task_id: str | None = None) -> bool:
+    """Whether *identifier* would load through :func:`build_preloaded_skills_prompt`.
+
+    Mirrors that path's two steps exactly: the payload must resolve, and an operator-disabled name
+    counts as MISSING (the preload path passes ``disabled_as_missing=True``). Callers that INJECT a
+    skill name — the kanban review dispatcher — consult this for the TARGET profile before spawn, so
+    "resolvable here" means "loadable in the spawned worker".
+    """
+    name = (identifier or "").strip()
+    if not name:
+        return False
+    loaded = _load_skill_payload(name, task_id=task_id)
+    if loaded is None:
+        return False
+    return loaded[2] not in _disabled_skill_names()
+
+
 def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
     """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
     empty when unset, malformed, or the config is unreadable."""

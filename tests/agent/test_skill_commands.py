@@ -9,6 +9,8 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    is_advisory_skill,
+    preload_skill_resolvable,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -859,3 +861,59 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "gone" in msg
+
+
+class TestPreloadSkillResolvable:
+    """``preload_skill_resolvable`` is the gate an INJECTING caller consults before spawn.
+
+    It must mirror ``build_preloaded_skills_prompt``'s resolution exactly — a name the preload path
+    would report as missing (absent, or operator-DISABLED) has to read as unresolvable here, or the
+    dispatcher injects a name that kills the worker at INIT.
+    """
+
+    def test_resolves_a_materialised_skill(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(skills_root, "sdlc-review")
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            assert preload_skill_resolvable("sdlc-review") is True
+
+    def test_resolves_a_nested_skill_by_name(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(skills_root, "sdlc-review", category="devops")
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            assert preload_skill_resolvable("sdlc-review") is True
+
+    def test_missing_and_blank_names_are_unresolvable(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            assert preload_skill_resolvable("sdlc-review") is False
+            assert preload_skill_resolvable("") is False
+            assert preload_skill_resolvable(None) is False
+
+    def test_operator_disabled_skill_reads_as_unresolvable(self, tmp_path, monkeypatch):
+        """The preload path treats disabled as MISSING (``disabled_as_missing=True``)."""
+        import agent.skill_commands as sc
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        _make_skill(skills_root, "sdlc-review")
+        monkeypatch.setattr(sc, "_disabled_skill_names", lambda: {"sdlc-review"})
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            assert preload_skill_resolvable("sdlc-review") is False
+
+
+class TestHarnessAdvisorySkillNames:
+
+    def test_empty_env_reads_as_no_injection(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_ADVISORY_SKILLS", raising=False)
+        assert is_advisory_skill("sdlc-review") is False
+
+    def test_comma_separated_env_is_normalised(self, monkeypatch):
+        import agent.skill_commands as sc
+
+        monkeypatch.setenv("HERMES_KANBAN_ADVISORY_SKILLS", " sdlc-review ,, other ")
+        assert sc.harness_advisory_skills() == {"sdlc-review", "other"}
+        assert is_advisory_skill("other") is True

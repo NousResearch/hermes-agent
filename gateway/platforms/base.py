@@ -1993,6 +1993,9 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts: Dict[str, int] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # A debounce task is only the carrier for a shielded dispatch.  Cancellation after the
+        # batch pop finishes that carrier immediately, so teardown must own the child explicitly.
+        self._pending_text_batch_dispatch_tasks: set[asyncio.Task] = set()
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Busy-text policy is a per-profile config decision the runner installs after construction
         # (``_wire_adapter_handlers``); a constructor-time process-env read would freeze the launch
@@ -2604,11 +2607,18 @@ class BasePlatformAdapter(ABC):
         """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
         await self.handle_message(event)
 
+    def _start_text_batch_dispatch(self, event: "MessageEvent") -> asyncio.Task:
+        """Start and strongly own a dispatch that may outlive its cancelled debounce carrier."""
+        task = asyncio.create_task(self._dispatch_text_batch(event))
+        self._pending_text_batch_dispatch_tasks.add(task)
+        task.add_done_callback(self._pending_text_batch_dispatch_tasks.discard)
+        return task
+
     async def _flush_text_batch_now(self, key: str) -> None:
         """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
         event = self._pop_text_batch(key)
         if event is not None:
-            await self._dispatch_text_batch(event)
+            await asyncio.shield(self._start_text_batch_dispatch(event))
 
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period, then dispatch the batch for ``key``.
@@ -2630,7 +2640,7 @@ class BasePlatformAdapter(ABC):
             if event is None:
                 return
             logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
-            await asyncio.shield(self._dispatch_text_batch(event))
+            await asyncio.shield(self._start_text_batch_dispatch(event))
         except asyncio.CancelledError:
             pass
         finally:

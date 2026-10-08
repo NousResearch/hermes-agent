@@ -5,7 +5,7 @@ gateway.platforms.*.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -39,6 +39,47 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class AuthorizedQueueEnvelope:
+    """Admission-time routing snapshot for one busy-queued event.
+
+    The ``MessageEvent`` remains mutable because media batching and STT annotate it in place. The
+    route that authorized that event does not: a queued turn must keep the session key and source
+    identity it was admitted under instead of resolving either again after config/restart awaits.
+    """
+
+    session_key: str
+    _source_values: tuple[tuple[str, Any], ...] = field(repr=False)
+    _provenance: tuple[tuple[str, Any], ...] = field(repr=False, compare=False)
+
+    @classmethod
+    def capture(cls, event: "MessageEvent", session_key: str) -> "AuthorizedQueueEnvelope":
+        from gateway.session_identity import replace_source
+
+        source = replace_source(event.source)
+        provenance_names = ("_transport_adapter_ref", "_authorization_profile_home", "_identity")
+        return cls(
+            session_key=session_key,
+            _source_values=tuple(
+                (source_field.name, getattr(source, source_field.name))
+                for source_field in dataclass_fields(SessionSource)
+            ),
+            _provenance=tuple(
+                (name, value)
+                for name in provenance_names
+                if (value := getattr(source, name, None)) is not None
+            ),
+        )
+
+    @property
+    def source(self) -> SessionSource:
+        """A fresh source carrying the immutable values and wire-invisible admission provenance."""
+        source = SessionSource(**dict(self._source_values))
+        for name, value in self._provenance:
+            setattr(source, name, value)
+        return source
 
 
 @dataclass
@@ -104,6 +145,11 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Set only after busy-path authorization and route/session validation. The frozen snapshot is
+    # consumed by run_turn; it is process-local and never accepted from ingress metadata.
+    _authorized_queue_envelope: Optional[AuthorizedQueueEnvelope] = field(
+        default=None, init=False, repr=False, compare=False
+    )
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

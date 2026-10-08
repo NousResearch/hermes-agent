@@ -24,7 +24,7 @@ from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import AuthorizedQueueEnvelope, MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
@@ -3651,12 +3651,18 @@ class GatewayTurnMixin:
                 else:
                     pending = interrupt_message
             elif pending_event:
+                queue_envelope = getattr(pending_event, "_authorized_queue_envelope", None)
+                pending_source = (
+                    queue_envelope.source
+                    if isinstance(queue_envelope, AuthorizedQueueEnvelope)
+                    else source
+                )
                 # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
                 _pending_text = pending_event.text or ""
                 if self._pending_event_audio_paths(pending_event):
                     pending, _ = await self._transcribe_and_echo_pending_voice(
-                        pending_event, adapter, source, _pending_text, log_context="Voice-drain",
-                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                        pending_event, adapter, pending_source, _pending_text, log_context="Voice-drain",
+                        metadata={"thread_id": pending_source.thread_id} if pending_source.thread_id else None,
                     )
                     pending = pending or _build_media_placeholder(pending_event)
                 else:
@@ -3724,7 +3730,13 @@ class GatewayTurnMixin:
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
+        queue_envelope = getattr(pending_event, "_authorized_queue_envelope", None)
+        restart_admitted = (
+            bool(getattr(self, "_restart_requested", False))
+            and isinstance(queue_envelope, AuthorizedQueueEnvelope)
+            and queue_envelope.session_key == session_key
+        )
+        if getattr(self, "_draining", False) and (pending_event or pending) and not restart_admitted:
             logger.info(
                 "Discarding pending follow-up for session %s during gateway %s",
                 session_key or "?", self._status_action_label(),
@@ -3860,22 +3872,37 @@ class GatewayTurnMixin:
         next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
         if pending_event is not None:
-            next_source = getattr(pending_event, "source", None) or source
+            queue_envelope = getattr(pending_event, "_authorized_queue_envelope", None)
+            if isinstance(queue_envelope, AuthorizedQueueEnvelope):
+                if queue_envelope.session_key != session_key:
+                    logger.error(
+                        "Refusing queued follow-up admitted for %s while draining %s",
+                        queue_envelope.session_key, session_key,
+                    )
+                    return result
+                next_source = queue_envelope.source
+                next_session_key = queue_envelope.session_key
+                # Reply-anchor and platform helpers read event.source directly. Restore the private
+                # admission snapshot now that the event has left the shared pending slot.
+                pending_event.source = next_source
+            else:
+                next_source = getattr(pending_event, "source", None) or source
             if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
                 logger.info(
                     "Discarding stale goal continuation for session %s — goal is no longer active",
                     session_key or "?",
                 )
                 return result
-            # Resolve the follow-up's session key BEFORE preparing the inbound text: native image
-            # paths are buffered under the key given and consumed under next_session_key.
-            try:
-                next_session_key = self._session_key_for_source(next_source)
-            except Exception:
-                logger.debug(
-                    "Queued follow-up session-key resolution failed; reusing %s",
-                    session_key or "?", exc_info=True,
-                )
+            # Legacy/non-busy pending events have no admission envelope and retain their old key
+            # derivation. Busy-queued events use the key captured in the authorization transaction.
+            if not isinstance(queue_envelope, AuthorizedQueueEnvelope):
+                try:
+                    next_session_key = self._session_key_for_source(next_source)
+                except Exception:
+                    logger.debug(
+                        "Queued follow-up session-key resolution failed; reusing %s",
+                        session_key or "?", exc_info=True,
+                    )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
             )

@@ -22,7 +22,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import AuthorizedQueueEnvelope, MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
@@ -170,6 +170,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
         (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
         from gateway.run import _is_slack_ignored_channel
+        queue_envelope = getattr(event, "_authorized_queue_envelope", None)
+        if isinstance(queue_envelope, AuthorizedQueueEnvelope):
+            # A session-release race may hand a parked event back through the cold path. Restore
+            # the source authorized with that queue entry before any routing or authorization read.
+            event.source = queue_envelope.source
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
         _config = getattr(self, "config", None)
@@ -232,6 +237,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         event = await self._hm_pre_gateway_dispatch_hook(event, source)
         if event is None:
             return None
+        if isinstance(queue_envelope, AuthorizedQueueEnvelope):
+            event._authorized_queue_envelope = queue_envelope
+            event.source = queue_envelope.source
         source = event.source
 
         if not self._is_user_authorized_for_source(source):
@@ -696,6 +704,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if self._bind_authorized_queue_envelope(event, _quick_key) is None:
+            return None
+        source = event.source
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
@@ -715,11 +726,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return None
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
-            if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
+            queued = queue_during_drain and self._queue_or_replace_pending_event(_quick_key, event)
             return (
                 t("gateway.busy.drain_queued", action=self._status_action_gerund())
-                if queue_during_drain
+                if queued
                 else t("gateway.busy.drain_rejected", action=self._status_action_gerund())
             )
         if effective_busy_input_mode == "queue":
@@ -1272,11 +1282,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return event, source, is_internal
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
             # otherwise into overflow behind the already-staged next orphan.
+            if self._bind_authorized_queue_envelope(event, _quick_key) is None:
+                return _rescued, source, bool(getattr(_rescued, "internal", False))
             self._enqueue_fifo(_quick_key, event, _orphan_adapter)
-            # Same session key by construction; carry the orphan's own source so reply anchors /
-            # thread metadata point at the message actually being answered.
-            _rescued_source = getattr(_rescued, "source", None)
-            source = _rescued_source if _rescued_source is not None else source
+            # Same session key by construction; carry the orphan's admission-time source so reply
+            # anchors and profile scope cannot drift while it waited in overflow.
+            envelope = getattr(_rescued, "_authorized_queue_envelope", None)
+            if envelope is not None and getattr(envelope, "session_key", None) == _quick_key:
+                source = envelope.source
+                _rescued.source = source
+            else:
+                _rescued_source = getattr(_rescued, "source", None)
+                source = _rescued_source if _rescued_source is not None else source
             return _rescued, source, bool(getattr(_rescued, "internal", False))
         except Exception:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
@@ -1306,7 +1323,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if _paused_notice is not None:
             return _paused_notice
 
-        _quick_key = self._session_key_for_source(source)
+        queue_envelope = getattr(event, "_authorized_queue_envelope", None)
+        _quick_key = (
+            queue_envelope.session_key
+            if isinstance(queue_envelope, AuthorizedQueueEnvelope)
+            else self._session_key_for_source(source)
+        )
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply

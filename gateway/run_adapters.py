@@ -1724,7 +1724,7 @@ class GatewayAdapterLifecycleMixin:
         async def _handler(event, _session_key):
             self._canonicalize(event.source, transport_profile=profile_name)
             async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
-                return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
+                return await self._handle_active_session_busy_message(event, _session_key)
 
         return _handler
 
@@ -1755,9 +1755,7 @@ class GatewayAdapterLifecycleMixin:
             if profile_home is None:
                 return True  # rejected route: swallow, same disposition as the ingress gate
             async with _async_profile_runtime_scope(profile_home):
-                return await self._handle_active_session_busy_message(
-                    event, self._session_key_for_source(source)
-                )
+                return await self._handle_active_session_busy_message(event, _session_key)
 
         return _handler
 

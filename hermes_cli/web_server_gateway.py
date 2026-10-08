@@ -20,6 +20,22 @@ from hermes_cli.config import get_hermes_home
 _log = logging.getLogger("hermes_cli.web_server")
 
 
+# Defense against a hostile/compromised upstream serving an unbounded body to
+# the dashboard's JSON readers: refuse to buffer past this size.
+_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_dashboard_json_response(response) -> Any:
+    """Read a JSON HTTP response body with a hard size cap (issue #54808)."""
+    raw = response.read(_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "dashboard HTTP JSON response exceeded "
+            f"{_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway's HTTP health endpoint (cross-container). Blocking — run in an executor.
 
@@ -31,12 +47,18 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     if not _GATEWAY_HEALTH_URL:
         return False, None
     base = re.sub(r"/health(/detailed)?$", "", _GATEWAY_HEALTH_URL.rstrip("/"))
+    # Bearer credential for an auth-protected gateway (issue #76051): sent to the
+    # authenticated /health/detailed probe ONLY — never to the public /health fallback,
+    # which is unauthenticated by design.
+    api_key = os.environ.get("API_SERVER_KEY", "").strip()
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if api_key and path.endswith("/health/detailed"):
+                req.add_header("Authorization", f"Bearer {api_key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
-                    return True, json.loads(resp.read())
+                    return True, _read_dashboard_json_response(resp)
         except Exception:
             continue
     return False, None
@@ -457,7 +479,16 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    # The header carries the action id durably: the update's completion marker lands in the ROOT
+    # update.log every profile shares, and only this id ties one to the action THIS log started.
+    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S') + (f" {action_id}" if action_id else "")
+    log_file.write(f"\n=== {name} started {stamp} ===\n".encode())
+    if action_id:
+        # ...and a sidecar keeps it once build output pushes the header past the status route's
+        # bounded tail, or the log rotates: a restarted dashboard still knows which action it ran.
+        from hermes_cli.runtime_state import _atomic_bytes
+        _atomic_bytes(_ACTION_LOG_DIR / f"{name}.action_id", action_id.encode("ascii"))
 
     from hermes_cli._launchers import runtime_command
     cmd = runtime_command(PROJECT_ROOT, subcommand)
@@ -494,7 +525,6 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
-    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     if action_id:
         _ACTION_IDS[name] = action_id
     else:

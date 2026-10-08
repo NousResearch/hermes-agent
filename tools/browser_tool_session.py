@@ -64,6 +64,26 @@ def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
         browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
+def windows_headless_browser_options(browser_env: Dict[str, str],
+                                     is_windows: Optional[bool] = None) -> Dict[str, str]:
+    """(#64867) Pin local Chromium headless on Windows.
+
+    Local mode is documented as zero-cost headless Chromium, but the agent-browser
+    daemon inherits this env, and anything that resolves its ``--headed`` setting
+    to a window (``--headed`` is agent-browser's documented boolean flag; this env
+    var is its documented equivalent) turns a browser-tool turn into a blank
+    top-level window over the Windows Desktop chat. Pure in ``(options, is_windows)``
+    so the invariant is testable on any host; call sites pass nothing (they resolve
+    ``os.name``) and skip non-Windows hosts entirely. Never overrides an explicit
+    ``AGENT_BROWSER_HEADED`` — the opt-out stays the user's.
+    """
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows or "AGENT_BROWSER_HEADED" in browser_env:
+        return browser_env
+    return {**browser_env, "AGENT_BROWSER_HEADED": "false"}
+
+
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
     """Best-effort read of agent-browser stdout/stderr temp files."""
     out = []
@@ -735,6 +755,10 @@ def _spawn_and_collect(
                              command)
     else:
         _apply_chromium_sandbox_args(browser_env)
+        # #64867: a local Chromium launch (no --cdp attach) must stay headless on
+        # Windows; headed mode is the intentional opt-out (dispatch adds --headed).
+        if not session_info.get("cdp_url") and not _cloud._is_headed_mode():
+            browser_env = windows_headless_browser_options(browser_env)
 
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
@@ -828,15 +852,16 @@ def _dispatch_browser_command(
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
 
-    # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
-    # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
+    # Every backend runs in this task's own daemon (``--session <name>``); Cloud/CDP adds
+    # ``--cdp <ws_url>`` to attach it to the remote browser. Without --session every CDP task
+    # shared agent-browser's default daemon, so one task's snapshot refs or close hit the others.
     # Engine injection keys off the resolved session backend, not global provider
     # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
     engine = _engine_override or _cloud._get_browser_engine()
+    backend_args = ["--session", session_info["session_name"]]
     if session_info.get("cdp_url"):
-        backend_args = ["--cdp", session_info["cdp_url"]]
+        backend_args += ["--cdp", session_info["cdp_url"]]
     else:
-        backend_args = ["--session", session_info["session_name"]]
         if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
             # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
             # Browser first): a launch would be forwarded into it by Chromium's singleton and die without

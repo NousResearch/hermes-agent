@@ -147,6 +147,9 @@ export const zhHantChrome = {
       reveal: '在資料夾中顯示',
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
+      createdInPreviousContext: '專案已在先前的連線或設定檔中建立。請切換回去；IDEA.md 尚未寫入。',
+      hiddenFromSidebar: '已從側邊欄移除',
+      undoHide: '復原',
       createFailed: '無法建立專案',
       staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
@@ -259,13 +262,38 @@ export const zhHantChrome = {
       free: '免費',
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
-        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : '')
+        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      localSetup: {
+        title: '本機執行 · 免費、私密',
+        text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,
+        action: '設定'
+      },
+      limited: '已限額',
+      limitedUntil: (time: string) => `限額至 ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} 已達到用量上限，將於 ${time} 重設；現在就可以先選好之後要用的模型。`
+          : `${provider} 已達到用量上限；現在就可以先選好重設後要用的模型。`,
+      modelResets: (time: string) => `${time} 恢復`,
+      modelLimitedTip: (time: string) => `此模型已達到自身上限，將於 ${time} 恢復。這裡的其他模型仍可使用。`,
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `剩餘 ${percent}% · ${time} 重設` : `剩餘 ${percent}%`,
+      poolAccounts: (count: number) => `${count} 個帳戶`,
+      poolLimited: (limited: number, total: number) => `${limited}/${total} 個帳戶已限額`,
+      poolAccount: (number: number) => `帳戶 ${number}`,
+      poolUnknown: '用量暫時無法取得',
+      poolUnavailable: '請重新登入',
+      usageTip: (provider: string) => `${provider} 即將達到用量上限。`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}：剩餘 ${percent}%，${time} 重設` : `${label}：剩餘 ${percent}%`
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',
       options: '選項',
       thinking: '思考',
       fast: '快速',
+      ultrafast: '極速',
+      useStandardSpeed: '使用標準速度',
       effort: '推理強度',
       minimal: '最小',
       low: '低',
@@ -327,6 +355,9 @@ export const zhHantChrome = {
       showTerminal: '顯示終端機',
       hideTerminal: '隱藏終端機',
       gateway: '閘道',
+      backend: '後端',
+      messagingStopped: '訊息閘道已停止',
+      messagingDegraded: name => `${name} 異常`,
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
       gatewayUnavailable: '推論不可用',

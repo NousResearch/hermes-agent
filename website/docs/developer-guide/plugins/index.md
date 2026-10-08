@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
@@ -102,6 +103,32 @@ skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
 same full-trust posture as other installed Hermes plugins.
 
+A package can ask Hermes to gate one of its MCP servers, the same way a user's
+`trust: untrusted` does in `config.yaml`. Use it for servers whose tools spend
+money, trade, send messages or change accounts, so the user approves each
+write-capable call instead of relying on the skill's instructions alone:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "trade": { "trust": "untrusted" }
+      }
+    }
+  }
+}
+```
+
+The server name must match an `mcp.json` entry. With `untrusted`, every tool
+call to that server that is not annotated `readOnlyHint: true` asks the user
+first, and fails closed where nobody can answer (cron, unattended runs). The
+only other accepted value is `full`, the default, so a package can narrow
+access but never widen it. A `config.yaml` server with the same name replaces
+the package's entry, including its trust. Other harnesses ignore this extension.
+`trust` can sit beside `app`, `requires` and `liveness` in the same server
+entry (see [Application declarations](./application-declarations.md)).
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
@@ -144,6 +171,15 @@ The compatibility rules are:
   readable, or ship an explicit migration; resumed sessions written by the old
   format must still replay. Do not add version literals to unrelated callback
   or context values.
+
+The contract covers documented surfaces only. Replacing or wrapping core
+functions, methods, module attributes or private tables at runtime (assigning
+`AIAgent.<method>`, `setattr` on a Hermes module, writing into
+`sys.modules` or a core dict) is not a supported extension point. It breaks
+whenever the internals move, and it collides with every other plugin patching
+the same seam. The plugin catalog refuses it at admission (`hermes plugins
+validate`, `no core override` check). If a public hook you need is missing,
+open an issue describing it.
 
 ### Deprecation policy
 
@@ -374,6 +410,9 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
   use a plugin-owned external runtime for them.
 - **`--no-deps`** downloads a new plugin without dependency consent and leaves it disabled,
   even with `--enable`. It cannot bypass PM admission when replacing an active plugin.
+- **`--yes-deps`** answers the dependency question up front, so a headless install (CI, SSH
+  automation, a container entrypoint) prepares the declared dependencies instead of being refused.
+  It is mutually exclusive with `--no-deps`.
 - **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
   Hermes does not install that Python runtime or modify its declaration.
 - **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
@@ -664,8 +703,9 @@ Config and state have different owners: settings are user-visible behavior in
 
 ### Settings form in the Desktop
 
-Every key you declare in the manifest's `config_schema` renders as a field in the
-Desktop app's **Capabilities → Plugins** tab (the gear on the plugin's row). No
+Every key you declare in the manifest's `config_schema` renders as a row on the
+plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
+plugin's Capabilities → Plugins row opens it). No
 Desktop code is needed: the backend's `plugins.manage list` returns the schema
 plus each key's current value, and saving writes through the same writer as
 `ctx.set_config()`, so `plugins.entries.<id>.settings.<key>` is what your plugin
@@ -679,8 +719,9 @@ reads back. The form is table-driven by `type`:
 | `list`, `dict` | JSON editor | |
 | `secret` | masked input | `env: MY_PLUGIN_TOKEN` — the `.env` variable it is stored under (default `<PLUGIN_ID>_<KEY>` upper-snaked) |
 
-Every entry also accepts `label` (shown instead of the key), `description`
-(help text under the field), `default` and `required`.
+Every entry also accepts `label` (or `title`; without one the key is shown in
+sentence case, `maps_api_key` → "Maps API key"), `description` (help text under
+the label), `default` and `required` (marks the row **Required**).
 
 ```yaml
 config_schema:
@@ -1031,7 +1072,7 @@ def reset_client():
     _slot.reset()
 ```
 
-Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The honcho memory plugin (`plugins/memory/honcho/client.py`) is the reference consumer.
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The [Honcho memory plugin](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) (`client.py`) is the reference consumer.
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
@@ -1451,6 +1492,75 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Send raw CDP commands to the agent's browser
+
+A plugin that must drive the agent's browser below the browser tools can get a
+CDP handle pinned to a task's live supervisor connection with
+`SUPERVISOR_REGISTRY.capture(task_id)` and send commands with
+`call(method, params=None, *, session_id=None, timeout=10.0)`. The handle
+raises `CapturedCDPInvalid` once that connection is gone and never retargets a
+newer one. Use it instead of reading or writing `CDPSupervisor` private
+attributes, which the catalog rejects. It is trusted in-process transport only:
+it performs no origin, consent or ownership checks for you. Full contract:
+[Browser CDP Supervisor](../browser-supervisor.md#trusted-plugin-cdp-access).
+
+### Know which cron run you are in
+
+`ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:
+
+| Field | Meaning |
+|---|---|
+| `job_id`, `job_name` | The cron job. |
+| `execution_id` | This run's row in the executions ledger (`hermes cron runs`). |
+| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `hermes cron run`), or an external scheduler's name. |
+| `scheduled_instant` | The schedule occurrence this run fires. `None` for a manual or other off-schedule run, so check this field to tell a scheduled run from a manual one. |
+| `started_at` | When the run started. |
+| `profile` | The profile that owns the job. |
+
+The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Hermes, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
+
+```python
+def register(ctx):
+    def guard(*, tool_name, args, **kw):
+        run = ctx.current_cron_execution()
+        if tool_name == "deploy" and (run is None or run.scheduled_instant is None):
+            return {"action": "block", "message": "deploy only runs from its scheduled cron job"}
+    ctx.register_hook("pre_tool_call", guard)
+```
+
+### Add Automation Blueprints
+
+`ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())` adds a fill-in-the-blanks automation to the [Automation Blueprints catalog](../../reference/automation-blueprints-catalog.mdx). It appears next to the built-ins in `/blueprint` (CLI, TUI, messengers), the dashboard's Blueprints tab, and the Desktop Cron page, labelled with your plugin's name. The arguments are the fields of the built-in `AutomationBlueprint` (`cron/blueprint_catalog.py`); each slot is a dict of `BlueprintSlot` fields.
+
+```python
+def register(ctx):
+    ctx.register_automation_blueprint(
+        "standup",
+        title="Team standup digest",
+        description="Every weekday, summarize what changed in a repo since yesterday.",
+        category="work",
+        schedule_template="{minute} {hour} * * 1-5",
+        prompt_template="Summarize yesterday's commits and open PRs for {repo} as a short standup digest.",
+        slots=[
+            {"name": "repo", "type": "text", "label": "Which repo?", "default": "acme/app"},
+            {"name": "time", "type": "time", "label": "What time?", "default": "09:15"},
+            {"name": "deliver", "type": "enum", "label": "Where to deliver?", "default": "origin",
+             "options": ["origin", "local"], "strict": False},
+        ],
+        tags=["work", "daily"],
+    )
+```
+
+Users then run `/blueprint teamtools:standup` (or just `/blueprint standup`) or pick it in the Desktop/dashboard form.
+
+- **Keys are namespaced.** The catalog key is `<plugin>:<key>` (`teamtools:standup`), so a plugin can never replace a built-in or another plugin's blueprint. Pass the bare key; a key containing `:` is rejected.
+- **Slots and templates.** Slot `type` is `time` (`HH:MM`), `enum`, `weekdays`, or `text`. `prompt_template` may use any slot as `{name}`. `schedule_template` may use slot names plus `{minute}`/`{hour}` (from a slot named `time`) and `{dow}` (from a `recurrence`/`day` slot, else `*`). A slot named `deliver` gets the profile's real delivery targets in the Desktop and dashboard forms.
+- **Validated at registration.** An unknown placeholder, bad slot type, duplicate key, or schedule that does not parse logs a warning and skips that blueprint; the rest of your plugin still loads. When every slot has a default, Hermes fills the blueprint once at load, so a broken template fails then instead of on the user's first *Schedule it*.
+- **Per profile.** Plugins load per profile, so the blueprint is listed only in profiles where your plugin is enabled.
+- **Jobs outlive the plugin.** Scheduling a blueprint creates an ordinary cron job with the prompt and schedule already filled in. Disabling or uninstalling the plugin removes the blueprint from the catalog but leaves those jobs running. If a job's `skills` name a skill your plugin bundles, the job skips that skill (and logs it) while the plugin is disabled.
+
+This needs no manifest capability. It also works under plugin host isolation, because slots are plain dicts.
+
 ### Handle Slack Block Kit button clicks
 
 Plugins that post Block Kit messages with interactive elements (buttons, overflow menus, datepickers, etc.) can register the click handlers directly with the Slack adapter — no monkey-patching of `slack_bolt.AsyncApp` required.
@@ -1790,6 +1900,90 @@ description: Custom image generation backend
 **Full guide:** [Image Generation Provider Plugins](../image-gen-provider-plugin.md) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
 
 **Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
+
+### Computer-use backend plugins
+
+The `computer_use` tool talks to exactly one **driver** through the `ComputerUseBackend` ABC
+(`tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
+built-in cua-driver, which ships as an ordinary provider at `plugins/computer_use/cua/`. Another driver
+is a provider plugin in `~/.hermes/plugins/<name>/` whose `register(ctx)` calls
+`ctx.register_computer_use_provider()`. The directory name is the value you put in `computer_use.backend`.
+Computer-use providers are single-select, like memory providers and context engines:
+
+```python
+# ~/.hermes/plugins/my-driver/__init__.py
+from tools.computer_use.backend import (
+    ActionResult, CaptureResult, ComputerUseBackend, ComputerUseProvider,
+)
+
+class MyBackend(ComputerUseBackend):
+    def start(self): ...                    # open the driver session
+    def stop(self): ...                     # tear it down (also called at exit)
+    def is_available(self): return True
+    def capture(self, mode="som", app=None, pid=None, window_id=None):
+        return CaptureResult(mode=mode, width=1920, height=1080, png_b64=...)
+    def click(self, **kw): return ActionResult(ok=True, action="click")
+    def drag(self, **kw): return ActionResult(ok=True, action="drag")
+    def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+    def type_text(self, text, **kw): return ActionResult(ok=True, action="type")
+    def key(self, keys, **kw): return ActionResult(ok=True, action="key")
+    def list_apps(self): return []
+    def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+    def set_value(self, value, element=None):
+        # A driver that can't do an action says so per call; the tool schema never changes.
+        return ActionResult(ok=False, action="set_value", code="unsupported_action",
+                            message="my-driver has no accessibility value setter")
+
+class MyDriverProvider(ComputerUseProvider):
+    name = "my-driver"
+    display_name = "My driver"
+
+    def create_backend(self, *, permission_mode):
+        return MyBackend()                  # permission_mode: standard | bounded | unrestricted
+
+    def is_available(self):                 # gates the tool; cheap, no network
+        return True
+
+    def doctor(self):                       # optional: `hermes computer-use doctor`
+        print("my-driver: ok")
+        return 0
+
+def register(ctx):
+    ctx.register_computer_use_provider(MyDriverProvider())
+```
+
+```yaml
+# ~/.hermes/plugins/my-driver/plugin.yaml
+name: my-driver
+version: 1.0.0
+description: Alternative computer-use driver   # shown in the picker
+```
+
+Select it in `hermes tools` → Computer Use (installed providers are listed under cua-driver, in the
+CLI and in the Desktop toolset panel), or set it directly. No `plugins.enabled` entry is needed:
+
+```yaml
+# config.yaml
+computer_use:
+  backend: my-driver     # default: cua
+```
+
+Rules:
+
+- **One provider is active at a time.** Only the selected one is imported and instantiated. Installed
+  providers that aren't selected stay on disk and are only listed (from `plugin.yaml`) as options. A
+  provider never activates itself.
+- **Selection is per profile and read when a session starts its driver.** If the configured name
+  doesn't resolve, the call fails with an error naming it and the installed providers. Hermes never
+  falls back to another driver.
+- **The model-facing schema is the same for every provider**, so the prompt cache survives a driver
+  swap. Report gaps per action with `ActionResult(ok=False, code="unsupported_action", ...)`.
+- Approval gating, the Bot Desktop lease, screenshot dedup, element caps and vision routing all run
+  in the tool, above the backend. The backend only drives the screen.
+- `hermes computer-use status`/`doctor`/`permissions` run cua-driver checks only when `cua` is
+  selected. For any other provider they report its `is_available()` and run its `doctor()` if it has one.
+- Providers return live driver sessions, so they load in-process only. Under
+  `plugins.isolation: host`, a user provider is refused and the call reports that it could not be loaded.
 
 ## Non-Python extension surfaces
 

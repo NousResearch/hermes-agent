@@ -2509,17 +2509,10 @@ def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatc
     ``desktop_ui`` — the client's own control surface — survives the subtraction."""
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
 
-    assert server._with_session_toolsets(["memory"], "desktop") == [
-        "memory",
-        "desktop_ui",
-    ]
-    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    assert server._with_session_toolsets(["memory"], "desktop") == ["memory", "catalog", "desktop_ui"]
+    # Nothing disabled: the fold-in keeps every client-surface toolset.
     monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
-    assert server._with_session_toolsets(["memory"], "desktop") == [
-        "memory",
-        "desktop_ui",
-        "project",
-    ]
+    assert server._with_session_toolsets(["memory"], "desktop") == ["memory", "catalog", "desktop_ui", "project"]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
@@ -7343,9 +7336,15 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
     def _fake_session_db(_session):
         yield fake_db
 
-    live = [
-        {k: v for k, v in message.items() if k != "_row_id"} for message in verbatim
-    ]
+    # Production cold resume materializes the live history from the DB with
+    # repair_alternation=True (server._load_resume_transcript), stamps kept:
+    # rows 303/304 collapse into ONE live carrier at 303, so 304 has no live
+    # user ordinal. The un-repaired DB read finds 304 as physical ordinal 2,
+    # but the live list only has user ordinals 0/1 — resolution must map the
+    # DB row onto the repaired live carrier instead of trusting the same
+    # ordinal against a list that cannot have it.
+    live = copy.deepcopy(repaired)
+    assert live[2]["_row_id"] == 303
     server._sessions["plain-merge-sid"] = _session(history=list(live))
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     monkeypatch.setattr(server, "_get_db", lambda: fake_db)
@@ -7369,6 +7368,8 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
         err = resp.get("error")
         assert err is None, err
         assert len(replaced) == 1
+        # The cut retains 303: deriving it from the physical durable prefix
+        # keeps the inner row boundary instead of collapsing the pair.
         assert [m["content"] for m in replaced[0][1]] == [
             "first",
             "reply 1",
@@ -15470,24 +15471,29 @@ def test_mirror_slash_compress_honors_here_argument(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
-# global approval-notify registration. (Slash workers are no longer pre-warmed
-# by the build thread — slash.exec spawns them on demand — so the build thread
-# must ALSO never construct one here.)
+# agent or the global approval-notify registration. (Slash workers are no
+# longer pre-warmed by the build thread — slash.exec spawns them on demand —
+# so the build thread must ALSO never construct one here.)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.real_agent_prewarm
-def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
+def test_session_create_close_race_does_not_orphan_resources(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
-    must detect the orphan and unregister the notify registration it's
-    about to install.  It must also never pre-warm a slash worker (each
-    worker forks the full stdio MCP fleet; spawn is on-demand in
-    slash.exec) — a worker constructed here would be a regression."""
+    must detect the orphan, close the just-built agent, and unregister
+    the notify registration it's about to install - avoiding installing
+    a slash_worker or notify callback for the dead session.  It must also
+    never pre-warm a slash worker (each worker forks the full stdio MCP
+    fleet; spawn is on-demand in slash.exec) - a worker constructed here
+    would be a regression.  Without the early abort the agent outlives
+    the session until gateway shutdown."""
     import threading
 
     created_workers: list[str] = []
     closed_workers: list[str] = []
+    closed_agents: list[str] = []
+    registered_keys: list[str] = []
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
@@ -15506,6 +15512,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.provider = "openrouter"
             self.base_url = ""
             self.api_key = ""
+
+        def close(self):
+            closed_agents.append("closed")
 
     # Make _build block until we release it — simulates slow agent init.
     # Also signal when _build actually reaches _make_agent so the test
@@ -15540,7 +15549,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # Shim register/unregister to observe leaks
     import tools.approval as _approval
 
-    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(
+        _approval,
+        "register_gateway_notify",
+        lambda key, cb: registered_keys.append(key),
+    )
     monkeypatch.setattr(
         _approval,
         "unregister_gateway_notify",
@@ -15579,20 +15592,24 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert close_resp.get("result", {}).get("closed") is True
 
-    # At this point session.close saw slash_worker=None (never eagerly
-    # installed) so it had nothing to close.  Release the build thread
-    # and let it finish — it should detect the orphan and unregister
-    # the notify, without ever having constructed a worker.
+    # At this point session.close saw agent=None and slash_worker=None (never
+    # eagerly installed) so it had nothing to close.  Release the build thread:
+    # it must close the agent that finishes late and abort before registering
+    # any more session resources - without ever having constructed a worker.
     release_build.set()
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if own_key in unregistered_keys:
+        if closed_agents:
             break
         import time
 
         time.sleep(0.02)
 
+    assert closed_agents == ["closed"], (
+        "agent built after session.close was never closed - "
+        f"closed_agents={closed_agents}"
+    )
     assert created_workers == [], (
         f"build thread pre-warmed a slash worker (spawn must stay on-demand "
         f"in slash.exec) — created_workers={created_workers}"
@@ -15607,6 +15624,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     assert own_key in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
         f"{own_key} not in unregistered_keys={unregistered_keys}"
+    )
+    assert own_key not in registered_keys, (
+        f"the abandoned build registered {own_key} for a closed session"
     )
 
 
@@ -18272,7 +18292,35 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
+    assert {k: resp["result"][k] for k in ("connected", "url")} == {"connected": True, "url": "http://lan:9222"}
+
+
+def test_browser_manage_use_swaps_the_profiles_browser_tools_for_new_agents(monkeypatch, tmp_path):
+    """Desktop/TUI ``/browser use [off]``: the target profile's ``browser.backend`` flips, ``status``
+    reports it, and the tool surface a NEW agent resolves swaps (stale check_fn verdicts dropped).
+    ``profile`` scopes the write: the launch profile's config stays untouched."""
+    from hermes_cli.config import read_raw_config
+    from hermes_constants import get_hermes_home
+    from tools import browser_use_cli
+    import model_tools
+    import hermes_yaml as yaml
+
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+    manage = lambda **p: server.handle_request({"id": "1", "method": "browser.manage", "params": p})["result"]
+    exec_offered = lambda: "browser_exec" in {
+        t["function"]["name"] for t in model_tools.get_tool_definitions(enabled_toolsets=["browser", "terminal"])}
+
+    assert manage(action="use", enabled=False)["browser_use"] is False
+    assert manage(action="status")["browser_use"] is False and not exec_offered()
+    assert manage(action="use")["browser_use"] is True
+    assert read_raw_config()["browser"]["backend"] == "browser-use" and exec_offered()
+
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
+    manage(action="use", enabled=False, profile="other")
+    backend = lambda home: yaml.safe_load((home / "config.yaml").read_text())["browser"]["backend"]
+    assert (backend(other_home), backend(get_hermes_home())) == ("off", "browser-use")
 
 
 
@@ -19357,8 +19405,8 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
 
     payload = json.loads(saved_file.read_text(encoding="utf-8-sig"))
     assert payload["model"] == "hermes-test"
-    assert payload["session_id"] == "20260101_120000_abc123"
-    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["id"] == "20260101_120000_abc123"  # importable: import_sessions keys on raw["id"]
+    assert payload["started_at"] == datetime(2026, 1, 1, 12, 0, 0).timestamp()
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history
 
@@ -19902,7 +19950,12 @@ def test_restart_slash_worker_noop_without_worker(monkeypatch):
 def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
     """With eager pre-warm removed, slash.exec is the only spawn path — two
     concurrent worker-routed commands on a fresh session must not each fork a
-    full MCP-fleet worker. The per-session spawn lock serializes first use."""
+    full MCP-fleet worker. The per-session spawn lock serializes first use.
+
+    The probe is an unregistered command so it is not answered live, pending-input,
+    bundle, skill, or plugin — it falls through to the worker spawn (the path under
+    test). ``/context`` was the original probe but is now answered in-process for a
+    local session (the #93280 fix), so it no longer reaches the worker."""
     import time as _time
 
     spawned = []
@@ -19932,7 +19985,7 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
             {
                 "id": str(n),
                 "method": "slash.exec",
-                "params": {"command": "/context", "session_id": "race-spawn"},
+                "params": {"command": "/frobnicate-probe", "session_id": "race-spawn"},
             }
         )
         results.append(resp)
@@ -20195,8 +20248,7 @@ def test_periodic_trim_runs_once_every_session_is_quiescent(monkeypatch):
 
 
 def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch):
-    """The finishing session is still marked running when _finish_turn runs, so only OTHER sessions gate its
-    trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
+    """Only OTHER sessions gate the post-turn trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
     calls = _periodic_trim_calls(monkeypatch)
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     now = time.time()
@@ -20204,12 +20256,12 @@ def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch
     server._sessions.clear()
     server._sessions["own"] = own
     try:
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert len(calls) == 1
 
         calls.clear()
         server._sessions["other"] = _idle_evictable_session(now) | {"running": True}
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert calls == []
     finally:
         server._sessions.clear()
@@ -23352,3 +23404,93 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
 
     assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
+
+
+def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
+    """A retried session.branch with the SAME idempotency_key returns the SAME
+    child instead of a duplicate (#65410): a branch whose first response was
+    lost must not leave two children behind. The hit answers the SAME result
+    shape (title, parent, message_count) without re-copying the transcript."""
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            pass
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def create_session(self, new_key, **kwargs):
+            pass
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            return list(range(1, len(messages) + 1))
+
+        def set_session_title(self, key, title):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *a, **k):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+            self.session_id = None
+
+    parent = {
+        "session_key": "parent-key",
+        "history": [{"role": "user", "content": "hi"}],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cols": 80,
+        "profile_home": None,
+        "source": "tui",
+        "agent": FakeAgent(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "cwd": str(tmp_path),
+    }
+    server._sessions["parent"] = parent
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    server._idempotency_keys.clear()
+    try:
+        params = {"session_id": "parent", "name": "forked", "idempotency_key": "branch-live-retry-1"}
+        first = server.handle_request({"id": "b1", "method": "session.branch", "params": dict(params)})
+        assert "result" in first, first
+        first_sid = first["result"]["session_id"]
+        first_key = first["result"]["stored_session_id"]
+        assert first["result"]["title"] == "forked"
+        assert first["result"]["parent"] == "parent-key"
+
+        # Client retries after a lost response: same key, same params.
+        second = server.handle_request({"id": "b2", "method": "session.branch", "params": dict(params)})
+        assert "result" in second, second
+        assert second["result"]["session_id"] == first_sid
+        assert second["result"]["stored_session_id"] == first_key
+        assert second["result"]["title"] == "forked"
+        assert second["result"]["parent"] == "parent-key"
+
+        # Only ONE child runtime exists besides the parent.
+        children = [sid for sid, s in server._sessions.items() if sid != "parent"]
+        assert len(children) == 1
+    finally:
+        for k in list(server._sessions):
+            server._sessions.pop(k, None)
+        server._idempotency_keys.clear()

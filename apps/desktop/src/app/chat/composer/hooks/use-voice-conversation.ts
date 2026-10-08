@@ -634,6 +634,38 @@ export function useVoiceConversation({
     })
   }, [pendingResponse, submitCapturedUtterance])
 
+  // `voice.barge_in` flipping off MID-TURN disarms the live monitor too: the
+  // gate above only covers creation, so a config refresh that says barge-in is
+  // off must also stop a monitor that already armed, or the rest of the turn
+  // keeps interrupting on speech while the pref says off. A capture that was
+  // mid-flight is dropped (the pref changed under it) and the loop resumes
+  // normal listening the way a failed capture does.
+  // eslint-disable-next-line no-restricted-syntax -- atom-edge CLEANUP of the live monitor handle, not a mirror: nothing copies atom state into a ref
+  useEffect(() => {
+    const unsubscribe = $bargeInEnabled.subscribe(enabled => {
+      if (enabled) {
+        return
+      }
+
+      stopBargeMonitorRef.current?.()
+      stopBargeMonitorRef.current = null
+
+      if (bargeCapturePendingRef.current) {
+        bargeCapturePendingRef.current = false
+        bargedRef.current = false
+        bargeEchoTextRef.current = ''
+
+        if (enabledRef.current && !mutedRef.current) {
+          pendingStartRef.current = true
+        }
+
+        setStatus('idle')
+      }
+    })
+
+    return unsubscribe
+  }, [])
+
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
     (responseId: string) => {

@@ -7,6 +7,7 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sqlite3
@@ -22,6 +23,8 @@ from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
+
+logger = logging.getLogger(__name__)
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -88,6 +91,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -169,6 +173,29 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
 def _claim_age_seconds(claimed_at: str) -> float:
     """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_time.now)."""
     return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
+
+
+def _stale_age_seconds(claimed_at: str, progress_at: Optional[str]) -> float:
+    """Seconds since the owner last proved it was making progress.
+
+    A wedged worker (#115692) stops stamping ``progress_at``; a long but healthy run keeps
+    stamping it, so the derived stale bound measures silence, not run length. Rows written
+    before the column existed have no stamp and fall back to claim age.
+    """
+    return _claim_age_seconds(progress_at or claimed_at)
+
+
+def touch_execution_progress(execution_id: str) -> bool:
+    """Stamp ``progress_at`` on a running attempt this process owns. Returns False when the row
+    is no longer ours or no longer running (the caller treats that as informational only)."""
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET progress_at=?
+               WHERE id=? AND status IN ('claimed','running') AND process_id=? AND pid=?""",
+            (now, execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
@@ -319,6 +346,16 @@ _OWNER_WEDGED_REASON = (
 )
 
 
+def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> None:
+    """Close the receipt of a run that never started: a ``claimed`` row never resolves. Best-effort
+    so a ledger write cannot mask the failure the caller logs or re-raises."""
+    try:
+        finish_execution(execution_id, success=False, error=error)
+    except (sqlite3.Error, OSError) as record_err:
+        logger.error("Job '%s': failed to close execution receipt %s (%s): %s",
+                     job_id, execution_id, error, record_err)
+
+
 def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
@@ -333,7 +370,7 @@ def recover_interrupted_executions() -> int:
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at, claimed_at
+                      handoff_pending, handoff_started_at, claimed_at, progress_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -344,16 +381,21 @@ def recover_interrupted_executions() -> int:
             if _owner_is_live(int(row["pid"]), row["process_started_at"]):
                 # A live owner is normally a legitimately running job. A worker permanently
                 # deadlocked (e.g. futex_wait behind a route/proxy flip, #115692) also passes
-                # this check, so a claim older than the derived bound is treated as wedged
-                # and released — the external-worker wait loop polls this ledger for a
-                # terminal status, so the job can fire again. The wedged worker PROCESS is
-                # NOT terminated here (leaked until host restart); rows owned by this process
-                # (process_id == _PROCESS_ID, in-process runs) are skipped above and remain
-                # out of scope.
+                # this check, so a claim SILENT for longer than the derived bound is treated
+                # as wedged and released — the external-worker wait loop polls this ledger
+                # for a terminal status, so the job can fire again. Silence is measured from
+                # the owner's last ``progress_at`` stamp (the run monitor refreshes it while
+                # the agent is active), so a healthy multi-hour run is never reclaimed while
+                # it is still working. The wedged worker PROCESS is NOT terminated here
+                # (leaked until host restart); rows owned by this process (process_id ==
+                # _PROCESS_ID, in-process runs) are skipped above and remain out of scope.
                 if not stale_after_resolved:
                     stale_after = _live_owner_stale_after_seconds()
                     stale_after_resolved = True
-                if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
+                if (
+                    stale_after is None
+                    or _stale_age_seconds(row["claimed_at"], row["progress_at"]) <= stale_after
+                ):
                     continue
                 reason = _OWNER_WEDGED_REASON
             handoff_started_at = row["handoff_started_at"]
@@ -480,6 +522,21 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     rows = list_executions(job_id=job_id, limit=1)
     return rows[0] if rows else None
+
+
+def live_inflight_execution(job_id: str) -> Optional[Dict[str, Any]]:
+    """The job's latest attempt while it is still claimed/running under a LIVE owner, else ``None``.
+
+    This is scheduler OWNERSHIP, not recent activity: a run inside a long tool call writes no
+    heartbeat yet stays owned, while a run whose process died (watchdog kill, crash) does not.
+    Read-only — unlike ``recover_interrupted_executions`` it never rewrites a row.
+    """
+    record = latest_execution(job_id)
+    if not record or record.get("status") not in ("claimed", "running"):
+        return None
+    if not _owner_is_live(int(record["pid"]), record.get("process_started_at")):
+        return None
+    return record
 
 
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:

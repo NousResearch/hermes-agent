@@ -75,6 +75,12 @@ def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now:
     return owner is not None and owner["holder"] == holder, reclaimed_holder
 
 
+# Defensive bound on the forward compression-chain walk; ``seen`` guards cycles.
+# 100 truncated real compression lineages (~180 deep), stranding root→tip walks
+# on a stale mid id (#125041). Named so tests can simulate the REAL walk.
+_CHAIN_CAP = 1000
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
@@ -220,16 +226,18 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, started_at,
+                   thread_id, display_name, origin_json, pinned, started_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time(),
+                parent["thread_id"], parent["display_name"], parent["origin_json"],
+                # The pin is lineage-wide (set_session_pinned); a segment published after it joins it.
+                int(parent["pinned"] or 0), time.time(),
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 parent["archived"] or 0, parent["auto_archived"] or 0),
@@ -244,11 +252,13 @@ class SessionCompressionMixin:
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
-        ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
-        > watermark`` — appends landed during the slow summary — are column-cloned into the child AFTER the
-        handoff. *watermark_ceiling* bounds the clone: the rotation path flushes its OWN transcript to the
-        parent just before publishing and those rows are already in the handoff, so only ``(watermark,
-        watermark_ceiling]`` is foreign tail (``None`` = unbounded). *require_lease_refresh* +
+        ended parent with a missing/empty child. *watermark* (the parent's highest row already represented
+        in the handoff: its ``get_active_message_watermark`` at compression start, or the newest row of an
+        adopted durable snapshot): parent rows with ``id > watermark`` — appends landed during the slow
+        summary — are column-cloned into the child AFTER the handoff. *watermark_ceiling* bounds the clone:
+        the rotation path flushes its OWN transcript to the parent just before publishing and those rows are
+        already in the handoff, so only ``(watermark, watermark_ceiling]`` is foreign tail (``None`` =
+        unbounded). *require_lease_refresh* +
         *compression_lock_holder* refreshes the lease on the same ``conn`` before the expiry check (no
         TOCTOU window), so a refresher that died on transient DB errors gets one last chance.
 
@@ -273,7 +283,7 @@ class SessionCompressionMixin:
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name, tool_names,
-                          archived, auto_archived
+                          archived, auto_archived, pinned
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -647,8 +657,22 @@ class SessionCompressionMixin:
                 last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
-    def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
-        """Extend a turn lease only while ``holder`` still owns it."""
+    def session_turn_lease_expires_at(self, session_id: str, holder: str) -> Optional[float]:
+        """Committed ``expires_at`` of ``holder``'s turn lease, or None when it does not hold it."""
+        if not session_id or not holder:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                (self._session_turn_lease_key_on_conn(conn, session_id), holder),
+            ).fetchone()
+        return float(row[0]) if row else None
+
+    def refresh_session_turn_lease(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
+        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
@@ -658,7 +682,7 @@ class SessionCompressionMixin:
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do))
+        return bool(self._execute_write(_do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""
@@ -722,7 +746,10 @@ class SessionCompressionMixin:
         current = session_id
         chain = [current] if current else []
         seen = set(chain)
-        for _ in range(100):  # defensive bound; chains this deep are pathological
+        # Defensive bound; ``seen`` guards cycles. 100 truncated real
+        # compression lineages (~180 deep), stranding root→tip walks on a
+        # stale mid id (#125041).
+        for _ in range(_CHAIN_CAP):
             with self._read_ctx() as conn:
                 row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
             child_id = row["id"] if row is not None else None

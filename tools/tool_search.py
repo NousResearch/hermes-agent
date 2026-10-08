@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
+from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
@@ -134,10 +135,8 @@ def _core_tool_names() -> frozenset[str]:
 
 
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
-# their schema; once enabled they stay direct unless the deferral list names them. ``setup``
-# is the setup profile's whole job: a guide that has to search for its one tool first
-# answers the user's install request with a tool_search round trip.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup"})
+# their schema; once enabled they stay direct unless the deferral list names them.
+_DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys()
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
@@ -311,9 +310,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Local tools require one entry per tool_call. Only connectors__ names "
-            "may be batched together; mixed and multi-local batches are rejected. "
-            "Connector entries execute individually with results in input order. "
+            "Independent calls may be batched together. Local entries are split "
+            "into individual tool calls by the agent and follow each tool's "
+            "concurrency policy. Results are returned in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
             "Policy, hooks, and approvals run as for directly-listed tools.",
             {
@@ -327,7 +326,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         },
                         "required": ["name", "arguments"],
                     },
-                    "description": "One local invocation, or one or more connector invocations. Never mix local and connector tools.",
+                    "description": "One or more independent deferred tool invocations.",
                 },
             },
             ["calls"],

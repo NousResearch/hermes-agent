@@ -327,13 +327,13 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
         else:
             lines.append(f"  - Channel: `{src.chat_id}`")
-        if src.message_id:
-            # The volatile per-turn message id must stay OUT of this cached block (it would bust the
-            # agent-cache signature every message); run.py injects it into the user message instead.
-            lines.append(
-                "  - Triggering message: provided per-turn in the incoming user message (use it as "
-                "`message_id` for reply/react/pin)"
-            )
+        # Neither the volatile id nor its presence belongs in this pinned block: slash and voice
+        # turns have no triggering message, so a presence-gated line flips the prompt between them
+        # and typed turns. run.py injects the real id into the user message when there is one.
+        lines.append(
+            "  - Triggering message: when available, its ID is provided per-turn in the incoming "
+            "user message (use it as `message_id` for reply/react/pin)"
+        )
     else:
         lines = ["", (
             "**Platform notes:** You are running inside Discord. You do NOT have access to "
@@ -537,13 +537,16 @@ class SessionEntry:
     # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
     # older positional construction of transport_profile keeps its meaning.
     prompt_pin: Optional[Dict[str, Any]] = None
+    # Gateway ``/yolo`` bypass for this lane, mirrored from ``tools.approval``'s in-memory set so a restart
+    # keeps it; cleared with it at every conversation boundary (``_clear_session_boundary_security_state``).
+    yolo: bool = False
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
     _PLAIN_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "total_tokens", "last_prompt_tokens", "estimated_cost_usd", "cost_status",
-        "expiry_finalized", "suspended", "resume_pending", "resume_reason",
+        "expiry_finalized", "suspended", "resume_pending", "resume_reason", "yolo",
     )
     _RESET_FIELDS = (
         "is_fresh_reset", "was_auto_reset", "auto_reset_reason", "reset_had_activity",
@@ -1114,6 +1117,14 @@ class SessionStore(
             self._persist_routing_data(data, generation)
             entry.model_override = cleaned
 
+    def set_session_yolo(self, session_key: str, enabled: bool) -> bool:
+        """Persist the lane's ``/yolo`` bypass; False when the key has no entry yet or it is unchanged."""
+        def _apply(entry: SessionEntry):
+            if entry.yolo is enabled:
+                return False
+            entry.yolo = enabled
+        return self._update_entry(session_key, _apply)
+
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
         with self._lock:
@@ -1260,6 +1271,7 @@ class SessionStore(
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
                 display_name=old_entry.display_name, model_override=old_entry.model_override,
+                yolo=old_entry.yolo,
                 prompt_pin=(
                     dict(old_entry.prompt_pin)
                     if preserve_prompt_pin and old_entry.prompt_pin is not None else None
@@ -1272,6 +1284,9 @@ class SessionStore(
                 log=lambda e: logger.debug("Session DB end_session failed: %s", e),
             )
         if self._db_for_key(session_key):
+            # An explicit /resume/handoff/branch repoint is real user activity: the row is
+            # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
+            # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
             self._reopen_session_row(
                 session_key, target_session_id, log_prefix="Session DB reopen_session failed"
             )

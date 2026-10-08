@@ -37,6 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
@@ -464,10 +465,6 @@ def _ensure_windows_gateway_venv_imports() -> None:
         sys.path.insert(insert_at, site_entry)
 
         os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
-        if os.environ.get("PYTHONPATH"):
-            pythonpath.append(os.environ["PYTHONPATH"])
-        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
         return
 
 
@@ -580,12 +577,9 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 def _redact_approval_command(cmd: "str | None") -> str:
     """Redact credentials from a command before it goes into an approval prompt.
 
-    Else a Tirith-flagged credential echoes verbatim to chat; ``force=True`` holds even with redaction off.
-
-    Tirith's *findings* are already redacted, but the gateway approval prompt is built from the raw command
-    string, so a credential-shaped value Tirith flagged would otherwise be echoed verbatim to the chat
-    platform (#48456). Uses ``redact_sensitive_text(force=True)`` — the same Tirith-grade redactor — so the
-    prompt honors redaction even when ``security.redact_secrets`` is off. Module-level so the wiring is
+    The gateway approval prompt is built from the raw command string, so a credential-shaped value would
+    otherwise be echoed verbatim to the chat platform (#48456). Uses ``redact_sensitive_text(force=True)`` so
+    the prompt honors redaction even when ``security.redact_secrets`` is off. Module-level so the wiring is
     unit-testable (the call site is a deeply nested gateway closure that cannot be driven directly).
     """
     from agent.redact import redact_sensitive_text
@@ -1156,6 +1150,12 @@ def _build_replay_entry(
     # flushes skip rows already in state.db (#121462/#123462).
     if msg.get("_db_persisted"):
         entry["_db_persisted"] = True
+    # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
+    # The other counts the rows the repair dropped behind a dict or folded into an assistant turn,
+    # which this view cannot name either; the last names them for the commit.
+    for stamp in (MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS):
+        if msg.get(stamp):
+            entry[stamp] = msg[stamp]
     return entry
 
 
@@ -1644,35 +1644,6 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     return list(profiles_to_serve(multiplex=True))
 
 
-def _recover_pending_flushes(runner) -> int:
-    """Replay every ``pending_messages`` spool this gateway owns into state.db; return the count.
-
-    ``_get_flush_dir`` follows the active HERMES_HOME, so a routed turn on a multiplexed gateway spools
-    its stalled transcript backlog under ``profiles/<name>/`` and the runtime drain forgets it on
-    restart. After the launch home, replay each served profile inside its own home so the default
-    store ``recover_pending_to_db`` opens is that profile's state.db (#123584).
-    """
-    from gateway.shutdown_flush import recover_pending_to_db
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
-
-    resolver = runner.session_store.resolve_session_id_for_key
-    recovered = recover_pending_to_db(session_resolver=resolver)
-    if not getattr(runner.config, "multiplex_profiles", False):
-        return recovered
-    launch_home = Path(get_hermes_home()).resolve()
-    for name, home in _multiplex_profile_homes(runner.config):
-        if Path(home).resolve() == launch_home or not (Path(home) / "pending_messages").is_dir():
-            continue
-        token = set_hermes_home_override(str(home))
-        try:
-            recovered += recover_pending_to_db(session_resolver=resolver)
-        except Exception:  # one profile's unreadable spool must not strand the others'
-            logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
-        finally:
-            reset_hermes_home_override(token)
-    return recovered
-
-
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
@@ -1931,6 +1902,11 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     """Return True when a token-authenticated platform has a usable bot credential; platforms not using
     ``PlatformConfig.token`` (Signal session paths, port-binding HTTP adapters) always return True."""
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
+    if platform is Platform.WHATSAPP:
+        from hermes_constants import get_hermes_dir
+        session = Path(platform_config.extra.get(
+            "session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
+        return (session / "creds.json").exists()
     if platform not in PLATFORM_TOKEN_ENV_NAMES:
         return True
     for attr in ("token", "api_key"):  # some adapters accept api_key as the primary credential
@@ -3506,7 +3482,6 @@ class GatewayRunner(
         self._init_session_store()
         self._init_lifecycle_state()
         self._init_runtime_caches()
-        self._init_startup_checks()
         self._init_session_db()
         self._init_registries_and_clocks()
 
@@ -3660,38 +3635,6 @@ class GatewayRunner(
         import itertools
         self._slash_confirm_counter = itertools.count(1)
 
-    def _init_startup_checks(self) -> None:
-        """Ensure tirith is installed and warn when manual approvals have no automated assessor."""
-        def _ensure_tirith() -> None:
-            from tools.tirith_security import ensure_installed
-            ensure_installed(log_failures=False)  # downloads if needed; fail-open at scan time
-
-        _best_effort(_ensure_tirith)
-
-        # Manual approvals with no automated assessor (tirith off AND no auxiliary.approval) fail closed
-        # on unattended gateways — surface it so operators knowingly enable one.
-        try:
-            from hermes_cli.config import load_config as _load_full_config
-            # Startup heads-up (#30882): a gateway in manual approval mode with no automated risk assessor
-            # (tirith disabled AND no auxiliary.approval model) can only gate dangerous commands /
-            # execute_code scripts via live in-chat approval.
-            _appr_cfg = _load_full_config()
-            _appr_mode = str(
-                cfg_get(_appr_cfg, "approvals", "mode", default="manual") or "manual"
-            ).strip().lower()
-            _tirith_on = bool(cfg_get(_appr_cfg, "security", "tirith_enabled", default=True))
-            _aux_approval = cfg_get(_appr_cfg, "auxiliary", "approval", default=None)
-            if _appr_mode == "manual" and not _tirith_on and not _aux_approval:
-                logger.warning(
-                    "Gateway approvals.mode=manual with no automated risk "
-                    "assessor (security.tirith_enabled is false and "
-                    "auxiliary.approval is unset): dangerous commands and "
-                    "execute_code scripts will BLOCK until a human approves "
-                    "them in chat. Enable security.tirith_enabled or configure "
-                    "auxiliary.approval for unattended operation.")
-        except Exception:
-            logger.debug("approvals.mode startup check skipped", exc_info=True)
-
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
         # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
@@ -3747,8 +3690,8 @@ class GatewayRunner(
         self.hooks = ProfileHookRegistries()
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
-        # Per-(guild,user) transcript dedup: the voice/STT pipeline can emit one utterance twice.
-        self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
+        # Per-(bot, guild, text channel, user) transcript dedup: voice/STT can emit one utterance twice.
+        self._recent_voice_transcripts: Dict[tuple, List[tuple[float, str]]] = {}
         # Background tasks kept referenced so they are not garbage-collected mid-execution.
         self._background_tasks: set = set()
         # Event-loop liveness heartbeat: rewritten every 30s while the loop dispatches; supervisors use
@@ -4636,6 +4579,7 @@ def _housekeeping_media_caches() -> None:
     from tools.environments.local import cleanup_terminal_temp_cache
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
+    from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
 
     for cache_name, cleanup_fn in (
         ("Image", cleanup_image_cache), ("Document", cleanup_document_cache),
@@ -4644,7 +4588,7 @@ def _housekeeping_media_caches() -> None:
         ("Terminal temp", cleanup_terminal_temp_cache), ("Bot DM", cleanup_bot_dm_cache),
         ("Bot relay", cleanup_bot_relay_artifacts)):
         def _one(name=cache_name, fn=cleanup_fn):
-            removed = fn(max_age_hours=24)
+            removed = fn(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)
             if removed:
                 logger.info("%s cache cleanup: removed %d stale file(s)", name, removed)
         _housekeeping_chore(f"{cache_name} cache cleanup", _one)
@@ -4670,18 +4614,6 @@ def _housekeeping_curator() -> None:
     """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
     from agent.curator import maybe_run_curator
     maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
-
-
-def _housekeeping_skill_sync() -> None:
-    """Inert unless the access gate is open and a sync base URL is configured."""
-    from tools.skills_sync_client import maybe_pull_skills
-    maybe_pull_skills()
-
-
-def _housekeeping_org_skill_sync() -> None:
-    """Gated on real org membership (the token must carry an org role): solo accounts never reach the network."""
-    from tools.skills_sync_client_org import maybe_pull_org_skills
-    maybe_pull_org_skills()
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4841,8 +4773,6 @@ def _start_gateway_housekeeping(
         # Per served profile: each profile has its own skills tree, curator state, Nous login
         # and state.db.
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
-        (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
-        (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -5455,15 +5385,17 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
-        if live_owner is not None:
-            decision = standalone_attach_decision(get_hermes_home(), live_owner)
-            if decision is not None:
-                if decision.outcome == START:
-                    return
-                from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-                print(decision.message)
-                raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
-        _refuse_second_host_gateway(owner)
+        # The rendezvous record proves lock ownership, but the owner's control channel may
+        # still be unavailable. Standalone discovery also checks each profile's liveness
+        # channel, so it can prove that this profile is unserved even when the host probe
+        # cannot construct a HostGateway yet.
+        decision = standalone_attach_decision(get_hermes_home(), live_owner)
+        if decision is not None:
+            if decision.outcome == START:
+                return
+            from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+            print(decision.message)
+            raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now
@@ -5861,6 +5793,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _start_gateway_configure_logging(verbosity)
 
+    from gateway.run_startup import recover_left_core_at_gateway_start
+    await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
+
     runner = GatewayRunner(config)
     # Multiplex: swap the launch-home file handlers for per-profile routers so each profile's records
     # land in its own logs/. Must run after the runner resolved (possibly None) config and setup_logging.
@@ -5964,13 +5899,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not success:
         _shutdown_gateway_health_export(runner)
         return False
-
-    def _recover_pending() -> None:
-        recovered = _recover_pending_flushes(runner)
-        if recovered:
-            logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
-
-    _best_effort(_recover_pending)
     if runner.should_exit_cleanly:
         _shutdown_gateway_health_export(runner)
         if runner.exit_reason:

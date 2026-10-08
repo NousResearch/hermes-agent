@@ -377,6 +377,31 @@ def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
     assert observed == ["provider-native"]
 
 
+def test_managed_stream_delivers_each_chunk_before_the_provider_sends_the_next(relay_turn):
+    """Steering lost streamed text with Relay on: chunk N was withheld until chunk N+1 arrived."""
+    del relay_turn
+    release = threading.Event()
+
+    def paused_provider(_request):
+        yield {"delta": "first"}
+        assert release.wait(10), "first chunk never reached the consumer during the provider pause"
+        yield {"delta": "second"}
+
+    stream = relay_llm.stream(
+        {"payload": "paused"},
+        paused_provider,
+        session_id="session-1",
+        name="paused-native",
+        model_name="paused-model",
+        finalizer=lambda: {"content": "first second"},
+        metadata={"api_mode": "bedrock_converse", "api_request_id": "paused-stream"},
+    )
+
+    assert next(stream) == {"delta": "first"}
+    release.set()
+    assert list(stream) == [{"delta": "second"}]
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
@@ -553,6 +578,25 @@ def test_anthropic_stream_accumulator_merges_plain_provider_object():
     assert response.id == "message-1"
     assert response.content[0].text == "hello"
     assert response.usage.input_tokens == 10
+
+
+def test_anthropic_stream_accumulator_null_delta_usage_keeps_message_start_counts():
+    """The SDK's ``MessageDeltaUsage`` serializes the fields message_delta omits as null; they
+    must not erase the input / cache counts message_start reported (span token counts went null)."""
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({"type": "message_start", "message": {
+        "id": "message-1", "type": "message", "role": "assistant", "model": "claude-test",
+        "usage": {"input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200,
+                  "output_tokens": 1},
+    }})
+    accumulator.observe({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {
+        "output_tokens": 42, "input_tokens": None, "cache_read_input_tokens": None,
+        "cache_creation_input_tokens": None,
+    }})
+
+    assert accumulator.finalize()["usage"] == {
+        "input_tokens": 12, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 200, "output_tokens": 42,
+    }
 
 
 def test_jsonable_does_not_probe_dynamic_attributes():

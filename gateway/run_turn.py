@@ -512,7 +512,6 @@ class GatewayTurnMixin:
     async def _hmwa_open_session(self, session_entry, session_key, source):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
         Returns ``(_was_auto_reset, _is_new_session)``."""
-        # Consume was_auto_reset immediately so it cannot re-fire and wipe overrides set between turns.
         # Capture and immediately consume was_auto_reset so it does not re-fire on subsequent messages —
         # preventing the cleanup from wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
@@ -1106,7 +1105,7 @@ class GatewayTurnMixin:
             )
             _hyg_rotated = False
             _compressed = history
-        # Only rewrite the transcript when rotation produced a NEW session id. In-place compaction does NOT
+        # Only persist a child transcript when rotation produced a NEW session id. In-place compaction does NOT
         # need a rewrite: archive_and_compact() has already soft-archived the previous active rows and
         # inserted the compacted messages as the new active set inside _compress_context(). Calling
         # rewrite_transcript() after in-place compaction would invoke replace_messages(active_only=False)
@@ -1121,7 +1120,9 @@ class GatewayTurnMixin:
         # conversation silently vanishes. Persist the child transcript first; only then rebind the live
         # entry.
         if _hyg_rotated:
-            if not await self.async_session_store.rewrite_transcript(_hyg_new_sid, _compressed):
+            # Published child is already durable; a rewrite would drop rows cloned at publish.
+            if not await self.async_session_store.persist_rotated_compression_child(
+                    session_entry.session_id, _hyg_new_sid, _compressed):
                 logger.error(
                     "Session hygiene: failed to persist compressed transcript for rotated session "
                     "%s → %s; keeping the live entry on the original session so the "
@@ -1140,7 +1141,7 @@ class GatewayTurnMixin:
                 )
 
         if _hyg_rotated or _hyg_in_place:
-            # Rewritten (rotation) or persisted by archive_and_compact() (in-place): reset token count.
+            # Persisted (rotation) or persisted by archive_and_compact() (in-place): reset token count.
             session_entry.last_prompt_tokens = 0
             attempt.history = _compressed
             _new_count = len(_compressed)
@@ -1407,22 +1408,22 @@ class GatewayTurnMixin:
             )
         return bounded
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, message, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
         from gateway.run import _gateway_config_home, _home_target_env_var, _load_gateway_config
-        if history:
+        if history or internal:  # internal = plugin/system turn: no human made first contact
             return
         human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
-            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # Same branch logic as the TUI (offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
-            from agent.onboarding import first_contact_turn_note
+            from agent.onboarding import first_contact_turn_note, setup_command
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
-                session_history_empty=True, install_has_prior_sessions=False,
-            )
+                session_history_empty=True, install_has_prior_sessions=False, message=message,
+                command=setup_command(source.platform.value))
             if note:
                 turn_sidecar_notes.append(note)
 
@@ -2049,6 +2050,7 @@ class GatewayTurnMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        self._restore_session_yolo(session_key, session_entry)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -2099,7 +2101,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).
@@ -3590,20 +3592,16 @@ class GatewayTurnMixin:
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
         the active model and the next message retries the primary). Skip failed runs: evicting
         would loop bad model → fallback → evict → recreate."""
-        from gateway.run import _resolve_gateway_model
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        _cfg_model = _resolve_gateway_model()
-        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
-        # cached agent is evicted every turn, destroying prompt caching.
-        with suppress(Exception):
-            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-            _agent_provider = getattr(_agent, 'provider', '') or ''
-            if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+        # A provider fallback is drift even when it serves the configured model name on another endpoint.
+        if getattr(_agent, "_provider_fallback_active", False) is True:
+            self._evict_cached_agent(session_key)
+            return
+        _cfg_model = self._fallback_baseline_model(session_key, turn_ctx.source, _agent)
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
@@ -3667,9 +3665,50 @@ class GatewayTurnMixin:
                     logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        if result and not pending and not pending_event and result.get("pending_steer"):
-            pending = result.get("pending_steer")
-            logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+        leftover_steer = (result.get("pending_steer") or "").strip() if result else None
+        if leftover_steer:
+            if not pending and not pending_event:
+                pending = leftover_steer
+                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+            elif pending_event and adapter and session_key:
+                # User steered during the turn, but a background event or queued message arrived.
+                # Deliver the user's steer first and restore the pending event to the head of the queue.
+                overflow = self._overflow_queue(session_key)
+                if hasattr(adapter, "_pending_messages") and isinstance(adapter._pending_messages, dict):
+                    promoted = adapter._pending_messages.get(session_key)
+                    if promoted is not None:
+                        if overflow is not None:
+                            overflow.insert(0, promoted)
+                        else:
+                            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
+                    adapter._pending_messages[session_key] = pending_event
+                else:
+                    if overflow is not None:
+                        overflow.insert(0, pending_event)
+                    else:
+                        self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
+                pending_event = None
+                pending = leftover_steer
+                logger.debug(
+                    "Delivering leftover /steer before queued event for session %s: '%s...'",
+                    session_key, pending[:40],
+                )
+            elif pending and not pending_event:
+                from gateway.platforms.base import MessageEvent
+                # A deferred steer continues the active channel context, just like an
+                # eventless follow-up. Reuse its pins without marking the user as internal.
+                steer_prompt, steer_source = self._pinned_channel_inputs(
+                    session_key, None, source, internal=True,
+                )
+                steer_event = MessageEvent(
+                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                )
+                if session_key:
+                    self._enqueue_fifo(session_key, steer_event, adapter)
+                logger.debug(
+                    "Enqueued leftover /steer behind pending message for session %s: '%s...'",
+                    session_key or "?", leftover_steer[:40],
+                )
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):
@@ -4272,8 +4311,8 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
-            persist_user_display_metadata=persist_user_display_metadata,
-            scheduled_heartbeat=scheduled_heartbeat,
+            persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

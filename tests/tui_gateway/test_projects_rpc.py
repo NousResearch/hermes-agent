@@ -42,8 +42,9 @@ def _fast_git_probe(monkeypatch):
             d = os.path.dirname(d)
         return ""
 
+    real_run_git = git_probe.run_git
     monkeypatch.setattr(git_probe, "run_git", _fake_run_git)
-    yield
+    yield real_run_git
     git_probe.invalidate()
 
 
@@ -564,6 +565,37 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
         db.close()
 
 
+@pytest.mark.parametrize("source", ["tool", "subagent"])
+def test_project_tree_hides_automation_before_applying_session_limit(
+    monkeypatch, tmp_path, source
+):
+    """Root automation rows stay out of Home and project drill-in (#134697)."""
+    from hermes_state import SessionDB
+
+    home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    project = _create_project(home, "Project", repo)
+    with SessionDB(db_path=home / "state.db") as db:
+        for index, (session_id, session_source, cwd) in enumerate([
+            ("visible-project", "cli", str(repo)),
+            ("visible-home", "tui", ""),
+            ("automation-project", source, str(repo)),
+            ("automation-home", source, ""),
+        ]):
+            db.create_session(session_id, session_source, cwd=cwd)
+            db.append_message(session_id, "user", session_id, timestamp=1_790_000_000 + index)
+
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree", {"session_limit": 2})
+        detail = _call("projects.project_sessions", {"project_id": project["id"]})
+
+    assert set(tree["scoped_session_ids"]) == {"visible-project", "visible-home"}
+    lane = detail["project"]["repos"][0]["groups"][0]
+    assert [row["id"] for row in lane["sessions"]] == ["visible-project"]
+
+
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
     """Run the handlers as a backend launched under ``launch_home``.
@@ -758,4 +790,57 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
+@pytest.mark.parametrize("source", ["tool", "subagent", "cron", "kanban", "oneshot"])
+def test_project_tree_discovery_counts_only_visible_sources(
+    monkeypatch, tmp_path, source, _fast_git_probe
+):
+    """Hidden history keeps its workspace signal without promoting an empty sidebar header."""
+    from hermes_state import SessionDB
+    from tui_gateway import git_probe
 
+    monkeypatch.setattr(git_probe, "run_git", _fast_git_probe)
+
+    home = _profile_dir(tmp_path, "launch")
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    roots = {name: tmp_path / name for name in ("automation-only", "mixed", "latest")}
+    for root in roots.values():
+        root.mkdir()
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+
+    root_ids = {name: root.resolve().as_posix() for name, root in roots.items()}
+
+    with SessionDB(db_path=home / "state.db") as db:
+        for index, (session_id, session_source, root) in enumerate([
+            ("hidden-only", source, roots["automation-only"]),
+            ("older-human", "desktop", roots["mixed"]),
+            ("hidden-mixed", source, roots["mixed"]),
+            ("latest-human", "desktop", roots["latest"]),
+        ]):
+            db.create_session(session_id, session_source, cwd=str(root))
+            db.append_message(session_id, "user", session_id, timestamp=1_790_000_000 + index)
+
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree", {"session_limit": 1})
+        discovered = _call("projects.discover_repos")["repos"]
+        detail = _call("projects.project_sessions", {"project_id": root_ids["mixed"]})
+
+    by_root = {project["id"]: project for project in tree["projects"]}
+    hidden = by_root[root_ids["automation-only"]]
+    assert hidden["sessionCount"] == 0
+    assert hidden["sessionIds"] == []
+    assert hidden["previewSessions"] == []
+    # Eligible history outside the overview page must still keep its project visible.
+    mixed = by_root[root_ids["mixed"]]
+    assert mixed["sessionCount"] == 1
+    assert mixed["previewSessions"] == []
+    assert tree["scoped_session_ids"] == ["latest-human"]
+    assert detail["project"]["sessionIds"] == ["older-human"]
+    # General discovery still sees all workspace signals and can backfill their roots.
+    discovery_counts = {repo["root"]: repo["sessions"] for repo in discovered}
+    for repo in discovered:
+        if repo["root"] != root_ids["latest"]:
+            assert by_root[repo["root"]]["lastActive"] == repo["last_active"]
+    assert discovery_counts[root_ids["automation-only"]] == 1
+    assert discovery_counts[root_ids["mixed"]] == 2
+    with SessionDB(db_path=home / "state.db") as db:
+        assert db.get_session("hidden-only")["git_repo_root"] == root_ids["automation-only"]

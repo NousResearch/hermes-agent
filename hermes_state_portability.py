@@ -201,16 +201,23 @@ class SessionPortabilityMixin:
         with self._read_ctx() as conn:
             return conn.execute(sql, params).fetchall()
 
-    def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
+    def distinct_session_cwds(
+        self, include_archived: bool = False, *, count_exclude_sources: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery. Aggregates
         across ALL history; children/branches count (a worktree session is a real
-        workspace signal)."""
+        workspace signal). ``count_exclude_sources`` only filters the count, preserving
+        cwd discovery, activity and backfill signals even when no counted sessions remain."""
         where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
         if not include_archived:
             where += " AND archived = 0"
+        params = count_exclude_sources or []
+        count = "COUNT(*)"
+        if params:
+            count = f"COUNT(CASE WHEN source NOT IN ({','.join('?' for _ in params)}) THEN 1 END)"
         rows = self._read_rows(
-            "SELECT cwd AS cwd, COUNT(*) AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
-            f"FROM sessions WHERE {where} GROUP BY cwd"
+            f"SELECT cwd AS cwd, {count} AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
+            f"FROM sessions WHERE {where} GROUP BY cwd", params
         )
         return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
                 for r in rows]

@@ -366,7 +366,7 @@ class _Applier:
                                          f"{source.name} also supplies it (first source wins — "
                                          "remove one binding or reorder secrets.sources)")
             return False
-        existed = bool(self.env.get(var))
+        existed = self.env.get(var) is not None
         if existed and (var in self.preserve or not override):
             sr.skipped_existing.append(var)
             return False
@@ -413,17 +413,22 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # Mapped outranks bulk regardless of list order.
     ordered = [s for s in enabled if s.shape == "mapped"] + [s for s in enabled if s.shape == "bulk"]
 
-    fetches: List[tuple[SecretSource, dict, FetchResult]] = []
+    # Disabling a backend stops its fetch, not its ownership of bootstrap
+    # credentials. Only consult registrations belonging to this home.
     protected: Dict[str, str] = {}  # var → source that protects it
-    for source in ordered:
+    for source in list_sources(scope=hermes_home_key(home_path)):
         cfg = _section(secrets_cfg, source.name)
-        result = _fetch_with_timeout(source, cfg, home_path, env)
-        fetches.append((source, cfg, result))
         try:
             for var in source.protected_env_vars(cfg):
                 protected.setdefault(var, source.name)
         except Exception:  # noqa: BLE001
             pass
+
+    fetches: List[tuple[SecretSource, dict, FetchResult]] = []
+    for source in ordered:
+        cfg = _section(secrets_cfg, source.name)
+        result = _fetch_with_timeout(source, cfg, home_path, env)
+        fetches.append((source, cfg, result))
 
     # An alias never shadows a var some source supplies by its real name.
     supplied_directly = {v for _, _, r in fetches if r.ok for v in r.secrets if isinstance(v, str)}

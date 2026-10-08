@@ -11,13 +11,16 @@ material is fingerprinted, never stored).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess  # noqa: F401 — tests monkeypatch ``op.subprocess.run``
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote, unquote
 
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
 from agent.secret_sources.base import (
@@ -90,7 +93,7 @@ def _validate_references(references: Optional[Dict[str, str]]) -> Tuple[Dict[str
         elif not isinstance(ref, str):
             warnings.append(f"Skipping {name!r}: reference is not a string")
         elif not ref.strip().startswith("op://"):
-            warnings.append(f"Skipping {name!r}: {ref!r} is not an op:// secret reference")
+            warnings.append(f"Skipping {name!r}: value is not an op:// secret reference")
         else:
             valid[name] = ref.strip()
     return valid, warnings
@@ -127,6 +130,30 @@ def _scrub(text: str) -> str:
     return strip_ansi(text).replace("\x1b", "").strip()
 
 
+def _mask_reference_diagnostic(message: str, references: Dict[str, str]) -> str:
+    """Hide full locators and separately quoted vault/item/field diagnostics."""
+    spellings = set()
+    for ref in references.values():
+        # Split before decoding: an escaped slash can belong to a component.
+        for part in [ref, *ref.removeprefix("op://").split("/")]:
+            for variant in (part, unquote(part), quote(unquote(part), safe="/:" if part == ref else "")):
+                if variant:
+                    spellings.update((variant, repr(variant)[1:-1],
+                                      json.dumps(variant)[1:-1],
+                                      json.dumps(variant, ensure_ascii=False)[1:-1]))
+    if not spellings:
+        return message
+    # One substitution avoids redacting text inside our own replacement marker.
+    # Word boundaries retain useful diagnostics for short names like "a".
+    # Percent-escape hex digits are case-insensitive; literal names are not.
+    def escaped_pattern(value: str) -> str:
+        return re.sub(r"%[0-9a-fA-F]{2}", lambda m: "(?i:" + m.group() + ")", re.escape(value))
+
+    pattern = "|".join(r"(?<!\w)" + escaped_pattern(value) + r"(?!\w)"
+                       for value in sorted(spellings, key=len, reverse=True))
+    return re.sub(pattern, "[reference redacted]", _scrub(unquote(message)))
+
+
 def _op_child_env(token_value: str) -> Dict[str, str]:
     source_env = get_source_environment()
     env = {k: source_env[k] for k in _OP_ENV_ALLOWLIST if k in source_env}
@@ -146,18 +173,19 @@ def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: st
     cmd += ["--", reference]  # `--` so a reference can never parse as an op flag
 
     proc = run_cli(cmd, env=_op_child_env(token_value), timeout=_OP_RUN_TIMEOUT, label="op",
-                   timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}", stdin=None)
+                   timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s", stdin=None)
 
     if proc.returncode != 0:
-        err = _scrub(proc.stderr or "")[:200]
+        # Bound the public warning only AFTER configured locators are masked.
+        err = _scrub(proc.stderr or "")
         if err:
-            raise RuntimeError(f"op read failed for {reference!r}: {err}")
-        raise RuntimeError(f"op read exited {proc.returncode} for {reference!r}")
+            raise RuntimeError(f"op read failed: {err}")
+        raise RuntimeError(f"op read exited {proc.returncode}")
 
     # Strip only op's trailing newline so intentional edge spaces survive.
     value = (proc.stdout or "").rstrip("\r\n")
     if not value.strip():
-        raise RuntimeError(f"op read returned an empty value for {reference!r}")
+        raise RuntimeError("op read returned an empty value")
     return value
 
 
@@ -197,7 +225,12 @@ def fetch_onepassword_secrets(
         try:
             secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
         except RuntimeError as exc:
-            warnings.append(str(exc))
+            # An op diagnostic may repeat any configured locator, including
+            # quoted/ANSI-decorated ones. Mask before truncating so long refs
+            # cannot leak a prefix. The destination still identifies the map
+            # entry to repair without exposing vault/item/field names.
+            message = _mask_reference_diagnostic(_scrub(str(exc)), valid)
+            warnings.append(f"{name}: {message[:200]}")
             read_errors += 1
 
     if use_cache and not read_errors and secrets:
@@ -232,7 +265,9 @@ def apply_onepassword_secrets(
 
     def _guarded(name: str) -> bool:
         """True when ``name`` must not be applied (token var or env already set)."""
-        return name == service_account_token_env or (not override_existing and bool(os.environ.get(name)))
+        return name == service_account_token_env or (
+            not override_existing and os.environ.get(name) is not None
+        )
 
     result.skipped.extend(n for n in valid if _guarded(n))
     refs_to_fetch = {n: ref for n, ref in valid.items() if not _guarded(n)}

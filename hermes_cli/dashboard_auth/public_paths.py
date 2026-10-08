@@ -13,6 +13,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Portal wildcard liveness probe (``docs/agent-dashboard-public-url-contract.md``,
     # NAS side): version, gateway state, session count, auth-gate shape. No secrets.
     "/api/status",
+    # Pre-login auth provider discovery for native clients (Conduit); returns
+    # provider name/display_name/supports_password flags only — no secrets.
+    "/api/auth/providers",
     # Read-only config-defaults / schema feeds for the SPA's Config page.
     "/api/config/defaults",
     "/api/config/schema",

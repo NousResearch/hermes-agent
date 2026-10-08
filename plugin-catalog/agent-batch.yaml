@@ -2,27 +2,34 @@
 #
 # Owner-submitted: the PR author (`raaaas`) owns and maintains the repo below.
 # Exact-SHA pin (40-hex). No self-updating code: the desktop half is a static
-# `desktop/plugin.js` that only fetches its own local backend router; it never
+# `desktop/plugin.js` that only calls its own local backend router; it never
 # downloads, replaces, or reloads itself.
 name: agent-batch
 repo: https://github.com/raaaas/hermes-agent-batch
-sha: "70fc4df633fc414d48ff2c759e3b0f30251802de"
+sha: "064afc5dba8869df703ba055aa2760730c0d30dc"
 subdir: plugin
-description: Parallel AI task orchestrator — paste a task list, let Hermes phase it, then
-  dispatch one independent GitHub Actions agent per task on its own branch, and track the
-  resulting PRs from a desktop panel. Free-tier runners (opencode/kilo keyless) or bring-your-own-key
-  (cline, claude-code, codex, dsh + provider keys).
+description: >-
+  Parallel AI task orchestrator. Paste a task list into the desktop panel; Hermes phases it
+  into dependency-ordered groups through the agent_batch_plan / agent_batch_phase tools (or
+  you group it yourself in one click), then each phase dispatches one independent coding
+  agent per task to a GitHub Actions workflow in a repo you name — own branch, own PR — and
+  the panel tracks the runs and the PRs. GITHUB_TOKEN is the only required credential;
+  AGENT_BATCH_REPO, AGENT_BATCH_WORKFLOW, AGENT_BATCH_MODEL and AGENT_BATCH_STATE are
+  optional (the last is a directory override for the plan file, not a secret) and each can
+  be set per plan in the panel instead. Disclosure — dispatching pushes real branches and
+  opens real PRs in the target repo with your token, and the LLM cost belongs to the runner
+  CLI you pick: cline has a free-tier gateway, opencode free models need its zen relay, kilo
+  needs an active Kilo Go subscription (keyless CI runs fail), and claude-code / codex / dsh
+  need their own keys.
 maintainer: raaaas
 tier: community
 category: automation
 docs_url: https://github.com/raaaas/hermes-agent-batch
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - agent_batch_plan
+    - agent_batch_phase
   provides_hooks: []
   provides_middleware: []
   requires_env:
     - GITHUB_TOKEN
-    - AGENT_BATCH_REPO
-    - AGENT_BATCH_WORKFLOW
-    - AGENT_BATCH_MODEL
-    - AGENT_BATCH_STATE

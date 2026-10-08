@@ -523,6 +523,59 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             m["content"] = new_content if new_content else [_text_block("(tool result removed)")]
 
 
+def _deduplicate_tool_use_pairs(result: List[Dict[str, Any]]) -> None:
+    """Drop repeated tool_use / tool_result blocks that reuse an id.
+
+    Replayed session history can carry the same tool call twice (a resumed or
+    re-delivered run re-appends it). Anthropic rejects the whole request with
+    "tool_use ids must be unique", which surfaces to the user as "model provider
+    failed after retries". Orphan stripping does not catch this: both copies are
+    adjacent to a matching result, so each looks well-formed on its own.
+
+    Keeps the FIRST occurrence of each id in transcript order and mutates
+    ``result`` in place. Runs after role merging, because merging is what can
+    bring duplicate ids together into a single turn.
+    """
+    seen_tool_use_ids: set = set()
+    for _, m in _assistant_block_lists(result):
+        kept: List[Any] = []
+        dropped = False
+        for b in m["content"]:
+            if _block_type(b) == "tool_use":
+                bid = b.get("id")
+                if bid:
+                    if bid in seen_tool_use_ids:
+                        dropped = True
+                        continue
+                    seen_tool_use_ids.add(bid)
+            kept.append(b)
+        if not dropped:
+            continue
+        # A signed thinking block was signed against the original content and is
+        # now dead; flag so _manage_thinking_signatures demotes it.
+        if _has_block_type(m["content"], _THINKING_TYPES):
+            m["_thinking_signature_invalidated"] = True
+        m["content"] = kept if kept else [_text_block("(duplicate tool call removed)")]
+
+    seen_tool_result_ids: set = set()
+    for m in result:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        kept = []
+        dropped = False
+        for b in m["content"]:
+            if _block_type(b) == "tool_result":
+                bid = b.get("tool_use_id")
+                if bid:
+                    if bid in seen_tool_result_ids:
+                        dropped = True
+                        continue
+                    seen_tool_result_ids.add(bid)
+            kept.append(b)
+        if dropped:
+            m["content"] = kept if kept else [_text_block("(duplicate tool result removed)")]
+
+
 def _concat_content(prev: Any, curr: Any) -> List[Any]:
     """Merge two message contents into one block list, each side's blocks kept intact (a string
     becomes its own text block). Strings are never joined: the first turn's bytes must equal what a
@@ -733,6 +786,7 @@ def convert_messages_to_anthropic(
             result.append(_convert_user_message(m.get("content", "")))
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    _deduplicate_tool_use_pairs(result)
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)

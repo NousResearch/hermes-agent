@@ -1,4 +1,4 @@
-.nyx-raiz { position: relative; height: calc(100vh - 120px); min-height: 420px; border-radius: 12px; overflow: hidden; background: #010309; }
+.nyx-raiz { position: relative; height: calc(100vh - 120px); min-height: 420px; border-radius: 12px; overflow: hidden; background: #000; }
 .nyx-palco { position: absolute; inset: 0; }
 .nyx-palco canvas { display: block; width: 100%; height: 100%; }
 .nyx-barra { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 10px;

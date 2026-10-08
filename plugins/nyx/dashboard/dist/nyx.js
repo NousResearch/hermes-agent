@@ -642,7 +642,7 @@ export function montar(el, { densidade = 1 } = {}) {
   renderer.setPixelRatio(pr);
   el.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x010309);
+  scene.background = new THREE.Color(0x000000);   // preto puro, como a foto
   const group = new THREE.Group();
   scene.add(group);
   const camera = new THREE.PerspectiveCamera(FOV, 1, 4, 200);   // near longe do zero: a máscara precisa de precisão de profundidade

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "models": [
     {
       "id": "qwen3.8-27b",
@@ -30,6 +30,7 @@
       "mtp": true,
       "mtp_draft_depth": 2,
       "sampling": {
+        "chat-template-kwargs": "{\"reasoning_effort\":\"medium\"}",
         "temp": "1.0",
         "top-p": "0.95",
         "top-k": "20",
@@ -41,29 +42,29 @@
     {
       "id": "qwen3.8-flash-next",
       "display_name": "Qwen3.8 Flash Next",
-      "description": "Frontier-scale model; needs a very large GPU to run well",
+      "description": "Frontier-scale mixture-of-experts with multi-token prediction; sees images",
       "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
       "variants": [
         {
-          "quant": "UD-Q4_K_XL",
+          "quant": "UD-IQ4_XS",
           "files": [
             {
-              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
-              "size_bytes": 10946624
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+              "size_bytes": 10946624,
+              "revision": "38bb39ee97821de2c9009abb7e93950eec396e66"
             },
             {
-              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
-              "size_bytes": 49859583136
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+              "size_bytes": 49835229856,
+              "revision": "38bb39ee97821de2c9009abb7e93950eec396e66"
             },
             {
-              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
-              "size_bytes": 49376141504
-            },
-            {
-              "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
-              "size_bytes": 12087983520
+              "path": "UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+              "size_bytes": 43836407744,
+              "revision": "38bb39ee97821de2c9009abb7e93950eec396e66"
             }
-          ]
+          ],
+          "lazy_bytes": 28800138240
         }
       ],
       "n_ctx_train": 262144,
@@ -72,12 +73,22 @@
       "per_layer_f16": 2048,
       "moe": true,
       "n_vocab": 248320,
+      "architecture": "qwen4exp",
+      "mtp_draft_depth": 3,
       "mmproj": {
         "path": "mmproj-BF16.gguf",
         "size_bytes": 907542944,
-        "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
+        "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+        "revision": "38bb39ee97821de2c9009abb7e93950eec396e66"
       },
-      "min_engine": "b10678",
+      "mtp_head": {
+        "repo": "ggml-org/Qwen3.8-Flash-Next-GGUF",
+        "path": "mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+        "size_bytes": 4137429280,
+        "revision": "052beeaca7bec4a303e59cc7bc630c4f3a1b845d",
+        "local": "mtp-Qwen3.8-Flash-Next-ggml-org-Q8_0.gguf"
+      },
+      "min_engine": "b11370",
       "quality": 95,
       "decode_fraction": 0.08
     },

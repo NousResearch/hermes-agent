@@ -51,25 +51,116 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-@contextlib.contextmanager
-def _session_profile_runtime_scope(session: dict):
-    """Bind model resolution to the session's profile config and secrets."""
-    profile_home = session.get("profile_home")
-    if not profile_home:
-        yield
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> "_TurnScopes":
+    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
+    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+    the launch env (live while single-profile, frozen at activation afterwards; never live
+    ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
+    source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
+    activation instead of hitting ``UnscopedSecretError`` mid-request. Its terminal policy is bound
+    only once multiplexing is active: single-profile terminal execution keeps the standalone
+    ``os.environ`` bridge.
+
+    ``hydrate_secrets=False`` skips resolving the profile's EXTERNAL secret sources (``op run``,
+    ``bws``, ``sh -c`` — a subprocess with a 30s CLI budget holding a process-global lock). Pass it
+    from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
+    TOTAL budget, and one slow source there costs the transcript the flush exists to save.
+    """
+    from agent.secret_scope import is_multiplex_active
+    scopes = _TurnScopes()
+    try:
+        if profile_home:
+            home = Path(profile_home)
+            # External sources first: the requested profile may never have been served in this process.
+            if hydrate_secrets:
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                hydrate_profile_secret_sources(home)
+            secrets = build_profile_secret_scope(home)
+            overlay = None
+            scopes.home = set_hermes_home_override(str(home))
+        else:
+            # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
+            # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
+            # active the override is bound too: an unset override is the "unbound context" signal
+            # plugin runtime bindings and per-home slots fail closed on (#118538).
+            # Resolve at call time like the launch state.db handle: a harness that
+            # re-homes the process after import must not read the old home's .env.
+            from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+            home = _launch_home()
+            secrets = launch_secret_scope(home)
+            # No home stamp: this IS the process's own profile, and the stamp exists only to
+            # mark a FOREIGN home for serves_routed_profile().
+            scopes.secret = set_secret_scope(secrets)
+            if not is_multiplex_active():
+                return scopes
+            scopes.home = set_hermes_home_override(str(home))
+            overlay = launch_terminal_env()
+        if scopes.secret is None:
+            scopes.secret = set_secret_scope(secrets, profile_home=str(home) if profile_home else None)
+        # Same terminal policy the gateway binds per turn: a docker-configured profile
+        # must never resolve the launch process's pinned env. Failure → refusal scope.
+        from tools.terminal_scope import install_profile_terminal_scope
+        scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
+        return scopes
+    except Exception:
+        # A raise mid-bind leaves no return value for the caller to release —
+        # undo whatever was bound before propagating.
+        _release_profile_runtime_scope_tokens(scopes)
+        raise
+
+
+def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
+    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
+    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
+    every scope has been released."""
+    if scopes is None:
         return
-    home_token = set_hermes_home_override(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    # Same terminal policy the gateway binds per turn: a docker-configured profile
-    # must never resolve the launch process's pinned env. Failure → refusal scope.
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
-    terminal_token = install_profile_terminal_scope(Path(profile_home))
+    from tools.terminal_scope import reset_terminal_scope
+    first_error: BaseException | None = None
+    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
+                         (scopes.home, reset_hermes_home_override)):
+        if token is None:
+            continue
+        try:
+            reset(token)
+        except Exception as exc:
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
+
+
+@contextlib.contextmanager
+def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = True):
+    """Bind model resolution to the session's profile config and secrets (launch profile included
+    once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
+    scopes = _profile_runtime_scope_tokens(session.get("profile_home"), hydrate_secrets=hydrate_secrets)
     try:
         yield
     finally:
-        reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        _release_profile_runtime_scope_tokens(scopes)
+
+
+def _session_default_route(session: dict) -> tuple[str, str]:
+    """``(model, provider)`` a not-yet-built session of its OWN profile will run on. Bare
+    ``_resolve_startup_runtime()`` reads the LAUNCH profile's config, so a secondary session's reply or
+    first state.db row carried the launch profile's model id. On the Nous free tier the agent build pins
+    ``nous/welcome`` (``pin_model_for_route``), so the configured default (often the silent default,
+    with no provider) is not what the session runs; report the pinned route instead."""
+    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
+                                        hydrate_secrets=False):
+        if not _resolve_startup_runtime()[1] and free_tier_route():
+            return GUEST_MODEL, "nous"
+        # Off the free tier, the model id alone: the provider is resolved when the agent is built.
+        return _resolve_model(), ""
+
+
+def _lazy_info_route(session: dict, override: dict) -> dict:
+    """``session.info``'s model and provider for a not-yet-built session: the client's sticky pick when it
+    sent one (so the client does not clobber it), else the profile's default route."""
+    model, provider = (override.get("model"), override.get("provider")) if override else _session_default_route(session)
+    return {"model": model, **({"provider": provider} if provider else {})}
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:
@@ -128,7 +219,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=None)
+    runtime = resolve_runtime_provider(requested=None, target_model=current_model or None)
     # Keep a callable api_key (Azure Entra bearer) unchanged: ``str()`` would
     # yield "<function ...>" and poison switch_model validation.
     key = runtime.get("api_key", "")
@@ -136,6 +227,20 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
         key = str(key or "")
     provider = str(runtime.get("provider", "") or "")
     return provider, current_model, str(runtime.get("base_url", "") or ""), key
+
+
+def _switch_away_provider(agent, explicit_provider: str, current_provider: str) -> str | None:
+    """The provider of the model the user leaves. Agent-less with ``--provider``, ``current_provider``
+    is the TARGET (what switch_model wants), so the launch route names it instead; None when only a
+    credential resolve could tell, which the metric reads as ``unknown`` and so reports the model as
+    ``custom``."""
+    if agent or not explicit_provider:
+        return current_provider
+    if env_provider := os.environ.get("HERMES_TUI_PROVIDER", "").strip():
+        return env_provider
+    if _env_model_seed():
+        return None
+    return _config_model_target()[1] or None
 
 
 def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) -> None:
@@ -153,13 +258,16 @@ def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) ->
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
-def _expensive_model_confirm(result, current_base_url: str, current_api_key) -> dict | None:
-    """Deferred-confirm response when the selection guards flag the target model, else None."""
+def _expensive_model_confirm(result, current_base_url: str, current_api_key, agent=None) -> dict | None:
+    """Deferred-confirm response when the selection guards flag the target model (or, with a live
+    ``agent``, the switch itself — large cached context), else None."""
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
-            api_key=result.api_key or current_api_key, model_info=result.model_info)
+            api_key=result.api_key or current_api_key, model_info=result.model_info,
+            selection_context=selection_context_for_agent(agent))
     except Exception:
         warning = None
     if warning is None:
@@ -200,7 +308,9 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
 def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
-    persist_override: bool | None = None) -> dict:
+    persist_override: bool | None = None, count_switch: bool = True) -> dict:
+    """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
+    user's /model pick, so it stays out of the shared-metrics switch count."""
     from hermes_cli.model_switch import switch_model
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
@@ -228,11 +338,29 @@ def _apply_model_switch(
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
-        confirm = _expensive_model_confirm(result, current_base_url, current_api_key)
+        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
-    if agent:
-        _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    records_composer_override = (
+        pin_session_override and isinstance(session, dict) and not one_turn
+        and not persist_global and session.get("follow_profile_config"))
+    had_composer_profile = "composer_override_profile" in session
+    previous_composer_profile = session.get("composer_override_profile")
+    if records_composer_override:
+        profile_model, profile_provider = _config_model_target()
+        session["composer_override_profile"] = {
+            "model": profile_model, "provider": profile_provider}
+    try:
+        if agent:
+            # Provenance must exist before this transaction persists the switched runtime.
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    except Exception:
+        if records_composer_override:
+            if had_composer_profile:
+                session["composer_override_profile"] = previous_composer_profile
+            else:
+                session.pop("composer_override_profile", None)
+        raise
     # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
     # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
     # every same-profile session in one process, so os.environ would leak the switch to all.
@@ -245,6 +373,13 @@ def _apply_model_switch(
         persist_model_selection(result)
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    if count_switch:
+        from hermes_cli.observability.shared_metrics_events import record_model_switch
+
+        record_model_switch(
+            from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
+            to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
+            session_id=getattr(agent, "session_id", None))
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
@@ -316,19 +451,35 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model."""
     agent = session.get("agent")
-    if agent is None or session.get("model_override"):
+    if agent is None:
         return
     target = _config_model_target()
     if not target[0]:
         return
     seen = session.get("config_model_seen")
+    if target == seen:
+        return
+    superseded_pin = None
+    if session.get("model_override"):
+        composer_profile = session.get("composer_override_profile")
+        pinned_profile = (
+            str(composer_profile.get("model") or "").strip(),
+            str(composer_profile.get("provider") or "").strip(),
+        ) if isinstance(composer_profile, dict) else None
+        if pinned_profile is None or pinned_profile == target:
+            return
+        # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
+        # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.
+        superseded_pin = session.pop("model_override"), composer_profile
+        session["composer_override_profile"] = None
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     model, provider = target
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
-    if target == seen or (
-            model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", ""))):
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        if superseded_pin is not None:
+            _persist_live_session_runtime(session)
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:
@@ -336,20 +487,28 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         # how `hermes --tui -m` once leaked into config.yaml).
         _apply_model_switch(
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
-            persist_override=False)
+            persist_override=False, count_switch=False)
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
+        from gateway.warning_notifications import render_notification
+        render_notification(
+            lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
+            platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
-def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
+def _pending_switch_selection_warning(model: str, provider: str, agent: Any = None) -> str | None:
     """Selection-guard message for a model queued mid-turn, or ``None``. Runs BEFORE the pick is
     stashed (the client can still turn the response into a confirm prompt); only pre-resolution
-    inputs exist so it can only under-fire — ``_apply_model_switch`` is the backstop."""
+    inputs exist for the model guards, so they can only under-fire — ``_apply_model_switch`` is the
+    backstop. The live ``agent`` supplies the context-cache guard's session size here, since at turn
+    start that guard can no longer ask and would drop the pick."""
     if not model:
         return None
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
-        warning = combined_selection_warning(model, provider=provider or None)
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
+        warning = combined_selection_warning(
+            model, provider=provider or None, selection_context=selection_context_for_agent(agent))
     except Exception:
         return None
     return warning.message if warning is not None else None

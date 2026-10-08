@@ -252,7 +252,7 @@ def _play(console, payload, *, cols, rows, color, fps: int) -> int:
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 # ── list / delete / edit ─────────────────────────────────────────────────────
@@ -329,7 +329,7 @@ def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
         path = fh.name
     try:
         subprocess.call([*editor.split(), path])
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             return fh.read()
     except OSError as exc:
         print(f"  editor failed: {exc}")
@@ -364,12 +364,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_list.set_defaults(func=_cmd_list)
 
     p_del = sub.add_parser("delete", help="Delete a learned skill (archived) or memory by node id.")
-    p_del.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_del.add_argument("node", help="Node id (skill name, or a memory id exactly as `journey list` prints it).")
     p_del.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
     p_del.set_defaults(func=_cmd_delete)
 
     p_edit = sub.add_parser("edit", help="Edit a learned skill or memory by node id in $EDITOR.")
-    p_edit.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_edit.add_argument("node", help="Node id (skill name, or a memory id exactly as `journey list` prints it).")
     p_edit.set_defaults(func=_cmd_edit)
 
 
@@ -378,13 +378,3 @@ if __name__ == "__main__":
     register_cli(_p)
     _a = _p.parse_args()
     sys.exit(_a.func(_a))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def cmd_journey(args: argparse.Namespace) -> int:
-    return _cmd_show(args)
-# ---- END PLUGIN-COMPAT ----

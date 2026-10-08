@@ -431,10 +431,10 @@ class TestFederatedConfigDiscovery:
 
     def test_read_config_from_hermes_home(self, tmp_path) -> None:
         """_read_config discovers web.federated from config.yaml in HERMES_HOME."""
-        import yaml
+        import hermes_yaml as yaml
 
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
+        config_file.write_text(yaml.safe_dump({
             "web": {
                 "federated": {
                     "timeout": 15,

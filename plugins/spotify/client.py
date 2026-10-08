@@ -26,14 +26,14 @@ class SpotifyAPIError(SpotifyError):
         self.status_code, self.response_body, self.path = status_code, response_body, None
 
 
-_empty_204 = lambda message: {"status_code": 204, "empty": True, "message": message}  # noqa: E731  explanatory stand-in for a bare 204
+_empty_204 = lambda message: {"status_code": 204, "empty": True, "message": message}
 
 
 class SpotifyClient:
     def __init__(self) -> None:
         self._runtime = self._resolve_runtime(refresh_if_expiring=True)
 
-    def _resolve_runtime(self, *, force_refresh: bool = False, refresh_if_expiring: bool = True) -> Dict[str, Any]:
+    def _resolve_runtime(self, *, force_refresh: bool = False, refresh_if_expiring: bool = True) -> dict[str, Any]:
         try:
             return resolve_spotify_runtime_credentials(force_refresh=force_refresh, refresh_if_expiring=refresh_if_expiring)
         except AuthError as exc:
@@ -44,8 +44,8 @@ class SpotifyClient:
         return str(self._runtime.get("base_url") or "").rstrip("/")
 
     def request(
-        self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None, json_body: Optional[Dict[str, Any]] = None,
-        allow_retry_on_401: bool = True, empty_response: Optional[Dict[str, Any]] = None,
+        self, method: str, path: str, *, params: Optional[dict[str, Any]] = None, json_body: Optional[dict[str, Any]] = None,
+        allow_retry_on_401: bool = True, empty_response: Optional[dict[str, Any]] = None,
     ) -> Any:
         response = httpx.request(
             method, f"{self.base_url}{path}",
@@ -116,7 +116,7 @@ def _friendly_spotify_error_message(*, status_code: int, detail: str, path: str,
     return detail or f"Spotify API request failed with status {status_code}."
 
 
-_strip_none = lambda payload: {key: value for key, value in (payload or {}).items() if value is not None}  # noqa: E731
+_strip_none = lambda payload: {key: value for key, value in (payload or {}).items() if value is not None}
 
 
 def _check_type(item_type: str, expected_type: Optional[str]) -> None:
@@ -159,15 +159,3 @@ def normalize_spotify_uris(values: Iterable[str], expected_type: Optional[str] =
     if not uris:
         raise SpotifyError("At least one Spotify item is required.")
     return uris
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import json  # noqa: F401,E402
-
-def compact_json(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False)
-# ---- END PLUGIN-COMPAT ----

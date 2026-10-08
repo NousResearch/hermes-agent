@@ -226,6 +226,37 @@ def _native_authorize_params(challenge, **overrides):
     return params
 
 
+@pytest.mark.parametrize("forwarded_template", ["198.51.100.{i}", ", 198.51.100.{i}"],
+                         ids=["rotated-address", "empty-first-hop"])
+def test_native_authorize_spoofed_forwarded_headers_cannot_bypass_pending_cap(
+    gated_client: TestClient, forwarded_template: str,
+) -> None:
+    # The public OAuth entry point must limit one peer before allocating the
+    # global pending store, even when XFF rotates or has an empty first hop.
+    _verifier, challenge = _make_pkce()
+    params = _native_authorize_params(challenge, provider="stub")
+    for i in range(native_flow._MAX_PENDING_PER_IP):
+        response = gated_client.get(
+            "/auth/native/authorize", params=params,
+            headers={"X-Forwarded-For": forwarded_template.format(i=i)},
+        )
+        assert response.status_code == 302
+
+    blocked = gated_client.get(
+        "/auth/native/authorize", params=params,
+        headers={"X-Forwarded-For": forwarded_template.format(i=native_flow._MAX_PENDING_PER_IP)},
+    )
+    assert blocked.status_code == 503
+    assert "too many pending" in blocked.json()["detail"]
+
+    # Exhausting one peer's allowance must leave room for another real peer.
+    other_client = TestClient(
+        web_server.app, base_url=str(gated_client.base_url),
+        client=("203.0.113.10", 50000), follow_redirects=False,
+    )
+    assert other_client.get("/auth/native/authorize", params=params).status_code == 302
+
+
 def test_native_authorize_mixed_providers_offers_both_choices(gated_client):
     """SSO-with-password-fallback (one OAuth + the bundled password provider): the desktop
     sends no ``provider``, so BOTH configured methods must stay reachable. #78906's symptom
@@ -450,6 +481,88 @@ def _start_native_password_login(client, *, challenge, state="desk-state"):
     )
     assert r.status_code == 302, r.text
     return r.cookies
+
+
+def test_native_redirect_uri_boundary_matches_browser_authority(gated_client):
+    """Only canonical loopback authorities survive the upstream OAuth callback."""
+    verifier, challenge = _make_pkce()
+    rejected = (
+        "http://attacker.example\\@127.0.0.1/callback",  # browser authority = attacker host
+        "http://user@127.0.0.1/callback",
+        "http://@127.0.0.1/callback",
+        "http://%31%32%37%2e%30%2e%30%2e%31/callback",
+        "http://127.0.0.1%2fattacker.example/callback",
+        "http://127.1/callback",
+        "http://2130706433/callback",
+        "http://0x7f000001/callback",
+        "http://127.0.0.1/callback#fragment",
+        "http://127.0.0.1/callback#",
+        "http://127.0.0.1:/callback",
+        "http://127.0.0.1:053999/callback",
+        "http://127.0.0.1:65536/callback",
+        "http://127.0.0.1:not-a-port/callback",
+        "http://[0:0:0:0:0:0:0:1]/callback",
+        "\thttp://127.0.0.1:53999/callback",
+        "http://127.0.0.1:53999/\tcallback",
+    )
+    for redirect_uri in rejected:
+        r = gated_client.get(
+            "/auth/native/authorize",
+            params={
+                "provider": "stub",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "redirect_uri": redirect_uri,
+                "state": "desk-state",
+            },
+        )
+        assert r.status_code == 400, (redirect_uri, r.status_code, r.text)
+        assert "set-cookie" not in r.headers
+
+    accepted = (
+        (
+            "HTTP://127.0.0.1:53999/callback/path?existing=one",
+            "http://127.0.0.1:53999/callback/path?existing=one",
+        ),
+        (
+            "http://[::1]:54000/callback/path?existing=two",
+            "http://[::1]:54000/callback/path?existing=two",
+        ),
+    )
+    for redirect_uri, canonical in accepted:
+        started = gated_client.get(
+            "/auth/native/authorize",
+            params={
+                "provider": "stub",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "redirect_uri": redirect_uri,
+                "state": "desk-state",
+            },
+        )
+        assert started.status_code == 302, (redirect_uri, started.status_code, started.text)
+        upstream = urlparse(started.headers["location"])
+        upstream_query = parse_qs(upstream.query)
+        completed = gated_client.get(
+            "/auth/callback",
+            params={
+                "code": upstream_query["code"][0],
+                "state": upstream_query["state"][0],
+            },
+            cookies=started.cookies,
+        )
+        assert completed.status_code == 302, completed.text
+        target = completed.headers["location"]
+        assert target.startswith(f"{canonical}&code="), target
+        query = parse_qs(urlparse(target).query)
+        expected_query = parse_qs(urlparse(canonical).query)
+        assert query["existing"] == expected_query["existing"]
+        assert query["state"] == ["desk-state"]
+        redeemed = gated_client.post(
+            "/auth/native/token",
+            json={"code": query["code"][0], "code_verifier": verifier},
+        )
+        assert redeemed.status_code == 200, redeemed.text
 
 
 def test_native_password_login_full_roundtrip(pw_gated_client):

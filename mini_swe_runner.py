@@ -8,7 +8,7 @@ trajectory_compressor.py. Supports single tasks and JSONL batch mode.
 
 Usage:
     python mini_swe_runner.py --task "Create a hello world Python script" --env local
-    python mini_swe_runner.py --task "List files in /tmp" --env docker --image python:3.11-slim
+    python mini_swe_runner.py --task "List files in the working directory" --env docker --image python:3.11-slim
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
@@ -16,6 +16,7 @@ import importlib
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -96,13 +97,17 @@ HERMES_SYSTEM_SUFFIX = (
 _OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
 
-def create_environment(env_type: str = "local", image: str = "python:3.11-slim", cwd: str = "/tmp", timeout: int = 60, **kwargs):
-    """Create a Hermes execution environment (``local`` ignores ``image``/``kwargs``)."""
+def create_environment(env_type: str = "local", image: str = "python:3.11-slim", cwd: str | None = None, timeout: int = 60, **kwargs):
+    """Create a Hermes execution environment (``local`` ignores ``image``/``kwargs``).
+
+    ``cwd=None`` means the host temp dir locally and the sandbox's own ``/tmp`` inside a container.
+    """
     if env_type == "local":
         from tools.environments.local import LocalEnvironment
-        return LocalEnvironment(cwd=cwd, timeout=timeout)
+        return LocalEnvironment(cwd=cwd or tempfile.gettempdir(), timeout=timeout)
     if env_type not in ("docker", "modal"):
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
+    cwd = cwd or "/tmp"  # container-side path, not the host temp dir  # no-tmp: ok — container-side path, not the host temp dir
     module = importlib.import_module(f"tools.environments.{env_type}")
     return getattr(module, f"{env_type.capitalize()}Environment")(image=image, cwd=cwd, timeout=timeout, **kwargs)
 
@@ -117,7 +122,7 @@ def _parse_json_args(raw: Any) -> Any:
         return {}
 
 
-def _gpt_content(msg: Dict[str, Any], content: str) -> str:
+def _gpt_content(msg: dict[str, Any], content: str) -> str:
     """Prefix ``content`` with a ``<think>`` block when the message carries reasoning."""
     return (f"<think>{msg['reasoning']}</think>" if msg.get("reasoning") else "") + content
 
@@ -126,7 +131,7 @@ class MiniSWERunner:
     """Tool-calling agent loop over a Hermes execution environment, emitting Hermes trajectories."""
 
     def __init__(self, model: str = "anthropic/claude-sonnet-4.6", base_url: str = None, api_key: str = None,
-                 env_type: str = "local", image: str = "python:3.11-slim", cwd: str = "/tmp",
+                 env_type: str = "local", image: str = "python:3.11-slim", cwd: str | None = None,
                  max_iterations: int = 15, command_timeout: int = 60, verbose: bool = False):
         self.model, self.max_iterations, self.command_timeout, self.verbose = model, max_iterations, command_timeout, verbose
         self.env_type, self.image, self.cwd = env_type, image, cwd
@@ -168,7 +173,7 @@ class MiniSWERunner:
                 stop()
             self.env = None
 
-    def _execute_command(self, command: str, timeout: int = None) -> Dict[str, Any]:
+    def _execute_command(self, command: str, timeout: int = None) -> dict[str, Any]:
         """Run ``command`` in the environment; returns ``{output, exit_code, error}``."""
         if self.env is None:
             self._create_env()
@@ -185,7 +190,7 @@ class MiniSWERunner:
             for t in self.tools
         ], ensure_ascii=False)
 
-    def _tool_response_turn(self, messages: List[Dict[str, Any]], i: int) -> tuple:
+    def _tool_response_turn(self, messages: list[dict[str, Any]], i: int) -> tuple:
         """Fold the tool messages following assistant turn ``i`` into one ``tool`` value.
 
         Returns ``(value_or_None, index_of_last_consumed_message)``.
@@ -209,7 +214,7 @@ class MiniSWERunner:
             j += 1
         return ("\n".join(tool_responses), j - 1) if tool_responses else (None, i)
 
-    def _convert_to_hermes_format(self, messages: List[Dict[str, Any]], user_query: str) -> List[Dict[str, Any]]:
+    def _convert_to_hermes_format(self, messages: list[dict[str, Any]], user_query: str) -> list[dict[str, Any]]:
         """Convert the OpenAI-style message list to the Hermes trajectory format used by batch_runner.py."""
         system_msg = HERMES_SYSTEM_PREFIX + f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n" + HERMES_SYSTEM_SUFFIX
         trajectory = [{"from": "system", "value": system_msg}, {"from": "human", "value": user_query}]
@@ -233,7 +238,7 @@ class MiniSWERunner:
             i += 1
         return trajectory
 
-    def _call_model(self, messages: List[Dict[str, Any]]):
+    def _call_model(self, messages: list[dict[str, Any]]):
         """One chat completion with the ephemeral system prompt; returns the message or None on API error."""
         api_kwargs = {"model": self.model, "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
                       "tools": self.tools, "timeout": 300.0}
@@ -246,7 +251,7 @@ class MiniSWERunner:
         except Exception as e:
             self.logger.error("API call failed: %s", e)
 
-    def _run_tool_calls(self, assistant_message, messages: List[Dict[str, Any]]) -> bool:
+    def _run_tool_calls(self, assistant_message, messages: list[dict[str, Any]]) -> bool:
         """Record the assistant turn, execute each terminal call, append results; True if the completion signal fired."""
         print(f"🔧 Tool calls: {len(assistant_message.tool_calls)}")
         messages.append({"role": "assistant", "content": assistant_message.content, "tool_calls": [
@@ -267,7 +272,7 @@ class MiniSWERunner:
             print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
         return completed
 
-    def run_task(self, task: str) -> Dict[str, Any]:
+    def run_task(self, task: str) -> dict[str, Any]:
         """Run one task; returns ``{conversations, completed, api_calls, metadata}``."""
         print(f"\n{'='*60}")
         print(f"📝 Task: {task[:80]}{'...' if len(task) > 80 else ''}")
@@ -300,7 +305,7 @@ class MiniSWERunner:
         return {"conversations": self._convert_to_hermes_format(messages, task), "completed": completed, "api_calls": api_call_count,
                 "metadata": {"model": self.model, "env_type": self.env_type, "timestamp": datetime.now().isoformat()}}
 
-    def run_batch(self, prompts: List[str], output_file: str) -> List[Dict[str, Any]]:
+    def run_batch(self, prompts: list[str], output_file: str) -> list[dict[str, Any]]:
         """Run every prompt, appending each result to ``output_file`` as it finishes."""
         results = []
         print(f"\n📦 Running batch of {len(prompts)} tasks")
@@ -324,7 +329,7 @@ class MiniSWERunner:
         return results
 
 
-def _load_prompts(prompts_file: str) -> List[str]:
+def _load_prompts(prompts_file: str) -> list[str]:
     """One prompt per non-blank line: JSON ``{"prompt"|"task": ...}`` or raw text."""
     prompts = []
     with open(prompts_file, 'r', encoding='utf-8') as f:
@@ -349,7 +354,7 @@ def main(
     api_key: str = None,
     env: str = "local",
     image: str = "python:3.11-slim",
-    cwd: str = "/tmp",
+    cwd: str | None = None,
     max_iterations: int = 15,
     timeout: int = 60,
     verbose: bool = False,
@@ -366,7 +371,7 @@ def main(
         api_key: API key (optional, uses env vars)
         env: Environment type - "local", "docker", or "modal"
         image: Docker/Modal image (default: python:3.11-slim)
-        cwd: Working directory (default: /tmp)
+        cwd: Working directory (default: host temp dir locally, /tmp inside a container)
         max_iterations: Maximum tool-calling iterations (default: 15)
         timeout: Command timeout in seconds (default: 60)
         verbose: Enable verbose logging

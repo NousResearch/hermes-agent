@@ -22,7 +22,7 @@ _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
-_PATTERNS: List[Tuple[str, str, str]] = [
+_PATTERNS: list[tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
     (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
@@ -80,13 +80,28 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
+    # Write-verb gated like the *_config_mod rules: a bare path match blocked ordinary docs
+    # ("check $HOME/.ssh is chmod 700"). ``>>?`` covers a leading redirect with no verb word;
+    # ``open(`` covers the scripted-write shape; chmod/chown/sed/truncate/rm/touch/curl/wget/git
+    # mutate the directory without an obvious copy verb.
+    (r'(?:\b(?:echo|cat|cp|mv|dd|tee|install|printf|rsync|scp|ln|append|add|write'
+     r'|sed|chmod|chown|truncate|rm|touch|curl|wget|git)\b|\bopen\s*\(|>>?)'
+     r'[^\n]{0,512}(?:\$HOME/\.ssh|~/\.ssh)', "ssh_access", "strict"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
     (rf'{_MODIFY}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    # The lookahead skips a value that is itself an environment-variable NAME
+    # (SHOUTY_SNAKE, ≥2 underscore-separated segments): ENV_PASSWORD =
+    # "MYPLUGIN_APP_PASSWORD" says where the credential lives, it does not embed
+    # one (#116221). Scoped case-sensitive on purpose — the pattern compiles with
+    # IGNORECASE and a lowercase snake value is the password-passphrase shape
+    # ("correct_horse_battery_staple"); requiring an underscore segment keeps
+    # underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py
@@ -100,8 +115,8 @@ INVISIBLE_CHARS = frozenset(
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
 
 
-def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
-    compiled: dict[str, List[Tuple[re.Pattern, str]]] = {"all": [], "context": [], "strict": []}
+def _compile() -> dict[str, list[tuple[re.Pattern, str]]]:
+    compiled: dict[str, list[tuple[re.Pattern, str]]] = {"all": [], "context": [], "strict": []}
     for pattern, pid, scope in _PATTERNS:
         if scope not in _SCOPE_SETS:
             raise ValueError(f"threat_patterns: unknown scope {scope!r} for pattern {pid!r}")
@@ -113,7 +128,7 @@ def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
 _COMPILED = _compile()
 
 
-def scan_for_threats(content: str, scope: str = "context") -> List[str]:
+def scan_for_threats(content: str, scope: str = "context") -> list[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
     reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
     if not content:
@@ -122,7 +137,7 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     content = content[:MAX_SCAN_CHARS]
     # Invisible unicode is checked on the RAW content: NFKC below can strip these codepoints.
-    findings: List[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
+    findings: list[str] = [f"invisible_unicode_U+{ord(ch):04X}" for ch in set(content) & INVISIBLE_CHARS]
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)

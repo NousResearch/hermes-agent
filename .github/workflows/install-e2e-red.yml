@@ -1,0 +1,59 @@
+name: Install & Update E2E red tracker
+
+# Someone hears about a red scheduled matrix. After every scheduled
+# "Install & Update E2E" run, tests/install/e2e-assets/red-tracker.mjs keeps
+# ONE issue labelled install-e2e-red in step with it: a red run opens it (or
+# rewrites the open one's body in place with the current red legs grouped by
+# failure class), a green run closes it. No comment per red run, no second
+# issue.
+#
+# A separate workflow on purpose: install-e2e.yml is also a reusable workflow
+# called by stable-release.yml with contents/actions read only, and a nested
+# job asking for issues: write would fail that call at startup.
+#
+# Dispatch it by hand to preview (dry-run, the default) or replay a run.
+
+on:
+  workflow_run:
+    workflows: ['Install & Update E2E']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Install & Update E2E run id to report on.'
+        required: true
+        type: string
+      dry-run:
+        description: 'Print the planned issue change instead of making it.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-e2e-red-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Update the install-e2e-red tracker
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run-id || github.event.workflow_run.id }}
+          DRY_RUN: ${{ inputs.dry-run == true && '--dry-run' || '' }}
+        run: node tests/install/e2e-assets/red-tracker.mjs --run-id "$RUN_ID" $DRY_RUN

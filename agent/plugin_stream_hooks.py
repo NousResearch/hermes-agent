@@ -85,7 +85,15 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             payload = dict(item.payload)
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
-                item.context.run(dispatcher.callback, **payload)
+                from hermes_cli.plugins_dispatch import PluginDispatchMixin
+
+                # Reuse the normal hook signature filtering and coroutine resolution
+                # while keeping the callback on this off-turn worker.
+                item.context.run(
+                    PluginDispatchMixin._invoke_hook_callback,
+                    dispatcher.callback,
+                    payload,
+                )
             except Exception as exc:
                 # Fires once per streaming delta: a mis-declared callback fails identically every
                 # time, so it goes through the manager's warn-once reporter (#111922).

@@ -104,7 +104,7 @@ class _GatewayReviewAdmission:
     token: int
     context: Any = None
     agent: Any = None
-    _candidate: Optional[Dict[str, Any]] = None
+    _candidate: Optional[dict[str, Any]] = None
     _finished: bool = False
     _lock: Any = dataclasses.field(default_factory=threading.Lock)
 
@@ -169,7 +169,7 @@ class _GatewayReviewAdmission:
     def capture_candidate(
         self,
         agent: Any,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         *,
         review_memory: bool,
         review_skills: bool,
@@ -190,7 +190,7 @@ class _GatewayReviewAdmission:
                 self._candidate = candidate
 
     def adopt_candidate(
-        self, candidate: Dict[str, Any], owner: "_GatewayReviewAdmission"
+        self, candidate: dict[str, Any], owner: "_GatewayReviewAdmission"
     ) -> bool:
         """Carry a nested turn's confirmed candidate until this turn's ownership is released.
 
@@ -283,7 +283,7 @@ class _GatewayReviewAdmission:
         )
         try:
             spawner.start()
-        except Exception:  # noqa: BLE001 — ownership is already released: greppable, never fatal
+        except Exception:  # ownership is already released: greppable, never fatal
             logger.warning(
                 "Background review delivery completion failed (owner=%s, reason=%s)",
                 review_admission.owner_tag(

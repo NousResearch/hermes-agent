@@ -18,7 +18,7 @@ import run_agent as run_agent_module
 from agent import review_admission
 from agent.model_metadata import estimate_messages_tokens_rough
 from run_agent import AIAgent
-from tests.agent.test_background_review_compute_overlap import (  # noqa: F401 — fixtures
+from tests.agent.test_background_review_compute_overlap import (  # fixtures
     _bare_agent,
     _config,
     _patch_config,

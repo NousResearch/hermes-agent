@@ -1038,7 +1038,7 @@ class AIAgent(
                 replace_existing=False,
                 reason=review_admission.REASON_PREEMPTED_REQUEUED,
             )
-        except Exception:  # noqa: BLE001 — deferred review persistence is best-effort
+        except Exception:  # deferred review persistence is best-effort
             logger.debug("Preempted-review requeue failed", exc_info=True)
 
     def _maybe_requeue_preempted_review(self, review_run, kwargs) -> None:

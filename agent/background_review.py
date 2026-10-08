@@ -117,7 +117,7 @@ class _BackgroundReviewRun:
             return None
         try:
             return gate()
-        except Exception:  # noqa: BLE001 — unknown foreground state blocks lower-priority work
+        except Exception:  # health: allow BLE001 -- unknown foreground state blocks lower-priority work
             from agent.review_admission import REASON_ADMISSION_FAILURE
 
             logger.warning("Automatic review blocked: %s", REASON_ADMISSION_FAILURE)
@@ -353,7 +353,7 @@ def _interrupt_background_review(
 def _cancel_background_review(
     agent: Any, *, pending_followup: bool = False,
     session_id: Optional[str] = None, profile_key: Optional[str] = None,
-) -> Tuple[Optional[_BackgroundReviewRun], Any]:
+) -> tuple[Optional[_BackgroundReviewRun], Any]:
     """Fence the current run and return ``(run, admitted_fork)`` for its caller's policy."""
     from agent import review_admission
 
@@ -1562,7 +1562,7 @@ class _ReviewTurnLease(DurableTurnLease):
         """The stamper's slug, or None while nobody asked the review to yield."""
         try:
             return self.db.session_turn_lease_yield_reason(self._current_session_id(), self.holder)
-        except Exception:  # noqa: BLE001 — a broken store reads as no yield; the renewal decides
+        except Exception:  # health: allow BLE001 -- a broken store reads as no yield; the renewal decides
             return None
 
     def _renewed(self) -> bool:
@@ -1572,7 +1572,7 @@ class _ReviewTurnLease(DurableTurnLease):
                     self._current_session_id(), self.holder, ttl_seconds=self.ttl_seconds
                 )
             )
-        except Exception:  # noqa: BLE001 — an unrenewable row is a lost row
+        except Exception:  # an unrenewable row is a lost row
             logger.debug("Background review lease renewal failed", exc_info=True)
             return False
 
@@ -1620,7 +1620,7 @@ def _try_acquire_durable_review_lease(
         acquired = db.try_acquire_session_turn_lease(
             session_id, holder, ttl_seconds=_REVIEW_LEASE_TTL_SECONDS
         )
-    except Exception:  # noqa: BLE001 — uncertain durable ownership must fail safe
+    except Exception:  # health: allow BLE001 -- uncertain durable ownership must fail safe
         logger.warning("Automatic review blocked: %s", REASON_DURABLE_FAILURE)
         return None, REASON_DURABLE_FAILURE
     if not acquired:

@@ -25,7 +25,7 @@ from gateway.run import _INTERRUPT_REASON_STOP, GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 # The raft plugin registers its Platform member at import time.
-from plugins.platforms.raft.adapter import RaftAdapter  # noqa: E402
+from plugins.platforms.raft.adapter import RaftAdapter
 
 RAFT = Platform("raft")
 

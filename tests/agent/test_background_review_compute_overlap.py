@@ -398,7 +398,7 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
     def foreground():
         try:
             outcome["result"] = TurnFacadeMixin.run_conversation(agent, "hi")
-        except BaseException as exc:  # noqa: BLE001 — surfaced by the assertions below
+        except BaseException as exc:  # surfaced by the assertions below
             outcome["error"] = exc
 
     turn = threading.Thread(target=foreground, daemon=True)
@@ -632,7 +632,6 @@ def test_live_turn_registering_during_the_foreground_probe_is_refused_at_publica
         # A contender registers while the probe runs; it must never wait behind the probe, so
         # the wait is bounded rather than blocking on the (old) lock-holding path.
         registered_before_probe_returned.append(live_registered.wait(timeout=3.0))
-        return None
 
     try:
         run = ObservedRun(
@@ -677,7 +676,6 @@ def test_queue_side_cancel_is_never_blocked_by_the_foreground_probe():
     def parked_gate():
         probe_entered.set()
         release_probe.wait(timeout=10.0)
-        return None
 
     run = background_review_module._BackgroundReviewRun(admission_gate=parked_gate)
     requester = threading.Thread(

@@ -271,7 +271,7 @@ def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(mo
             outcome["result"] = AIAgent.run_conversation(
                 agent, "new message", conversation_history=[]
             )
-        except BaseException as exc:  # noqa: BLE001 — surfaced by the assertions below
+        except BaseException as exc:  # surfaced by the assertions below
             outcome["error"] = exc
 
     turn = threading.Thread(target=foreground, daemon=True)

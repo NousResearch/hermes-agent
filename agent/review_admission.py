@@ -29,7 +29,7 @@ import hashlib
 import itertools
 import logging
 import threading
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +95,11 @@ REQUEST_OVERHEAD_MARGIN_TOKENS = 2_048
 REVIEW_REQUEST_SHARES = 3
 
 _lock = threading.RLock()
-_live_turns: Dict[Tuple[str, str], Set[int]] = {}
-_review_runs: Dict[Tuple[str, str], Any] = {}
+_live_turns: dict[tuple[str, str], set[int]] = {}
+_review_runs: dict[tuple[str, str], Any] = {}
 # token -> the key it was registered under, so a release is exact whatever profile the releasing
 # thread is acting for by then.
-_turn_keys: Dict[int, Set[Tuple[str, str]]] = {}
+_turn_keys: dict[int, set[tuple[str, str]]] = {}
 _tokens = itertools.count(1)
 
 
@@ -119,14 +119,14 @@ def current_profile_key() -> str:
         from hermes_constants import hermes_home_key
 
         return hermes_home_key()
-    except Exception:  # noqa: BLE001 — an unresolvable home must not break the turn/review path
+    except Exception:  # an unresolvable home must not break the turn/review path
         logger.debug(
             "Could not resolve the profile key for review admission", exc_info=True
         )
         return ""
 
 
-def _admission_key(session_id: Any, profile_key: Optional[str]) -> Tuple[str, str]:
+def _admission_key(session_id: Any, profile_key: Optional[str]) -> tuple[str, str]:
     """``(profile, session)`` bucket; ``profile_key`` pins a caller-supplied profile (a deferred
     dispatch runs on the queue thread, which is not inside the turn's profile scope)."""
     profile = current_profile_key() if profile_key is None else str(profile_key)
@@ -231,7 +231,7 @@ def _followup_block_reason(agent: Any) -> Optional[str]:
         return None
     try:
         return REASON_QUEUED_FOLLOWUP if probe() else None
-    except Exception:  # noqa: BLE001 — unknown foreground state must block lower-priority work
+    except Exception:  # health: allow BLE001 -- unknown foreground state must block lower-priority work
         logger.warning("Automatic review blocked: %s", REASON_ADMISSION_FAILURE)
         return REASON_ADMISSION_FAILURE
 
@@ -301,7 +301,7 @@ def request_overhead_tokens(agent: Any, review_prompt: Optional[str] = None) -> 
         estimate_messages_tokens_rough,
     )
 
-    fixed: List[Dict[str, Any]] = []
+    fixed: list[dict[str, Any]] = []
     system_prompt = getattr(agent, "_cached_system_prompt", None)
     if isinstance(system_prompt, str) and system_prompt:
         fixed.append({"role": "system", "content": system_prompt})
@@ -317,7 +317,7 @@ def request_overhead_tokens(agent: Any, review_prompt: Optional[str] = None) -> 
 
 
 def replay_token_budget(
-    task_cfg: Optional[Dict[str, Any]],
+    task_cfg: Optional[dict[str, Any]],
     agent: Any = None,
     review_prompt: Optional[str] = None,
 ) -> int:
@@ -345,7 +345,7 @@ def replay_token_budget(
     )
 
 
-def _replay_ceiling(task_cfg: Optional[Dict[str, Any]]) -> int:
+def _replay_ceiling(task_cfg: Optional[dict[str, Any]]) -> int:
     """``max_replay_tokens`` clamped to the hard ceiling; the default on any invalid value."""
     config = task_cfg or {}
     if "max_replay_tokens" not in config:
@@ -393,9 +393,9 @@ def _is_complete_user_anchor(message: Any) -> bool:
 
 
 def bounded_replay_history(
-    snapshot: List[Dict],
+    snapshot: list[dict],
     budget: Optional[int],
-) -> Tuple[List[Dict], Optional[str]]:
+) -> tuple[list[dict], Optional[str]]:
     """Return the verbatim snapshot when it fits, otherwise its widest safe recent suffix.
 
     Older turns were eligible for earlier post-turn reviews; the current review needs the newest

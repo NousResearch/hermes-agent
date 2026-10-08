@@ -108,7 +108,7 @@ class _UnpublishedExit(threading.Event):
         super().__init__()
         self.waits: list = []
 
-    def wait(self, timeout=None):  # noqa: D102 — Event.wait's shape
+    def wait(self, timeout=None):  # Event.wait's shape
         self.waits.append(timeout)
         return False
 

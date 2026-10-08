@@ -5,6 +5,10 @@ to the previous capture of the same target in the same session returns text
 metadata plus an explicit "screen unchanged" note instead of the multimodal
 image block. Changed pixels, changed targets, other sessions, and streak
 exhaustion all deliver full pixels again.
+
+Past a few identical captures in a row that note inverts: an idle desktop and
+a capture pipeline that stopped repainting are byte-for-byte the same, and
+only the second one is dangerous to keep acting on (#132125).
 """
 
 import base64
@@ -155,3 +159,131 @@ class TestScreenshotDedup:
         assert not _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))
         _reset_read_dedup_caches("task", session_id="s1")
         assert _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))
+
+
+class TestFrozenCaptureDetection:
+    """Identical bytes are also what a capture pipeline that stopped repainting looks like."""
+
+    def _capture_n(self, n, session_id="s1", seed=1):
+        """Deliver n identical captures; return the last response."""
+        resp = cu_tool._capture_response(_cap(seed=seed), session_id=session_id)
+        for _ in range(n - 1):
+            resp = cu_tool._capture_response(_cap(seed=seed), session_id=session_id)
+        return resp
+
+    @staticmethod
+    def _payload(resp) -> str:
+        return resp if isinstance(resp, str) else json.dumps(resp)
+
+    @staticmethod
+    def _text(resp) -> str:
+        return resp if isinstance(resp, str) else resp["text_summary"]
+
+    def test_frozen_run_is_flagged_not_certified(self):
+        """The verdict fires on the threshold capture and the note no longer certifies the pixels."""
+        below = self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS - 1)
+        assert "capture_frozen_suspected" not in self._payload(below)
+        assert "still shows the current state" in self._text(below)
+        frozen = self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        assert "capture_frozen_suspected" in self._payload(frozen)
+        assert "still shows the current state" not in self._text(frozen)
+        assert "stale" in self._text(frozen)
+
+    def test_frozen_note_names_the_run_length(self):
+        resp = self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS + 2)
+        assert f"no change in {cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS + 2} consecutive captures" in self._text(resp)
+
+    def test_identical_run_survives_the_omission_streak_cap(self):
+        """Re-delivering pixels after the omission streak must not reset the evidence: the frames really
+        are identical, so the run keeps climbing across the re-delivery instead of restarting at 1."""
+        withheld = self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        assert not _is_multimodal(withheld)
+        assert "capture_frozen_suspected" in self._payload(withheld)
+        # The next identical capture exhausts the omission streak, so the pixels go back out — and the run
+        # counter must carry on from where it was rather than restart, or the warning would vanish here.
+        delivered = self._capture_n(1)
+        assert _is_multimodal(delivered)
+        assert (f"no change in {cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS + 1} consecutive captures"
+                in delivered["text_summary"])
+
+    def test_frozen_verdict_rides_on_the_delivered_frame(self):
+        """Whichever way the dedup policy resolved this capture — image withheld or re-sent after the
+        streak cap — the frozen verdict travels with it, so the note can never certify a stale frame."""
+        withheld = self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        assert "capture_frozen_suspected" in self._payload(withheld)
+        assert not _is_multimodal(withheld)  # the policy still saves the pixels while the streak allows it
+        # The next identical capture exhausts the streak cap, so the pixels go back out — the prose warning
+        # has to ride along on the delivered frame too, not only on the withheld ones.
+        resp = self._capture_n(1)
+        assert _is_multimodal(resp)
+        assert "no change in" in resp["text_summary"]
+        assert "stale, not the screen" in resp["text_summary"]
+
+    def test_dedup_policy_still_governs_the_image(self):
+        """The escalation is wording only: withholding stays the streak cap's decision, not the frozen
+        verdict's, so a genuinely idle long-running session keeps its token saving."""
+        seen = [self._capture_n(i) for i in range(1, cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS + 3)]
+        assert [not _is_multimodal(r) for r in seen] == [False, True, True, False, True], seen
+
+    def test_changed_pixels_clear_the_frozen_verdict(self):
+        self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        resp = cu_tool._capture_response(_cap(seed=9), session_id="s1")
+        assert _is_multimodal(resp)
+        assert "capture_frozen_suspected" not in resp["text_summary"]
+        # And the counter restarts against the new frame.
+        assert not _is_multimodal(cu_tool._capture_response(_cap(seed=9), session_id="s1"))
+
+    def test_short_idle_run_keeps_the_unchanged_wording(self):
+        """Two identical captures is the ordinary capture→act→capture loop; escalating there would
+        cry wolf on every static screen."""
+        cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        resp = cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        data = json.loads(resp)
+        assert data["screen_unchanged"] is True
+        assert "capture_frozen_suspected" not in data
+        assert "still shows the current state" in data["summary"]
+
+    def test_frozen_run_is_per_session(self):
+        self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS, session_id="s1")
+        resp = cu_tool._capture_response(_cap(seed=1), session_id="s2")
+        assert _is_multimodal(resp)
+        assert "capture_frozen_suspected" not in resp["text_summary"]
+
+    def test_dedup_check_reports_the_run(self):
+        """The counter is the contract between the two states, so pin its shape rather than its value."""
+        assert cu_tool._screenshot_dedup_check("s9", "d1", ("kate", "notes")) == (False, 1)
+        assert cu_tool._screenshot_dedup_check("s9", "d1", ("kate", "notes")) == (True, 2)
+        assert cu_tool._screenshot_dedup_check("s9", "d1", ("kate", "notes")) == (True, 3)
+        # Streak exhausted → pixels come back, but the identical run keeps climbing.
+        assert cu_tool._screenshot_dedup_check("s9", "d1", ("kate", "notes")) == (False, 4)
+        # A different target is a different frame.
+        assert cu_tool._screenshot_dedup_check("s9", "d1", ("kcalc", "notes")) == (False, 1)
+        # New pixels restart it.
+        assert cu_tool._screenshot_dedup_check("s9", "d2", ("kate", "notes")) == (False, 1)
+
+    def test_session_release_forgets_the_frozen_run(self):
+        self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        cu_tool.release_computer_use_session("s1")
+        resp = cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        assert _is_multimodal(resp)
+        assert "capture_frozen_suspected" not in resp["text_summary"]
+
+    def test_compaction_boundary_clears_the_frozen_run(self):
+        """Compaction rewrites the history the frozen note points at, so the next capture must start
+        from the delivered frame again."""
+        from agent.conversation_compression import _reset_read_dedup_caches
+
+        self._capture_n(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS)
+        _reset_read_dedup_caches("task", session_id="s1")
+        resp = cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        assert _is_multimodal(resp)
+        assert "capture_frozen_suspected" not in resp["text_summary"]
+
+    def test_ax_mode_never_reports_frozen(self):
+        """An ax capture carries no pixels, so there is nothing to compare and nothing to distrust."""
+        cap = CaptureResult(mode="ax", width=64, height=64, png_b64=None,
+                            elements=[], app="kate", window_title="notes")
+        resp = cu_tool._capture_response(cap, session_id="s1")
+        for _ in range(cu_tool._SCREENSHOT_FROZEN_IDENTICAL_RUNS + 1):
+            resp = cu_tool._capture_response(cap, session_id="s1")
+        assert "capture_frozen_suspected" not in json.loads(resp)

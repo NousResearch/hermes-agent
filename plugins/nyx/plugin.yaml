@@ -1,0 +1,12 @@
+name: nyx
+version: 0.1.0
+description: "Nyx — avatar de partículas do Hermes. Os hooks do turno (pensar, chamar ferramenta, responder) viram eventos que o painel Nyx do dashboard desenha: a galáxia só aparece enquanto o Hermes pensa e usa ferramentas."
+author: "julinhodailha"
+hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_stream_delta
+  - post_llm_call
+  - subagent_start
+  - subagent_stop

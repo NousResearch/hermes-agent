@@ -1,0 +1,11 @@
+{
+  "name": "nyx",
+  "label": "Nyx",
+  "description": "Avatar de partículas do Hermes: a galáxia aparece enquanto ele pensa e usa ferramentas.",
+  "icon": "Sparkles",
+  "version": "0.1.0",
+  "tab": { "path": "/nyx", "position": "after:analytics" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

@@ -112,6 +112,26 @@ describe('handleMouseEvent right-click selection behavior', () => {
     expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
   })
 
+  it('does not dispatch right-click paste handlers during right-button motion without a selection', () => {
+    const app = makeApp()
+
+    handleMouseEvent(app, { action: 'press', button: 0x20 | 2, col: 3, kind: 'mouse', row: 1, sequence: '' })
+
+    expect(app.props.onCopySelectionNoClear).not.toHaveBeenCalled()
+    expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
+    expect(app.props.onMouseDragAt).not.toHaveBeenCalled()
+  })
+
+  it('routes modified motion to an active mouse capture target instead of paste handlers', () => {
+    const app = makeApp()
+    app.mouseCaptureTarget = {} as never
+
+    handleMouseEvent(app, { action: 'press', button: 0x20 | 2, col: 3, kind: 'mouse', row: 1, sequence: '' })
+
+    expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
+    expect(app.props.onMouseDragAt).toHaveBeenCalledWith(app.mouseCaptureTarget, 2, 0, 2)
+  })
+
   it('still dispatches right-click handlers when no text is selected', () => {
     const app = makeApp()
 

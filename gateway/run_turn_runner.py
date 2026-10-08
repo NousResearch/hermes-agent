@@ -65,14 +65,48 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
-class _ExecApprovalDeclined(RuntimeError):
-    """The connector refused the approval card's destination.
+class _ExecApprovalUndeliverable(RuntimeError):
+    """The approval prompt could not be delivered to the operator."""
+
+
+class _ExecApprovalDeclined(_ExecApprovalUndeliverable):
+    """The connector refused the approval prompt's destination.
 
     Raised (not returned) so it propagates out of `_approval_notify_sync` to
     `_await_gateway_decision`, whose notify-failure path drops the central
     approval queue entry and unblocks the waiting tool. A plain return
     suppressed the text fallback but left that entry pending.
     """
+
+
+def _approval_request_id_for_log(approval_data: dict) -> str:
+    """Return a bounded, single-line request id for approval delivery logs."""
+    request_id = approval_data.get("request_id")
+    if request_id is None or request_id == "":
+        return "missing"
+    value = str(request_id)
+    safe = "".join(
+        char if char.isascii() and (char.isalnum() or char in "._:-") else "_"
+        for char in value
+    )
+    return safe[:256] or "missing"
+
+
+def _log_exec_approval_delivery(
+    request_id: str, lane: str, outcome: str, *, level: int
+) -> None:
+    logger.log(
+        level,
+        "Exec approval delivery outcome: request_id=%s lane=%s outcome=%s",
+        request_id,
+        lane,
+        outcome,
+        extra={
+            "approval_request_id": request_id,
+            "delivery_lane": lane,
+            "delivery_outcome": outcome,
+        },
+    )
 
 
 class TurnRunner:
@@ -1459,6 +1493,7 @@ class TurnRunner:
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
+        request_id = _approval_request_id_for_log(approval_data)
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
@@ -1478,15 +1513,29 @@ class TurnRunner:
                     ),
                     "send_exec_approval scheduling error",
                 )
-                if fut is None:
-                    raise RuntimeError("send_exec_approval: loop unavailable")
+            except Exception as e:
+                _log_exec_approval_delivery(request_id, "button", "failed", level=logging.WARNING)
+                logger.warning("Button-based approval failed, falling back to text: %s", e)
+            else:
                 outcome = _approval_send_outcome(fut, timeout=15)
+                _log_exec_approval_delivery(
+                    request_id, "button", outcome,
+                    level=logging.INFO if outcome == "sent" else logging.WARNING,
+                )
                 if outcome == "sent":
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    try:
+                        register_timeout_notice(
+                            self, approval_data, command=cmd,
+                            card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    except Exception:
+                        logger.warning(
+                            "Exec approval timeout notice registration failed: request_id=%s lane=button",
+                            request_id,
+                            extra={"approval_request_id": request_id, "delivery_lane": "button"},
+                            exc_info=True,
+                        )
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1499,55 +1548,69 @@ class TurnRunner:
                     )
                     return
                 if outcome == "declined":
-                    # P5(b): the connector AUTHORIZED this destination and
-                    # refused it. The text fallback below re-sends the same
-                    # content to the same chat, which would turn a refused
-                    # button card into a delivered plain-text one — the exact
-                    # leak the egress guard exists to stop. A decline is
-                    # definitive, so unlike `ambiguous` the registration is
-                    # torn down; unlike `failed`, nothing is re-sent.
+                    # The connector refused this destination. Re-sending the same content as
+                    # plain text would bypass the egress guard, so let the central wait tear down.
                     logger.warning(
                         "Button-based approval DECLINED by the connector's "
                         "egress guard — not falling back to text (the "
                         "destination is not approved for this connection)"
                     )
-                    # RAISE, do not return. This function is the notify_cb for
-                    # `_await_gateway_decision`, which already has a correct
-                    # undeliverable path: a raising notify drops the queue entry
-                    # and returns `notify_failed`, unblocking the tool. Returning
-                    # quietly suppressed the text fallback (right) but left the
-                    # CENTRAL approval entry pending (wrong) — the dangerous
-                    # command then blocked until the approval timeout. My earlier
-                    # comment claimed the registration was torn down; only the
-                    # adapter's private prompt map was.
                     raise _ExecApprovalDeclined(
                         "exec approval undeliverable: connector egress declined "
                         "this destination"
                     )
                 logger.warning("Button-based approval failed (send returned error), falling back to text")
-            except _ExecApprovalDeclined:
-                # Must escape this handler: the fallback below is a text send to
-                # the destination the connector just refused.
-                raise
-            except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+        # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
+        metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
         try:
-            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
-            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
+                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)),
+                "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        except Exception as exc:
+            _log_exec_approval_delivery(request_id, "text", "failed", level=logging.ERROR)
+            raise _ExecApprovalUndeliverable(
+                "exec approval undeliverable: text prompt could not be scheduled"
+            ) from exc
+
+        # Classify only the future's wait as possibly delivered. A scheduler exception (including
+        # TimeoutError) above is definitive; a completed send exception or error result is also a
+        # failure, while an actual wait deadline remains ambiguous and must not be retried.
+        outcome = _approval_send_outcome(fut, timeout=15)
+        _log_exec_approval_delivery(
+            request_id, "text", outcome,
+            level=logging.INFO if outcome == "sent" else logging.WARNING,
+        )
+        if outcome == "ambiguous":
+            logger.warning(
+                "Text-based approval send timed out — treating as possibly delivered "
+                "(no re-send; the prompt stays armed for a late reply)"
+            )
+            return
+        if outcome == "declined":
+            raise _ExecApprovalDeclined(
+                "exec approval undeliverable: connector egress declined this destination"
+            )
+        if outcome == "failed":
+            raise _ExecApprovalUndeliverable(
+                "exec approval undeliverable: text prompt send failed"
+            )
+
+        # No card to edit on the text path: the prompt has no buttons to drop and carries the
+        # /approve instructions, so the timeout notice is posted as a new message.
+        try:
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+        except Exception:
+            logger.warning(
+                "Exec approval timeout notice registration failed: request_id=%s lane=text",
+                request_id,
+                extra={"approval_request_id": request_id, "delivery_lane": "text"},
+                exc_info=True,
+            )
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

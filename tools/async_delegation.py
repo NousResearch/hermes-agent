@@ -247,13 +247,13 @@ def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
     """``alive(owner_pid, owner_started_at)`` over the shared drift-tolerant start-time comparator,
     or None when the liveness probes cannot be imported."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+        from gateway.status import _pid_exists, _process_start_time_matches
     except Exception:
         return None
 
     def alive(pid, started) -> bool:
         return bool(pid) and _pid_exists(int(pid)) and (
-            started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0))
+            started is None or _process_start_time_matches(int(pid), started, tolerance=200))
     return alive
 
 

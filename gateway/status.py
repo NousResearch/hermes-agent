@@ -466,6 +466,33 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _get_proc_start_time(pid: int) -> Optional[int]:
+    """Return Linux's boot-relative process start time, or None without /proc."""
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        return int(stat_path.read_text(encoding="utf-8").split()[21])
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        return None
+
+
+def _get_psutil_start_time(pid: int, *, monotonic: bool) -> Optional[int]:
+    """Read psutil's monotonic birth time or its legacy epoch birth time."""
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process(pid)
+        if monotonic:
+            try:
+                # The private macOS value is stable across wall-clock corrections.
+                start = proc._proc.create_time(monotonic=True)  # type: ignore[attr-defined]
+            except (AttributeError, TypeError):
+                start = proc.create_time()
+        else:
+            start = proc.create_time()
+        return int(round(start * 100))
+    except Exception:
+        return None
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return a stable per-process start-time fingerprint, or None.
 
@@ -473,32 +500,34 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     a process, so a recycled PID (same number, different process) yields a
     different value and is never mistaken for the original.
 
-    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
-    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
-    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
-    timestamp — quantized to an int (centiseconds) for stable equality.
+    On Linux this is field 22 of ``/proc/<pid>/stat`` (clock ticks since boot,
+    an int). On platforms without ``/proc`` (macOS, Windows), use psutil's
+    private monotonic process birth time when available. Older persisted records
+    used psutil's public epoch timestamp; readers try that legacy unit too.
 
-    The two sources are never mixed on a single platform: ``/proc`` always
-    succeeds first on Linux, and always fails on macOS/Windows so psutil is
-    always used there.  Because the guard only compares the value recorded at
-    spawn against the live value *on the same host*, the differing units across
-    platforms are irrelevant — only same-source equality matters.
+    New records use the monotonic source where supported. Persisted-record
+    readers also try the legacy epoch source on platforms that do not expose
+    ``/proc``, so an upgrade cannot invalidate a still-live older process.
     """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
+    proc_start = _get_proc_start_time(pid)
+    return proc_start if proc_start is not None else _get_psutil_start_time(pid, monotonic=True)
 
-    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
+
+def _process_start_time_matches(pid: int, recorded: Any, *, tolerance: int = 0) -> bool:
+    """Match both current monotonic and pre-monotonic persisted fingerprints."""
+    if recorded is None:
+        return False
     try:
-        import psutil  # type: ignore
-        return int(round(psutil.Process(pid).create_time() * 100))
-    except Exception:
-        return None
+        recorded = int(recorded)
+    except (TypeError, ValueError):
+        return False
+    current = get_process_start_time(pid)
+    if current is not None and abs(int(current) - int(recorded)) <= tolerance:
+        return True
+    if _get_proc_start_time(pid) is not None:
+        return False
+    legacy = _get_psutil_start_time(pid, monotonic=False)
+    return legacy is not None and abs(int(legacy) - int(recorded)) <= tolerance
 
 
 def get_process_start_time(pid: int) -> Optional[int]:
@@ -881,7 +910,8 @@ def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
     pid = _pid_from_record(record)
     if pid is None or not _pid_exists(pid):
         return None
-    if _start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
+    recorded_start = record.get("start_time")
+    if recorded_start is not None and not _process_start_time_matches(pid, recorded_start):
         return None
     return pid
 
@@ -1540,8 +1570,8 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     if existing_pid is None or not _pid_exists(existing_pid):
         return True
     recorded_start = existing.get("start_time")
-    current_start = _get_process_start_time(existing_pid)
-    if _start_times_conflict(recorded_start, current_start):
+    current_start = get_process_start_time(existing_pid)
+    if recorded_start is not None and not _process_start_time_matches(existing_pid, recorded_start):
         return True
     if not _looks_like_gateway_process(existing_pid):
         if _read_process_cmdline(existing_pid) is not None:
@@ -1629,7 +1659,10 @@ def release_all_scoped_locks(
         if owner_pid is not None:
             record = _read_json_file(lock_file) or {}
             if _pid_from_record(record) != owner_pid or (
-                owner_start_time is not None and record.get("start_time") != owner_start_time
+                owner_start_time is not None and (
+                    record.get("start_time") != owner_start_time
+                    and not _process_start_time_matches(owner_pid, record.get("start_time"))
+                )
             ):
                 continue
         with contextlib.suppress(OSError):
@@ -1696,8 +1729,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     ``hermes gateway stop`` as an unexpected exit revived by the service manager."""
     if target_pid != os.getpid():
         return False
-    our_start_time = _get_process_start_time(target_pid)
-    return None in (target_start_time, our_start_time) or target_start_time == our_start_time
+    return target_start_time is None or _process_start_time_matches(target_pid, target_start_time)
 
 
 def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None, keep: bool = False) -> bool:
@@ -1794,7 +1826,8 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
     if (
         not _record_looks_like_gateway(pid_record)
         or _pid_from_record(pid_record) != owner_pid
-        or pid_record.get("start_time") != owner_start_time
+        or not _process_start_time_matches(owner_pid, pid_record.get("start_time"))
+        or not _process_start_time_matches(owner_pid, owner_start_time)
         or not isinstance(pid_record_home, str)
         or not _same_hermes_home(pid_record_home, target_home)
     ):
@@ -1810,7 +1843,7 @@ def _scoped_lock_owner_state(owner_pid: int, owner_start_time: int) -> str:
     # A different start time means the PID was recycled; never signal the replacement.
     if live_start_time is None:
         return "unknown"
-    return "same" if live_start_time == owner_start_time else "exited"
+    return "same" if _process_start_time_matches(owner_pid, owner_start_time) else "exited"
 
 
 def _wait_for_scoped_lock_owner_exit(
@@ -2098,11 +2131,8 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
     starts = tuple(record.get("start_time") for record in records)
     if current_start is None or any(start is None for start in starts):
         raise RuntimeError("gateway creation time is unavailable")
-    try:
-        if not _start_times_agree(current_start, *starts):
-            raise RuntimeError("gateway process identity changed")
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("gateway creation time is malformed") from exc
+    if any(not _process_start_time_matches(pid, start) for start in starts):
+        raise RuntimeError("gateway process identity changed")
     if not all(_record_matches_live_gateway_pid(record, pid) for record in records):
         raise RuntimeError("runtime metadata does not identify a live gateway")
     current = float(current_start)

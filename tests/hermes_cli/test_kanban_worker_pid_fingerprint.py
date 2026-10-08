@@ -110,6 +110,34 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_pre_upgrade_shifted_fingerprint_survives_the_crash_sweep(board):
+    """A worker spawned by the pre-upgrade gateway carries a fingerprint whose start part was read
+    on the old (clock-sensitive) source: wall-clock corrections shift it by seconds relative to
+    what the upgraded gateway reads for the same live process. The boot witness still matches, so
+    the crash sweep must hold the worker, not reclaim it as crashed (tolerance comparison, not
+    exact equality). Genuinely foreign rows stay reclaimable."""
+    from gateway import drain_control
+    from gateway.status import get_process_start_time
+
+    conn = board
+    killed = []
+    start = get_process_start_time(os.getpid())
+    assert start is not None
+    witness = drain_control.current_instantiation_epoch()
+    shifted = f"{witness}|{start - 20}"  # same boot, start drifted by ~2 s
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=shifted, max_runtime=1)
+    assert kbd._worker_alive(os.getpid(), shifted) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    assert kb.get_task(conn, tid).status == "running"
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+    # A start far outside the drift tolerance and a foreign boot witness are still recycled.
+    assert kbd._pid_recycled(os.getpid(), f"{witness}|{start - 4000}") is True
+    assert kbd._pid_recycled(os.getpid(), "deadbeef-boot:1|" + str(start)) is True
+    assert kbd._worker_alive(os.getpid(), "deadbeef-boot:1|" + str(start)) is False
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

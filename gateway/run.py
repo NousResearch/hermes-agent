@@ -4967,7 +4967,7 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     # pidfile exists.
     try:
         from gateway.status import (
-            _get_pid_path, _get_process_hermes_home, _get_process_start_time, _pid_from_record,
+            _get_pid_path, _get_process_hermes_home, _pid_from_record, _process_start_time_matches,
             _read_pid_record, _record_looks_like_gateway, _read_process_cmdline, _same_hermes_home)
         our_home = _get_process_hermes_home()
 
@@ -4985,7 +4985,7 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
         recorded_start = record.get("start_time")
         if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
             return True
-        if _get_process_start_time(existing_pid) != recorded_start:
+        if not _process_start_time_matches(existing_pid, recorded_start):
             return refuse("pid record start-time does not match the live process %s (stale/PID-reuse record).",
                           existing_pid)
         recorded_home = record.get("hermes_home")

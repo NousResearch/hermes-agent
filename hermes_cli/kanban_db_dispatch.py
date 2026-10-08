@@ -396,14 +396,23 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before
+    the boot witness was added) compares the start time only. A ``"<witness>|<start>"`` fingerprint
+    keeps the witness exact — it changes only on reboot — and compares the start part through
+    :func:`gateway.status._process_start_time_matches` with the shared drift tolerance: a row written
+    by a clock-sensitive build must still identify its live worker after an upgrade (#128471)."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        from gateway.drain_control import current_instantiation_epoch
+        from gateway.status import _process_start_time_matches
+
+        witness, _, recorded_start = str(started_at).partition("|")
+        if witness != current_instantiation_epoch():
+            return True
+        return not _process_start_time_matches(int(pid), recorded_start, tolerance=200)
     from gateway.status import _start_times_agree, get_process_start_time
     current = get_process_start_time(int(pid))
     if current is None:

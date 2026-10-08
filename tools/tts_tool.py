@@ -449,39 +449,49 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
     return encoded_paths, chunk_results
 
 
-def text_to_speech_tool(
-    text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
-    """Convert text to speech with long-form chunking; returns the JSON result envelope.
+class _TtsAttemptFailed(Exception):
+    """One provider's full synthesis attempt failed; message is the provider error text.
+    Carried up to the entry point so the next provider in tts.fallback_chain can be tried."""
 
-    Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
-    sequentially, then packed against the platform's upload limit: a failed combine keeps the
-    separate valid files and no over-limit artifact is ever returned."""
-    if not text or not text.strip():
-        return tool_error("Text is required", success=False)
-    try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
-        text = text.strip()
-    if not text:
-        return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message or "unknown error"
+
+
+class _OutputPathRejected(Exception):
+    """``_resolve_output_base`` refused the caller's path (traversal / protected location).
+    A security verdict, not a provider failure: never replay it against another provider."""
+
+    def __init__(self, envelope: str):
+        super().__init__(envelope)
+        self.envelope = envelope
+
+
+def _synthesize_attempt(
+    text: str, output_path: Optional[str], *, provider: str, tts_config: Dict[str, Any],
+    command_provider_config: Optional[Dict[str, Any]], want_opus: bool,
+    instructions: Optional[str], generated_artifacts: set,
+) -> str:
+    """One full synthesis attempt (chunking + delivery packing) with a single provider.
+
+    Returns the success envelope JSON; raises :class:`_TtsAttemptFailed` (carrying the last
+    provider error envelope text) when any stage fails. Extracted so the tool entry point can
+    replay the identical attempt against the next provider in ``tts.fallback_chain``."""
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:
-        return tool_error("Text is required", success=False)
+        raise _TtsAttemptFailed("Text is required")
     if len(chunks) > 1:
         logger.info("TTS text for provider %s split into %d chunks (input=%d chars, cap=%d)",
                     provider, len(chunks), len(text), max_len)
-    platform, want_opus = _session_platform()
+    platform, _ = _session_platform()
     delivery_profile = _resolve_audio_delivery_profile(platform, tts_config)
     base_path, error = _resolve_output_base(
         output_path, provider, command_provider_config, want_opus)
     if error:
-        return error
-    generated_artifacts: set[str] = set()
+        # A rejection from _resolve_output_base is a path-security decision, not a provider
+        # failure: replaying it on another provider would only launder the same verdict.
+        raise _OutputPathRejected(error)
     final_paths: List[str] = []
     try:
         encoded_paths, chunk_results = _synthesize_chunks(
@@ -505,16 +515,98 @@ def text_to_speech_tool(
                 "target_file_bytes": delivery_profile.target_file_bytes},
         }, ensure_ascii=False)
     except _ChunkFailed as exc:
-        return tool_error(str(exc), success=False)
-    except ValueError as exc:
-        return _tool_failure("TTS delivery error", provider, exc)
+        raise _TtsAttemptFailed(str(exc))
     except Exception as exc:
-        return _tool_failure("TTS long-form generation failed", provider, exc)
+        envelope = _tool_failure("TTS generation failed", provider, exc)
+        try:
+            message = json.loads(envelope).get("error", envelope)
+        except (json.JSONDecodeError, TypeError):
+            message = envelope
+        raise _TtsAttemptFailed(message)
     finally:
         final_absolute = {os.path.abspath(path) for path in final_paths}
         for artifact in generated_artifacts:
             if os.path.abspath(artifact) not in final_absolute:
                 _remove_quietly(artifact)
+
+
+def _resolve_tts_fallback_chain(tts_config: Dict[str, Any], primary: str) -> List[str]:
+    """The ``tts.fallback_chain`` providers to try after *primary*, de-duplicated.
+
+    Empty when the config disables or misconfigures the chain (caller-explicit provider= is
+    handled by the entry point). Unknown names are kept: dispatch surfaces their own error
+    envelope, same as the primary path."""
+    raw = tts_config.get("fallback_chain")
+    if not isinstance(raw, list):
+        if raw not in (None, "", "off", "none"):
+            logger.warning("tts.fallback_chain must be a list of provider names; got %r — ignored", raw)
+        return []
+    seen = {primary}
+    chain: List[str] = []
+    for entry in raw:
+        name = entry.lower().strip() if isinstance(entry, str) else ""
+        if not name:
+            logger.warning("tts.fallback_chain: skipping non-string entry %r", entry)
+            continue
+        if name == NOUS_MANAGED_PROVIDER:  # same managed-gateway alias the primary path resolves
+            name = "openai"
+        if name in seen:
+            continue
+        seen.add(name)
+        chain.append(name)
+    return chain
+
+
+def _command_provider_for(name: str, tts_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a fallback entry's command-provider config (mirrors the primary dispatch)."""
+    return _resolve_command_provider_config(name, tts_config)
+
+
+def text_to_speech_tool(
+    text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
+    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    """Convert text to speech with long-form chunking; returns the JSON result envelope.
+
+    Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
+    sequentially, then packed against the platform's upload limit: a failed combine keeps the
+    separate valid files and no over-limit artifact is ever returned. When the primary provider
+    fails and ``tts.fallback_chain`` is configured, the same attempt replays against each
+    fallback provider in order before the failure is reported."""
+    if not text or not text.strip():
+        return tool_error("Text is required", success=False)
+    try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
+        from tools.tts_text_normalize import prepare_spoken_text
+        text = prepare_spoken_text(text, max_chars=None)
+    except Exception:
+        text = text.strip()
+    if not text:
+        return tool_error("Text is empty after TTS cleanup", success=False)
+    provider_explicit = bool(provider and provider.strip())
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    # A caller-explicit provider= is intent, not a default: the chain collapses to that name.
+    attempts = [provider] if provider_explicit else [provider] + _resolve_tts_fallback_chain(
+        tts_config, provider)
+    errors: List[str] = []
+    for index, attempt in enumerate(attempts):
+        generated_artifacts: set[str] = set()
+        try:
+            result = _synthesize_attempt(
+                text, output_path, provider=attempt, tts_config=tts_config,
+                command_provider_config=_command_provider_for(attempt, tts_config),
+                want_opus=_session_platform()[1], instructions=instructions,
+                generated_artifacts=generated_artifacts)
+            if index > 0:
+                logger.info("TTS primary provider %s failed; recovered with fallback provider '%s'",
+                            provider, attempt)
+            return result
+        except _OutputPathRejected as rejected:
+            return rejected.envelope
+        except _TtsAttemptFailed as failed:
+            errors.append(failed.message)
+            if index + 1 < len(attempts):
+                logger.warning("TTS provider '%s' failed; trying next fallback: %s",
+                               attempt, failed.message[:200])
+    return tool_error(errors[-1] if errors else "TTS generation failed", success=False)
 
 
 # --- check_fn ---

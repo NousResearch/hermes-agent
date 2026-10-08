@@ -19,37 +19,37 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
-from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: F401
-from utils import rmtree_readonly  # noqa: F401
+from hermes_cli.secret_prompt import masked_secret_prompt
+from utils import rmtree_readonly
 
 # Topical siblings. The facade re-exports what other modules, tests and the old updater import from
 # ``hermes_cli.plugins_cmd``; sibling bodies read those names back through the facade at call time.
-from hermes_cli.plugins_cmd_capabilities import (  # noqa: F401
+from hermes_cli.plugins_cmd_capabilities import (
     _declared_capabilities_for_key, _declared_capabilities_from_manifest, _resolve_tool_override_grant,
     _run_capability_consent, cmd_capabilities,
 )
-from hermes_cli.plugins_cmd_git import (  # noqa: F401
+from hermes_cli.plugins_cmd_git import (
     _EXACT_COMMIT_RE, _canonical_source, _checkout_exact_revision, _clone_plugin_repo, _git_head_revision,
     _git_or_raise, _git_pull_plugin_dir, _git_resolve_commit, _normalize_exact_revision, _pin_annotation,
     _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _update_install_record,
     _write_install_metadata, pinned_revision,
 )
-from hermes_cli.plugins_cmd_install import (  # noqa: F401
+from hermes_cli.plugins_cmd_install import (
     _check_manifest_version, _consent_python_deps, _display_after_install, _install_plugin_core,
     _install_plugin_python_deps, _prompt_plugin_env_vars, _python_dependency_summary,
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
-from hermes_cli.plugins_cmd_listing import (  # noqa: F401
+from hermes_cli.plugins_cmd_listing import (
     _filter_plugin_entries, cmd_list, cmd_show,
 )
-from hermes_cli.plugins_cmd_remove import (  # noqa: F401
+from hermes_cli.plugins_cmd_remove import (
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
 )
-from hermes_cli.plugins_cmd_toggle import (  # noqa: F401
+from hermes_cli.plugins_cmd_toggle import (
     _discover_context_engines, _persist_plugin_selection, _provider_categories, _run_composite_fallback,
     cmd_toggle,
 )
-from hermes_cli.plugins_cmd_update import (  # noqa: F401
+from hermes_cli.plugins_cmd_update import (
     _clear_plugin_bytecode, cmd_adopt, cmd_check_updates, cmd_trust_update_url, cmd_update,
     dashboard_update_user_plugin,
 )

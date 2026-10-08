@@ -40,7 +40,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 try:  # pragma: no cover - exercised implicitly by every exception test
-    from botocore.exceptions import (  # noqa: F401
+    from botocore.exceptions import (
         ClientError as _RealClientError,
         ConnectionClosedError as _RealConnectionClosedError,
     )

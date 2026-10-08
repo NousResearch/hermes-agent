@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 import sys
-from functools import lru_cache
+from functools import lru_cache, cache
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +85,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 # -- workflow replay ---------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
@@ -644,7 +644,7 @@ def _module_file(module: str) -> Path | None:
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _imports(path: Path) -> frozenset[str]:
     """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
     try:
@@ -679,7 +679,7 @@ def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
     return sorted(hits)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _importers() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in _product_python():
@@ -833,5 +833,5 @@ def test_windows_install_update_dispatch_alone_sets_strict():
 def test_run_tests_forwards_the_strict_switch():
     """run_tests.sh starts pytest under `env -i`: an unlisted variable never arrives."""
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
-    allow = re.search(r"for _test_var in (.*?); do", text, re.S)
+    allow = re.search(r"for _test_var in (.*?); do", text, re.DOTALL)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()

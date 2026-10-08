@@ -492,7 +492,7 @@ def auth_priority_command(args) -> None:
     index, matched, error = pool.resolve_target(getattr(args, "target", None))
     if matched is None or index is None:
         raise SystemExit(f"{error} Provider: {provider}.")
-    requested = int(getattr(args, "priority"))
+    requested = int(args.priority)
     moved = pool.move_entry(matched.id, requested)
     if moved is None:
         raise SystemExit(f'No credential matching "{getattr(args, "target", None)}" for provider {provider}.')

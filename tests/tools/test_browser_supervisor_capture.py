@@ -141,6 +141,6 @@ def test_handle_never_follows_a_reconnect_or_replacement(cdp, registry):
 def _raises(fn) -> BaseException | None:
     try:
         fn()
-    except BaseException as exc:  # noqa: BLE001 — handed back to the asserting thread
+    except BaseException as exc:
         return exc
     return None

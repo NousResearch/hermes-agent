@@ -46,7 +46,7 @@ def _read_battery_uncached() -> BatteryStatus:
         import psutil
 
         # ``sensors_battery`` is missing on some platforms/builds of psutil.
-        batt = getattr(psutil, "sensors_battery")()
+        batt = psutil.sensors_battery()
     except Exception:
         return UNAVAILABLE
     if batt is None:

@@ -158,7 +158,7 @@ def add_comment_xml(doc, runs, text, author, initials) -> str:
     root = _comments_root(doc)
     if root is None:
         root = etree.fromstring(
-            f'<w:comments xmlns:w="{W}"/>'.encode("utf-8"))
+            f'<w:comments xmlns:w="{W}"/>'.encode())
         from docx.opc.packuri import PackURI
         from docx.opc.part import Part
         blob = etree.tostring(root, xml_declaration=True,

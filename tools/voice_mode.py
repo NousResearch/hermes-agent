@@ -161,7 +161,7 @@ def _termux_microphone_command() -> Optional[str]:
     return shutil.which("termux-microphone-record") if _is_termux_environment() else None
 
 
-def _run_quiet(cmd: List[str], *, timeout: float, check: bool) -> subprocess.CompletedProcess:
+def _run_quiet(cmd: list[str], *, timeout: float, check: bool) -> subprocess.CompletedProcess:
     """subprocess.run with captured, utf-8-decoded output and no stdin."""
     return subprocess.run(
         cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -210,7 +210,7 @@ def _termux_voice_capture_available() -> bool:
     return _termux_microphone_command() is not None and _termux_api_app_installed()
 
 
-def _pulse_socket_candidates() -> List[str]:
+def _pulse_socket_candidates() -> list[str]:
     """Socket paths a PulseAudio/PipeWire client would try by default."""
     env = os.environ.get
     # PULSE_SERVER may be "unix:/path", "unix:/path;..." or a bare path.
@@ -248,7 +248,7 @@ def _pulse_socket_reachable() -> bool:
     return False
 
 
-def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwarded_audio: bool,
+def _probe_audio_libraries(warnings: list[str], notices: list[str], *, has_forwarded_audio: bool,
                            termux_mic_cmd: Optional[str], termux_app_installed: bool) -> None:
     """Import sounddevice and query devices; append the outcome to warnings/notices.
 
@@ -525,7 +525,7 @@ def _new_recording_path(ext: str) -> str:
 
 # WAV path -> live STT session that heard the same take (``stt.streaming``). transcribe_recording
 # pops it, so every consumer of a recorder's WAV gets the live transcript with no call-site change.
-_LIVE_SESSIONS: Dict[str, Any] = {}
+_LIVE_SESSIONS: dict[str, Any] = {}
 _LIVE_SESSIONS_MAX = 8
 _LIVE_LOCK = threading.Lock()
 
@@ -562,7 +562,7 @@ class _RecorderBase:
         from tools.transcription_streaming import open_streaming_session
         try:
             self._live = open_streaming_session(on_partial=self.on_live_partial)
-        except Exception:  # noqa: BLE001 — live STT is an accelerator; the WAV path still runs
+        except Exception:
             logger.debug("Live STT session did not open", exc_info=True)
             self._live = None
         if self._live is not None:
@@ -671,7 +671,7 @@ class AudioRecorder(_RecorderBase):
     def __init__(self) -> None:
         super().__init__()
         self._stream: Any = None
-        self._frames: List[Any] = []
+        self._frames: list[Any] = []
         self._sample_rate: int = SAMPLE_RATE
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
@@ -800,7 +800,7 @@ class AudioRecorder(_RecorderBase):
             self._close_stream_with_timeout()
         sd, np = _import_audio()
 
-        def _callback(indata, frames, time_info, status):  # noqa: ARG001
+        def _callback(indata, frames, time_info, status):
             if status:
                 logger.debug("sounddevice status: %s", status)
             if self._recording:
@@ -938,7 +938,7 @@ def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
 
 
 # ── STT dispatch ──
-def _live_result(wav_path: str) -> Optional[Dict[str, Any]]:
+def _live_result(wav_path: str) -> Optional[dict[str, Any]]:
     """The live session's transcript for this take, or None to transcribe the WAV instead.
 
     A failed or empty live result falls back to the file: an empty live transcript over a take the
@@ -954,7 +954,7 @@ def _live_result(wav_path: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_recording(wav_path: str, model: Optional[str] = None) -> dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
     from tools.transcription_tools import transcribe_audio
@@ -1050,7 +1050,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         return False
 
 
-def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
+def _wsl_powershell_player_cmd(file_path: str) -> Optional[list[str]]:
     """WSL2 PowerShell fallback player command, or None. Without a PulseAudio bridge
     ffplay/aplay have no device, but Media.SoundPlayer on the host does: convert to a
     uniquely-named WAV in Windows %TEMP% (concurrent TTS must not collide), play, always
@@ -1082,10 +1082,10 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
         return None  # WSL path resolution failed; fall through to ffplay/aplay
 
 
-def _system_player_candidates(file_path: str) -> List[List[str]]:
+def _system_player_candidates(file_path: str) -> list[list[str]]:
     """Ordered system-player commands for this platform."""
     system = platform.system()
-    players: List[List[str]] = [["afplay", file_path]] if system == "Darwin" else []
+    players: list[list[str]] = [["afplay", file_path]] if system == "Darwin" else []
     ps_cmd = _wsl_powershell_player_cmd(file_path) if system == "Linux" else None
     if ps_cmd:
         players.append(ps_cmd)
@@ -1095,7 +1095,7 @@ def _system_player_candidates(file_path: str) -> List[List[str]]:
     return players
 
 
-def _run_system_player(cmd: List[str]) -> bool:
+def _run_system_player(cmd: list[str]) -> bool:
     """Run one player to completion (interruptible via stop_playback)."""
     proc = None
     try:
@@ -1283,7 +1283,7 @@ def listen_for_speech(
 
                 # Keep rolling until the user goes quiet. Playback is stopped
                 # now, so plain silence endpointing (recorder threshold) works.
-                frames: List[Any] = list(pre_roll)
+                frames: list[Any] = list(pre_roll)
                 quiet = 0
                 for _ in range(max_blocks):
                     data, _ = stream.read(block)
@@ -1321,7 +1321,7 @@ def _vad_log(msg: str) -> None:
 def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write
     pre-roll + capture to a WAV. Playback was cut by the trigger, so silence endpointing works."""
-    frames: List[Any] = list(pre_roll)
+    frames: list[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
         data, _ = stream.read(block)
@@ -1472,12 +1472,12 @@ def _check_plugin_stt_provider(provider: str) -> bool:
             # one refresh after plugins or configuration change.
             _ensure_plugins_discovered(force=True)
             plugin_provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 - discovery failure is non-fatal
+    except Exception as exc:
         logger.debug("STT plugin requirements check skipped for '%s': %s", key, exc)
         return False
     try:
         return plugin_provider is not None and bool(plugin_provider.is_available())
-    except Exception as exc:  # noqa: BLE001 - plugins must not break status
+    except Exception as exc:
         logger.warning(
             "STT plugin provider '%s' is_available() raised during requirements "
             "check: %s - treating as unavailable", key, exc, exc_info=True)
@@ -1497,7 +1497,7 @@ _NATIVE_STT_LABELS = {
 }
 
 
-def check_voice_requirements() -> Dict[str, Any]:
+def check_voice_requirements() -> dict[str, Any]:
     """Check voice mode requirements: ``{available, audio_available, stt_available,
     missing_packages, details, environment}``."""
     from tools.transcription_tools import (

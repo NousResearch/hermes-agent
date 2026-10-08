@@ -59,12 +59,12 @@ def _summarize_error_body(body: str) -> str:
     return text[:_MAX_ERROR_BODY_CHARS]
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model() -> tuple[str, dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_credential(model: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def _read_codex_credential(model: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
     the image request goes to the host the token's credential routes to (pool row /
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
@@ -84,7 +84,7 @@ def _read_codex_credential(model: Optional[str] = None) -> Tuple[Optional[str], 
 
 def _httpx_available() -> bool:
     try:
-        import httpx  # noqa: F401
+        import httpx
     except ImportError:
         return False
     return True
@@ -152,7 +152,7 @@ def _local_image_to_data_url(value: str) -> str:
         f"Image input path is not a supported image: {value}")
 
 
-def _to_input_image(value: str) -> Dict[str, str]:
+def _to_input_image(value: str) -> dict[str, str]:
     """Convert a URL/data URL/local path into an ``images[]`` entry for ``images/edits``."""
     candidate = (value or "").strip()
     if not candidate:
@@ -168,19 +168,19 @@ def _to_input_image(value: str) -> Dict[str, str]:
 
 
 def _normalize_input_images(
-    image_url: Optional[str], reference_image_urls: Optional[List[str]]
-) -> List[Dict[str, str]]:
+    image_url: Optional[str], reference_image_urls: Optional[list[str]]
+) -> list[dict[str, str]]:
     values = collect_source_images(image_url, reference_image_urls, limit=_MAX_REFERENCE_IMAGES)
     return [_to_input_image(value) for value in values]
 
 
 def _build_image_request(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
-) -> Tuple[str, Dict[str, Any]]:
+    *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None
+) -> tuple[str, dict[str, Any]]:
     """``(endpoint_path, json_body)`` — ``images/edits`` when sources are present, else
     ``images/generations``. Field set mirrors the official client's ``ImageGenerationRequest`` /
     ``ImageEditRequest``."""
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "prompt": prompt, "model": API_MODEL, "n": 1, "quality": quality, "size": size,
         "background": "opaque",
     }
@@ -191,9 +191,9 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None,
+    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None,
     base_url: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
     ``imagegen_request_id`` (backend correlation id, for support tickets).
 
@@ -245,7 +245,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     def is_available(self) -> bool:
         return bool(_read_codex_credential()[0]) and _httpx_available()
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
@@ -259,14 +259,14 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
                 "if you haven't already. No API key needed."),
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:

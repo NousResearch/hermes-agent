@@ -37,8 +37,8 @@ def server():
     # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
     # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
-    import tui_gateway.server_requests  # noqa: F401
-    import tui_gateway.transport  # noqa: F401
+    import tui_gateway.server_requests
+    import tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -1359,8 +1359,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1409,8 +1409,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1831,7 +1831,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     """Real config + skin files: activating a skin (as `hermes config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
     Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
-    import hermes_cli.skin_engine as skin_engine
+    from hermes_cli import skin_engine
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(

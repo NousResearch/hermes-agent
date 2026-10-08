@@ -256,7 +256,7 @@ class TestDefaultModelFromCache:
     def test_shipped_manifest_labels_glm52_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
-        import hermes_cli.model_catalog as model_catalog
+        from hermes_cli import model_catalog
         from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
@@ -539,7 +539,6 @@ class TestSwrRefreshProfileScope:
             with seen:
                 refreshed_paths.append(str(model_catalog._cache_path()))
             release.wait(5)
-            return None
 
         set_multiplex_active(True)
         try:

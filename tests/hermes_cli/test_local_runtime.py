@@ -63,7 +63,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         if self.require_auth and "Authorization" not in self.headers:
             self._send(401, {})
             return
@@ -97,7 +97,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {})
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         if self.path == "/v1/chat/completions":
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
@@ -246,7 +246,7 @@ def test_touch_generate_scans_reasoning_content(stub_server, tmp_path):
     sup = _make_supervisor(tmp_path, port)
 
     class ReasoningHandler(handler):  # type: ignore[valid-type]
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             if self.path == "/v1/chat/completions":
                 self._send(200, {"choices": [{"message": {
                     "role": "assistant", "content": "",

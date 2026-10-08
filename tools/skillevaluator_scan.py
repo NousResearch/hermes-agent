@@ -52,16 +52,16 @@ class Tier1Finding:
 class Tier1Report:
     available: bool                 # scanner ran and produced a report
     passed: bool = True
-    findings: List[Tier1Finding] = field(default_factory=list)
-    incomplete_checks: List[str] = field(default_factory=list)
+    findings: list[Tier1Finding] = field(default_factory=list)
+    incomplete_checks: list[str] = field(default_factory=list)
     error: str = ""                 # why the scan is unavailable (debug only)
 
     @property
-    def advisory_findings(self) -> List[Tier1Finding]:
+    def advisory_findings(self) -> list[Tier1Finding]:
         return [f for f in self.findings if not f.is_secrets_class]
 
     @property
-    def secrets_findings(self) -> List[Tier1Finding]:
+    def secrets_findings(self) -> list[Tier1Finding]:
         return [f for f in self.findings if f.is_secrets_class]
 
 
@@ -79,8 +79,8 @@ def tier1_advisory_enabled() -> bool:
 def _parse_report(report: dict) -> Tier1Report:
     """Reduce a SkillEvaluator JSON report to install-relevant findings. Findings from ``status == "incomplete"``
     validators are kept (partial evidence is evidence) but excluded from the pass/fail signal."""
-    findings: List[Tier1Finding] = []
-    incomplete: List[str] = []
+    findings: list[Tier1Finding] = []
+    incomplete: list[str] = []
     failed = False
     for res in report.get("results", []) or []:
         validator = str(res.get("validator", "unknown"))
@@ -99,7 +99,7 @@ def _parse_report(report: dict) -> Tier1Report:
 
 def run_tier1_scan(skill_dir: Path, timeout: int = SCAN_TIMEOUT_SECONDS) -> Tier1Report:
     """Run SkillEvaluator Tier 1 over one skill dir; any failure returns ``available=False``, never raises."""
-    unavailable = lambda why: Tier1Report(available=False, error=why)  # noqa: E731
+    unavailable = lambda why: Tier1Report(available=False, error=why)
     if shutil.which(SCANNER_BIN) is None:
         return unavailable("scanner not on PATH")
     with tempfile.TemporaryDirectory(prefix="se-tier1-") as outdir:
@@ -124,7 +124,7 @@ def format_tier1_report(report: Tier1Report, limit: int = 10) -> str:
     """Plain-text advisory summary for console display ("" when unavailable)."""
     if not report.available:
         return ""
-    lines: List[str] = []
+    lines: list[str] = []
     if not report.findings:
         lines.append("SkillEvaluator Tier 1: no findings from completed checks." if report.incomplete_checks
                      else "SkillEvaluator Tier 1: no findings.")

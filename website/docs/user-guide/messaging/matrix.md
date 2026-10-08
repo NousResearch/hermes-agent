@@ -126,7 +126,7 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 :::
 
 :::tip Room-wide mentions
-Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
+Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Every text message it sends carries an `m.mentions` block (MSC3952), empty when it mentions nobody, so homeservers and bots that follow MSC3952 do not treat a bare name in its prose as a mention. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
 :::
 
 :::note

@@ -3,6 +3,19 @@
 
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
+export const canonicalProfile = (profile: unknown): string =>
+  typeof profile === 'string' && profile ? profile : 'default'
+
+export const canonicalSessionKey = (sessionId: unknown, profile?: unknown): string =>
+  JSON.stringify([canonicalProfile(profile), sessionId])
+
+// Only the authenticated adapter can establish this renderer-side provenance;
+// a JSON-RPC payload's ordinary `profile` property cannot impersonate it.
+const canonicalOwners = new WeakMap<object, string>()
+export const canonicalOwnerProfile = (value: object): string | undefined => canonicalOwners.get(value)
+
+export const recordCanonicalOwner = (value: object, profile: string): void => { canonicalOwners.set(value, profile) }
+
 // Mirrors hermes_cli/gateway_mutations.slash_mutation: the typed directives
 // that are canonical mutations, not gateway-executed slash commands. Model
 // flags (--global/--once/--refresh) have no canonical mutation and stay on the
@@ -59,7 +72,7 @@ export class CanonicalDesktopProtocol {
   // admission_id → generation of a turn the authority recovered as `unknown`
   // (owner died mid-turn). Only these rows may be acknowledged, and only with
   // the generation the authority stamped on them, never the live one.
-  private unknownAdmissions = new Map<string, { session_id: string; generation: number }>()
+  private unknownAdmissions = new Map<string, { session_id: string; profile: string; generation: number }>()
 
   failure(params: Record<string, unknown>, error: unknown) {
     if ((error as { data?: { reason?: string } })?.data?.reason !== 'revision_conflict') { return }
@@ -83,15 +96,16 @@ export class CanonicalDesktopProtocol {
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
-  private retainedMutation(sessionId: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
-    const key = JSON.stringify([sessionId, operation, payload])
+  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
+    const owner = canonicalSessionKey(sessionId, profile)
+    const key = JSON.stringify([owner, operation, payload])
     const retained = this.mutations.get(key)
 
     if (retained) { return retained }
-    const revision = this.revisions.get(String(sessionId))
+    const revision = this.revisions.get(owner)
 
     if (revision === undefined) { throw new Error('Session revision unavailable; reopen the session before editing metadata') }
-    const generation = this.generations.get(String(sessionId))
+    const generation = this.generations.get(owner)
 
     if (withGeneration && generation === undefined) { throw new Error('Session execution identity unavailable; reconnect before this command') }
 
@@ -104,6 +118,14 @@ export class CanonicalDesktopProtocol {
   }
 
   prepare(method: string, params: Record<string, unknown>): Record<string, unknown> {
+    const prepared = this.preparePayload(method, params)
+
+    // Routing belongs to the envelope, independently of the canonical payload.
+    // Creation applies its own default-profile normalization.
+    return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
+  }
+
+  private preparePayload(method: string, params: Record<string, unknown>): Record<string, unknown> {
     const mutation = this.prepareMutation(method, params)
 
     if (mutation) { return mutation }
@@ -115,7 +137,7 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
-      const generation = params.execution_generation ?? this.generations.get(String(params.session_id))
+      const generation = params.execution_generation ?? this.generations.get(canonicalSessionKey(params.session_id, params.profile))
 
       if (typeof generation !== 'number') { throw new Error('Session execution identity unavailable; reconnect before controlling this turn') }
 
@@ -123,9 +145,9 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'prompt.resolve_unknown') {
-      const lost = this.unknownAdmissions.get(String(params.admission_id))
+      const lost = this.unknownAdmissions.get(canonicalSessionKey(params.admission_id, params.profile))
 
-      if (!lost || lost.session_id !== params.session_id) { throw new Error('Admission is not an unknown lost turn; reopen the session before acknowledging') }
+      if (!lost || lost.session_id !== params.session_id || lost.profile !== canonicalProfile(params.profile)) { throw new Error('Admission is not an unknown lost turn; reopen the session before acknowledging') }
 
       return { session_id: params.session_id, admission_id: params.admission_id, execution_generation: lost.generation }
     }
@@ -139,7 +161,7 @@ export class CanonicalDesktopProtocol {
   private prepareMutation(method: string, params: Record<string, unknown>): Record<string, unknown> | null {
     const field = ({ 'session.title': 'title', 'session.archive': 'archived' } as Record<string, string>)[method]
 
-    if (field) { return this.retainedMutation(params.session_id, field === 'title' ? 'rename' : 'archive', { [field]: params[field] }, false) }
+    if (field) { return this.retainedMutation(params.session_id, params.profile, field === 'title' ? 'rename' : 'archive', { [field]: params[field] }, false) }
 
     // Branch and compress fence the execution generation like the slash directives.
     const fenced = ({
@@ -147,20 +169,20 @@ export class CanonicalDesktopProtocol {
       'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
-    if (fenced) { return this.retainedMutation(params.session_id, fenced.operation, fenced.payload, true) }
+    if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
 
     if (method === 'session.branch_stored' || method === 'session.branch_whole') {
       // The stored-parent form names the parent as `parent_session_id`; the live form as `session_id`.
       const parent = params.parent_session_id ?? params.session_id
       const payload = typeof params.title === 'string' && params.title ? { title: params.title } : {}
 
-      return this.retainedMutation(parent, 'branch', payload, true)
+      return this.retainedMutation(parent, params.profile, 'branch', payload, true)
     }
 
     if (method === 'slash.exec') {
       const directive = slashMutation(String(params.command ?? ''))
 
-      if (directive) { return this.retainedMutation(params.session_id, directive.operation, directive.payload, true) }
+      if (directive) { return this.retainedMutation(params.session_id, params.profile, directive.operation, directive.payload, true) }
     }
 
     return null
@@ -184,10 +206,11 @@ export class CanonicalDesktopProtocol {
 
   private preparePromptResponse(method: string, params: Record<string, unknown>): Record<string, unknown> {
     const id = String(params.prompt_id ?? params.request_id ?? '')
-    const prompt = this.prompts.get(id)
+    const prompt = this.prompts.get(canonicalSessionKey(id, params.profile))
     const sessionId = params.session_id ?? prompt?.session_id
 
-    if (!prompt || prompt.session_id !== sessionId || prompt.execution_generation !== this.generations.get(String(sessionId))) {
+    if (!prompt || prompt.session_id !== sessionId || prompt.profile !== canonicalProfile(params.profile) ||
+        prompt.execution_generation !== this.generations.get(canonicalSessionKey(sessionId, params.profile))) {
       throw new Error('Prompt is stale or unavailable; reconnect before responding')
     }
 
@@ -196,43 +219,53 @@ export class CanonicalDesktopProtocol {
     return { session_id: sessionId, execution_generation: prompt.execution_generation, prompt_id: id, [field]: params[field] }
   }
 
-  event(event: { type: string; session_id?: string; payload?: unknown }) {
+  private reconcileUnknownAdmissions(sid: string, profile: string, pending: Array<Record<string, unknown>>): void {
+    for (const [id, lost] of this.unknownAdmissions) {
+      if (lost.session_id === sid && lost.profile === profile) { this.unknownAdmissions.delete(id) }
+    }
+
+    for (const row of pending) {
+      if (row?.status === 'unknown' && typeof row.admission_id === 'string' && typeof row.execution_generation === 'number') {
+        this.unknownAdmissions.set(canonicalSessionKey(row.admission_id, profile), { session_id: sid, profile, generation: row.execution_generation })
+      }
+    }
+  }
+
+  event(event: { type: string; session_id?: string; profile?: string; execution_generation?: unknown; payload?: unknown }) {
     const payload = event.payload as Record<string, unknown> | undefined
 
     if (!payload || !event.session_id) { return }
     const sid = event.session_id
+    const profile = canonicalProfile(event.profile)
+    const owner = canonicalSessionKey(sid, profile)
 
     if (Array.isArray(payload.pending)) {
       payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text }))
 
-      for (const [id, lost] of this.unknownAdmissions) { if (lost.session_id === sid) { this.unknownAdmissions.delete(id) } }
-
-      for (const row of payload.pending) {
-        if (row?.status === 'unknown' && typeof row.admission_id === 'string' && typeof row.execution_generation === 'number') {
-          this.unknownAdmissions.set(row.admission_id, { session_id: sid, generation: row.execution_generation })
-        }
-      }
+      this.reconcileUnknownAdmissions(sid, profile, payload.pending)
     }
 
-    if (typeof payload.execution_generation === 'number') {
-      const current = this.generations.get(sid) ?? -1
+    const generation = event.execution_generation ?? payload.execution_generation
 
-      if (payload.execution_generation < current) { return }
-      this.generations.set(sid, payload.execution_generation)
+    if (typeof generation === 'number') {
+      const current = this.generations.get(owner) ?? -1
+
+      if (generation < current) { return }
+      this.generations.set(owner, generation)
     }
 
     // Turns advance the CAS revision without a session.updated event; the
     // pending fanout is where a viewer learns the value its next mutation must present.
-    if (event.type === 'session.info' && typeof payload.revision === 'number') { this.revisions.set(sid, payload.revision) }
+    if (event.type === 'session.info' && typeof payload.revision === 'number') { this.revisions.set(owner, payload.revision) }
 
     if (typeof payload.prompt_id === 'string') {
-      if (event.type.endsWith('.settled')) { this.prompts.delete(payload.prompt_id);
+      if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
 
  return }
 
       if (event.type === 'approval.request' || event.type === 'clarify.request') {
         payload.request_id = payload.prompt_id
-        this.prompts.set(payload.prompt_id, { ...payload, session_id: sid })
+        this.prompts.set(canonicalSessionKey(payload.prompt_id, profile), { ...payload, session_id: sid, profile })
       }
     }
   }
@@ -241,7 +274,7 @@ export class CanonicalDesktopProtocol {
     if (!value || typeof value !== 'object') { return value }
 
     if (typeof value.session_id === 'string' && typeof value.revision === 'number') {
-      this.revisions.set(value.session_id, value.revision)
+      this.revisions.set(canonicalSessionKey(value.session_id, params.profile), value.revision)
     }
 
     if (MUTATION_METHODS.has(method) || (method === 'slash.exec' && typeof params.operation === 'string')) {
@@ -254,10 +287,10 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'prompt.submit' || method === 'prompt.resolve_unknown') { return this.admissionReceipt(method, params, value) }
 
-    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') { return this.snapshotResult(value) }
+    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') { return this.snapshotResult(value, params.profile) }
 
     if (method === 'session.events.since') {
-      for (const event of value.events ?? []) { this.event(event) }
+      for (const event of value.events ?? []) { this.event({ ...event, profile: canonicalProfile(params.profile) }) }
     }
 
     return value
@@ -276,7 +309,7 @@ export class CanonicalDesktopProtocol {
       throw new Error('Canonical admission receipt destination mismatch')
     }
 
-    this.unknownAdmissions.delete(String(params.admission_id))
+    this.unknownAdmissions.delete(canonicalSessionKey(params.admission_id, params.profile))
 
     return { ...value, session_id: value.ref.session_id }
   }
@@ -290,18 +323,19 @@ export class CanonicalDesktopProtocol {
       return { ...value, session_id: value.branched_session_id, stored_session_id: value.branched_session_id, parent_session_id: params.session_id, message_count: value.copied_messages }
     }
 
-    if (method === 'slash.exec') { return { type: 'exec', output: mutationSummary(params.operation as string, value) } }
+    if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
 
     return { ...value, ok: true }
   }
 
-  private snapshotResult(value: any): any {
+  private snapshotResult(value: any, route: unknown): any {
     const sid = value.session_id
-    this.event({ type: 'session.info', session_id: sid, payload: value })
+    const profile = canonicalProfile(route)
+    this.event({ type: 'session.info', session_id: sid, profile, payload: value })
 
     const prompts = (value.prompts ?? []).map((prompt: Record<string, unknown>) => {
       const projected = { ...prompt, request_id: prompt.prompt_id }
-      this.event({ type: `${prompt.kind}.request`, session_id: sid, payload: projected })
+      this.event({ type: `${prompt.kind}.request`, session_id: sid, profile, payload: projected })
 
       return projected
     })
@@ -313,11 +347,11 @@ export class CanonicalDesktopProtocol {
   // the compress action repaints only from `messages`, so resume the session
   // through the normal request path (which also re-primes revision/generation).
   async settle(method: string, params: Record<string, unknown>, value: any, request: (method: string, params: Record<string, unknown>) => Promise<any>): Promise<any> {
-    if (method !== 'session.compress') { return value }
+    if (method !== 'session.compress' && !(method === 'slash.exec' && params.operation === 'compress')) { return value }
 
     // `--preview` in the focus argument is a read-only report: no transcript changed.
     if (value?.status === 'preview') { return { ...value, host_ack: { output: (value.lines as string[]).join('\n') } } }
-    const resumed = await request('session.resume', { session_id: params.session_id })
+    const resumed = await request('session.resume', { session_id: params.session_id, ...(params.profile !== undefined ? { profile: params.profile } : {}) })
 
     return { ...value, messages: resumed.messages, info: resumed.info, host_ack: { output: `compressed context: ${value.message_count} messages retained` } }
   }

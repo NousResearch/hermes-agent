@@ -2,6 +2,56 @@ import { expect, test } from 'vitest'
 
 import { CanonicalDesktopProtocol } from './canonical-protocol'
 
+test('sibling routes survive every rebuilt control and compression follow-up', async () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's', profile: 'sibling' }, {
+    session_id: 's', revision: 4, execution_generation: 9,
+    prompts: [{ kind: 'approval', prompt_id: 'p', execution_generation: 9 }],
+    pending: [{ admission_id: 'lost', status: 'unknown', execution_generation: 3 }]
+  })
+
+  const requests: Array<[string, Record<string, unknown>]> = [
+    ['session.title', { title: 'title' }], ['session.archive', { archived: true }],
+    ['session.branch', {}], ['session.branch_stored', { parent_session_id: 's' }],
+    ['session.compress', {}], ['slash.exec', { command: 'model new-model' }],
+    ['approval.respond', { request_id: 'p', choice: 'once' }],
+    ['prompt.resolve_unknown', { admission_id: 'lost' }]
+  ]
+
+  for (const [method, params] of requests) {
+    expect(protocol.prepare(method, { session_id: 's', profile: 'sibling', ...params })).toMatchObject({ profile: 'sibling' })
+  }
+
+  const calls: unknown[] = []
+  const params = protocol.prepare('session.compress', { session_id: 's', profile: 'sibling' })
+  await protocol.settle('session.compress', params, { message_count: 1 }, async (method, followUp) => {
+    calls.push([method, followUp])
+
+    return { messages: [], info: {} }
+  })
+  expect(calls).toEqual([['session.resume', { session_id: 's', profile: 'sibling' }]])
+})
+
+test('slash compress refreshes its transcript on the owner route and previews stay read-only', async () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { profile: 'sibling' }, { session_id: 's', revision: 1, execution_generation: 2 })
+  const prepared = protocol.prepare('slash.exec', { session_id: 's', profile: 'sibling', command: 'compress' })
+  const calls: unknown[] = []
+
+  const followUp = async (method: string, params: Record<string, unknown>) => {
+    calls.push([method, params])
+
+    return { messages: [{ role: 'assistant', content: 'retained' }], info: {} }
+  }
+
+  const result = protocol.result('slash.exec', prepared, { session_id: 's', revision: 2, message_count: 1 })
+  expect(await protocol.settle('slash.exec', prepared, result, followUp)).toMatchObject({ type: 'exec', messages: [{ content: 'retained' }] })
+  expect(calls).toEqual([['session.resume', { session_id: 's', profile: 'sibling' }]])
+  const preview = protocol.result('slash.exec', prepared, { session_id: 's', status: 'preview', lines: ['report'] })
+  await protocol.settle('slash.exec', prepared, preview, followUp)
+  expect(calls).toHaveLength(1)
+})
+
 test('corrections preserve intent and fence the observed session generation', () => {
   const protocol = new CanonicalDesktopProtocol()
 

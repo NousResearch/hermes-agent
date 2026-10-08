@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -1129,7 +1130,7 @@ export function useGatewayBoot({
 
     const offEvent = gateway.onEvent(event => {
       const connectionId = activeGatewayConnectionId()
-      const sourceProfile = sourceProfileNow()
+      const sourceProfile = canonicalOwnerProfile(event) ?? sourceProfileNow()
 
       const scopedEvent = {
         ...event,

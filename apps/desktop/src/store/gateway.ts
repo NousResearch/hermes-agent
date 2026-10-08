@@ -10,6 +10,7 @@ import {
 } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -351,7 +352,7 @@ function dispatchServerRequest(request: ServerRequest, profile: string, connecti
     return false
   }
 
-  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile: canonicalOwnerProfile(request) ?? profile })
 
   return true
 }
@@ -1062,12 +1063,11 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     activationLeaseUntil: 0
   }
 
-  // Events keep carrying the bare profile — session routing is profile-keyed
-  // everywhere. A pool secondary with no registry connection has no exact
-  // connection id, so stamp this closure-owned profile before registry fan-in;
-  // the recorder must not promote an arbitrary wire `profile` field instead.
+  // Canonical adapters prove the owner from their attachment; legacy pooled
+  // sockets prove it through this closure. Stamp before registry fan-in,
+  // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
-    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, profile)
+    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
 
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)

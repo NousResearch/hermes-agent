@@ -4652,6 +4652,53 @@ def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
     return home / "sessions"
 
 
+# Homes whose no-op housekeeping already produced a WARNING this process (#132542).
+_noop_housekeeping_warned_homes: set = set()
+
+
+def _warn_noop_housekeeping_stale_sessions(sess_cfg: Dict[str, Any]) -> None:
+    """Warn when a served profile's ``sessions:`` config resolves to a no-op sweep over a stale store.
+
+    A profile that disables both ``auto_archive`` and ``auto_prune`` (the merged defaults carry
+    ``auto_prune: true``, #54189, so this takes an explicit opt-out) is silently opted out of
+    session housekeeping forever: the tick's gate returns before touching its state.db and no log
+    or dashboard surface says so, so months of unarchived sessions can accumulate with zero signal
+    (#132542). Before that return, count what a sweep would have archived — the same predicate
+    ``archive_stale_sessions`` uses — and WARN naming the home, the disabled keys and the backlog,
+    once per process per profile. An empty backlog is a legitimate deliberate opt-out and stays
+    silent; the count re-runs each (hourly) tick until a warning fires, then the home is
+    rate-limited for the process lifetime."""
+    try:
+        home = str(get_hermes_home())
+    except Exception:
+        return
+    if home in _noop_housekeeping_warned_homes:
+        return
+    try:
+        idle_days = float(sess_cfg.get("auto_archive_days", 3))
+    except (TypeError, ValueError):
+        idle_days = 3.0
+    from hermes_state_registry import acquire, release_or_close
+    try:
+        _adb = acquire()
+        try:
+            stale = _adb.count_stale_unarchived(idle_days)
+        finally:
+            release_or_close(_adb)
+    except Exception as exc:
+        logger.debug("No-op housekeeping staleness count failed for %s: %s", home, exc)
+        return
+    if stale <= 0:
+        return
+    _noop_housekeeping_warned_homes.add(home)
+    logger.warning(
+        "Session housekeeping is disabled for %s (sessions.auto_archive=%s, sessions.auto_prune=%s) "
+        "but its state.db holds %d session(s) idle for more than %g day(s) that nothing will sweep; "
+        "enable sessions.auto_archive / sessions.auto_prune in the profile's config.yaml, or archive "
+        "them manually. Reported once per process per profile.",
+        home, sess_cfg.get("auto_archive", False), sess_cfg.get("auto_prune", False), stale, idle_days)
+
+
 def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
@@ -4667,6 +4714,7 @@ def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = Non
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
+        _warn_noop_housekeeping_stale_sessions(_sess_cfg)
         return
     _adb = acquire()
     try:

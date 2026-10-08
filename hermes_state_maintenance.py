@@ -319,6 +319,24 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
+    def count_stale_unarchived(self, idle_days: float, *, exclude_pinned: bool = True) -> int:
+        """Count-only :meth:`archive_stale_sessions` predicate: what a sweep with this
+        ``idle_days`` would archive right now. Visibility for callers that must not sweep —
+        the disabled-housekeeping warning path reads the backlog without touching it (#132542)."""
+        if idle_days is None or idle_days < 0:
+            return 0
+        cutoff = time.time() - float(idle_days) * 86400.0
+        pin_clause = f"AND {_not_pinned_sql()}" if exclude_pinned else ""
+        return int(self._read_one(
+            f"""
+            SELECT COUNT(*) FROM sessions s
+            WHERE s.archived = 0
+              AND COALESCE(s.end_reason, '') <> 'compression'
+              {pin_clause}
+              AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
+              AND {_LAST_ACTIVE_SQL} < ?
+            """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))[0])
+
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
                        **filters) -> int:

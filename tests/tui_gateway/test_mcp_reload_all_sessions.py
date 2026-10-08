@@ -27,7 +27,8 @@ def reload_env(monkeypatch, tmp_path):
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda: None)
     scoped_homes: list[str] = []
 
-    def _discover():
+    def _discover(*, force_refresh=False):
+        assert force_refresh is True
         discovered_homes.append(hermes_constants.hermes_home_key())
         if current_secret_scope() is not None:
             scoped_homes.append(hermes_constants.hermes_home_key())

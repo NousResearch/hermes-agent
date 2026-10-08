@@ -388,7 +388,7 @@ def _(rid, params: dict) -> dict:
             for _ in range(_MCP_RELOAD_MAX_PASSES):
                 _mcp_lifecycle.shutdown_mcp_servers()
                 _mcp_agent.reprobe_tool_availability()
-                _mcp_discovery.discover_mcp_tools()
+                _mcp_discovery.discover_mcp_tools(force_refresh=True)
                 after = _compute_mcp_rev()
                 if after == loaded:
                     break
@@ -401,7 +401,7 @@ def _(rid, params: dict) -> dict:
         for home in sorted(homes - {None}):
             try:
                 with _session_profile_runtime_scope({"profile_home": home}):
-                    _mcp_discovery.discover_mcp_tools()
+                    _mcp_discovery.discover_mcp_tools(force_refresh=True)
             except Exception as _exc:
                 logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
         _refresh_session_agent()

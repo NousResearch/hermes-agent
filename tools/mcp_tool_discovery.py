@@ -395,13 +395,17 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return new_servers
 
 
-def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, dict], int, int]:
+def _register_lazy_from_cache(new_servers: Dict[str, dict], *, force_refresh: bool = False) -> Tuple[Dict[str, dict], int, int]:
     """Register ``lazy: true`` servers from a valid schema-cache entry without connecting
     (missing/stale entry or failed registration -> eager). Returns (eager servers, lazy tool
     count, lazy server count)."""
     # A missing or stale cache entry falls back to the normal eager connect below (which write-through
     # refreshes the cache for next time). See #56832.
     eager_servers: Dict[str, dict] = dict(new_servers)
+    # An approved explicit reload must confirm the served manifest, including servers
+    # whose cached tools/list result carries no TTL. Keep the last-good disk entry intact.
+    if force_refresh:
+        return eager_servers, 0, 0
     lazy_registered = 0
     lazy_server_count = 0
     try:
@@ -532,7 +536,7 @@ def _log_summary(prefix: str, names, **lazy) -> None:
         logger.info(summary)
 
 
-def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = False) -> List[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
     if not _core._ensure_mcp_sdk():
@@ -540,14 +544,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         return []
     servers = _config._filter_suspicious_mcp_servers(servers)
     try:
-        return _register_mcp_servers(servers)
+        return _register_mcp_servers(servers, force_refresh=force_refresh)
     finally:
         # An owner's scoped reload orphaned adopters of its shared connections: now that this
         # pass (its rediscovery) is done, give them their tools back under their own scope.
         _lifecycle._reregister_orphaned_adopters()
 
 
-def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def _register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = False) -> List[str]:
     scoped_healed = _registration.register_connected_into_current_scope(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
@@ -557,7 +561,7 @@ def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.info("MCP: registered %d already-connected server(s) into this profile scope", scoped_healed)
     if not new_servers:
         return _registration._existing_tool_names()
-    new_servers, lazy_registered, lazy_server_count = _register_lazy_from_cache(new_servers)
+    new_servers, lazy_registered, lazy_server_count = _register_lazy_from_cache(new_servers, force_refresh=force_refresh)
     if not new_servers:
         if lazy_registered:
             logger.info("MCP: registered %d lazy tool(s) from schema cache (no processes spawned)",
@@ -592,9 +596,13 @@ def _acquire_discovery_lock_with_retry():
     return cookie
 
 
-def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[str]:
+def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None, *, force_refresh: bool = False) -> List[str]:
     """Entry point: load config, connect servers, register tools. [] without the ``mcp``
     package; idempotent (only servers missing from a previous call are retried).
+
+    ``force_refresh``: bypass persistent lazy schema entries for newly connecting servers.
+    Explicit reload callers disconnect first; normal discovery remains lazy and idempotent.
+    A failed live connect leaves the last-good disk cache unchanged, not reported as refreshed.
 
     ``allowed_mcp_names``: spawn only the MCP servers named in it (built-in toolset names in the
     list simply don't match); ``None`` spawns every configured server. Used by
@@ -628,7 +636,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
                                 and mcp_server_enabled(cfg)]
             prior_lazy = set(_core._lazy_server_configs)
-        tool_names = register_mcp_servers(servers)
+        tool_names = register_mcp_servers(servers, force_refresh=force_refresh)
         if new_server_names:
             # A lazily registered server never connected, so it must not be counted as failed
             # (the old summary read "N failed" for a healthy all-lazy config, #111717). Reporting

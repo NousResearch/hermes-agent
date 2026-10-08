@@ -29,10 +29,15 @@ def _clean_load_failure_buffer():
     with _providers_pkg._LOAD_FAILURES_LOCK:
         _providers_pkg._LOAD_FAILURES.clear()
         _providers_pkg._REPLAYED_COUNT = 0
+        _providers_pkg._LOGGING_READY = False
+    _saved_discovered = _providers_pkg._discovered
+    _providers_pkg._discovered = True
     yield
     with _providers_pkg._LOAD_FAILURES_LOCK:
         _providers_pkg._LOAD_FAILURES.clear()
         _providers_pkg._REPLAYED_COUNT = 0
+        _providers_pkg._LOGGING_READY = False
+    _providers_pkg._discovered = _saved_discovered
     sys.modules.pop(f"plugins.model_providers.{BROKEN_PLUGIN_NAME}", None)
 
 
@@ -228,3 +233,92 @@ def test_host_isolation_refusal_is_buffered_with_remedy(monkeypatch):
     assert failures[0].plugin_name == "refused-plugin-zz"
     assert failures[0].source == "entry-point"
     assert "plugins.isolation" in failures[0].error
+
+
+def test_second_replay_after_discovery_surfaces_late_failure(monkeypatch, caplog):
+    """A failure buffered by lazy discovery AFTER an early replay still reaches the log.
+
+    Review 5461583910 finding 1: the import-time replay runs before lazy
+    provider discovery, so a late-buffered failure needs a later flush —
+    here, the guarded replay at the end of _discover_providers().
+    """
+    import logging as _logging
+
+    from providers import replay_provider_load_failures
+
+    def _late_discovery_steps():
+        _providers_pkg._record_plugin_failure(
+            "late-discovery-zz", "bundled", RuntimeError("late-discovery-marker-zz")
+        )
+
+    monkeypatch.setattr(_providers_pkg, "_run_discovery_steps", _late_discovery_steps)
+    monkeypatch.setattr(_providers_pkg, "_sync_auth_registry", lambda: None)
+    _providers_pkg._discovered = False
+
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == 0
+        _providers_pkg._discover_providers()
+    assert any(
+        "late-discovery-zz" in r.getMessage()
+        and "late-discovery-marker-zz" in r.getMessage()
+        for r in caplog.records
+        if r.levelno >= _logging.WARNING
+    )
+
+    # Exactly once: a further replay must not double-report.
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == 0
+    assert [r for r in caplog.records if r.levelno >= _logging.WARNING] == []
+
+
+def test_replay_cursor_survives_max_rollover(caplog):
+    """Filling the 50-slot buffer, replaying, then recording more still replays the new items.
+
+    Review 5461583910 finding 2: the replay cursor is an index into a bounded
+    list, so eviction used to strand it past the end and later replays
+    returned 0 forever.
+    """
+    import logging as _logging
+
+    from providers import MAX_LOAD_FAILURES, replay_provider_load_failures
+
+    assert MAX_LOAD_FAILURES == 50
+    for i in range(MAX_LOAD_FAILURES):
+        _providers_pkg._record_plugin_failure(
+            f"rollover-zz-{i}", "bundled", RuntimeError(f"rollover-marker-{i}")
+        )
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == MAX_LOAD_FAILURES
+
+    _providers_pkg._record_plugin_failure(
+        "rollover-new-zz", "bundled", RuntimeError("rollover-new-marker-zz")
+    )
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == 1
+    assert any(
+        "rollover-new-zz" in r.getMessage() and "rollover-new-marker-zz" in r.getMessage()
+        for r in caplog.records
+        if r.levelno >= _logging.WARNING
+    )
+
+    # Multi-eviction variant: N records past MAX surface exactly once.
+    for i in range(3):
+        _providers_pkg._record_plugin_failure(
+            f"rollover-multi-zz-{i}", "bundled", RuntimeError(f"rollover-multi-marker-{i}")
+        )
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == 3
+    warned = [
+        r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING
+    ]
+    for i in range(3):
+        assert any(
+            f"rollover-multi-zz-{i}" in m and f"rollover-multi-marker-{i}" in m
+            for m in warned
+        )
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        assert replay_provider_load_failures() == 0

@@ -133,9 +133,17 @@ def _record_plugin_failure(plugin_name: str, source: str, exc: BaseException) ->
     ``setup_logging()`` runs and corrupt the fullscreen TUI.
     """
     failure = ProviderLoadFailure(plugin_name=str(plugin_name), source=source, error=str(exc))
+    global _REPLAYED_COUNT
     with _LOAD_FAILURES_LOCK:
         _LOAD_FAILURES.append(failure)
-        del _LOAD_FAILURES[: max(0, len(_LOAD_FAILURES) - MAX_LOAD_FAILURES)]
+        evicted = max(0, len(_LOAD_FAILURES) - MAX_LOAD_FAILURES)
+        if evicted:
+            # The buffer is a bounded window: evicting the oldest entries
+            # shifts every index, so the replay cursor (an index into this
+            # list) must move back by the same amount or a later replay
+            # slices past the end and silently drops new failures.
+            del _LOAD_FAILURES[:evicted]
+            _REPLAYED_COUNT = max(0, _REPLAYED_COUNT - evicted)
     logger.debug("Failed to load %s provider plugin %s: %s", source, plugin_name, exc)
 
 
@@ -170,6 +178,12 @@ def format_provider_load_failures(
 # early replay, and a later replay must still surface those exactly once.
 _REPLAYED_COUNT = 0
 
+# True once ``replay_provider_load_failures()`` has run at least once. Every
+# production call site runs after ``setup_logging()``, so the flag means
+# ``logger.warning`` is safe (no ``logging.lastResort`` raw-stderr write to
+# corrupt the fullscreen TUI) and late discovery passes may flush inline.
+_LOGGING_READY = False
+
 
 def replay_provider_load_failures() -> int:
     """Log buffered discovery failures as warnings, once each.
@@ -180,8 +194,9 @@ def replay_provider_load_failures() -> int:
     including in agent.log. Idempotent: only failures buffered since the last
     call are logged. Returns the number newly replayed.
     """
-    global _REPLAYED_COUNT
+    global _REPLAYED_COUNT, _LOGGING_READY
     with _LOAD_FAILURES_LOCK:
+        _LOGGING_READY = True
         pending = list(_LOAD_FAILURES[_REPLAYED_COUNT:])
         _REPLAYED_COUNT = len(_LOAD_FAILURES)
     for failure in pending:
@@ -192,6 +207,23 @@ def replay_provider_load_failures() -> int:
             failure.error,
         )
     return len(pending)
+
+
+def _replay_if_logging_ready() -> int:
+    """Flush buffered discovery failures when logging is already configured.
+
+    No-op before the first ``replay_provider_load_failures()`` call (logging
+    not yet safe: warning now would hit ``lastResort`` raw stderr). Used at
+    the end of lazy discovery passes so failures buffered after an early
+    replay still reach agent.log exactly once. Never raises.
+    """
+    if not _LOGGING_READY:
+        return 0
+    try:
+        return replay_provider_load_failures()
+    except Exception:
+        logger.debug("provider failure replay failed", exc_info=True)
+        return 0
 
 
 def _sync_auth_registry() -> None:
@@ -542,6 +574,9 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
+        # Same late-discovery flush as _discover_providers: the per-home scan
+        # runs lazily at lookup time, possibly after the early replay.
+        _replay_if_logging_ready()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
@@ -750,6 +785,11 @@ def _discover_providers() -> None:
         # hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
         # partial profile list — hand it the complete one (no-op unless auth is already loaded).
         _sync_auth_registry()
+        # Lazy discovery can run after the import-time replay (main.py), so a
+        # late-buffered failure would otherwise never reach agent.log. Flush
+        # here when logging is configured; pre-setup this is a no-op and the
+        # buffered entries wait for the normal replay sites.
+        _replay_if_logging_ready()
 
 
 def _run_discovery_steps() -> None:

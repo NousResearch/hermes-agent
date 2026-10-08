@@ -3625,6 +3625,15 @@ def main():
     # trigger no consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
 
+    # Second provider-failure replay: lazy provider discovery (first
+    # get_provider_profile/list_providers call) can buffer load failures after
+    # the import-time replay above; flush those now that dispatch — and
+    # logging — is ready. Idempotent: already-replayed entries are skipped.
+    try:
+        _replay_provider_failures()
+    except Exception:
+        pass  # best-effort — buffer replay must not crash startup
+
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)
 

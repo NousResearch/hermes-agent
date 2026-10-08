@@ -58,31 +58,42 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
-    else a ``tool_error``. Fail-closed: approval-system errors block."""
+    """Approval gate before an MCP call: tools matching the server's ``tools.confirm`` always ask;
+    otherwise write-capable tools on ``trust: untrusted`` servers ask. None to proceed, else a
+    ``tool_error``. Fail-closed: approval-system errors block."""
+    from tools.mcp_tool_schema import matches_name_filter
     from tools.mcp_tool_scope import _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
-    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
+    # Trust and confirm are the calling profile's own policy (an adopter of a shared connection keeps its own).
+    key = _server_key(server_name)
+    if matches_name_filter(tool_name, _core._server_confirm_tools.get(key, set())):
+        reason = (f"MCP tool '{tool_name}' on server '{server_name}' wants to run.",
+                  f"Server '{server_name}' lists '{tool_name}' under 'tools.confirm'. "
+                  f"Approve to run it once, or deny to block it.")
+        denied = (f"The user did not approve running MCP tool '{tool_name}' on server '{server_name}'. "
+                  f"The command was NOT run. Do not retry without explicit user direction.")
+    elif (_core._server_trust_levels.get(key, _core._TRUST_FULL) == _core._TRUST_UNTRUSTED
+          and not _tool_is_read_only(server_name, tool_name)):
+        reason = (f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is "
+                  f"write-capable (no readOnlyHint=true annotation) and may modify external state.",
+                  f"Server '{server_name}' is configured 'trust: untrusted'. "
+                  f"Approve to run '{tool_name}' once, or deny to block it.")
+        denied = (f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
+                  f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
+    else:
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
-        answer = request_elicitation_consent(
-            f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
-            f"(no readOnlyHint=true annotation) and may modify external state.",
-            f"Server '{server_name}' is configured 'trust: untrusted'. "
-            f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
+        answer = request_elicitation_consent(*reason, surface=f"mcp-trust/{server_name}",
+                                             title=f"MCP server '{server_name}' is asking")
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
-        return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
+        return tool_error(f"MCP tool '{tool_name}' on server '{server_name}' was blocked: the approval "
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
         return None
-    logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
+    logger.info("MCP trust gate: user %s '%s' on server '%s'",
                 "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
-    return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
-                      f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
+    return tool_error(denied)
 
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:

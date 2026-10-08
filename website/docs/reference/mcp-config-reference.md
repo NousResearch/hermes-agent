@@ -37,6 +37,7 @@ mcp_servers:
     tools:
       include: []
       exclude: []
+      confirm: []
       resources: true
       prompts: true
 ```
@@ -113,6 +114,7 @@ Any other `${...}` reference falls through to the env-var lookup above.
 |---|---|---|
 | `include` | string or list | Whitelist server-native MCP tools. Entries may be exact names or fnmatch-style globs (`*_radar_*`, `get_zones_*`) |
 | `exclude` | string or list | Blacklist server-native MCP tools. Same exact-name / glob semantics as `include` |
+| `confirm` | string or list | Tools that ask for user approval before every call, through the same approval surface as `trust: untrusted`. Same exact-name / glob semantics as `include`. Applies on any `trust` tier and regardless of `readOnlyHint` |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
 

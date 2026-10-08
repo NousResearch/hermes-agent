@@ -485,6 +485,10 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: Dict[Any, str] = {}
 _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
+# ``tools.confirm`` (exact names / fnmatch globs): tools that need approval before EVERY call, on any
+# trust tier and whatever their readOnlyHint (#14669). Keyed like ``_server_trust_levels`` — the
+# consuming profile's own policy.
+_server_confirm_tools: Dict[Any, set] = {}
 
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 

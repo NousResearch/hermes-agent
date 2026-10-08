@@ -682,6 +682,25 @@ mcp_servers:
 Entries without glob metacharacters (`*`, `?`, `[`) match exactly — `docs`
 excludes only the tool named `docs`, never `docs_search`.
 
+### Require confirmation for specific tools
+
+To keep a tool available but ask before each call — sending a message, deleting
+something — list it under `confirm`:
+
+```yaml
+mcp_servers:
+  whatsapp:
+    command: "whatsapp-mcp"
+    tools:
+      confirm: [send_message, "delete_*"]
+```
+
+Matching calls pause on the usual approval prompt (CLI/TUI prompt, or approval
+buttons on gateway platforms); deny and the call never reaches the server.
+Entries use the same exact-name / glob rules as `include` and `exclude`, and
+apply on any `trust` tier. To gate every write-capable tool on a server
+instead, set `trust: untrusted`.
+
 ### Precedence rule
 
 If both are present:

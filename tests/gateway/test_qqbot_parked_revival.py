@@ -40,6 +40,8 @@ def _make_adapter() -> QQBotAdapter:
     adapter._parked_since = None
     adapter._first_failure_at = None
     adapter._revival_task = None
+    adapter._listen_task = None
+    adapter._heartbeat_task = None
     adapter._running = True
     adapter._fatal_error_code = None
     adapter._fatal_error_message = None
@@ -85,6 +87,7 @@ class TestParkedRevival:
         adapter = _make_adapter()
         adapter._parked = True
         adapter._parked_since = time.time() - 60
+        adapter._first_failure_at = time.time() - 120
 
         calls = {"open": 0}
 
@@ -103,9 +106,75 @@ class TestParkedRevival:
             await adapter._revival_probe_loop()
 
         assert adapter._parked is False
+        # A revived adapter must forget the prior outage's first-failure stamp so a
+        # later re-park times from its own first failure, not a stale timestamp.
+        assert adapter._first_failure_at is None
         mark_c.assert_called_once()
         revived = [r for r in caplog.records if "PLATFORM_ADAPTER_REVIVED" in r.getMessage()]
         assert revived, "typed PLATFORM_ADAPTER_REVIVED event must be logged"
+
+    @pytest.mark.asyncio
+    async def test_park_cancels_stale_heartbeat_task(self):
+        """Blocking-review regression: park must stop the pre-park heartbeat.
+
+        Park does not clear ``_running``, and ``_heartbeat_loop`` loops on
+        ``while self._running`` while re-reading ``self._ws`` each pass — so a
+        surviving heartbeat task sends op-1 frames the moment a revival probe
+        reopens the socket. Park must cancel it (``disconnect()`` only ever
+        holds the newest handle, so an uncancelled one is orphaned)."""
+        adapter = _make_adapter()
+        stale_heartbeat = asyncio.ensure_future(asyncio.sleep(3600))
+        adapter._heartbeat_task = stale_heartbeat
+        await asyncio.sleep(0)  # let the stale task actually start
+
+        with patch.object(adapter, "_write_runtime_status_safe"), \
+             patch.object(adapter, "_revival_probe_loop", new=AsyncMock()), \
+             patch("asyncio.create_task", return_value=object()):
+            await adapter._park_for_revival("generic")
+
+        assert stale_heartbeat.cancelled(), "pre-park heartbeat task must be cancelled on park"
+        assert adapter._heartbeat_task is None
+
+    @pytest.mark.asyncio
+    async def test_revive_cancels_old_tasks_before_reassign_no_stacking(self):
+        """Blocking-review regression: revival must cancel the old listen/heartbeat
+        handles before overwriting them (the disconnect() discipline), so a
+        re-park/revive cycle cannot stack orphaned loops on one socket."""
+        adapter = _make_adapter()
+        adapter._parked = True
+        adapter._parked_since = time.time() - 60
+        old_listen = asyncio.ensure_future(asyncio.sleep(3600))
+        old_heart = asyncio.ensure_future(asyncio.sleep(3600))
+        adapter._listen_task = old_listen
+        adapter._heartbeat_task = old_heart
+        await asyncio.sleep(0)
+
+        async def _ok_open():
+            return None
+
+        new_tasks = []
+
+        def _track_create(coro):
+            task = asyncio.ensure_future(coro)
+            new_tasks.append(task)
+            return task
+
+        with patch.object(adapter, "_open_gateway_ws", side_effect=_ok_open), \
+             patch.object(adapter, "_mark_connected"), \
+             patch.object(QQBotAdapter, "_listen_loop", new=AsyncMock()), \
+             patch.object(QQBotAdapter, "_heartbeat_loop", new=AsyncMock()), \
+             patch("asyncio.create_task", side_effect=_track_create), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._revival_probe_loop()
+
+        assert old_listen.cancelled(), "pre-revive listen task must be cancelled, not orphaned"
+        assert old_heart.cancelled(), "pre-revive heartbeat task must be cancelled, not orphaned"
+        assert adapter._listen_task is not old_listen
+        assert adapter._heartbeat_task is not old_heart
+        # Exactly one fresh listen + one fresh heartbeat — no stacking.
+        assert adapter._listen_task in new_tasks and adapter._heartbeat_task in new_tasks
+        for t in new_tasks:
+            t.cancel()
 
     @pytest.mark.asyncio
     async def test_disconnect_cancels_probe(self):

@@ -454,6 +454,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             error_code="PLATFORM_ADAPTER_PARKED",
             error_message=f"qqbot reconnect ladder exhausted ({cause}); slow revival probe every {PARKED_PROBE_INTERVAL_SECONDS}s",
         )
+        # Stop the pre-park heartbeat before parking. Park does NOT clear
+        # ``_running`` (so the reconnect semantics stay intact), and
+        # ``_heartbeat_loop`` loops on ``while self._running`` while re-reading
+        # ``self._ws`` each pass — so once a revival probe repopulates the
+        # socket, a surviving heartbeat task would push op-1 frames down it, and
+        # every park/revive cycle would stack one more (``disconnect()`` only
+        # holds the newest handle, orphaning the rest). The listen task is this
+        # coroutine's own caller and returns immediately after parking, so it
+        # unwinds itself; the heartbeat task is separate and must be cancelled.
+        await cancel_task(self._heartbeat_task)
+        self._heartbeat_task = None
         if self._revival_task is None or self._revival_task.done():
             self._revival_task = asyncio.create_task(self._revival_probe_loop())
 
@@ -475,12 +486,22 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     logger.debug("[%s] Revival probe failed: %s", self._log_tag, exc)
                     continue
                 self._parked = False
+                self._first_failure_at = None  # new outage must time from its own first failure
                 self._mark_connected()
                 logger.error(
                     "[%s] PLATFORM_ADAPTER_REVIVED platform=qqbot parked_duration=%.0fs — "
                     "revived by probe without process restart",
                     self._log_tag, time.time() - (self._parked_since or time.time()),
                 )
+                # Cancel-before-reassign (same discipline as disconnect()): a
+                # prior listen/heartbeat handle must never be overwritten while
+                # still live, or it outlives the adapter and stacks frames on the
+                # freshly reopened socket. The pre-park heartbeat was already
+                # cancelled in _park_for_revival and the pre-park listen task has
+                # returned, so these are normally no-ops — but a re-park/revive
+                # cycle makes the guarantee load-bearing.
+                await cancel_task(self._listen_task)
+                await cancel_task(self._heartbeat_task)
                 self._listen_task = asyncio.create_task(self._listen_loop())
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
                 return

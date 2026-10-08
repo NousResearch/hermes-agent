@@ -218,6 +218,12 @@ def has_free_tier_account() -> bool:
     return guest_enabled() and has_guest()
 
 
+def guest_without_free_tier(state: Any) -> bool:
+    """A guest identity while the free tier is off: it serves connectors and managed tools only, so
+    inference, account and status readers treat the profile as not signed in."""
+    return is_guest_state(state) and not guest_enabled()
+
+
 def free_tier_route() -> bool:
     from hermes_cli.auth import resolve_provider
     return has_free_tier_account() and resolve_provider("auto") == "nous"
@@ -934,7 +940,7 @@ FREE_TIER_AVAILABLE_NOTICE = (
 def guest_notice_pending() -> bool:
     """True when a guest identity exists and the one-time availability notice has not been shown."""
     state = current_nous_state()
-    return is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
+    return guest_enabled() and is_guest_state(state) and not bool(state.get(GUEST_NOTICE_FLAG))
 
 
 def mark_guest_notice_shown() -> bool:

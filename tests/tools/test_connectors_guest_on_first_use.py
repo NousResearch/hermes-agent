@@ -50,7 +50,18 @@ def test_first_hosted_action_creates_one_connectors_only_guest(nas, monkeypatch)
     assert nas.creates() == 1
     assert [r["body"].get("purpose") for r in nas.token_requests] == ["connectors"]
     assert bearers and all(anon_auth.is_connectors_only(b) for b in bearers)
-    assert anon_auth.has_guest() and not anon_auth.has_free_tier_account()
+
+    # The free model and its surfaces stay off; the identity survives for connectors.
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_nous import get_nous_auth_status_local, resolve_nous_runtime_credentials
+
+    with pytest.raises(AuthError) as refused:
+        resolve_nous_runtime_credentials()
+    assert refused.value.code == "nous_auth_missing" and not refused.value.relogin_required
+    assert not get_nous_auth_status_local().get("logged_in")
+    assert not anon_auth.guest_notice_pending() and not anon_auth.has_free_tier_account()
+    assert anon_auth.has_guest()
+    assert [r["body"].get("purpose") for r in nas.token_requests] == ["connectors"]
 
 
 def test_tool_search_without_an_identity_sends_nothing(nas, monkeypatch):

@@ -248,6 +248,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
+        ("Fallback", _fallback_display(job.get("fallback_providers"))),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
@@ -759,7 +760,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("fallback_providers", "fallback_providers"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -777,11 +778,22 @@ _JOB_DETAIL_LINES = (
     ("interpreter", "  Python: {}"))
 
 
+def _fallback_display(chain: Any) -> str:
+    """``fallback_providers`` for humans: "" when unset, "disabled" for [], else provider:model list."""
+    if not isinstance(chain, list):
+        return ""
+    if not chain:
+        return "disabled"
+    return ", ".join(f"{e.get('provider')}:{e.get('model')}" for e in chain if isinstance(e, dict))
+
+
 def _print_job_details(job_data: Dict[str, Any]) -> None:
-    """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
+    """Print the optional Script/Monitor/Mode/Continuity/Workdir/Fallback lines of a job record."""
     for key, template in _JOB_DETAIL_LINES:
         if job_data.get(key):
             print(template.format(job_data[key]))
+    if fallback := _fallback_display(job_data.get("fallback_providers")):
+        print(f"  Fallback: {fallback}")
 
 
 def cron_create(args):

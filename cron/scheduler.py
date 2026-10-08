@@ -101,22 +101,38 @@ def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a different
     provider and usually a different model, which is exactly what the pin ruled out. Same-provider
     credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
+
+    A job may declare its own ``fallback_providers`` (same entry shape as the global list). A
+    declared chain is used whether or not the job is pinned; ``[]`` disables fallback; an absent
+    or null key keeps the default above.
     """
     return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+        get_fallback_chain(cfg), job.get("fallback_providers"),
+        pinned=_job_route_pinned(job), owner="cron job")
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
-    """Backup-provider clause for a provider-failure notice: "pinned, no fallback" vs "the backups
-    failed too" vs "none configured" (most installs). Fails open to "the backups failed too" if
+    """Backup-provider clause for a provider-failure notice: "fallback disabled" vs "the job's own
+    chain failed too" vs "pinned, no fallback" vs "the backups failed too" vs "none configured"
+    (most installs). Fails open to "the backups failed too" if
     config can't be read — never crash delivery.
     """
-    if job is not None and _job_route_pinned(job):
-        return (
-            "This job is pinned to its own provider/model, so it does not fall back to "
-            f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
-            "main model and its fallback chain."
-        )
+    if job is not None:
+        declared = job.get("fallback_providers")
+        if declared == []:
+            return (
+                "Fallback is disabled for this job (`fallback_providers: []`); "
+                f"`hermes cron edit {job.get('id')} --clear-fallback` restores the default."
+            )
+        if declared is not None and get_fallback_chain({"fallback_providers": declared}):
+            # The job's own chain was walked before this notice, pinned or not.
+            return "No provider in this job's own `fallback_providers` chain succeeded either."
+        if _job_route_pinned(job):
+            return (
+                "This job is pinned to its own provider/model, so it does not fall back to the global "
+                f"`fallback_providers`; `hermes cron edit {job.get('id')} --fallback provider:model` "
+                "gives it its own chain, or `--unpin` lets it follow the main model and its fallback chain."
+            )
     try:
         cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
@@ -1788,7 +1804,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             "Job '%s': primary provider resolve failed (%s: %s), %s",
             job_id, "auth" if is_auth else "transient network", resolve_exc,
             "trying fallback" if chain else (
-                "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
+                "not falling back: fallback is disabled for this job" if job.get("fallback_providers") == []
+                else "not falling back: the job is pinned" if _job_route_pinned(job)
+                else "no fallback configured"))
         for entry in chain:
             if not isinstance(entry, dict):
                 continue

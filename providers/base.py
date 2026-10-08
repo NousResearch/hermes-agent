@@ -60,6 +60,10 @@ class ProviderProfile:
 
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
+    # Exact model ids that this provider permits without a credential. Empty means every
+    # model requires the provider's normal authentication. Keep this explicit: a ``-free``
+    # suffix or a public catalog entry does not prove anonymous request access.
+    keyless_model_ids: frozenset[str] = frozenset()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
@@ -191,6 +195,15 @@ class ProviderProfile:
             from urllib.parse import urlparse
             return urlparse(self.base_url).hostname or ""
         return ""
+
+    def supports_anonymous_access(self, *, model: str | None, base_url: str | None = None) -> bool:
+        """Whether this exact provider/model/base route permits an empty API credential.
+
+        The base implementation is fail-closed. Providers with a declared keyless subset
+        override this when anonymous access also depends on the endpoint (for example, a
+        vendor-hosted route versus a user proxy).
+        """
+        return False
 
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Provider-specific message preprocessing.

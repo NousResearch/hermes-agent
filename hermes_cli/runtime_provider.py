@@ -316,6 +316,18 @@ def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra:
     return {"provider": provider, "api_mode": api_mode, "base_url": base_url, "api_key": api_key, **extra}
 
 
+def _provider_supports_anonymous_access(provider: str, *, model: str | None, base_url: str | None) -> bool:
+    """Fail-closed registry check for a provider-declared keyless model route."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        return bool(profile and profile.supports_anonymous_access(model=model, base_url=base_url))
+    except Exception as exc:
+        logger.debug("Anonymous-access check failed for provider %s: %s", provider, exc)
+        return False
+
+
 def _cfg_provider(model_cfg: Dict[str, Any]) -> str:
     return str(model_cfg.get("provider") or "").strip().lower()
 
@@ -855,16 +867,24 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
         cfg_url = _config_base_url_for_provider(model_cfg, provider)
         if is_actual_local_base_url(normalize_actual_base_url(cfg_url or creds.get("base_url", "").rstrip("/"))):
             creds = {**creds, "api_key": ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, "source": creds.get("source") or "local-offline"}
-    # An explicitly selected API-key provider is authoritative: an empty key would defer failure
-    # to the first request and make a later fallback look like a silent provider switch.
-    if not has_usable_secret(creds.get("api_key")):
-        hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
-        raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
+    effective_model = target_model or model_cfg.get("default", "")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
     base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
-                                          target_model or model_cfg.get("default", ""), opencode_by_model=True)
+                                          effective_model, opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
+    # Most API-key providers are authoritative: an empty key must fail before a request.
+    # A provider may explicitly opt one exact model into anonymous inference; keep the
+    # credential genuinely empty so the OpenAI SDK omits Authorization rather than inventing
+    # a placeholder bearer token.
+    if not has_usable_secret(creds.get("api_key")):
+        if _provider_supports_anonymous_access(provider, model=effective_model, base_url=base_url):
+            return _runtime(
+                provider, api_mode, base_url, "", source="anonymous-model",
+                requested_provider=requested_provider,
+            )
+        hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
+        raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     api_key = _actual_local_key(provider, creds.get("api_key", ""), base_url)
     return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"), requested_provider=requested_provider)
 

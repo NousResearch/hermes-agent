@@ -5289,6 +5289,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
+    final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -5298,15 +5299,16 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     if not api_key:
-        tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
-        logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
-                     provider, ", ".join(tried_sources))
-        return None, None
+        from hermes_cli.runtime_provider import _provider_supports_anonymous_access
+        if not _provider_supports_anonymous_access(provider, model=final_model, base_url=raw_base_url):
+            tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
+            logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
+                         provider, ", ".join(tried_sources))
+            return None, None
     base_url = _to_openai_base_url(raw_base_url)
     # Explicit base_url override: a fallback_model/custom_providers entry pointing a built-in name elsewhere.
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
-    final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
     # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:

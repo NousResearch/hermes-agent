@@ -1401,10 +1401,10 @@ def deactivate_provider() -> None:
 def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
     """Return a helpful hint string when provider resolution fails."""
     if str(provider_name or "").strip().lower() in {"opencode-free", "free", "opencode_free"}:
-        return ("OpenCode discontinued anonymous free-tier access outside its own client "
-                "(relay 403s FreeTierError), so the keyless 'opencode-free' provider was removed. "
-                "Switch to 'opencode-zen' (pay-as-you-go, OPENCODE_ZEN_API_KEY) or 'opencode-go' "
-                "($10/mo subscription, OPENCODE_GO_API_KEY) via 'hermes model'.")
+        return ("The retired 'opencode-free' provider name is not available. Use "
+                "'opencode-zen' with 'space-bunny-free' for keyless free chat, configure "
+                "OPENCODE_ZEN_API_KEY for paid Zen models, or use 'opencode-go' with "
+                "OPENCODE_GO_API_KEY, via 'hermes model'.")
     try:
         from hermes_cli.config import validate_config_structure
         issues = validate_config_structure()

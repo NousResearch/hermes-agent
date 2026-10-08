@@ -324,10 +324,14 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
                             f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
                             f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
             continue
-        if not runtime.get("api_key") and not runtime.get("command"):
+        # A provider-declared keyless route resolves with an empty api_key on purpose
+        # (source="anonymous-model"), so an empty key alone is not a misconfiguration.
+        keyless = runtime.get("source") == "anonymous-model"
+        if not runtime.get("api_key") and not runtime.get("command") and not keyless:
             check_warn(f"auxiliary.{task}.provider '{provider}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
             continue
-        ok.append(f"{task}→{runtime.get('provider')}@{base_url_hostname(str(runtime.get('base_url') or '')) or '?'}")
+        suffix = " (keyless)" if keyless else ""
+        ok.append(f"{task}→{runtime.get('provider')}@{base_url_hostname(str(runtime.get('base_url') or '')) or '?'}{suffix}")
     if ok:
         check_ok("auxiliary task routing resolves: " + ", ".join(ok))
 

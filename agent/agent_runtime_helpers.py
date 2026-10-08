@@ -2237,7 +2237,10 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent._client_kwargs = {}
         return
     effective_base = base_url or agent.base_url
-    agent._client_kwargs = {"api_key": api_key or agent.api_key, "base_url": effective_base}
+    # Mirror the api_key decision: an explicitly empty credential must not fall back to the
+    # previous provider's key, or the new endpoint receives the old provider's bearer token.
+    effective_key = agent.api_key if api_key is None else api_key
+    agent._client_kwargs = {"api_key": effective_key, "base_url": effective_base}
     try:
         from hermes_cli.config import (
             apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers,
@@ -2288,7 +2291,13 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._transport_cache.clear()
     from agent.turn_recovery import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
-    if api_key:
+    # Assign whenever the caller supplied a credential DECISION, including a deliberately empty
+    # one: a provider may declare an anonymous model route (no Authorization header at all). The
+    # old truthiness test kept the previous provider's key on such a switch, so an OpenRouter
+    # bearer could ride along to the new provider's host — the credential analogue of the
+    # base_url guard above. `None` still means "caller had nothing to say", which keeps the
+    # best-effort credential refresh working.
+    if api_key is not None:
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes
     # recover_with_credential_pool short-circuit. Reload failure is non-fatal.

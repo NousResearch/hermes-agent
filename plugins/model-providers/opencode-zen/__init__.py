@@ -5,6 +5,7 @@ chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 from agent import reasoning_effort as re_
 from hermes_cli.version_info import get_version_info
@@ -23,6 +24,29 @@ _ATTRIBUTION_HEADERS = {
 def _flat_model_name(model: str | None) -> str:
     """Bare OpenCode model ID, tolerating aggregator prefixes."""
     return (model or "").strip().rsplit("/", 1)[-1].lower()
+
+
+def _keyless_model_id(model: str | None, prefixes: tuple = ()) -> str:
+    """Bare model id for the keyless check, or "" when the spelling is not one we authorize.
+
+    Accepts only the two forms that reach the relay as the bare keyless slug: the id itself,
+    and the id behind a prefix that :func:`normalize_opencode_model_id` strips before the wire
+    call. That normalizer strips ``<provider_id>/`` and ``<family>/``, which for this profile is
+    ``opencode-zen/`` and ``opencode/`` — NOT every alias (``zen/`` and ``opencode_zen/`` survive
+    it), so the stripped prefixes are spelled out rather than taken from ``aliases``. Anything
+    else is refused, because the id sent to the relay would then differ from the id authorized
+    here.
+    """
+    current = (model or "").strip()
+    if not current:
+        return ""
+    head, sep, tail = current.rpartition("/")
+    if not sep:
+        return current.lower()
+    # One prefix segment only, and it must be one the wire normalizer actually strips.
+    if "/" in head:
+        return ""
+    return tail.lower() if head.lower() in {p.lower() for p in prefixes} else ""
 
 
 # Version-less DeepSeek ids that still carry the thinking/effort knobs on this wire: the retired
@@ -107,7 +131,44 @@ class OpenCodeGoProfile(ProviderProfile):
 
 
 class OpenCodeZenProfile(ProviderProfile):
-    """OpenCode Zen - model-specific reasoning controls."""
+    """OpenCode Zen - model-specific reasoning and anonymous-access controls."""
+
+    # Only the prefixes normalize_opencode_model_id strips for this family; see _keyless_model_id.
+    _KEYLESS_PREFIXES = ("opencode-zen", "opencode")
+
+    def supports_anonymous_access(self, *, model: str | None, base_url: str | None = None) -> bool:
+        """Allow only the documented free chat model on Zen's official HTTPS endpoint.
+
+        A public ``/models`` response or a ``-free`` suffix is not proof that a model
+        accepts anonymous inference. Keep this exact and endpoint-scoped so a proxy or
+        future paid model cannot inherit keyless access accidentally.
+
+        ``base_url`` is the endpoint the caller will actually use, so an absent one is
+        refused rather than defaulted to :attr:`base_url`: substituting our own endpoint
+        would decide the grant against a URL the caller never validated. Fail-closed like
+        every other condition here.
+        """
+        # Only the prefixes normalize_opencode_model_id strips for this family; see _keyless_model_id.
+        if _keyless_model_id(model, self._KEYLESS_PREFIXES) not in self.keyless_model_ids:
+            return False
+        candidate = str(base_url or "").strip()
+        if not candidate:
+            return False
+        try:
+            parsed = urlparse(candidate)
+            return bool(
+                parsed.scheme == "https"
+                and parsed.hostname == "opencode.ai"
+                and parsed.port in (None, 443)
+                and not parsed.username
+                and not parsed.password
+                and parsed.path.rstrip("/") == "/zen/v1"
+                and not parsed.params
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            return False
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -117,6 +178,7 @@ class OpenCodeZenProfile(ProviderProfile):
 
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
+    keyless_model_ids=frozenset({"space-bunny-free"}),
     base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )

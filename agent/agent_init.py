@@ -987,8 +987,14 @@ def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
 
 def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout):
     """OpenAI-wire client: resolve kwargs, apply header/TLS policy, construct."""
-    if api_key and base_url:
-        client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
+    anonymous_model = False
+    if base_url and not api_key:
+        from hermes_cli.runtime_provider import _provider_supports_anonymous_access
+        anonymous_model = _provider_supports_anonymous_access(
+            getattr(agent, "provider", "") or "", model=getattr(agent, "model", None), base_url=base_url,
+        )
+    if base_url and (api_key or anonymous_model):
+        client_kwargs = _explicit_client_kwargs(agent, api_key or "", base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
         if client_kwargs is None:  # init-time fallback bound the MoA facade

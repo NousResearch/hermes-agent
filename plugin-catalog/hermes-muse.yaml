@@ -1,11 +1,11 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: c79c2b4bafee5430f323a140ad97e4f387726181
-version: "0.1.0"
+sha: 85b3a08c2c7ababffee80ecb72d9059acc9c7429
+version: "0.1.1"
 description: >-
-  Provider-neutral companion assembly: goals and expiring interests, evidence-based
-  reminders, memory/relationship upkeep, nightly reflection, silent Feed and bounded
-  research. One Skill, one state tool and four script-gated native Cron jobs.
+  A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
+  and temporary interests, prepares reminders, maintains memory and a quiet Feed,
+  and uses Hermes subagents for research. One Skill and four recurring Cron jobs.
   Disclosure: first load creates profile-local muse files/SQLite state and owned
   scripts/Cron jobs; conversation hooks retain short real-user excerpts for upkeep;
   scheduled work uses the user's configured model/tools and may incur their normal
@@ -16,7 +16,7 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/c79c2b4bafee5430f323a140ad97e4f387726181/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/85b3a08c2c7ababffee80ecb72d9059acc9c7429/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]

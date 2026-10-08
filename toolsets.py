@@ -143,6 +143,10 @@ TOOLSETS = {
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "gui_tour", "show_tip"],
     ),
+    "setup": _ts("Onboarding-only surface for the setup profile: question and picker cards", ["setup_choose"],
+                 platforms=frozenset({"desktop"})),
+    "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"],
+                      platforms=frozenset({"desktop"})),
     # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
     "catalog": _ts(
         "Desktop catalog plugin/skill install requests through the approval card (GUI sessions only)",

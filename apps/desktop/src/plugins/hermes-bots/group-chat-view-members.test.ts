@@ -147,7 +147,7 @@ describe('setGroupChatMembers', () => {
     )
   })
 
-  it("does not replay a removed member's held messages after re-adding it", async () => {
+  it("does not replay a removed member's held messages as fresh delta after re-adding it", async () => {
     const room = await loadRoom()
     seedCore(room, {
       heldMessages: { reviewer: ['held-before-removal'] },
@@ -167,9 +167,13 @@ describe('setGroupChatMembers', () => {
     room.rounds.sendToGroupChat('Core', [reviewer], '@reviewer fresh task')
     await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
 
+    const prompt = room.gateway.calls[0].prompt
+    const delta = prompt.split('New messages in the room since your last turn (oldest first):')[1] || ''
+
     expect(room.chat.$groupChats.get().Core.heldMessages?.reviewer).toBeUndefined()
-    expect(room.gateway.calls[0].prompt).not.toContain('STALE_PRE_REMOVAL_TEXT')
-    expect(room.gateway.calls[0].prompt).toContain('fresh task')
+    expect(prompt).toContain('Historical room context from other threads')
+    expect(delta).not.toContain('STALE_PRE_REMOVAL_TEXT')
+    expect(delta).toContain('fresh task')
   })
 })
 

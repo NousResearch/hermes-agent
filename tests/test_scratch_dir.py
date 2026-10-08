@@ -67,6 +67,36 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
+def _track_prune_attempts(monkeypatch):
+    """Fresh per-root guard state + a recording stub for the prune walk itself."""
+    attempted = []
+    monkeypatch.setattr("hermes_constants._scratch_pruned_roots", set())
+    monkeypatch.setattr(
+        "hermes_constants.prune_scratch_dir",
+        lambda scratch: attempted.append(scratch) or 0,
+    )
+    return attempted
+
+
+def test_prune_once_guard_is_per_scratch_root_not_per_process(tmp_path, monkeypatch):
+    """The once guard is per scratch root, not per process (#134896): bootstrap prunes the
+    default home's scratch first, and the ``--profile`` re-home must still prune the profile
+    home's scratch instead of being skipped by a process-global flag."""
+    attempted = _track_prune_attempts(monkeypatch)
+    default = get_scratch_dir(tmp_path / "home", prune=True)
+    profile = get_scratch_dir(tmp_path / "home" / "profiles" / "work", prune=True)
+    assert attempted == [default, profile]
+
+
+def test_prune_once_guard_skips_a_repeated_root(tmp_path, monkeypatch):
+    """The per-root guard still collapses repeat visits to the same home: a fan-out of
+    children resolving one scratch root runs the prune walk at most once."""
+    attempted = _track_prune_attempts(monkeypatch)
+    scratch = get_scratch_dir(tmp_path, prune=True)
+    assert get_scratch_dir(tmp_path, prune=True) == scratch
+    assert attempted == [scratch]
+
+
 @pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:

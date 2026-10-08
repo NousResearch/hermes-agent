@@ -887,6 +887,39 @@ def _discover_windows_gateways():
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
+def _defer_windows_gateway_pause_for_fetch() -> bool:
+    """Keep a serving gateway online during Git transport when no old pause is owed.
+
+    Discovery is repeated at the actual pause, so the later record captures the
+    gateway's current identity. Indeterminate preflight aborts before shutdown.
+    """
+    from hermes_cli import update_pause_record as pause_record
+    from hermes_cli.update_cmd import _m
+
+    if sys.platform != "win32" or not (_m().PROJECT_ROOT / ".git").exists():
+        return False
+    if pause_record.orphans():
+        return False
+    return bool(_discover_windows_gateways()[3])
+
+
+def _finish_deferred_windows_pause(deferred: bool, token, request: dict, git_cmd=None):
+    """Acquire the durable pause after transport, before any checkout or ZIP write."""
+    if not deferred:
+        return token
+    from hermes_cli.update_cmd import _m, _discard_lockfile_churn, _normalize_managed_eol, _moves_for
+
+    token = _m()._pause_windows_gateways_for_update()
+    request["windows_resume"] = token
+    if token:
+        import atexit
+        atexit.register(_m()._resume_windows_gateways_after_update, token)
+    if git_cmd is not None:
+        _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(token))
+        _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(token))
+    return token
+
+
 def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, on_request=None):
     """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
 

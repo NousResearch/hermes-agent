@@ -45,6 +45,7 @@ from hermes_cli.update_cmd_windows import (  # noqa: F401
     _detect_venv_python_processes, _hermes_holder_subcommand, _holder_value_flags,
     _holder_value_flags_cache, _looks_like_desktop_control_plane,
     _pause_windows_gateways_for_update,
+    _defer_windows_gateway_pause_for_fetch, _finish_deferred_windows_pause,
     _refresh_bootstrap_cache_scripts, _refresh_windows_gateway_launchers,
     _refuse_gateway_ancestor_tree_kill,
     _restore_windows_gateway_service, _resume_windows_gateways_after_update,
@@ -1584,10 +1585,10 @@ def _record_update_initiator() -> None:
             _completion_receipt.record_fact("initiator", "desktop")
 
 
-def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
+def _prepare_git_command(*, checkout_move=None, checkout_cleanup: bool = True) -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
     on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters).
-    *checkout_move* binds the churn cleanups' file writes to the paused gateways' tree gate."""
+    *checkout_move* gates churn writes; defer cleanup until after a serving gateway pauses."""
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
@@ -1613,8 +1614,9 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
 
     # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
     # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+    if checkout_cleanup:
+        _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+        _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
 
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -1815,9 +1817,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
     _record_snapshot_stage(args, pre_update_snapshot_id)
 
-    # Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs.
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
-        no_gateway_restart=opts.no_gateway_restart)
+    # Git transport only changes .git; a serving Windows gateway needs pausing
+    # when checkout files or the venv change, not for a potentially stalled fetch.
+    defer_windows_pause = _defer_windows_gateway_pause_for_fetch()
+    _windows_gateway_resume = None if defer_windows_pause else (
+        _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
+            no_gateway_restart=opts.no_gateway_restart))
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1829,7 +1834,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or _m()._desktop_dist_exists(desktop_dir)
         or bool(_m()._installed_desktop_apps()))
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command(checkout_move=_moves_for(_windows_gateway_resume))
+    use_zip_update, git_cmd, is_fork = _prepare_git_command(
+        checkout_move=_moves_for(_windows_gateway_resume), checkout_cleanup=not defer_windows_pause)
 
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
@@ -1879,6 +1885,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = f"origin/{branch}"
 
     if use_zip_update:
+        _windows_gateway_resume = _finish_deferred_windows_pause(
+            defer_windows_pause, _windows_gateway_resume, completion_request)
         try:
             _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
@@ -1901,7 +1909,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if pruned:
             print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
-        # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
@@ -1929,6 +1936,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _record_stop("git_timeout" if fetch_result.returncode == 124 else "disk_full"
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
+
+        _windows_gateway_resume = _finish_deferred_windows_pause(
+            defer_windows_pause, _windows_gateway_resume, completion_request, git_cmd)
 
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)

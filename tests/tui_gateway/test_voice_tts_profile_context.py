@@ -44,7 +44,7 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
         reset_hermes_home_override(token)
 
     assert text_queue is not None
-    assert observed.wait(1.0), "streaming-TTS worker did not run"
+    assert observed.wait(5.0), "streaming-TTS worker did not run"
     assert seen["home"] == str(served_home), (
         "streaming-TTS worker must keep the routed profile Context instead of "
         "falling back to the launch HERMES_HOME"

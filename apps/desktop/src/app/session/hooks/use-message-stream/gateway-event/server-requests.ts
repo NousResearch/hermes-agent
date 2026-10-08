@@ -17,7 +17,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { type ClarifyRequest, normalizeQuestions, normalizeSetupChoose, setClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import type { PreviewOwner } from '@/store/preview-ownership'
@@ -368,19 +368,6 @@ const clarify: Handler = ctx => {
   })
 }
 
-const setupChoose: Handler = ctx => {
-  const { deps, request, sessionId } = ctx
-  const setup = normalizeSetupChoose(request.params)
-
-  if (!setup || (sessionId && deps.sessionInterrupted(sessionId))) {
-    request.respond({})
-
-    return
-  }
-
-  parkClarify(ctx, { ...setup, receivedAt: Date.now() / 1000, requestId: request.id, sessionId: sessionId || null })
-}
-
 const approval: Handler = ctx => {
   const { request, sessionId } = ctx
   const p = request.params
@@ -703,7 +690,6 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
-  setup_choose: setupChoose,
   sudo,
   'terminal.read': terminalRead,
   tour,

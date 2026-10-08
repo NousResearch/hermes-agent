@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $freeTierSignIn, noteFreeTierTurnComplete, openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { $onboardingGate } from '@/store/onboarding-gate'
+import { markQuestionnaireDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 const pollOAuthSession = vi.fn()
@@ -36,14 +36,14 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 
 beforeEach(() => {
   vi.spyOn(window, 'open').mockReturnValue(null)
+  markQuestionnaireDecided()
 })
 
 afterEach(() => {
   cleanup()
   $freeTierSignIn.set({ status: 'closed' })
   $freeTierStatus.set(null)
-  $onboardingGate.set({ guideKickoff: 'idle', guideQueued: false, phase: 'idle' })
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  setOnboardingSurfaceActive('questionnaire', false)
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.useRealTimers()
@@ -106,9 +106,8 @@ describe('FreeTierSignInDialog', () => {
       )
     })
 
-    it('waits for guided onboarding to leave the screen, then offers sign-in', async () => {
-      Object.assign(window, { hermesDesktop: { guestOnboardingEnabled: true } })
-      $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'guided' })
+    it('waits for the questionnaire to leave the screen, then offers sign-in', async () => {
+      setOnboardingSurfaceActive('questionnaire', true)
       await renderDialog()
 
       await act(async () => {
@@ -118,7 +117,7 @@ describe('FreeTierSignInDialog', () => {
       expect(requestGateway).not.toHaveBeenCalledWith('free_tier.claim_nudge')
 
       await act(async () => {
-        $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'done' })
+        setOnboardingSurfaceActive('questionnaire', false)
       })
 
       await waitFor(() => expect(screen.getByText('Keep going with Hermes')).toBeTruthy())

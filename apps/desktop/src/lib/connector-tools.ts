@@ -82,7 +82,6 @@ const TITLES: ConnectorTitles = {
   todoist: 'Todoist',
   figma: 'Figma',
   discord: 'Discord',
-  stripe_mcp: 'Stripe',
   outlook: 'Outlook'
 }
 

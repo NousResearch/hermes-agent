@@ -15,7 +15,6 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { cn } from '@/lib/utils'
-import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
@@ -47,7 +46,6 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
 
 export function NarrowOverlays() {
   const narrow = useStore($narrowViewport)
-  const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
   const panes = useContributions('panes')
   const paneStates = useStore($paneStates)
@@ -83,10 +81,8 @@ export function NarrowOverlays() {
   const inTree = useMemo(() => new Set(tree ? allPaneIds(tree) : []), [tree])
 
   const collapsibles = useMemo(
-    // Solo adopts sidebar panes without their surrounding sidebar chrome.
-    // Suppress every reveal path while those panes are intentionally hidden.
-    () => (solo ? [] : panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id))),
-    [solo, panes, inTree, hiddenPanes]
+    () => panes.filter(p => paneChrome(p).collapsible && inTree.has(p.id) && !hiddenPanes.has(p.id)),
+    [panes, inTree, hiddenPanes]
   )
 
   const collapsiblesRef = useRef(collapsibles)
@@ -95,7 +91,7 @@ export function NarrowOverlays() {
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
   useEffect(() => {
-    if (!narrow || solo) {
+    if (!narrow) {
       setReveal(null)
 
       return
@@ -147,9 +143,9 @@ export function NarrowOverlays() {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [narrow, solo])
+  }, [narrow])
 
-  if (!narrow || solo || collapsibles.length === 0) {
+  if (!narrow || collapsibles.length === 0) {
     return null
   }
 

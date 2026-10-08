@@ -1,6 +1,6 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import { enAppTour, enHandoffTour } from './en_app_tour'
+import { enAppTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
@@ -10,6 +10,7 @@ import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
+import { enQuestionnaire } from './en_questionnaire'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
@@ -27,6 +28,7 @@ export const en: Translations = {
   },
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
+  questionnaire: enQuestionnaire,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: {
@@ -1109,6 +1111,10 @@ export const en: Translations = {
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      accentTitle: 'Accent Color',
+      accentDesc: 'Recolors buttons, links and highlights on top of the theme. Saved for this profile.',
+      accentThemeDefault: 'Theme default',
+      accentCustom: 'Custom color',
       installTitle: 'Install from VS Code',
       installDesc:
         'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
@@ -1249,12 +1255,6 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
-      developerTitle: 'Developer',
-      resetOnboardingTitle: 'Reset onboarding',
-      resetOnboardingDesc:
-        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
-      resetOnboardingAction: 'Reset',
-      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -3977,7 +3977,6 @@ export const en: Translations = {
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
-  handoffTour: enHandoffTour,
   install: {
     stageStates: {
       pending: 'Pending',
@@ -4864,31 +4863,6 @@ export const en: Translations = {
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Accent color',
-        connectors: 'Apps',
-        layout: 'Layout',
-        plugins: 'Plugins',
-        theme: 'Appearance'
-      },
-      loading: 'Loading options…',
-      unavailable: "This list isn't available right now. Reply in chat instead.",
-      findApp: 'Find an app',
-      customColor: 'Custom color',
-      plugin: 'Plugin',
-      startsLater: "We'll set these up when you start."
-    },
-    startChat: {
-      starting: title => `Starting “${title}”…`,
-      startingUntitled: 'Starting a chat…',
-      untitled: 'New chat',
-      notStarted: "Couldn't start that chat.",
-      retry: 'Retry',
-      inProfile: profile => `In ${profile}`,
-      open: 'Open',
-      openFailed: "Couldn't open the chat"
     },
     catalogInstall: enCatalogInstall,
     mcpSetup: {

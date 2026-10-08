@@ -331,10 +331,7 @@ export const zhHantBoot = {
     price: (input, output) => `${input} 輸入 / ${output} 輸出 每 Mtok`,
     change: '變更',
     startChatting: '開始',
-    docs: provider => `${provider} 文件`,
-    setupSlowTitle: '設定花費的時間比平常久。',
-    setupSlowBody: 'Hermes 仍在背景中啟動。',
-    continueWithoutSetup: '略過設定並繼續'
+    docs: provider => `${provider} 文件`
   }
 } satisfies Pick<
   TranslationOverrides,

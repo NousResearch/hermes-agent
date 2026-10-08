@@ -36,12 +36,14 @@ import {
   startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
-import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $onboardingSurfaceClear, onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
+import { OverlaySurface } from './overlay-surface'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
@@ -50,6 +52,7 @@ import {
   ProviderRow,
   sortProviders
 } from './providers'
+import { QuestionnaireLayer } from './questionnaire-layer'
 
 export {
   FeaturedProviderRow,
@@ -206,7 +209,8 @@ export function DesktopOnboardingOverlay({
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  useStore($onboardingSurfaces)
+  const statusbarVisible = useStore($statusbarVisible)
+  useStore($onboardingSurfaceClear)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   useStore($gateway)
@@ -357,8 +361,15 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
+  // D22: while the questionnaire holds the surface it is this overlay's first state; the picker, ready
+  // and confirm screens follow it.
   if (!onboarding.manual && onboardingSurfaceActive()) {
-    return null
+    return (
+      <QuestionnaireLayer
+        refreshReadiness={() => refreshOnboarding(ctx).then(() => undefined)}
+        statusbarVisible={statusbarVisible}
+      />
+    )
   }
 
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
@@ -414,18 +425,15 @@ export function DesktopOnboardingOverlay({
   const bare = ready && (freeTierIntro || (!showPicker && flow.status === 'confirming_model'))
 
   return (
-    <div
+    <OverlaySurface
       className={cn(
-        'fixed inset-0 z-(--z-onboarding) flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
+        'transition-opacity duration-[520ms] ease-out',
         // On the bare confirm screen, hold the surface (text-out + hold) so the
         // per-element exit plays before it dissolves.
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
-      // Masks the whole app until onboarding finishes — must stay filled under
-      // window glass or the shell shows through. Contract:
-      // `[data-glass-opaque]` in styles.css.
-      data-glass-opaque=""
+      statusbarVisible={statusbarVisible}
     >
       <div
         className={cn(
@@ -468,7 +476,7 @@ export function DesktopOnboardingOverlay({
           )}
         </div>
       </div>
-    </div>
+    </OverlaySurface>
   )
 }
 

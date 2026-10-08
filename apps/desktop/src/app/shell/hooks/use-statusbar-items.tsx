@@ -37,6 +37,7 @@ import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usa
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import { FreeAccountStatusItem, LocalDownloadStatusItem } from '@/onboarding/status-items'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
@@ -556,6 +557,9 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleFreeTier,
         variant: 'action'
       },
+      // The questionnaire's background work: the free account being made, then the local model download.
+      { id: 'free-account-setup', render: () => <FreeAccountStatusItem /> },
+      { id: 'questionnaire-download', render: () => <LocalDownloadStatusItem /> },
       {
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,

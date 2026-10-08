@@ -27,8 +27,6 @@ export const LAYOUTS_AREA = 'layouts'
  */
 export interface LayoutPresetSpec extends Tiered {
   id: string
-  /** `false` keeps a preset off every picker and out of `apply_layout`; only its owner applies it. */
-  listed?: false
   order: number
   resting?: readonly string[]
   title: string
@@ -43,14 +41,7 @@ export function registerBundledPresets(bundled: readonly LayoutPresetSpec[]) {
   }
 
   return registry.registerMany(
-    bundled.map(({ id, listed, order, title, tree }) => ({
-      id,
-      area: LAYOUTS_AREA,
-      title,
-      order,
-      data: tree,
-      ...(listed === false && { enabled: false })
-    }))
+    bundled.map(({ id, order, title, tree }) => ({ id, area: LAYOUTS_AREA, title, order, data: tree }))
   )
 }
 

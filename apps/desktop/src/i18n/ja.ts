@@ -9,6 +9,7 @@ import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
+import { jaQuestionnaire } from './ja_questionnaire'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const jaOverrides = {
@@ -18,6 +19,7 @@ export const jaOverrides = {
     copyUrl: 'リンクをコピー',
     close: '閉じる'
   },
+  questionnaire: jaQuestionnaire,
   sharedMetrics: jaSharedMetrics,
   intro: introJa,
   sessionImport: {
@@ -699,6 +701,10 @@ export const jaOverrides = {
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
       themeProfileNote: profile =>
         `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      accentTitle: 'アクセントカラー',
+      accentDesc: 'テーマの上からボタン、リンク、ハイライトの色を変えます。このプロファイルに保存されます。',
+      accentThemeDefault: 'テーマの既定',
+      accentCustom: 'カスタムカラー',
       installTitle: 'VS Code から導入',
       installDesc:
         'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
@@ -1007,12 +1013,6 @@ export const jaOverrides = {
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
-      developerTitle: '開発者',
-      resetOnboardingTitle: 'オンボーディングをリセット',
-      resetOnboardingDesc:
-        'セットアップ用のチャットを削除し、セットアッププロファイルを作り直して、初回セットアップをもう一度実行します。自分で作成したプロファイル、チャット、プラグインはそのまま残ります。',
-      resetOnboardingAction: 'リセット',
-      resetOnboardingFailed: 'オンボーディングをリセットできませんでした',
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc:
         '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
@@ -2417,26 +2417,6 @@ export const jaOverrides = {
     }
   },
 
-  handoffTour: {
-    profileTitle: '最初のタスクはデフォルトのプロファイルで実行されます',
-
-    profileText:
-      'このレールでプロファイルを切り替えます。いま点灯しているのが default で、タスクのセッションはここにあります。もう一方はセットアップ用のプロファイルで、ウェルカムチャットはそちらにあります。',
-
-    sessionsTitle: 'プロファイルごとにセッションが分かれています',
-
-    sessionsText:
-      'この一覧は default プロファイルのものです。「新しいセッション」は選択中のプロファイルで始まります。レールでプロファイルを切り替えると一覧も変わります。',
-
-    stayTitle: 'Hermes はワンクリックで呼べます',
-
-    stayText:
-      '手を借りたいときは、セットアッププロファイルに切り替えて「Hermes へようこそ」を開いてください。いつでもそこにあります。',
-    localTitle: 'このマシンはローカルでモデルを実行できます',
-    localText: (model: string) =>
-      `${model} はお使いのハードウェアで動きます。無料で、チャットはこのコンピューターから出ません。いつでもここ、モデルメニューから選べます。`
-  },
-
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
@@ -3624,31 +3604,6 @@ export const jaOverrides = {
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'アクセントカラー',
-        connectors: 'アプリ',
-        layout: 'レイアウト',
-        plugins: 'プラグイン',
-        theme: '外観'
-      },
-      loading: 'オプションを読み込み中…',
-      unavailable: 'このリストは現在利用できません。代わりにチャットで返信してください。',
-      findApp: 'アプリを検索',
-      customColor: 'カスタムカラー',
-      plugin: 'プラグイン',
-      startsLater: '始めるときに設定します。'
-    },
-    startChat: {
-      starting: title => `「${title}」を開始中…`,
-      startingUntitled: 'チャットを開始中…',
-      untitled: '新しいチャット',
-      notStarted: 'チャットを開始できませんでした',
-      inProfile: profile => `${profile} 内`,
-      open: '開く',
-      openFailed: 'チャットを開けませんでした',
-      retry: '再試行'
     },
     tool: {
       copyCode: 'コードをコピー',

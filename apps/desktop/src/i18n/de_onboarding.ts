@@ -7,9 +7,6 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   preparingInstall:
     'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
   starting: 'Hermes wird gestartet…',
-  setupSlowTitle: 'Die Einrichtung dauert länger als üblich.',
-  setupSlowBody: 'Hermes wird im Hintergrund noch gestartet.',
-  continueWithoutSetup: 'Ohne Einrichtung fortfahren',
   lookingUpProviders: 'Anbieter werden gesucht...',
   collapse: 'Einklappen',
   otherProviders: 'Andere Anbieter',

@@ -10,6 +10,7 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantQuestionnaire } from './zh-hant_questionnaire'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
@@ -30,6 +31,7 @@ export const zhHantOverrides = {
     copyUrl: '複製連結',
     close: '關閉'
   },
+  questionnaire: zhHantQuestionnaire,
   sharedMetrics: {
     consentTitle: '分享使用統計？',
     dialogTitle: '使用統計',
@@ -123,24 +125,6 @@ export const zhHantOverrides = {
   errors: zhHantDiagnostics.errors,
   tips: zhHantChat.tips,
   ui: zhHantCommon.ui,
-  handoffTour: {
-    profileTitle: '你的第一個任務在預設設定檔中執行',
-
-    profileText:
-      '這條欄用來切換設定檔。現在亮著的是 default，任務工作階段就在這裡。另一個是設定用的設定檔，歡迎聊天在那裡。',
-
-    sessionsTitle: '每個設定檔都有自己的工作階段',
-
-    sessionsText:
-      '這個清單屬於 default 設定檔。「新工作階段」會在目前選取的設定檔中開始。在欄上切換設定檔，清單也會跟著改變。',
-
-    stayTitle: 'Hermes 一鍵可及',
-
-    stayText: '需要幫忙時，切換到設定用的設定檔並開啟「歡迎使用 Hermes」。它會一直在那裡。',
-    localTitle: '這台電腦可以在本機執行模型',
-    localText: (model: string) =>
-      `${model} 適合你的硬體。免費執行，對話不會離開你的電腦。隨時在這裡的模型選單中選擇它。`
-  },
   freeTier: {
     offer: {
       heading: '繼續使用 Hermes',

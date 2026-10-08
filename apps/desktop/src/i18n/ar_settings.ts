@@ -332,6 +332,10 @@ export const arSettings = {
       themeTitle: 'الثيم',
       themeDesc: 'اختر ثيم سطح المكتب.',
       themeProfileNote: profile => `سيطبق هذا الثيم على الملف الشخصي ${profile}.`,
+      accentTitle: 'لون التمييز',
+      accentDesc: 'يعيد تلوين الأزرار والروابط والتمييزات فوق الثيم. يُحفظ لهذا الملف الشخصي.',
+      accentThemeDefault: 'افتراضي الثيم',
+      accentCustom: 'لون مخصص',
       installTitle: 'تثبيت ثيم',
       installDesc: 'ألصق رابط ثيم أو اسمه لتثبيته.',
       installPlaceholder: 'رابط أو اسم الثيم',
@@ -510,12 +514,6 @@ export const arSettings = {
     },
 
     config: {
-      developerTitle: 'المطوّر',
-      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
-      resetOnboardingDesc:
-        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
-      resetOnboardingAction: 'إعادة تعيين',
-      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
         'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',

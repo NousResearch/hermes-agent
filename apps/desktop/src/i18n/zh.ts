@@ -8,6 +8,7 @@ import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
+import { zhQuestionnaire } from './zh_questionnaire'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zhOverrides = {
@@ -17,6 +18,7 @@ export const zhOverrides = {
     copyUrl: '复制链接',
     close: '关闭'
   },
+  questionnaire: zhQuestionnaire,
   sharedMetrics: zhSharedMetrics,
   intro: introZh,
   connectors: {
@@ -867,6 +869,10 @@ export const zhOverrides = {
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
       themeSearchPlaceholder: '搜索本地主题或 VS Code 市场…',
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
+      accentTitle: '强调色',
+      accentDesc: '在主题之上重新着色按钮、链接和高亮。仅为此配置文件保存。',
+      accentThemeDefault: '主题默认',
+      accentCustom: '自定义颜色',
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
       installPlaceholder: 'publisher.extension',
@@ -1305,11 +1311,6 @@ export const zhOverrides = {
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
       alwaysExternalLinksDesc:
         '点击的每个链接都在系统浏览器中打开，而不是应用内浏览器。右键菜单中的“在应用内浏览器中打开”仍然可用。',
-      developerTitle: '开发者',
-      resetOnboardingTitle: '重置新手引导',
-      resetOnboardingDesc: '删除设置对话，重建设置配置文件，并重新运行首次设置。你自己的配置文件、对话和插件会保留。',
-      resetOnboardingAction: '重置',
-      resetOnboardingFailed: '无法重置新手引导',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -3290,25 +3291,6 @@ export const zhOverrides = {
     markAllRead: '全部标记为已读'
   },
 
-  handoffTour: {
-    profileTitle: '你的第一个任务在默认配置文件中运行',
-
-    profileText:
-      '这条栏用于切换配置文件。现在亮着的是 default，任务会话就在这里。另一个是设置配置文件，欢迎聊天在那里。',
-
-    sessionsTitle: '每个配置文件都有自己的会话',
-
-    sessionsText:
-      '这个列表属于 default 配置文件。“新会话”会在当前选中的配置文件中开始。在栏上切换配置文件，列表也会随之变化。',
-
-    stayTitle: 'Hermes 一键可达',
-
-    stayText: '需要帮忙时，切换到设置配置文件并打开“欢迎使用 Hermes”。它会一直在那里。',
-    localTitle: '这台电脑可以在本地运行模型',
-    localText: (model: string) =>
-      `${model} 适合你的硬件。免费运行，对话不会离开你的电脑。随时在这里的模型菜单中选择它。`
-  },
-
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -4596,31 +4578,6 @@ export const zhOverrides = {
       oneQuestion: '1 个问题',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
-    },
-    setupChoose: {
-      kinds: {
-        accent: '强调色',
-        connectors: '应用',
-        layout: '布局',
-        plugins: '插件',
-        theme: '外观'
-      },
-      loading: '正在加载选项…',
-      unavailable: '此列表暂不可用，请直接在对话中回复。',
-      findApp: '查找应用',
-      customColor: '自定义颜色',
-      plugin: '插件',
-      startsLater: '开始时我们会帮你设置好这些。'
-    },
-    startChat: {
-      starting: title => `正在启动“${title}”…`,
-      startingUntitled: '正在启动对话…',
-      untitled: '新对话',
-      notStarted: '对话未能启动',
-      retry: '重试',
-      inProfile: profile => `位于 ${profile}`,
-      open: '打开',
-      openFailed: '无法打开对话'
     },
     catalogInstall: {
       preparing: '正在准备安装…',

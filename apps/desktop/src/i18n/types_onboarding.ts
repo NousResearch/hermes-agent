@@ -3,9 +3,6 @@ export interface OnboardingTranslations {
   headerDesc: string
   preparingInstall: string
   starting: string
-  setupSlowTitle: string
-  setupSlowBody: string
-  continueWithoutSetup: string
   lookingUpProviders: string
   collapse: string
   otherProviders: string

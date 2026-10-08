@@ -2,9 +2,13 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { markQuestionnaireDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
 import { DesktopOnboardingOverlay } from '.'
+
+// The questionnaire's due check answered "not due": first-run surfaces are free to show.
+markQuestionnaireDecided()
 
 const HEADER = "Let's get you setup with Hermes Agent"
 

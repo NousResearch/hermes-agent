@@ -45,7 +45,6 @@ export function ComposerControls({
   disabled,
   foldVoice = false,
   hasComposerPayload,
-  hideModelPill = false,
   minimal = false,
   state,
   voiceStatus,
@@ -62,7 +61,6 @@ export function ComposerControls({
   disabled: boolean
   foldVoice?: boolean
   hasComposerPayload: boolean
-  hideModelPill?: boolean
   minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
@@ -117,12 +115,8 @@ export function ComposerControls({
     <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
-          {hideModelPill ? null : (
-            <>
-              <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
-            </>
-          )}
+          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
           {voiceControls}
         </>
       )}

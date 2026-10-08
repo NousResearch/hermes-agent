@@ -45,8 +45,8 @@ export function activitySignature(content: readonly ActivityPart[], reasoningSho
   let settledTools = 0
 
   for (const part of content) {
-    // Reasoning the transcript does not draw (the guided chat, or the user
-    // turned it off) is the model thinking in silence, not progress on screen.
+    // Reasoning the transcript does not draw (the user turned it off) is the
+    // model thinking in silence, not progress on screen.
     if (!reasoningShown && part.type === 'reasoning') {
       continue
     }

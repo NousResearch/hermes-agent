@@ -2,16 +2,15 @@
  * The local-setup offer: "this machine can run a model locally" for every
  * machine that qualifies, delivered by state transitions, never by a timer.
  *
- * Three surfaces read this one record:
+ * Two surfaces read this one record (the questionnaire's local step answers it
+ * directly: yes → accepted, Not now → dismissed):
  *
- * - The handoff tour ends on the model pill (`signpost.ts`) when the machine
- *   qualifies. Every guided user who reaches the handoff sees it.
  * - A card above the primary composer after the first finished turn once
- *   onboarding is over (handoff or skip). It renders only while that session
- *   is idle, so an automatic follow-up turn hides it and the next idle shows it.
+ *   the first run is over. It renders only while that session is idle, so an
+ *   automatic follow-up turn hides it and the next idle shows it.
  * - A "Run locally" row at the top of the model menu, until setup is done.
  *
- * States move only on events: `armed` when onboarding ends, `shown` on the
+ * States move only on events: `armed` when the first run ends, `shown` on the
  * first eligible `message.complete`, `dismissed` on ✕, `accepted` on the card's
  * button. Local setup completing ends it by eligibility: a machine with a
  * runtime and a staged model no longer qualifies, so every surface hides.
@@ -25,14 +24,13 @@
 import { atom, computed } from 'nanostores'
 
 import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { readKey } from '@/lib/storage'
 import type { LocalCatalogModel, LocalModelsStatus } from '@/types/hermes'
 
 import { $localModelsEnabled } from './local-models-flag'
 import { $desktopOnboarding } from './onboarding'
-import { $onboardingGate, $onboardingStateRead, type OnboardingPhase } from './onboarding-gate'
+import { $onboardingSurfaceClear } from './onboarding-presence'
 import { $connection } from './session'
 import { $retiredTips } from './tips'
 
@@ -231,18 +229,12 @@ function transition(state: LocalSetupOfferState, patch: Partial<OfferRecord>): v
   setRecord({ ...$localSetupOffer.get(), ...patch, at: new Date().toISOString(), state })
 }
 
-/** The guide will not run for this identity: `onboarding.state` answered without starting it, or "choose a provider later". */
-function guideWillNotStart(): boolean {
-  return $onboardingStateRead.get() || $desktopOnboarding.get().firstRunSkipped
-}
-
 /**
- * Guided onboarding ending (either way) arms the offer, and so does an install
- * where the guide never runs (flag off, or `idle` with the guide ruled out).
- * `cinematic`/`guided`/`handoff`, and an `idle` the guide may still leave, wait:
- * the card must not land on top of the guide.
+ * The first run is behind this window: the questionnaire closed (Start, Skip or a failed Start), was
+ * never due, or the person chose a provider later. A Start that answered the local step already moved
+ * the offer to accepted or dismissed, which stays final.
  */
-function armFromPhase(phase: OnboardingPhase): void {
+function armWhenFirstRunSettles(): void {
   if ($localSetupOffer.get().state !== 'unarmed') {
     return
   }
@@ -250,25 +242,25 @@ function armFromPhase(phase: OnboardingPhase): void {
   // Someone who closed the old local-setup tip already answered this offer.
   if ($retiredTips.get().includes('local-setup')) {
     transition('dismissed', { armedBy: 'retired-tip' })
-  } else if (phase === 'done' || phase === 'skipped') {
-    transition('armed', { armedBy: `onboarding:${phase}` })
-  } else if (!isOnboardingEnabled()) {
-    transition('armed', { armedBy: 'no-guided-onboarding' })
-  } else if (phase === 'idle' && guideWillNotStart()) {
-    transition('armed', { armedBy: 'guide-will-not-start' })
+  } else if ($onboardingSurfaceClear.get() || $desktopOnboarding.get().firstRunSkipped) {
+    transition('armed', { armedBy: 'first-run-settled' })
   }
 }
 
-$onboardingGate.subscribe(gate => armFromPhase(gate.phase))
-$desktopOnboarding.listen(() => armFromPhase($onboardingGate.get().phase))
-$onboardingStateRead.listen(() => armFromPhase($onboardingGate.get().phase))
+$onboardingSurfaceClear.subscribe(armWhenFirstRunSettles)
+$desktopOnboarding.listen(armWhenFirstRunSettles)
+
+/** The questionnaire's handoff chat: its first finished turn is the task it was given, not a moment for the card. */
+let handoffSessionId: null | string = null
+
+export function noteHandoffSession(sessionId: string): void {
+  handoffSessionId = sessionId
+}
 
 interface TurnCompleteSignal {
   /** Anything but a completed turn: errored, interrupted, cancelled. */
   failed: boolean
   sessionId: null | string
-  /** A turn of the setup chat itself (its closing words after `start_chat`). */
-  setupChat: boolean
 }
 
 /**
@@ -277,17 +269,15 @@ interface TurnCompleteSignal {
  * it), so this is the end of a task, not a step in one. Turns that did not
  * complete do not count; the caller only reports the session on screen.
  */
-export function reportLocalSetupTurnComplete({ failed, sessionId, setupChat }: TurnCompleteSignal): void {
+export function reportLocalSetupTurnComplete({ failed, sessionId }: TurnCompleteSignal): void {
   const offer = $localSetupOffer.get()
 
-  if (failed || !sessionId || setupChat || offer.state !== 'armed') {
+  if (failed || !sessionId || offer.state !== 'armed') {
     return
   }
 
-  // The task chat that setup hands off to speaks first: its opening turn asks which direction to take.
-  // That question is not a finished task, so the card waits for the next completed turn.
-  if (offer.armedBy === 'onboarding:done' && offer.sessionId === null) {
-    transition('armed', { sessionId })
+  if (sessionId === handoffSessionId) {
+    handoffSessionId = null
 
     return
   }
@@ -328,7 +318,7 @@ interface LocalSetupOfferDebug {
     eligibility: Eligibility | null
     localModelsEnabled: boolean
     offer: OfferRecord
-    onboardingPhase: OnboardingPhase
+    firstRunSettled: boolean
   }
 }
 
@@ -353,12 +343,12 @@ window.__hermesTips = {
   reset: () => {
     $stored.set({})
     invalidateLocalSetupEligibility()
-    armFromPhase($onboardingGate.get().phase)
+    armWhenFirstRunSettles()
   },
   state: () => ({
     eligibility: $localSetupEligibility.get(),
     localModelsEnabled: $localModelsEnabled.get(),
     offer: $localSetupOffer.get(),
-    onboardingPhase: $onboardingGate.get().phase
+    firstRunSettled: $onboardingSurfaceClear.get()
   })
 }

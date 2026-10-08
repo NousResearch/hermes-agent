@@ -7,6 +7,7 @@ import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
+import { ruQuestionnaire } from './ru_questionnaire'
 import { ruSharedMetrics } from './ru_shared_metrics'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
@@ -31,6 +32,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  questionnaire: ruQuestionnaire,
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -680,6 +682,10 @@ export const ruOverrides = {
       themeTitle: 'Тема',
       themeDesc: 'Только палитры для приложения. Выбранный режим применяется поверх.',
       themeProfileNote: profile => `Сохранено для профиля ${profile} — у каждого профиля своя тема.`,
+      accentTitle: 'Акцентный цвет',
+      accentDesc: 'Перекрашивает кнопки, ссылки и выделения поверх темы. Сохраняется для этого профиля.',
+      accentThemeDefault: 'По умолчанию темы',
+      accentCustom: 'Свой цвет',
       installTitle: 'Установить из VS Code',
       installDesc:
         'Вставьте id расширения с Marketplace (напр. dracula-theme.theme-dracula), чтобы преобразовать его цветовую тему в палитру приложения.',
@@ -1036,13 +1042,7 @@ export const ruOverrides = {
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
-      developerTitle: 'Для разработчиков',
-      resetOnboardingTitle: 'Сбросить первоначальную настройку',
-      resetOnboardingDesc:
-        'Удалить чаты настройки, пересоздать профиль настройки и снова запустить первоначальную настройку. Ваши профили, чаты и плагины сохранятся.',
-      resetOnboardingAction: 'Сбросить',
-      resetOnboardingFailed: 'Не удалось сбросить первоначальную настройку'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -2686,20 +2686,6 @@ export const ruOverrides = {
     },
     markAllRead: 'Отметить все как прочитанные'
   },
-  handoffTour: {
-    profileTitle: 'Первая задача выполняется в профиле по умолчанию',
-    profileText:
-      'Эта панель переключает профили. Сейчас подсвечен default — там сессия задачи. Другой — профиль настройки, там приветственный чат.',
-    sessionsTitle: 'У каждого профиля свои сессии',
-    sessionsText:
-      'Этот список относится к профилю default. «Новая сессия» создаёт её в выбранном профиле. Переключите профиль на панели — и список сменится.',
-    stayTitle: 'Hermes в одном клике',
-    stayText:
-      'Переключитесь на профиль настройки и откройте «Добро пожаловать в Hermes», когда понадобится помощь. Он остаётся там.',
-    localTitle: 'Этот компьютер может запускать модели локально',
-    localText: (model: string) =>
-      `${model} подходит для вашего оборудования. Работает бесплатно, а чаты не покидают ваш компьютер. Выберите её здесь, в меню моделей, когда захотите.`
-  },
   composer: {
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
@@ -3802,31 +3788,6 @@ export const ruOverrides = {
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       notDelivered:
         'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Акцентный цвет',
-        connectors: 'Приложения',
-        layout: 'Раскладка',
-        plugins: 'Плагины',
-        theme: 'Оформление'
-      },
-      loading: 'Загружаю варианты…',
-      unavailable: 'Этот список сейчас недоступен. Ответьте в чате.',
-      findApp: 'Найти приложение',
-      customColor: 'Свой цвет',
-      plugin: 'Плагин',
-      startsLater: 'Мы настроим это, когда вы начнёте.'
-    },
-    startChat: {
-      starting: title => `Запускаю «${title}»…`,
-      startingUntitled: 'Запускаю чат…',
-      untitled: 'Новый чат',
-      notStarted: 'Чат не запустился',
-      retry: 'Повторить',
-      inProfile: profile => `В ${profile}`,
-      open: 'Открыть',
-      openFailed: 'Не удалось открыть чат'
     },
     catalogInstall: {
       preparing: 'Готовим установку…',

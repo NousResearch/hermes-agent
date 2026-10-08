@@ -1,12 +1,10 @@
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
-import { finishGuidedOnboarding } from '@/components/onboarding-chat/intro'
-import { type GatewayEventPayload, toolCallOwnerMessageId } from '@/lib/chat-messages'
+import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { isStartChatCallerWatched, markLiveStartChat, readStartChatResult } from '@/store/start-chat'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -38,23 +36,6 @@ function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: str
     const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
     record(sessionId, previewTarget, cwd, storedSessionIdForRuntimeId(sessionId) ?? sessionId)
   }
-}
-
-function reportStartChatHandoff(payload: GatewayEventPayload | undefined, sessionId: string): void {
-  const outcome = readStartChatResult(payload?.result)
-
-  if (payload?.name !== 'start_chat' || outcome?.status !== 'started') {
-    return
-  }
-
-  const callerId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
-
-  if (isStartChatCallerWatched(callerId)) {
-    markLiveStartChat(callerId, payload.tool_id || payload.tool_call_id || payload.id || '')
-  }
-
-  // From the setup chat, the handoff completes the guided first run (no-op elsewhere).
-  finishGuidedOnboarding(sessionId, outcome.sessionId)
 }
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
@@ -122,10 +103,6 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       if (!sessionInterrupted(sessionId)) {
         recordToolPreview(ctx, sessionId, state?.cwd ?? '', pendingProduction)
-      }
-
-      if (!event.replayed) {
-        reportStartChatHandoff(payload, sessionId)
       }
 
       if (isActiveEvent) {

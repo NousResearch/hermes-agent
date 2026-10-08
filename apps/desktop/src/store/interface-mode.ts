@@ -80,7 +80,11 @@ export interface ModeContext {
   /** A signed-out free-tier user with no setup in progress: the statusbar's
    *  Sign in chip is their standing way to sign in. */
   freeTierSignInOpen: boolean
+  /** The first-run questionnaire is open; its account and download progress live in the statusbar. */
+  onboardingOpen: boolean
   profileCount: number
+  /** The model download the questionnaire's Start began is running; its progress lives in the statusbar. */
+  setupDownloadRunning: boolean
 }
 
 export interface ModePolicy {
@@ -115,8 +119,8 @@ const SIMPLE_POLICY: PolicyTable = {
   // What was said and when — cost, tokens, PR and profile chips are readouts.
   sidebarRowMeta: ['preview', 'updated'],
   // The bar carries the free tier's Sign in chip, the one standing way in to a
-  // sign-in. It rests hidden for everyone else and goes away once they sign in.
-  statusbarVisible: context => context.freeTierSignInOpen,
+  // sign-in, and the questionnaire's account and download progress. It rests hidden otherwise.
+  statusbarVisible: context => context.freeTierSignInOpen || context.onboardingOpen || context.setupDownloadRunning,
   terminalOpen: false,
   // Product summaries; the technical payload view is the instrumentation itself.
   toolViewMode: 'product'
@@ -138,7 +142,9 @@ const shadows = (key: ModePolicyKey, mode: InterfaceMode) => key in POLICY[mode]
 export const $modeContext = atom<ModeContext>({
   connectionCount: 1,
   freeTierSignInOpen: false,
-  profileCount: 1
+  onboardingOpen: false,
+  profileCount: 1,
+  setupDownloadRunning: false
 })
 
 export function setModeContext(patch: Partial<ModeContext>) {

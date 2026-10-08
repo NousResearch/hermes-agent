@@ -14,7 +14,6 @@ import {
   HUD_TEXT
 } from '@/app/floating-hud'
 import { SESSION_IMPORT_ROUTE } from '@/app/routes'
-import { leaveIntro } from '@/components/onboarding-chat/intro'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -1583,8 +1582,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     completeFlow('command_palette')
     recordAction(item.action ?? 'other', 'palette')
-    // A Cmd-K command or layout is a way out of the first-run intro.
-    leaveIntro()
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

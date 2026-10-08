@@ -37,7 +37,6 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
-import { DeveloperSettings } from './developer-settings'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -55,6 +54,7 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { RunSetupAgainSetting } from './run-setup-again'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -486,7 +486,7 @@ function ConfigSettingsInner({
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
-          <DeveloperSettings />
+          <RunSetupAgainSetting />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is

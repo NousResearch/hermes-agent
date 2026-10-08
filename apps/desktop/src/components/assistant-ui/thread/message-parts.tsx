@@ -14,7 +14,6 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
-import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -24,7 +23,6 @@ import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/compone
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
-import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -94,19 +92,6 @@ const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
-const StartChatToolPart: FC<TimelineToolCallProps> = props => {
-  if (props.isError || settledWithoutResult(props)) {
-    return <ToolFallback {...props} />
-  }
-
-  return (
-    <>
-      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-      <StartChatTool {...props} />
-    </>
-  )
-}
-
 const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
   mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
 
@@ -116,8 +101,9 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
   manage_connections: ConnectionsToolPart,
-  setup_choose: ClarifyToolPart,
-  start_chat: StartChatToolPart
+  // Rows left in old setup chats render as plain tool rows (plan D18).
+  setup_choose: ToolFallback,
+  start_chat: ToolFallback
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the
@@ -353,10 +339,6 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
-  // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the layout picker"), and a first-time user reading that alongside the
-  // greeting breaks the one conversation the guide is trying to have.
-  const guidedChat = useOnboardingChatActive()
 
   const pending = useAuiState(
     s =>
@@ -395,7 +377,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat || !showReasoning) {
+  if (!hasContent || !showReasoning) {
     return null
   }
 

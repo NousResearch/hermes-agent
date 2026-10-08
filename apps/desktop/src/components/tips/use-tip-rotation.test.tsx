@@ -4,10 +4,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $localModelsEnabled } from '@/store/local-models-flag'
+import { markQuestionnaireDecided } from '@/store/onboarding-presence'
 import { $awaitingResponse, $busy, $connection } from '@/store/session'
 import { $activeTip, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt } from '@/store/tips'
 
 import { useTipRotation } from './use-tip-rotation'
+
+// The questionnaire's due check answered "not due": first-run surfaces are free to show.
+markQuestionnaireDecided()
 
 vi.mock('@/store/tutorial-lifetime', () => ({ checkTutorialLifetime: vi.fn() }))
 

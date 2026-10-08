@@ -674,7 +674,6 @@ import {
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
-import { isAppSized, registerWindowSizing } from './window-growth'
 import { windowMenuTemplate } from './window-menu'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
@@ -3624,7 +3623,7 @@ function readWindowState() {
 // broken transition behind #94319 — so record that provenance and let recovery
 // on the next launch recognize the snapshot instead of guessing from geometry.
 function persistWindowState() {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || isAppSized(mainWindow)) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
     return
   }
 
@@ -13912,7 +13911,7 @@ function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocu
   const displays = screen.getAllDisplays()
 
   const fallback = computeWindowOptions(
-    readWindowState() ?? windowSize('normal', screen.getPrimaryDisplay().workArea),
+    readWindowState() ?? windowSize(screen.getPrimaryDisplay().workArea),
     displays
   )
 
@@ -14019,7 +14018,6 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
-registerWindowSizing({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -15023,7 +15021,7 @@ function createWindow() {
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
     ...computeWindowOptions(
-      savedWindowState ?? windowSize('normal', screen.getPrimaryDisplay().workArea),
+      savedWindowState ?? windowSize(screen.getPrimaryDisplay().workArea),
       screen.getAllDisplays()
     ),
     minWidth: WINDOW_MIN_WIDTH,

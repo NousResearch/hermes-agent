@@ -17,9 +17,7 @@ import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { $guidedOnboardingSettled, $setupProfileName } from '@/store/onboarding-gate'
-import { $onboardingSurfaces } from '@/store/onboarding-presence'
-import { normalizeProfileKey } from '@/store/profile'
+import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -57,10 +55,8 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
-  const surfaces = useStore($onboardingSurfaces)
-  const guidedSettled = useStore($guidedOnboardingSettled)
+  const surfaceClear = useStore($onboardingSurfaceClear)
   const tourActive = useStore($tourActive)
-  const setupProfile = useStore($setupProfileName)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
@@ -69,20 +65,16 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
 
   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
-  // Never over the provider picker, the free-tier welcome, the guided chat or a tour on screen:
+  // Never over the provider picker, the free-tier welcome, the questionnaire or a tour on screen:
   // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
-    surfaces.size === 0 &&
-    guidedSettled &&
+    surfaceClear &&
     !tourActive
 
-  // The setup profile only hosts the welcome chat; its answer would count for nobody.
-  const inSetupProfile = setupProfile !== null && normalizeProfileKey(setupProfile) === normalizeProfileKey(profile)
-
-  const ready = enabled && onboardingSettled && !inSetupProfile
+  const ready = enabled && onboardingSettled
 
   useEffect(() => {
     $sharedMetricsConsent.set(null)

@@ -2,14 +2,14 @@ import { renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
-import { $onboardingGate } from '@/store/onboarding-gate'
+import { markQuestionnaireDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import {
   $connection,
   $currentCwd,
@@ -286,8 +286,6 @@ describe('free-tier Sign in in every interface mode', () => {
     notice_pending: false
   })
 
-  const desktopBridge = window.hermesDesktop
-
   function signInChipVisible(): boolean {
     const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
     const chip = [...leftStatusbarItems, ...statusbarItems].find(item => item.id === 'free-tier')
@@ -295,10 +293,11 @@ describe('free-tier Sign in in every interface mode', () => {
     return $statusbarVisible.get() && chip !== undefined && !chip.hidden
   }
 
+  beforeEach(() => markQuestionnaireDecided())
+
   afterEach(() => {
     $freeTierStatus.set(null)
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'idle' })
-    window.hermesDesktop = desktopBridge
+    setOnboardingSurfaceActive('questionnaire', false)
     setInterfaceMode('advanced')
   })
 
@@ -318,13 +317,12 @@ describe('free-tier Sign in in every interface mode', () => {
     expect($statusbarVisible.get()).toBe(false)
   })
 
-  it('holds the chip while a guided setup is running and brings it back after', () => {
-    window.hermesDesktop = { ...desktopBridge, guestOnboardingEnabled: true } as typeof desktopBridge
+  it('holds the chip while the questionnaire is open and brings it back after', () => {
     $freeTierStatus.set(freeTier(true))
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'guided' })
+    setOnboardingSurfaceActive('questionnaire', true)
     expect(signInChipVisible()).toBe(false)
 
-    $onboardingGate.set({ ...$onboardingGate.get(), phase: 'done' })
+    setOnboardingSurfaceActive('questionnaire', false)
     expect(signInChipVisible()).toBe(true)
   })
 })

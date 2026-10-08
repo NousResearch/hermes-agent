@@ -17,7 +17,7 @@ describe('LocalSetupCard', () => {
     const { LocalSetupCard } = await import('./local-setup-card')
     $localModelsEnabled.set(true)
 
-    expect(() => render(<LocalSetupCard busy={false} guidedChat={false} />)).not.toThrow()
+    expect(() => render(<LocalSetupCard busy={false} />)).not.toThrow()
     expect($localSetupEligibility.get()?.reason).toBe('connection not established yet')
   })
 })

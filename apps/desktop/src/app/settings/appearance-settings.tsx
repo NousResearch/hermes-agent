@@ -76,6 +76,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
+import { AccentSetting } from './accent-setting'
 import { AppearanceExtraSlot } from './appearance-contrib'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
@@ -489,13 +490,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     // Active theme first; stable sort keeps the rest in their original order.
     .sort((a, b) => Number(b.name === themeName) - Number(a.name === themeName))
 
-  // Themes save per profile. Surface that only when the user actually has more
-  // than one profile (single-profile installs never see the distinction).
-  const showProfileNote = profiles.length > 1
-
-  const activeProfileName =
-    profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
-
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
 
   const toolOptions = [
@@ -654,11 +648,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                     )}
                     <MarketplaceThemeResults installs={installs} onInstalled={name => setTheme(name)} query={query} />
                   </div>
-                  {showProfileNote && (
-                    <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                      {a.themeProfileNote(activeProfileName)}
-                    </p>
-                  )}
+                  <ThemeProfileNote activeProfileKey={activeProfileKey} note={a.themeProfileNote} profiles={profiles} />
                 </>
               }
               description={a.themeDesc}
@@ -667,6 +657,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               wide
             />
           )}
+
+          {show('theme') && <AccentSetting id={settingElementId(ids.accent)} />}
 
           {show('typography') && (
             <>
@@ -1099,5 +1091,29 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           not that section. */}
       {subpage === undefined && <AppearanceExtraSlot />}
     </SettingsContent>
+  )
+}
+
+// Themes save per profile. Surface that only when the user actually has more
+// than one profile (single-profile installs never see the distinction).
+function ThemeProfileNote({
+  activeProfileKey,
+  note,
+  profiles
+}: {
+  activeProfileKey: string
+  note: (profile: string) => string
+  profiles: readonly { name: string }[]
+}) {
+  if (profiles.length < 2) {
+    return null
+  }
+
+  const active = profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
+
+  return (
+    <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+      {note(active)}
+    </p>
   )
 }

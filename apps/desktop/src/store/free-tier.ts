@@ -2,8 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { runFreeTierChallenge } from '@/store/free-tier-challenge'
 import { setModeContext } from '@/store/interface-mode'
-import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
-import { onboardingSurfaceActive } from '@/store/onboarding-presence'
+import { $onboardingSurfaceClear, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 /** The model the free-tier route runs on. Used to recognise a session that is
@@ -28,12 +27,12 @@ export const $freeTierStatus = atom<FreeTierStatus | null>(null)
 /**
  * A signed-out free-tier user who should see the standing Sign in: the tier is
  * on with an identity (`available`; a sign-in replaces that identity, so it
- * reads false afterwards) and no guided setup owns the moment. The statusbar
- * chip shows on it, and Simple mode keeps the statusbar up on it.
+ * reads false afterwards) and the first-run questionnaire does not own the
+ * moment. The statusbar chip shows on it, and Simple mode keeps the statusbar up on it.
  */
 export const $freeTierSignInOpen = computed(
-  [$freeTierStatus, $onboardingGate],
-  status => Boolean(status?.available) && !guidedOnboardingActive()
+  [$freeTierStatus, $onboardingSurfaceClear],
+  (status, clear) => Boolean(status?.available) && clear
 )
 
 // Fed here, beside the atom, so every importer of this store gets the same link.

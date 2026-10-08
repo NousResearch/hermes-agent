@@ -1,15 +1,15 @@
 /**
  * First-run funnel telemetry (hermes.desktop.onboarding). Observes the
- * onboarding stores' own transitions — the provider picker, the guided intro,
- * free-tier sign-in — and maps them onto the closed step set; nothing here
+ * onboarding stores' own transitions — the provider picker, the first-run
+ * questionnaire, free-tier sign-in — and maps them onto the closed step set; nothing here
  * changes onboarding behavior. Manual (Settings "add provider") flows are not
  * first run and are ignored.
  */
 
+import { $questionnairePhase, type QuestionnairePhase } from '@/onboarding/store'
 import { closeOnboardingStep, recordDislike, recordOnboarding } from '@/store/desktop-metrics'
 import { $freeTierSignIn, type FreeTierSignInState } from '@/store/free-tier-sign-in'
 import { $desktopOnboarding, type DesktopOnboardingState } from '@/store/onboarding'
-import { $onboardingGate, type OnboardingPhase } from '@/store/onboarding-gate'
 
 const OAUTH_PENDING = new Set(['awaiting_user', 'error', 'external_pending', 'polling', 'starting', 'submitting'])
 
@@ -85,18 +85,21 @@ export function onboardingTransition(prev: DesktopOnboardingState, next: Desktop
   }
 }
 
-export function guidePhaseTransition(prev: OnboardingPhase, next: OnboardingPhase): void {
+/** D10: `guide` is reached when the questionnaire shows and completed at a successful Start. */
+export function guidePhaseTransition(prev: QuestionnairePhase, next: QuestionnairePhase): void {
   if (prev === next) {
     return
   }
 
-  if (next === 'guided') {
+  if (next === 'shown') {
     recordOnboarding('guide', 'reached')
   } else if (next === 'skipped') {
     recordOnboarding('guide_skip', 'completed')
     closeOnboardingStep('guide')
   } else if (next === 'done') {
     recordOnboarding('guide', 'completed')
+  } else if (next === 'failed') {
+    closeOnboardingStep('guide')
   }
 }
 
@@ -124,7 +127,7 @@ export function signInTransition(prev: FreeTierSignInState, next: FreeTierSignIn
 /** Subscribe the three first-run stores; returns the unsubscribe. */
 export function observeOnboardingMetrics(): () => void {
   let onboarding = $desktopOnboarding.get()
-  let phase = $onboardingGate.get().phase
+  let phase = $questionnairePhase.get()
   let signIn = $freeTierSignIn.get()
 
   const stops = [
@@ -134,11 +137,11 @@ export function observeOnboardingMetrics(): () => void {
       onboarding = next
       onboardingTransition(prev, next)
     }),
-    $onboardingGate.listen(next => {
+    $questionnairePhase.listen(next => {
       const prev = phase
 
-      phase = next.phase
-      guidePhaseTransition(prev, next.phase)
+      phase = next
+      guidePhaseTransition(prev, next)
     }),
     $freeTierSignIn.listen(next => {
       const prev = signIn

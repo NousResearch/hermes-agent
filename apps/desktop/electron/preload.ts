@@ -88,9 +88,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
     }
   },
-  chatOnboarding: {
-    size: mode => ipcRenderer.send('hermes:window:size', mode)
-  },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.

@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
 import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
-import { $onboardingGate } from '@/store/onboarding-gate'
+import {
+  $questionnaireDecided,
+  markQuestionnaireDecided,
+  setOnboardingSurfaceActive
+} from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 const status = (nudge_due_in: null | number, available = true): FreeTierStatus => ({
@@ -52,6 +56,8 @@ function own(requestGateway: FreeTierRequester) {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  // The questionnaire's due check answered "not due": nothing first-run owns the screen.
+  markQuestionnaireDecided()
 })
 
 afterEach(() => {
@@ -60,8 +66,7 @@ afterEach(() => {
   stopFreeTierOffer()
   closeFreeTierSignIn()
   $freeTierStatus.set(null)
-  $onboardingGate.set({ guideKickoff: 'idle', guideQueued: false, phase: 'idle' })
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  setOnboardingSurfaceActive('questionnaire', false)
   vi.useRealTimers()
 })
 
@@ -103,14 +108,23 @@ describe('sign-in offer after a finished task', () => {
     expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
   })
 
-  it('does not claim while guided onboarding is on screen, the dialog is open, or off the free tier', async () => {
+  it('does not claim before the due check answers', async () => {
     const requestGateway = gateway({ statuses: [status(0)] })
 
-    Object.assign(window, { hermesDesktop: { guestOnboardingEnabled: true } })
-    $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'guided' })
+    $questionnaireDecided.set(false)
     syncFreeTierOffer(status(0), requestGateway)
     await vi.advanceTimersByTimeAsync(0)
-    $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'done' })
+
+    expect(claims(requestGateway)).toBe(0)
+  })
+
+  it('does not claim while the questionnaire is on screen, the dialog is open, or off the free tier', async () => {
+    const requestGateway = gateway({ statuses: [status(0)] })
+
+    setOnboardingSurfaceActive('questionnaire', true)
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    setOnboardingSurfaceActive('questionnaire', false)
 
     $freeTierSignIn.set({ status: 'requested' })
     syncFreeTierOffer(status(0), requestGateway)

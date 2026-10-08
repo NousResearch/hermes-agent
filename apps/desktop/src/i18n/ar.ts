@@ -8,10 +8,12 @@ import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
+import { arQuestionnaire } from './ar_questionnaire'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  questionnaire: arQuestionnaire,
   sharedMetrics: arCommon.sharedMetrics,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,
@@ -56,19 +58,6 @@ export const arOverrides = {
   errors: arDiagnostics.errors,
   tips: arChat.tips,
   ui: arCommon.ui,
-  handoffTour: {
-    profileTitle: 'مهمتك الأولى تعمل على الملف الشخصي الافتراضي',
-    profileText:
-      'يبدّل هذا الشريط بين الملفات الشخصية. المضاء الآن هو الافتراضي، حيث توجد جلسة المهمة. والآخر هو ملف الإعداد، حيث توجد محادثة الترحيب.',
-    sessionsTitle: 'لكل ملف شخصي جلساته الخاصة',
-    sessionsText:
-      'هذه القائمة تخص الملف الافتراضي. «جلسة جديدة» تبدأ جلسة على الملف المحدد. بدّل الملف من الشريط فتتغير القائمة معه.',
-    stayTitle: 'Hermes على بُعد نقرة',
-    stayText: 'انتقل إلى ملف الإعداد وافتح «مرحبًا بك في Hermes» متى احتجت إلى مساعدة. ستبقى هناك.',
-    localTitle: 'يمكن لهذا الجهاز تشغيل النماذج محليًا',
-    localText: (model: string) =>
-      `${model} يناسب أجهزتك. يعمل مجانًا، ولا تغادر المحادثات جهازك. اختره من هنا، من قائمة النماذج، متى شئت.`
-  },
   freeTier: {
     offer: {
       heading: 'واصل مع Hermes',

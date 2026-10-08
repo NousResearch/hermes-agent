@@ -20,7 +20,6 @@ const ELIGIBILITY_RETRY_MS = 30_000
 
 interface LocalSetupCardProps {
   busy: boolean
-  guidedChat: boolean
 }
 
 /**
@@ -32,7 +31,7 @@ interface LocalSetupCardProps {
  * next idle brings it back. Offers, never hijacks: "Show me" opens this
  * composer's model menu on click, nothing moves by itself.
  */
-export function LocalSetupCard({ busy, guidedChat }: LocalSetupCardProps) {
+export function LocalSetupCard({ busy }: LocalSetupCardProps) {
   const primary = useSessionView().kind === 'primary'
   const { target } = useComposerScope()
   const offer = useStore($localSetupOffer)
@@ -61,7 +60,7 @@ export function LocalSetupCard({ busy, guidedChat }: LocalSetupCardProps) {
     }
   }, [offer.state, eligibility])
 
-  if (offer.state !== 'shown' || !fit || !primary || busy || guidedChat || isHudWindow()) {
+  if (offer.state !== 'shown' || !fit || !primary || busy || isHudWindow()) {
     return null
   }
 

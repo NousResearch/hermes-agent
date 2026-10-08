@@ -6,7 +6,6 @@
  * live `screen` displays.
  */
 
-import type { WindowSizeMode } from './window-size-types'
 
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
@@ -114,25 +113,15 @@ interface WorkArea {
   height: number
 }
 
-// Share of the display's work area, clamped. Normal is the working app — the
-// first window and a layout pick in the setup chat. Onboarding is the setup
-// chat alone, before a layout exists; its floor keeps the chat readable at the
-// 110% default zoom.
-const WINDOW_SIZES: Record<WindowSizeMode, { share: WorkArea; min: WorkArea; max: WorkArea }> = {
-  normal: {
-    share: { width: 0.88, height: 0.88 },
-    min: { width: 1280, height: 820 },
-    max: { width: 1760, height: 1100 }
-  },
-  onboarding: {
-    share: { width: 0.5, height: 0.85 },
-    min: { width: 760, height: 760 },
-    max: { width: 960, height: 1000 }
-  }
+// First-launch size: a share of the display's work area, clamped.
+const WINDOW_SIZE: { share: WorkArea; min: WorkArea; max: WorkArea } = {
+  share: { width: 0.88, height: 0.88 },
+  min: { width: 1280, height: 820 },
+  max: { width: 1760, height: 1100 }
 }
 
-function windowSize(mode: WindowSizeMode, workArea: WorkArea): WindowOptions {
-  const { share, min, max } = WINDOW_SIZES[mode]
+function windowSize(workArea: WorkArea): WindowOptions {
+  const { share, min, max } = WINDOW_SIZE
 
   return {
     width: Math.min(clamp(Math.round(workArea.width * share.width), min.width, max.width), workArea.width),

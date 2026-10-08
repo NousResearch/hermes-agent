@@ -8,10 +8,12 @@ import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
+import { frQuestionnaire } from './fr_questionnaire'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  questionnaire: frQuestionnaire,
   sharedMetrics: frSharedMetrics,
   intro: introFr,
   connectors: {
@@ -1150,6 +1152,10 @@ export const frOverrides = {
       themeDesc: "Palettes desktop uniquement. Le mode sélectionné s'applique par-dessus.",
       themeSearchPlaceholder: 'Rechercher dans vos thèmes ou sur le Marketplace VS Code…',
       themeProfileNote: profile => `Enregistré pour le profil ${profile} — chaque profil conserve son propre thème.`,
+      accentTitle: 'Couleur d’accent',
+      accentDesc: 'Recolore les boutons, liens et surlignages par-dessus le thème. Enregistré pour ce profil.',
+      accentThemeDefault: 'Par défaut du thème',
+      accentCustom: 'Couleur personnalisée',
       installTitle: 'Installer depuis VS Code',
       installDesc:
         "Collez un identifiant d'extension Marketplace (ex. dracula-theme.theme-dracula) pour convertir son thème de couleur en palette desktop.",
@@ -1605,13 +1611,7 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
-      showOptions: 'Afficher les options',
-      developerTitle: 'Développeur',
-      resetOnboardingTitle: 'Réinitialiser la configuration initiale',
-      resetOnboardingDesc:
-        'Supprimer les chats de configuration, recréer le profil de configuration et relancer la configuration initiale. Vos propres profils, chats et plugins sont conservés.',
-      resetOnboardingAction: 'Réinitialiser',
-      resetOnboardingFailed: 'Impossible de réinitialiser la configuration initiale'
+      showOptions: 'Afficher les options'
     },
     hudModifier: {
       title: 'Toucher pour afficher le HUD',
@@ -4429,20 +4429,6 @@ export const frOverrides = {
         "Le backend ne s'est pas reconnecté. La mise à jour n'est peut-être pas terminée — vérifiez l'hôte du backend."
     }
   },
-  handoffTour: {
-    localTitle: 'Cette machine peut exécuter des modèles en local',
-    localText: (model: string) =>
-      `${model} convient à votre matériel. Il tourne gratuitement et les conversations ne quittent jamais votre ordinateur. Choisissez-le ici, dans le menu des modèles, quand vous voulez.`,
-    profileTitle: 'Votre première tâche utilise le profil par défaut',
-    profileText:
-      "Cette barre change de profil. Celui qui est éclairé est le profil par défaut, où se trouve la session de la tâche. L'autre est le profil de configuration, où se trouve la conversation de bienvenue.",
-    sessionsTitle: 'Chaque profil conserve ses propres sessions',
-    sessionsText:
-      'Cette liste appartient au profil par défaut. Nouvelle session démarre une tâche sur le profil sélectionné. Changez de profil dans la barre et la liste change avec lui.',
-    stayTitle: "Hermes reste à portée d'un clic",
-    stayText:
-      'Passez au profil de configuration et ouvrez Bienvenue dans Hermes lorsque vous avez besoin d’aide. La conversation y reste disponible.'
-  },
   install: {
     stageStates: {
       pending: 'En attente',
@@ -5315,31 +5301,6 @@ export const frOverrides = {
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Couleur d’accent',
-        connectors: 'Apps',
-        layout: 'Disposition',
-        plugins: 'Plugins',
-        theme: 'Apparence'
-      },
-      loading: 'Chargement des options…',
-      unavailable: 'Cette liste n’est pas disponible pour le moment. Répondez plutôt dans le chat.',
-      findApp: 'Trouver une app',
-      customColor: 'Couleur personnalisée',
-      plugin: 'Plugin',
-      startsLater: 'Nous les configurerons quand vous commencerez.'
-    },
-    startChat: {
-      starting: title => `Démarrage de « ${title} »…`,
-      startingUntitled: 'Démarrage d’un chat…',
-      untitled: 'Nouveau chat',
-      notStarted: 'Le chat n’a pas démarré',
-      retry: 'Réessayer',
-      inProfile: profile => `Dans ${profile}`,
-      open: 'Ouvrir',
-      openFailed: 'Impossible d’ouvrir le chat'
     },
     catalogInstall: {
       preparing: 'Préparation de l’installation…',

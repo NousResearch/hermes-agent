@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { markQuestionnaireDecided } from '@/store/onboarding-presence'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -11,6 +12,9 @@ import {
 } from '@/store/shared-metrics'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
+
+// The questionnaire's due check answered "not due": first-run surfaces are free to show.
+markQuestionnaireDecided()
 
 const copy = en.sharedMetrics
 

@@ -1,4 +1,3 @@
-import type { SetupChooseKind, SetupChooseOption } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
@@ -11,14 +10,6 @@ export interface ClarifyQuestion {
   multiSelect: boolean
 }
 
-export interface SetupChooseSpec {
-  kind: SetupChooseKind
-  options: SetupChooseOption[] | null
-  multiSelect: boolean
-  /** Row ids the card starts with picked (the backend fills them from the setup facts). */
-  preselected: string[]
-}
-
 export interface ClarifyRequest {
   requestId: string
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -27,7 +18,6 @@ export interface ClarifyRequest {
   questions: ClarifyQuestion[]
   /** Answers already locked server-side (reconnect replay): qid → answer, null = skipped. */
   lockedAnswers?: Record<string, null | string>
-  setup?: SetupChooseSpec
 }
 
 /**
@@ -109,51 +99,6 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
   }
 
   return normalized
-}
-
-export const SETUP_CHOOSE_QID = 'setup_choose'
-
-const SETUP_CHOOSE_KINDS = new Set<unknown>([
-  'accent',
-  'connectors',
-  'fork',
-  'layout',
-  'machine_use',
-  'plugins',
-  'question',
-  'theme',
-  'tour'
-])
-
-export function normalizeSetupChoose(
-  params: Record<string, unknown>
-): Pick<ClarifyRequest, 'questions' | 'setup'> | null {
-  const question = typeof params.question === 'string' ? params.question.trim() : ''
-
-  if (!question || !SETUP_CHOOSE_KINDS.has(params.kind)) {
-    return null
-  }
-
-  const options =
-    Array.isArray(params.options) && params.options.length > 0 ? (params.options as SetupChooseOption[]) : null
-
-  const multiSelect = params.multi_select === true
-
-  const preselected = Array.isArray(params.preselected)
-    ? params.preselected.filter((id): id is string => typeof id === 'string')
-    : []
-
-  return {
-    questions: [
-      {
-        choices: options ? options.map(option => option.label) : null,
-        multiSelect: multiSelect && options !== null,
-        qid: SETUP_CHOOSE_QID,
-        question
-      }
-    ],
-    setup: { kind: params.kind as SetupChooseKind, multiSelect, options, preselected }
-  }
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.
@@ -243,78 +188,6 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   }
 }
 
-interface SetupChooseStage {
-  draft: string
-  /**
-   * The name each row of the card shows, by id: a typed answer still names the rows staged with it, and
-   * composer text is matched against the rows of a card whose list the app owns.
-   */
-  labels: Record<string, string>
-  picked: string[]
-  /** The card's own pick of a row: it applies the row's look the same way a click does. */
-  preview: ((id: string) => void) | null
-  revert: (() => void) | null
-}
-
-export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', labels: {}, picked: [], preview: null, revert: null }
-
-/**
- * A card's answer: the picked ids, and the names the user saw for them when any id is a row. The backend
- * hands both to the model, which would otherwise guess a name from an id such as `#8a2be2`.
- */
-export function setupChooseAnswer(
-  picked: string | string[],
-  labels: Record<string, string>
-): { label?: string | string[]; picked: string | string[] } {
-  const ids = Array.isArray(picked) ? picked : [picked]
-
-  if (!ids.some(id => Object.hasOwn(labels, id))) {
-    return { picked }
-  }
-
-  const named = ids.map(id => (Object.hasOwn(labels, id) ? labels[id] : id))
-
-  return { label: Array.isArray(picked) ? named : named[0], picked }
-}
-
-export const $setupChooseStages = atom<Record<string, SetupChooseStage>>({})
-
-export const setupChooseStage = (requestId: string): SetupChooseStage =>
-  $setupChooseStages.get()[requestId] ?? EMPTY_SETUP_STAGE
-
-export function stageSetupChoose(requestId: string, patch: Partial<SetupChooseStage>): void {
-  const current = setupChooseStage(requestId)
-
-  // A no-op patch keeps the atom reference so subscribers do not rerender.
-  const unchanged = Object.entries(patch).every(([key, value]) =>
-    // SAFETY: the entries of a Partial<SetupChooseStage> carry only SetupChooseStage keys.
-    Object.is(current[key as keyof SetupChooseStage], value)
-  )
-
-  if (unchanged && requestId in $setupChooseStages.get()) {
-    return
-  }
-
-  $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...current, ...patch } })
-}
-
-export function commitSetupChoose(requestId: string): void {
-  const next = { ...$setupChooseStages.get() }
-  delete next[requestId]
-  $setupChooseStages.set(next)
-}
-
-$clarifyRequests.listen(requests => {
-  const live = new Set(Object.values(requests).map(request => request.requestId))
-
-  for (const [requestId, stage] of Object.entries($setupChooseStages.get())) {
-    if (!live.has(requestId)) {
-      commitSetupChoose(requestId)
-      stage.revert?.()
-    }
-  }
-})
-
 /** Whether `sessionId` has a clarify parked on it right now (imperative read —
  *  the composer checks this on Enter, not on every render). */
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
@@ -356,22 +229,17 @@ export function skipClarify(request: ClarifyRequest): void {
 
   respondToServerRequest(request.requestId, {})
 
-  settleClarify(
-    request,
-    request.setup
-      ? { outcome: 'cancelled', picked: null }
-      : {
-          outcome: 'cancelled',
-          // Answers locked server-side before a reconnect stand: the server merges them into its result too.
-          responses: request.questions.map(question => {
-            const locked = request.lockedAnswers?.[question.qid]
+  settleClarify(request, {
+    outcome: 'cancelled',
+    // Answers locked server-side before a reconnect stand: the server merges them into its result too.
+    responses: request.questions.map(question => {
+      const locked = request.lockedAnswers?.[question.qid]
 
-            return locked
-              ? { question: question.question, status: 'answered', user_response: lockedAnswer(question, locked) }
-              : { question: question.question, status: 'unanswered', user_response: null }
-          })
-        }
-  )
+      return locked
+        ? { question: question.question, status: 'answered', user_response: lockedAnswer(question, locked) }
+        : { question: question.question, status: 'unanswered', user_response: null }
+    })
+  })
 }
 
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
@@ -382,72 +250,6 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   }
 
   skipClarify(request)
-
-  return true
-}
-
-/**
- * Answer the setup card parked on `sessionId` with text the user typed in the
- * composer: the setup turn reads typed words as the card's answer. False when
- * no setup card is parked (an ordinary clarify card included) or its request is
- * gone; the caller then skips any card and sends the words as a message.
- */
-export function answerSetupCard(sessionId: string | null | undefined, text: string): boolean {
-  const request = $clarifyRequests.get()[keyFor(sessionId)]
-
-  return request?.setup ? answerSetupChoose(request, request.setup, text) : false
-}
-
-/** The row typed text names, by id or label (any case). */
-function matchSetupRow(labels: Record<string, string>, text: string): string | undefined {
-  const typed = text.trim().toLowerCase()
-
-  return Object.keys(labels).find(id => id.toLowerCase() === typed || labels[id].trim().toLowerCase() === typed)
-}
-
-function answerSetupChoose(request: ClarifyRequest, setup: SetupChooseSpec, text: string): boolean {
-  const stage = setupChooseStage(request.requestId)
-  // The backend fills its own rows into the request; the app's lists are known to the card that drew them.
-  const labels = setup.options ? Object.fromEntries(setup.options.map(row => [row.id, row.label])) : stage.labels
-  const freeText = setup.kind === 'question' && !setup.options
-  const id = freeText ? text : matchSetupRow(labels, text)
-
-  if (id === undefined) {
-    // Words that name no row are not a pick: the model reads them and asks again.
-    if (!respondToServerRequest(request.requestId, { said: text })) {
-      return false
-    }
-
-    clearClarifyRequest(request.requestId, request.sessionId)
-    settleClarify(request, { outcome: 'typed', picked: null, said: text })
-
-    return true
-  }
-
-  // A multi-select picker keeps the rows already staged on the card, the
-  // same as its own Confirm: the typed row is one more pick.
-  const answer = setupChooseAnswer(
-    setup.multiSelect ? [...new Set([...stage.picked, id])] : id,
-    freeText ? stage.labels : { ...stage.labels, ...labels }
-  )
-
-  if (!respondToServerRequest(request.requestId, answer)) {
-    return false
-  }
-
-  // A typed row is picked as if clicked, so its look stays once the request clears.
-  const staged = setup.multiSelect || stage.picked.includes(id)
-
-  if (!staged) {
-    stage.preview?.(id)
-  }
-
-  if (staged || stage.preview) {
-    commitSetupChoose(request.requestId)
-  }
-
-  clearClarifyRequest(request.requestId, request.sessionId)
-  settleClarify(request, { outcome: 'submitted', ...answer })
 
   return true
 }

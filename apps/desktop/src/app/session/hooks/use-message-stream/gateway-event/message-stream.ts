@@ -1,7 +1,6 @@
 import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
-import { $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
@@ -19,7 +18,6 @@ import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
-import { storedSessionIdForRuntimeId } from '@/store/session-states'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -92,14 +90,7 @@ function reportOnboardingTurnComplete(ctx: GatewayEventContext, sessionId: strin
     return
   }
 
-  const setupThreads = $chatOnboardingThreadIds.get()
-  const storedId = storedSessionIdForRuntimeId(sessionId)
-
-  reportLocalSetupTurnComplete({
-    failed: ctx.payload?.status !== 'complete',
-    sessionId,
-    setupChat: setupThreads.includes(sessionId) || (storedId !== null && setupThreads.includes(storedId))
-  })
+  reportLocalSetupTurnComplete({ failed: ctx.payload?.status !== 'complete', sessionId })
 }
 
 function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {

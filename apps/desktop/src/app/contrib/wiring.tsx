@@ -23,7 +23,6 @@ import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
-import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -43,6 +42,9 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
+import { firstMessageLanded, targetDefaultProfile } from '@/onboarding/handoff'
+import { Questionnaire } from '@/onboarding/Questionnaire'
+import type { FirstChat } from '@/onboarding/store'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
@@ -90,9 +92,9 @@ import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -166,7 +168,6 @@ import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
-import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -612,25 +613,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
 
-  const adoptSessionRoute = useCallback(
-    async (storedSessionId: string) => {
-      creatingSessionRef.current = true
-
-      try {
-        await resumeSession(storedSessionId, true)
-
-        if ($selectedStoredSessionId.get() === storedSessionId) {
-          navigate(sessionRoute(storedSessionId), { replace: true })
-        }
-      } finally {
-        window.setTimeout(() => {
-          creatingSessionRef.current = false
-        }, 0)
-      }
-    },
-    [navigate, resumeSession]
-  )
-
   // "New project" DRAG completion: the dialog created a project that was
   // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
   // its fresh session draft exactly there — the same `openNewSessionTile`
@@ -705,16 +687,29 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  const runKickoffSlash = useCallback<KickoffSlashCommand>(
-    (command, options) => executeSlashCommand(command, { ...options, typed: false }),
-    [executeSlashCommand]
+  // The questionnaire's first chat always opens in the default profile (D17), whatever profile is active.
+  const openDefaultChat = useCallback(
+    async (text: string, onCreated: (chat: FirstChat) => void) => {
+      await targetDefaultProfile()
+
+      return (await submitTextToNewSession(text, undefined, onCreated)).runtimeSessionId
+    },
+    [submitTextToNewSession]
   )
 
-  const kickoffFirstChat = useOnboardingKickoff({
-    requestGateway: ambientRequestGateway,
-    resumeSession: adoptSessionRoute,
-    runSlashCommand: runKickoffSlash
-  })
+  // A retried first chat opens the session the failed try created once its first message is there.
+  const openLandedChat = useCallback(
+    async ({ sessionId }: FirstChat) => {
+      if (!firstMessageLanded(await requestGateway<SessionResumeResult>('session.resume', { session_id: sessionId }))) {
+        return false
+      }
+
+      navigate(sessionRoute(sessionId))
+
+      return true
+    },
+    [navigate, requestGateway]
+  )
 
   // Runs outside the selected ChatBar so queues belonging to background
   // sessions continue once those sessions are idle. The session dispatcher
@@ -1295,11 +1290,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
       {!isAuxiliaryWindow() && (
-        <OnboardingChatGate
+        <Questionnaire
           enabled={gatewayState === 'open'}
-          onKickoff={kickoffFirstChat}
+          openDefaultChat={openDefaultChat}
+          openLandedChat={openLandedChat}
           requestGateway={ambientRequestGateway}
-          runsIntro={isMainWindow()}
         />
       )}
       {!isAuxiliaryWindow() && (

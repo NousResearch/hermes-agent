@@ -175,31 +175,6 @@ export const zhHantAssistant = {
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
-    setupChoose: {
-      kinds: {
-        accent: '強調色',
-        connectors: '應用程式',
-        layout: '版面配置',
-        plugins: '外掛',
-        theme: '外觀'
-      },
-      loading: '正在載入選項…',
-      unavailable: '此清單暫時無法使用，請直接在聊天中回覆。',
-      findApp: '尋找應用程式',
-      customColor: '自訂顏色',
-      plugin: '外掛',
-      startsLater: '開始時我們會幫你設定好這些。'
-    },
-    startChat: {
-      starting: title => `正在啟動「${title}」…`,
-      startingUntitled: '正在啟動聊天…',
-      untitled: '新聊天',
-      notStarted: '無法啟動該聊天。',
-      retry: '重試',
-      inProfile: profile => `位於 ${profile}`,
-      open: '開啟',
-      openFailed: '無法開啟聊天'
-    },
     tool: {
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',

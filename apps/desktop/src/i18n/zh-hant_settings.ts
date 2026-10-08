@@ -359,6 +359,10 @@ export const zhHantSettings = {
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
       themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      accentTitle: '強調色',
+      accentDesc: '在主題之上重新著色按鈕、連結與醒目標示。僅為此設定檔儲存。',
+      accentThemeDefault: '主題預設',
+      accentCustom: '自訂顏色',
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
       installPlaceholder: 'publisher.extension',
@@ -793,12 +797,7 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
-      showOptions: '顯示選項',
-      developerTitle: '開發者',
-      resetOnboardingTitle: '重設初始設定',
-      resetOnboardingDesc: '刪除設定聊天、重建設定設定檔，並再次執行首次設定。你自己的設定檔、聊天和外掛都會保留。',
-      resetOnboardingAction: '重設',
-      resetOnboardingFailed: '無法重設初始設定'
+      showOptions: '顯示選項'
     },
     hudModifier: {
       title: '輕按叫出 HUD',

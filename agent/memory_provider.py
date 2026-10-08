@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-import math
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -240,114 +239,6 @@ class MemoryPrefetchResult:
         )
 
 
-def _freeze_json_value(
-    value: Any,
-    *,
-    depth: int = 0,
-    budget: Optional[List[int]] = None,
-    operation_budget: Optional[List[int]] = None,
-) -> Any:
-    """Validate and recursively freeze one JSON-safe observation value.
-
-    This helper is intentionally private: providers return ordinary JSON
-    values, while the manager owns the trust boundary and emits the frozen
-    representation only after validation.
-
-    ``budget`` is a shared mutable counter (a single-element list) tracking
-    the number of JSON nodes still allowed for this payload. It is decremented
-    on every entry so that pathological width/depth combinations (each
-    container individually under MAX_MEMORY_OBSERVATION_ITEMS, but nested
-    such that their product explodes) fail during recursion rather than
-    after the whole structure has been materialized. When ``None``, the top
-    call auto-initializes it to ``MAX_MEMORY_OBSERVATION_NODES``.
-
-    ``operation_budget`` is an *additional* shared counter that spans many
-    payloads in one operation (see ``MAX_MEMORY_OBSERVATION_OPERATION_NODES``).
-    When supplied, every node decrements *both* counters and either exhausting
-    raises. Passing an operation budget does NOT relax the per-payload budget:
-    a single payload is still capped at ``MAX_MEMORY_OBSERVATION_NODES``.
-    """
-    if budget is None:
-        budget = [MAX_MEMORY_OBSERVATION_NODES]
-    if depth > MAX_MEMORY_OBSERVATION_DEPTH:
-        raise ValueError("observation payload is too deeply nested")
-    budget[0] -= 1
-    if budget[0] < 0:
-        raise ValueError("observation payload has too many nodes")
-    if operation_budget is not None:
-        operation_budget[0] -= 1
-        if operation_budget[0] < 0:
-            raise ValueError("observation operation exhausted node budget")
-    if value is None or type(value) in (bool, int):
-        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
-        return value
-    if isinstance(value, str):
-        value = str.__str__(value)
-        if str.__len__(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
-            raise ValueError("observation payload string is too long")
-        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
-        return value
-    if isinstance(value, int):
-        value = int.__int__(value)
-        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
-        return value
-    if isinstance(value, float):
-        value = float.__float__(value)
-        if not math.isfinite(value):
-            raise ValueError("observation payload contains a non-finite number")
-        _account_encoded_bytes(budget, _encoded_json_scalar_size(value))
-        return value
-    if isinstance(value, dict):
-        item_count = dict.__len__(value)
-        if item_count > MAX_MEMORY_OBSERVATION_ITEMS:
-            raise ValueError("observation payload object has too many keys")
-        _account_encoded_bytes(budget, 2)  # ``{}``
-        frozen = {}
-        for index, (key, child) in enumerate(dict.items(value)):
-            if not isinstance(key, str):
-                raise ValueError("observation payload object keys must be bounded strings")
-            key = str.__str__(key)
-            if str.__len__(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
-                raise ValueError("observation payload object keys must be bounded strings")
-            if index:
-                _account_encoded_bytes(budget, 1)  # ``,``
-            _account_encoded_bytes(budget, _encoded_json_scalar_size(key) + 1)  # key + ``:``
-            frozen[key] = _freeze_json_value(
-                child,
-                depth=depth + 1,
-                budget=budget,
-                operation_budget=operation_budget,
-            )
-        return _FrozenDict(frozen)
-    if isinstance(value, (list, tuple)):
-        if isinstance(value, list):
-            item_count = list.__len__(value)
-        else:
-            item_count = tuple.__len__(value)
-        if item_count > MAX_MEMORY_OBSERVATION_ITEMS:
-            raise ValueError("observation payload array has too many items")
-        _account_encoded_bytes(budget, 2)  # ``[]``
-        frozen = []
-        for index in range(item_count):
-            if index:
-                _account_encoded_bytes(budget, 1)  # ``,``
-            child = (
-                list.__getitem__(value, index)
-                if isinstance(value, list)
-                else tuple.__getitem__(value, index)
-            )
-            frozen.append(
-                _freeze_json_value(
-                    child,
-                    depth=depth + 1,
-                    budget=budget,
-                    operation_budget=operation_budget,
-                )
-            )
-        return tuple(frozen)
-    raise TypeError("observation payload must contain only JSON-safe values")
-
-
 def _thaw_json_value(value: Any) -> Any:
     """Return a JSON-native copy of a frozen observation value for sizing."""
     if isinstance(value, dict) and type(value) in (dict, _FrozenDict):
@@ -378,6 +269,8 @@ def _freeze_memory_observation_payload(
     the two counters are additive, not substitutive, so a caller cannot
     accidentally raise the per-payload cap by supplying an operation budget.
     """
+    from agent.memory_provider_freeze import _freeze_json_value
+
     budget = _FreezeBudget(MAX_MEMORY_OBSERVATION_NODES)
     frozen = _freeze_json_value(
         payload,

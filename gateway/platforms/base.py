@@ -1699,6 +1699,15 @@ class ExecApprovalPrompt:
         return [choice for _, choice, _ in self.actions]
 
 
+@dataclass(frozen=True)
+class PairingOffer:
+    """A pairing code issued through ``BasePlatformAdapter.request_pairing``: the owner approves it on
+    the host by running ``command``; the code expires after ``expires_in`` seconds."""
+    code: str
+    command: str
+    expires_in: int
+
+
 @dataclass
 class SendResult:
     """Result of sending a message."""
@@ -2019,6 +2028,8 @@ class BasePlatformAdapter(ABC):
         self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
+        # Registered by GatewayRunner (see set_pairing_requester / request_pairing).
+        self._pairing_requester: Optional[Callable[[SessionSource], Awaitable[Optional[PairingOffer]]]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
@@ -2434,6 +2445,27 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Authorization check returned %s for user %s; treating as unknown",
                        self.name, type(result).__name__, user_id)
         return None
+
+    def set_pairing_requester(
+        self, callback: Optional[Callable[[SessionSource], Awaitable[Optional[PairingOffer]]]]) -> None:
+        """Registered by GatewayRunner: issues the codes :meth:`request_pairing` returns."""
+        self._pairing_requester = callback
+
+    async def request_pairing(self, source: SessionSource) -> Optional[PairingOffer]:
+        """The pairing code an unknown DM sender would be sent, returned instead of sent: for
+        screen-first platforms (a device that shows the code) where nobody reads a chat reply. Same
+        gates and limits as an inbound DM; ``None`` when the sender is already authorized, the platform
+        does not pair unknown senders (``unauthorized_dm_behavior``), the sender is rate limited, the
+        platform is at its pending-code cap or locked out, or no gateway is attached. A second request
+        inside the rate-limit window returns ``None``, so keep the offer until ``expires_in``."""
+        requester = self._pairing_requester
+        return await requester(source) if requester is not None else None
+
+    async def on_pairing_changed(self, user_id: str, approved: bool) -> None:
+        """Called by the gateway when a sender on this platform is approved or revoked in this
+        profile's pairing store (``hermes pairing approve`` / ``revoke``, the dashboard), so a
+        screen-first adapter can update the device without waiting for its next message. ``user_id``
+        is the id as stored. Only adapters that override this are watched; the default does nothing."""
 
     def set_session_store(self, session_store: Any) -> None:
         """Set the session store (e.g. Slack checks for an active thread session

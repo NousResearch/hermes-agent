@@ -3,6 +3,7 @@ repo: https://github.com/volcengine/OpenViking
 sha: 3b65218eef43aba7a680cf143278ad4c153b0e9f
 subdir: examples/hermes-plugin
 version: "2.0.1"
+image: https://raw.githubusercontent.com/volcengine/OpenViking/main/docs/images/openviking-social.jpg
 description: OpenViking context-database memory provider — session-managed memory with automatic
   extraction, tiered retrieval and filesystem-style knowledge browsing. Maintained by Volcengine; the
   same provider that shipped in-tree. Disclosure — conversation turns, tool results and MEMORY.md /

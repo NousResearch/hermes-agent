@@ -86,3 +86,33 @@ def test_voice_usage_never_becomes_the_session_route(tmp_path):
     assert row["input_tokens"] == 10
     assert db.auxiliary_usage_by_task("s1")["voice_chat"]["input_tokens"] == 10
     assert db.get_recent_session_model_route("s1") is None
+
+
+@pytest.mark.parametrize("separate_voice_model", [False, True])
+def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, separate_voice_model):
+    """Desktop adopts session.info's effort/model into the composer that seeds new chats: a live
+    voice turn's reasoning-off (and voice model) must never be reported or persisted as the chat's."""
+    from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
+    from tui_gateway.server import _runtime_model_config, _session_info
+
+    with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:
+        extra = ("auxiliary:\n  voice_chat:\n    provider: custom\n"
+                 f"    base_url: {voice.base_url}\n    model: voice-model\n    api_key: sk-fake-voice\n"
+                 if separate_voice_model else "")
+        home = write_hermes_home(tmp_path / ".hermes", main.base_url, extra_config=extra)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        agent = _agent(home, main.base_url)
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent._voice_turn_pending = True
+        begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
+        try:
+            assert agent.reasoning_config == {"enabled": False}  # the voice turn itself still runs off
+            assert agent.model == ("voice-model" if separate_voice_model else "fake-model")
+            info = _session_info(agent, {})
+            persisted = _runtime_model_config(agent)
+            assert (info["reasoning_effort"], info["model"]) == ("low", "fake-model")
+            assert persisted["reasoning_config"] == {"enabled": True, "effort": "low"}
+            assert persisted["model"] == "fake-model"
+        finally:
+            end_voice_turn_route(agent)
+        assert _session_info(agent, {})["reasoning_effort"] == "low"

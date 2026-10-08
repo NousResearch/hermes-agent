@@ -7,7 +7,6 @@ import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
-import { savePendingInput } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
@@ -134,7 +133,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const destination = submitOpts.destination ?? captureDestination()
 
       const item =
-        submitOpts.queueItem ?? (destination.sid ? composerActions.stage?.(text, displayText, destination) : undefined)
+        submitOpts.queueItem ?? (destination.sid ? composerActions.stage?.(text, displayText, destination, submitOpts.attachments) : undefined)
 
       submitPrompt(
         text,
@@ -363,11 +362,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           // Handled here, before the slash handler, so it is counted here.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
 
-          const saved = journaled(() => {
-            const retained = composerActions.enqueue(queued.text, queued.display, destination)
-
-            if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
-          })
+          const saved = journaled(() => composerActions.enqueue(queued.text, queued.display, destination, submission.attachments))
 
           if (saved) { sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`) }
         } else {
@@ -397,11 +392,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (unbound) {
         composerActions.pushHistory(toHistory)
-        journaled(() => {
-          const retained = composerActions.enqueue(submission.text, submission.display, destination)
-
-          if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
-        })
+        journaled(() => composerActions.enqueue(submission.text, submission.display, destination, submission.attachments))
 
         return
       }
@@ -450,7 +441,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (shouldInterpolateSubmission(full)) {
-        const staged = journaled(() => composerActions.stage?.(submission.text, submission.display, destination))
+        const staged = journaled(() => composerActions.stage?.(submission.text, submission.display, destination, submission.attachments))
 
         if (!staged) { return }
         patchUiState({ busy: true })

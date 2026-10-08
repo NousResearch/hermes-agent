@@ -16,6 +16,7 @@ import { useSubmission } from '../app/useSubmission.js'
 import { canonicalEvent, canonicalResult } from '../canonicalGateway.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
+import * as pending from '../lib/pendingInputs.js'
 
 // Canonical authority rows: `pending` carries the server-issued admission_id,
 // the client's input_id and the public text under `ref` destination fields.
@@ -40,6 +41,8 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
 
     if (method === 'input.detect_drop') { return Promise.resolve({ matched: false }) }
 
+    if (method === 'shared_metrics.slash_command') { return Promise.resolve({ ok: true }) }
+
     if (method === 'prompt.submit') {
       return Promise.resolve({ admission_id: `adm-${params.submission_id}`, input_id: params.submission_id,
         target_session_id: 'stored-owner', target_profile_home: home, status: 'queued' })
@@ -54,6 +57,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   let submission!: ReturnType<typeof useSubmission>
 
   const noop = () => {}
+  const clearIn = vi.fn()
 
   const onEvent = createGatewayEventHandler({
     composer: { dequeue: () => undefined, queueEditRef: { current: null }, sendQueued: noop, setInput: noop },
@@ -75,7 +79,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
     submission = useSubmission({
       appendMessage: noop,
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ, removeQueue: queue.removeQ,
-        pushHistory: noop, clearIn: noop } as any,
+        pushHistory: noop, clearIn } as any,
       composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw, setLastUserMsg: noop, slashRef: { current: () => true },
@@ -92,11 +96,41 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   })
 
   return {
-    calls, request, fanout,
+    calls, request, fanout, clearIn,
     get queue() { return queue }, get submission() { return submission },
     cleanup() { instance.unmount(); turnController.fullReset(); resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
   }
 }
+
+it('keeps a queue head claimable when its durable in-flight write fails', () => {
+  const h = mount()
+  const save = vi.spyOn(pending, 'savePendingInput')
+
+  try {
+    const item = h.queue.enqueue('retry after disk failure')
+    save.mockImplementationOnce(() => { throw new Error('disk full') })
+    expect(h.queue.dequeue()).toBeUndefined()
+    expect($uiState.get().status).toContain('disk full')
+    expect(item.inFlight).not.toBe(true)
+    expect(h.queue.dequeue()).toBe(item)
+    item.settle!(true)
+    expect(h.queue.queueRef.current).toEqual([])
+  } finally { save.mockRestore(); h.cleanup() }
+})
+
+it('keeps /queue input in the composer until its complete journal entry is durable', () => {
+  const h = mount()
+  const save = vi.spyOn(pending, 'savePendingInput').mockImplementationOnce(() => { throw new Error('disk full') })
+
+  try {
+    expect(() => h.submission.dispatchSubmission('/queue retained')).not.toThrow()
+    expect(h.clearIn).not.toHaveBeenCalled()
+    expect(h.queue.queueRef.current).toEqual([])
+    h.submission.dispatchSubmission('/queue retained')
+    expect(h.clearIn).toHaveBeenCalledOnce()
+    expect(h.queue.queueRef.current.map(item => item.text)).toEqual(['retained'])
+  } finally { save.mockRestore(); h.cleanup() }
+})
 
 it('admits busy queue-mode input to the authority immediately with a stable input_id instead of holding it locally', async () => {
   const h = mount('queue')

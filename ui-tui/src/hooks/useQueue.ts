@@ -237,12 +237,13 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const draft = useCallback(
-    (text: string, display: string, destination?: SubmissionDestination) => {
+    (text: string, display: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
       const owner = pendingInputOwner(destination ?? captureDestination())
       const queue = getQueue(owner)
 
       const item: QueueItem = {
         ...queueItem(text, display),
+        ...(attachments?.length ? { attachments } : {}),
         submissionId: randomUUID(),
         destination: owner,
         createdAt: Math.max(Date.now(), (queue.items.at(-1)?.createdAt ?? 0) + 1)
@@ -254,8 +255,8 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const enqueue = useCallback(
-    (text: string, display = text, destination?: SubmissionDestination) => {
-      const { queue, item } = draft(text, display, destination)
+    (text: string, display = text, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => {
+      const { queue, item } = draft(text, display, destination, attachments)
       savePendingInput(item)
       queue.items.push(item)
       syncQueue()
@@ -305,7 +306,9 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         item.failed = !accepted
 
         if (accepted) {
-          removePendingInput(item)
+          try { removePendingInput(item) } catch (error) {
+            patchUiState({ status: `input delivered; journal cleanup failed: ${(error as Error).message}` })
+          }
 
           for (const pending of queues.current.values()) {
             removeAtInPlace(pending.items, pending.items.indexOf(item))
@@ -355,8 +358,8 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   // One durable write: the row joins the queue only once its attempt is journaled,
   // so a failed write leaves the composer as the draft's only copy.
   const stage = useCallback(
-    (text: string, display = text, destination = captureDestination()) => {
-      const { queue, item } = draft(text, display, destination)
+    (text: string, display = text, destination = captureDestination(), attachments?: QueueItem['attachments']) => {
+      const { queue, item } = draft(text, display, destination, attachments)
       item.queued = false
       claim(queue, item)
       queue.items.push(item)

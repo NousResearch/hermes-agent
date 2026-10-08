@@ -1,13 +1,13 @@
 name: hermes-slash-router
 repo: https://github.com/raitoxlol/hermes-slash-router
-sha: d6997c6a2ef80bef3a6a8309164c08fa796abec2
+sha: 2088919f4c59927aa2d47f21bb12e639453c1a2a
 description: "Jev-powered routing for misspelled, shortened, and meaning-based slash commands in the Hermes Desktop composer. Preserves drafts when unsure. Requires a TypeSafe API key; every non-exact lookup uses paid TypeSafe API usage. Disclosure — every non-exact slash token is sent through the plugin's local backend to api.typesafe.ai (paid, your TYPESAFE_API_KEY) together with the Desktop command catalog (names and descriptions), any prior route, up to 8 saved correction explanations and any clarification you type into its panel; message arguments and conversation content are not sent; the backend reads HERMES_HOME/.env only to check whether TYPESAFE_API_KEY is set."
 maintainer: raitoxlol
 tier: community
 category: desktop
 requires_hermes: ">=0.21.2"
 docs_url: https://github.com/raitoxlol/hermes-slash-router#readme
-version: "0.3.0"
+version: "0.3.1"
 platforms: []
 capabilities:
   provides_tools: []

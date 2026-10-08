@@ -1061,6 +1061,8 @@ class GatewayStartupMixin:
         # lazily imports run_agent, so model_tools' discover_plugins() side-effect may not have run.
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
             from hermes_cli.plugins import discover_plugins
+            from hermes_cli.plugins_cmd_remove import sweep_pending_plugin_deletes
+            sweep_pending_plugin_deletes()  # trees a previous life still held when they were uninstalled
             discover_plugins()
         # Relay entrypoints share the effective profile opt-out, including when a
         # deployment injects a URL. No URL or explicitly disabled -> no side effects.
@@ -1508,6 +1510,7 @@ class GatewayStartupMixin:
     async def _start_finish_wiring(self, connected_count: int) -> None:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        from gateway.shutdown_flush import recover_gateway_pending
         await self._start_post_connect_services(connected_count)
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
@@ -1523,6 +1526,11 @@ class GatewayStartupMixin:
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
+        # Replay the previous run's pending spool before resume turns and queued inbound write live
+        # rows: only this pass tells the store which sessions have spooled rows, and a live row
+        # written first would get a lower row id than them for good.
+        with _log_suppressed(logging.WARNING, "Pending-message recovery failed: %s"):
+            recover_gateway_pending(self)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()
@@ -1530,6 +1538,8 @@ class GatewayStartupMixin:
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()
+        from gateway.cron_store_notices import install_cron_store_notices
+        install_cron_store_notices(self, asyncio.get_running_loop())
         # Resume recovered process watchers. Detach the batch atomically (fresh list, not clear(): a
         # concurrent append during the yield must not be lost); yield every 100 to keep the loop live.
         with _log_suppressed(logging.ERROR, "Recovered watcher setup error: %s"):

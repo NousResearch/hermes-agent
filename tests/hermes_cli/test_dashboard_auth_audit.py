@@ -67,6 +67,43 @@ def test_audit_writes_jsonlines(profile_home):
     assert "ts" in second  # ISO-8601 timestamp
 
 
+def test_audit_rotates_when_over_max_bytes(profile_home, monkeypatch):
+    """Rotation is bounded: at most ``_BACKUP_COUNT`` ``.N`` files, current log under the cap."""
+    import hermes_cli.dashboard_auth.audit as audit_module
+
+    monkeypatch.setattr(audit_module, "_MAX_BYTES", 2000)
+    monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)
+
+    for i in range(500):
+        audit_log(AuditEvent.LOGIN_START, provider="x" * 50, i=i)
+
+    logs = profile_home / "logs"
+    assert (logs / "dashboard-auth.log").exists()
+    for i in (1, 2, 3):
+        assert (logs / f"dashboard-auth.log.{i}").exists()
+    assert not (logs / "dashboard-auth.log.4").exists()
+    assert (logs / "dashboard-auth.log").stat().st_size < 2000
+
+
+def test_audit_rotates_on_crossing_write(profile_home, monkeypatch):
+    """A write that pushes the file to/past the cap must rotate BEFORE appending (the pending
+    line's bytes count toward the threshold), not stay over the cap until the next event."""
+    import hermes_cli.dashboard_auth.audit as audit_module
+
+    monkeypatch.setattr(audit_module, "_MAX_BYTES", 200)
+    monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)
+
+    logs = profile_home / "logs"
+    logs.mkdir()
+    prior = logs / "dashboard-auth.log"
+    prior.write_bytes(b"x" * 190)
+
+    audit_log(AuditEvent.LOGIN_START, provider="nous")
+
+    assert (logs / "dashboard-auth.log.1").read_bytes() == b"x" * 190
+    assert prior.stat().st_size < 200
+
+
 def test_audit_redacts_token_like_fields(profile_home):
     audit_log(
         AuditEvent.LOGIN_SUCCESS,

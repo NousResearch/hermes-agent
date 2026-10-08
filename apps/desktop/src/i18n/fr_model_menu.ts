@@ -13,6 +13,11 @@ export const frModelMenu = {
   cacheRead: 'lecture en cache',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Exécuter en local · gratuit, privé',
+    text: (model: string, size: string) => `${model} tient sur cette machine · téléchargement de ${size}`,
+    action: 'Configurer'
+  },
   limited: 'Limité',
   limitedUntil: (time: string) => `Limité jusqu’à ${time}`,
   limitedTip: (provider: string, time: null | string) =>
@@ -24,6 +29,11 @@ export const frModelMenu = {
     `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `${percent} % restant · réinit. ${time}` : `${percent} % restant`,
+  poolAccounts: (count: number) => `${count} ${count === 1 ? 'compte' : 'comptes'}`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} comptes limités`,
+  poolAccount: (number: number) => `Compte ${number}`,
+  poolUnknown: 'Utilisation indisponible',
+  poolUnavailable: 'Reconnectez-vous',
   usageTip: (provider: string) => `${provider} approche de sa limite d’utilisation.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label} : ${percent} % restant, réinitialisation ${time}` : `${label} : ${percent} % restant`

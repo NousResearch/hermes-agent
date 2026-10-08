@@ -648,7 +648,9 @@ class AnthropicStreamAccumulator:
         if "usage" in payload:
             usage, current_usage = payload["usage"], self._message.get("usage")
             if isinstance(current_usage, dict) and isinstance(usage, dict):
-                usage = {**current_usage, **usage}
+                # The SDK's MessageDeltaUsage serializes unset fields as null; they must not
+                # erase message_start's input/cache counts.
+                usage = {**current_usage, **{k: v for k, v in usage.items() if v is not None}}
             self._message["usage"] = usage
 
     _EVENT_HANDLERS = {

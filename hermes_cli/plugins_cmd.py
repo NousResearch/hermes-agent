@@ -11,10 +11,11 @@ import logging
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Any, NoReturn, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 # Tests patch these two on the facade; the install/remove siblings read them through it.
@@ -80,11 +81,24 @@ def _resolve_git_executable() -> Optional[str]:
 
 
 class PluginOperationError(Exception):
-    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx)."""
+    """Recoverable plugin install/update failure (CLI exits; HTTP maps to 4xx).
+
+    ``failure_class`` names the raise site for the extension-install metric (a closed name from
+    ``shared_metrics_contract.EXTENSION_PLUGIN_FAILURE_CLASSES``); untagged sites read ``other``.
+    """
+
+    failure_class = "other"
+
+    def __init__(self, *args, failure_class: Optional[str] = None):
+        super().__init__(*args)
+        if failure_class is not None:
+            self.failure_class = failure_class
 
 
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
+
+    failure_class = "scan_blocked"
 
     def __init__(self, message: str, scan_result=None):
         super().__init__(message)
@@ -322,11 +336,14 @@ def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
     clone_root = clone_root.resolve()
     candidate = (clone_root / subdir).resolve()
     if candidate != clone_root and clone_root not in candidate.parents:
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' escapes the repository.",
+                                   failure_class="invalid_source")
     if not candidate.exists():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' does not exist in the repository.",
+                                   failure_class="invalid_source")
     if not candidate.is_dir():
-        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.")
+        raise PluginOperationError(f"Plugin subdirectory '{subdir}' is not a directory.",
+                                   failure_class="invalid_source")
     return candidate
 
 
@@ -345,7 +362,7 @@ def _native_manifest_file(plugin_dir: Path) -> Optional[Path]:
     try:
         return native_manifest_file(plugin_dir)
     except ValueError as exc:
-        raise PluginOperationError(str(exc)) from exc
+        raise PluginOperationError(str(exc), failure_class="manifest_invalid") from exc
 
 
 def _has_portable_manifest(plugin_dir: Path) -> bool:
@@ -436,7 +453,9 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
+        target = _resolved_user_plugin_dir(name)
+        if target is None:
+            _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
 
 
@@ -585,19 +604,32 @@ def _forget_plugin_config(aliases: set) -> dict[str, Any]:
     return result
 
 
+# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
+# thread; without it every thread read the same config version and all but the first commit were
+# refused as stale. The version check in PM stays: it still catches an edit from another process.
+_SELECTION_LOCKS: dict[str, threading.Lock] = {}
+_SELECTION_LOCKS_GUARD = threading.Lock()
+
+
+def _selection_lock() -> threading.Lock:
+    with _SELECTION_LOCKS_GUARD:
+        return _SELECTION_LOCKS.setdefault(hermes_home_key(), threading.Lock())
+
+
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
     """Submit the command's delta with the version of the selection it read."""
     from pm.plugins_state import read_home_selection
 
-    expected_config = _plugin_selection_version()
-    config = read_home_selection(get_hermes_home()) or {}
-    plugins = config.get("plugins") or {}
-    enabled = set(plugins.get("enabled") or ())
-    disabled = set(plugins.get("disabled") or ())
-    _apply_activation(enabled, disabled, name, aliases, enable=enable)
-    _admit_and_save_plugin_sets(enabled, disabled, console=console,
-                               action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                               expected_config=expected_config, plugin=name if enable else None)
+    with _selection_lock():
+        expected_config = _plugin_selection_version()
+        config = read_home_selection(get_hermes_home()) or {}
+        plugins = config.get("plugins") or {}
+        enabled = set(plugins.get("enabled") or ())
+        disabled = set(plugins.get("disabled") or ())
+        _apply_activation(enabled, disabled, name, aliases, enable=enable)
+        _admit_and_save_plugin_sets(enabled, disabled, console=console,
+                                   action=f"{'Enable' if enable else 'Disable'} '{name}'",
+                                   expected_config=expected_config, plugin=name if enable else None)
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -615,22 +647,43 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     return resolved[0] if resolved else None
 
 
+def _catalog_installed_dir(name: str) -> Optional[Path]:
+    """Install dir whose installer-owned record names catalog entry *name* (``hermes-memory-wiki`` is
+    installed as ``plugins/memory-wiki``), else None (also when two dirs claim it). Read through
+    :func:`catalog_install_record` (``.install-metadata.json``), never the tree, so a URL-installed
+    repo cannot claim a catalog entry's name."""
+    from hermes_cli.plugins_cmd_catalog import catalog_install_record
+    try:
+        keys = list(_read_install_metadata())
+    except PluginOperationError:
+        return None
+    hits = [target for key in keys if (target := _plugins_dir() / key).is_dir()
+            and (record := catalog_install_record(target)) and record["catalog_name"] == name]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _find_plugin_entry(name: str) -> Optional[tuple]:
-    """First discovered ``(name, version, description, source, dir_path, key)`` entry whose
-    manifest name or canonical key equals *name*."""
-    return next((entry for entry in _discover_all_plugins() if name in (entry[0], entry[5])), None)
+    """THE plugin name resolver for every verb (enable/disable/show/capabilities/remove/update, the
+    dashboard and the Desktop hub): the discovered ``(name, version, description, source, dir_path, key)``
+    entry for a canonical key or manifest name; else a bare leaf (``langfuse`` ->
+    ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
+    Never guesses between two candidates."""
+    entries = _discover_all_plugins()
+    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    if exact is not None:
+        return exact
+    leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]
+    if leaf_matches:
+        return leaf_matches[0] if len(leaf_matches) == 1 else None
+    target = _catalog_installed_dir(name)
+    return next((entry for entry in entries if target is not None and entry[4] and Path(str(entry[4])) == target),
+                None)
 
 
 def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
-    """Resolve *name* to ``(canonical_key, source)`` or ``None``. Exact key/manifest-name match
-    first; then a bare leaf match (``langfuse`` -> ``observability/langfuse``) only when unique,
-    so a same-named nested plugin is never picked silently."""
-    entries = _discover_all_plugins()
-    for entry in entries:
-        if name in (entry[0], entry[5]):
-            return (entry[5], entry[3])
-    leaf_matches = [(entry[5], entry[3]) for entry in entries if name == entry[5].split("/")[-1]]
-    return leaf_matches[0] if len(leaf_matches) == 1 else None
+    """Resolve *name* to ``(canonical_key, source)`` or ``None`` through :func:`_find_plugin_entry`."""
+    entry = _find_plugin_entry(name)
+    return (entry[5], entry[3]) if entry else None
 
 
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
@@ -804,11 +857,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
+    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
@@ -887,8 +940,10 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
 
 
 def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
-    """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
-    plugin provides no tools)."""
+    """Add/remove a plugin's toolset in every SAVED ``platform_toolsets`` list (no-op when the plugin
+    provides no tools). Platforms with no saved list are left alone: a plugin toolset is already on
+    there by default, and seeding ``[<plugin_ts>]`` would replace the core composite and strip every
+    built-in tool."""
     toolset_key = _get_plugin_toolset_key(name)
     if not toolset_key:
         return
@@ -905,10 +960,6 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
             (ts_list.append if enable else ts_list.remove)(toolset_key)
             platform_toolsets[platform] = ts_list
             changed = True
-    # Enabling with no platform lists yet: seed "cli" at minimum.
-    if enable and not changed and not platform_toolsets:
-        platform_toolsets["cli"] = [toolset_key]
-        changed = True
     if changed:
         save_config(config)
 
@@ -946,12 +997,20 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
-    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
+    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists, else the user install
+    :func:`_find_plugin_entry` resolves *name* to (its manifest or catalog name)."""
     try:
         target = _sanitize_plugin_name(name, _plugins_dir(), allow_subdir=True)
     except ValueError:
         return None
-    return target if target.is_dir() else None
+    return target if target.is_dir() else _resolved_user_plugin_dir(name)
+
+
+def _resolved_user_plugin_dir(name: str) -> Optional[Path]:
+    """Dir of the user install :func:`_find_plugin_entry` resolves *name* to (manifest or catalog name)."""
+    entry = _find_plugin_entry(name)
+    found = Path(str(entry[4])) if entry and entry[3] in ("user", "git") and entry[4] else None
+    return found if found is not None and found.is_dir() else None
 
 
 def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:

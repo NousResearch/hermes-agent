@@ -30,6 +30,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.conversation_compression_codex import _codex_compaction_cooldown_remaining
+from agent.conversation_compression_telemetry import _emit_aborted_attempt_telemetry, _emit_compression_attempt_telemetry
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
@@ -1466,52 +1468,9 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
     return bool(session and session.get("ended_at") is not None and session.get("end_reason") == "compression")
 
 
-def _emit_compression_attempt_telemetry(
-    agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
-) -> None:
-    """Emit one content-free JSON log line for a compression attempt."""
-    with _swallow('failed to emit compression attempt telemetry: %s'):
-        compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
-        if not isinstance(telemetry, dict):
-            telemetry = {}
-        payload = dict(telemetry)
-        payload.setdefault("event", "compression_attempt")
-        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
-        payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
-        payload.update(
-            total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
-            split_status=split_status,
-        )
-        if commit_started_at is not None:
-            telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
-        if failure_class:
-            payload["failure_class"] = failure_class
-        payload.setdefault("chunking", False)
-        payload.setdefault("chunk_count", 0)
-        payload["fallback_used"] = bool(
-            payload.get("fallback_used")
-            or getattr(compressor, "_last_summary_fallback_used", False)
-            or getattr(compressor, "_last_aux_model_failure_model", None)
-        )
-        logger.info(
-            "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        )
-        from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
-
-        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None), agent=agent)
-
-
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
     """Cached system prompt, or a fresh build when nothing is cached (abort paths)."""
     return getattr(agent, "_cached_system_prompt", None) or agent._build_system_prompt(system_message)
-
-
-def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class: str | None) -> None:
-    _emit_compression_attempt_telemetry(
-        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class
-    )
 
 
 def _restore_messages_snapshot(messages: list, snapshot: Optional[list]) -> None:
@@ -2977,20 +2936,19 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     memory_context = ""
     memory_manager = getattr(agent, "_memory_manager", None)
     evidence_messages = _direct_messages_for_pre_compress_memory(messages)
+    # A detached review/side-question fork (no memory manager, session DB or persistence) cannot checkpoint by design.
+    if checkpoint_required and getattr(agent, "_persist_disabled", False) and memory_manager is None:
+        checkpoint_required = getattr(agent, "_session_db", None) is not None
     if checkpoint_required:
         supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
         if memory_manager is None or not callable(supports_checkpoint):
-            raise _checkpoint_incapable(
-                f"no active provider implements checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
-            )
+            raise _checkpoint_incapable(f"no active provider implements checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}")
         try:
             compatible = bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION))
         except Exception as exc:
             raise _checkpoint_blocked("provider capability probe failed") from exc
         if not compatible:
-            raise _checkpoint_incapable(
-                f"active provider does not implement checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}"
-            )
+            raise _checkpoint_incapable(f"active provider does not implement checkpoint API v{PRE_COMPRESS_CHECKPOINT_API_VERSION}")
         try:
             _maybe_ctx = memory_manager.on_pre_compress(
                 messages, evidence_messages=evidence_messages, require_checkpoint=True,
@@ -3341,8 +3299,8 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
         parent = agent._session_db.get_session(parent_session_id)
     if parent and parent.get("source"):
         return parent["source"]
-    from run_agent import _session_source_for_agent  # late: run_agent imports this module
-    return _session_source_for_agent(getattr(agent, "platform", None))
+    from agent.session_source import session_source_for
+    return session_source_for(getattr(agent, "platform", None))
 
 
 def _publish_rotated_compaction(
@@ -3370,22 +3328,22 @@ def _publish_rotated_compaction(
         _foreign_tail_ceiling = agent._session_db.get_active_message_watermark(agent.session_id)
     with contextlib.suppress(Exception):  # best-effort — don't block compression on a flush error
         agent._flush_messages_to_session_db(messages, conversation_history=persisted_history)
-    # Publish closure + child + handoff in one transaction so no reader sees an
-    # empty child. Child stays on the parent's profile ("default" persists as NULL);
-    # publish also COALESCEs from the parent row for threads lacking HERMES_HOME.
+    # Publish closure + child + handoff in one transaction so no reader sees an empty child. Child stays on the
+    # parent's profile ("default" persists as NULL) and keeps a live /yolo; publish COALESCEs from the parent row.
     _profile_for_child = None
     with contextlib.suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
         _profile_for_child = get_active_profile_name()
-    if _profile_for_child == "default":
-        _profile_for_child = None
+    _profile_for_child = None if _profile_for_child == "default" else _profile_for_child
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from tools.approval_yolo import with_session_yolo
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=with_session_yolo(agent._session_init_model_config, old_session_id),
+        system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
@@ -3974,8 +3932,15 @@ def _run_summary_phase(
         )
         _stop_heartbeat("context compression cancelled")
         lease.release()
+        # Only the user's stop is ``explicit_interrupt`` (counted skipped); a host timeout cancels the fence
+        # without setting the stop event, and that is a real failure (hygiene 30 s budget, 600 s ceiling).
+        _host_cancel = commit_fence is not None and commit_fence.is_cancelled and not (
+            hard_cancel_event is not None and hard_cancel_event.is_set()
+        )
         _emit_aborted_attempt_telemetry(
-            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            agent, attempt.started_at,
+            STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff
+            else "commit_fence_cancelled" if _host_cancel else "explicit_interrupt",
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:
@@ -4066,6 +4031,16 @@ def _route_codex_compaction(
             commit_fence.finish_commit()
 
 
+def _refresh_main_credential(agent: Any) -> None:
+    """Re-resolve a rotating Anthropic OAuth token so the summary call never carries a revoked one."""
+    if getattr(agent, "api_mode", None) != "anthropic_messages":
+        return
+    refresh = getattr(agent, "_try_refresh_anthropic_client_credentials", None)
+    if callable(refresh):
+        with _swallow("pre-compression credential refresh failed: %s"):
+            refresh()
+
+
 def _announce_compression_start(
     agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
 ) -> _CompactionLifecycle:
@@ -4152,6 +4127,8 @@ def compress_context(
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )
+    # After the announce: an expired token's refresh is a blocking network call. Before the probe and summary call.
+    _refresh_main_credential(agent)
     # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
     # _compression_warning so status replay still surfaces the warning. Marked checked
     # only after the probe completes (transient failures are swallowed inside). A hard
@@ -4320,23 +4297,6 @@ def compress_context(
         finally:
             if _commit_fence_entered:
                 commit_fence.finish_commit()
-
-
-def _codex_compaction_cooldown_remaining(agent: Any) -> float:
-    """Seconds left on this session's compaction-failure cooldown (0 = clear)."""
-    compressor = getattr(agent, "context_compressor", None)
-    getter = getattr(compressor, "get_active_compression_failure_cooldown", None)
-    if not callable(getter):
-        return 0.0
-    try:
-        state = getter(refresh=True)
-    except Exception:
-        logger.debug("codex compaction cooldown lookup failed", exc_info=True)
-        return 0.0
-    try:
-        return max(0.0, float(state.get("remaining_seconds") or 0.0)) if state else 0.0
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _record_codex_compaction_failure(agent: Any, error: str) -> None:

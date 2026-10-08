@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_acceptance:
+        description: "Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py)."
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       release:
@@ -122,20 +127,25 @@ jobs:
   tests:
     name: Python tests
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # Its E2E jobs are lanes of their own: a lane the classifier sets must reach
+    # its job whatever `python` says (tests/ci/test_update_ci_routing.py).
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests.yml
     with:
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
+      strict_acceptance: ${{ inputs.strict_acceptance || '' }}
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
   # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
-  # Same `python` lane gate: if no Python changed, neither runs.
+  # Gated on `python` and on each lane it consumes: desktop_updater is set by
+  # TypeScript-only changes too (the Electron marker / result readers), and with
+  # `python` alone those never reached the Windows hand-off tests below.
   tests-os:
     name: OS-specific tests
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.desktop_updater == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests-os.yml
     with:
       # The Windows lane spawns the real desktop-update hand-off script
@@ -144,6 +154,7 @@ jobs:
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
+      strict_acceptance: ${{ inputs.strict_acceptance || '' }}
 
   lint:
     name: Python lints
@@ -209,8 +220,11 @@ jobs:
     needs: detect
     # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
     # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
-    # Advisory until it has proven stable on CI: its shards run with continue-on-error, so a
-    # red shard shows on the PR but does not fail all-checks-pass.
+    # Required when it runs: a PR that touches the Desktop update path (the
+    # classifier's e2e_desktop_update lane) cannot merge on a red shard. Like
+    # the Linux e2e-upgrade shards and the Windows install + update journey
+    # (tests / tests-os, gated on e2e_upgrade), it is skipped — and the skip
+    # counts as success — when the PR does not touch that path.
     if: needs.detect.outputs.e2e_desktop_update == 'true'
     uses: ./.github/workflows/e2e-desktop-update.yml
 
@@ -294,7 +308,8 @@ jobs:
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped.
   #
-  #   Non-release (PR/push): failure fails, skipped counts as success.
+  #   Non-release (PR/push): failure fails. Update/E2E consumers selected
+  #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
   #   jobs (history-check, lockfile-diff, supply-chain) and
@@ -303,11 +318,19 @@ jobs:
   #
   # Branch protection should require ONLY this check.
   #
+  # The check name carries a version. The ruleset requires a check NAME, and a
+  # green check run recorded on a PR head stays valid forever, so a PR whose
+  # last CI predates a new required job still merges on that old green (32
+  # PRs merged without the code-health ratchet that way). When the required
+  # set gains a job every open PR must pass, bump the version here and in the
+  # protect-main ruleset in the same rollout: older greens then no longer
+  # count, and each PR needs one fresh CI run before it can merge.
+  #
   # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
   # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
-    name: All required checks pass
+    name: All required checks pass (v2)
     needs:
       - detect
       - tests

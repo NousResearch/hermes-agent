@@ -36,6 +36,7 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 
+from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
 
 
@@ -51,34 +52,6 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return os.getcwd()
     except OSError:  # cwd was unlinked out from under us
         return None
-
-
-# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
-# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
-# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
-# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
-# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
-_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
-
-# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
-# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
-ONESHOT_SOURCE = "oneshot"
-CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
-
-
-def _session_source_for_agent(platform: Optional[str]) -> str:
-    try:
-        from gateway.session_context import get_session_env
-    except Exception:
-        get_session_env = os.environ.get
-    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
-    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
-    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
-        source = ""
-    if single_query and not source and (platform or "cli") == "cli":
-        return ONESHOT_SOURCE
-    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -279,7 +252,8 @@ class AIAgent(
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
+        connection_callback: callable = None, tour_callback: callable = None,
+        setup_choose_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -330,26 +304,16 @@ class AIAgent(
             return None
 
     def _session_row_model_config(self) -> Any:
-        """``model_config`` for the session row: the init config plus the live YOLO bypass.
-
-        The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
-        /yolo toggle for ``hermes --resume``.
-        """
-        model_config = self._session_init_model_config
-        try:
-            from tools.approval import is_session_yolo_enabled
-            if is_session_yolo_enabled(self.session_id):
-                model_config = dict(model_config or {})
-                model_config["yolo_mode"] = True
-        except Exception:
-            pass
-        return model_config
+        """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
+        before the first turn (``hermes --resume`` restores it)."""
+        from tools.approval_yolo import with_session_yolo
+        return with_session_yolo(self._session_init_model_config, self.session_id)
 
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
             return
-        source = _session_source_for_agent(self.platform)
+        source = session_source_for(self.platform)
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
@@ -400,7 +364,7 @@ class AIAgent(
         if should_start and target_session_id and hasattr(engine, "on_session_start"):
             start_context = {
                 "old_session_id": old_session_id, "carry_over_context": carry_over_context,
-                "platform": _session_source_for_agent(getattr(self, "platform", None)),
+                "platform": session_source_for(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""), "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None), **extra_context,
             }

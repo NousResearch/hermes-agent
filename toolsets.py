@@ -1,6 +1,5 @@
 """Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
-from pathlib import Path
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
@@ -69,7 +68,7 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 
 # Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
 # config: another surface lacking them made no configuration choice.
-CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
+CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui", "catalog"})
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
@@ -144,15 +143,15 @@ TOOLSETS = {
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "gui_tour", "show_tip"],
     ),
-    # Enabled per SESSION whose PROFILE carries ``role: setup`` in its backend-written
-    # profile.yaml (tui_gateway/server.py::_load_enabled_toolsets); stripped from every
-    # other profile's selection whatever the config, env pin or client asked for
-    # (model_tools._select_tool_names). Never configurable, never in `hermes tools`.
-    "setup": _ts(
-        "Onboarding-only surface for the setup profile: catalog plugin/skill install "
-        "requests through the approval card",
+    "setup": _ts("Onboarding-only surface for the setup profile: question and picker cards", ["setup_choose"],
+                 platforms=frozenset({"desktop"})),
+    "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"],
+                      platforms=frozenset({"desktop"})),
+    # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
+    "catalog": _ts(
+        "Desktop catalog plugin/skill install requests through the approval card (GUI sessions only)",
         ["manage_catalog"],
-        role="setup",
+        platforms=frozenset({"desktop"}),
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
@@ -250,6 +249,9 @@ TOOLSETS = {
         ],
     ),
 }
+
+# Toolset -> the session platforms it exists for, from the specs that carry ``platforms``.
+TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.items() if "platforms" in spec}
 
 # Captured before create_custom_toolset() can add user-named tools: shared metrics may export only
 # these names, so a plugin, MCP server or custom toolset name never leaves the machine.
@@ -385,11 +387,13 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
             return list(cached)
         visited = set()
 
-    # "all"/"*" span every toolset so new toolsets are included automatically.
+    # "all"/"*" span every toolset so new toolsets are included automatically, except the ones a
+    # session platform gates: a profile gets those only when its config names them.
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
-            all_tools.update(resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry))
+            if toolset_name not in TOOLSET_SESSION_PLATFORMS:
+                all_tools.update(resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry))
         return sorted(all_tools)
 
     # Diamond include or cycle: [] silently — the tools are collected via another path.
@@ -452,16 +456,26 @@ def get_toolset_names() -> List[str]:
     return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
 
 
-def profile_role_toolsets(profile_home: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
-    """``(granted, denied)`` for the profile at *profile_home* (default: the in-scope home; a session's
-    home override, when bound, IS its profile dir): toolsets reserved for the role in its backend-written
-    ``profile.yaml``, and toolsets reserved for any other role. An ordinary profile is granted none."""
-    from hermes_cli.profiles import read_profile_meta
-    from hermes_constants import get_hermes_home
-    role = read_profile_meta(Path(profile_home or get_hermes_home())).get("role")
-    granted = {name for name, spec in TOOLSETS.items() if role is not None and spec.get("role") == role}
-    denied = {name for name, spec in TOOLSETS.items() if spec.get("role") not in (None, role)}
-    return granted, denied
+def session_platform_tool_drops(platform: Optional[str]) -> frozenset:
+    """Tools of every platform-gated toolset that a session on *platform* does not get."""
+    return frozenset(tool for name, platforms in TOOLSET_SESSION_PLATFORMS.items() if platform not in platforms
+                     for tool in resolve_toolset(name))
+
+
+def session_disabled_toolsets(disabled: Optional[List[str]], platform: Optional[str]) -> Optional[List[str]]:
+    """*disabled* plus every platform-gated toolset a session on *platform* does not get. An agent stores
+    this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
+    and delegate children (which inherit it) all subtract the gated tools in ``_select_tool_names``."""
+    gated = [name for name, platforms in TOOLSET_SESSION_PLATFORMS.items()
+             if platform not in platforms and name not in (disabled or ())]
+    return [*(disabled or ()), *gated] if gated else disabled
+
+
+def agent_tool_drops(agent: Any) -> frozenset:
+    """Tool names *agent* never carries, whatever its toolsets resolved to: the side-agent drops and
+    the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""
+    from tools.connectors.turn import side_agent_tool_drops
+    return side_agent_tool_drops(agent) | session_platform_tool_drops(getattr(agent, "platform", None))
 
 
 def validate_toolset(name: str) -> bool:

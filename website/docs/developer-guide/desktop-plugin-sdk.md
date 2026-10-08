@@ -182,6 +182,8 @@ interface PluginContext {
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
   registerMany: (cs: PluginContribution[]) => () => void
+  /** Own entry (+ sub-pages) under Settings → Plugins. Removed on disable/unload. */
+  registerSettingsPage: (page: PluginSettingsPage) => () => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`). */
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
@@ -236,6 +238,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
 
@@ -792,6 +795,50 @@ Migrations for the plugins that motivated this slot:
   controls as an `APPEARANCE_AREAS.extra` card instead of a status-bar menu
   that reaches into Settings; the settings *values* still go through
   `host.settings` (allowlisted keys) and `THEMES_AREA`.
+
+### Plugin settings pages (Settings → Plugins) {#plugin-settings-pages}
+
+**Settings → Plugins** is the one home for plugin preferences, laid out like
+WoW's AddOns options: every plugin with settings gets its own entry in the
+Settings rail, and selecting it folds out that plugin's sub-pages. Don't build a
+preferences dialog, pane, or sidebar row for settings. Register a page:
+
+```javascript
+ctx.registerSettingsPage?.({
+  id: 'settings',            // unique within your plugin
+  title: 'Weather',          // rail label + breadcrumb
+  icon: 'cloud',             // codicon name; a plug when omitted
+  order: 0,                  // ascending; ties sort by title
+  render: () => jsx(General, {}),        // the entry's landing page
+  children: [                // optional sub-pages, listed in this order
+    { id: 'units', title: 'Units', render: () => jsx(Units, {}) },
+    { id: 'alerts', title: 'Alerts', render: () => jsx(Alerts, {}) }
+  ]
+})
+```
+
+- The page lives as long as the plugin. Disable or unload removes it, the same
+  as every other `ctx` registration, and the returned disposer removes it early.
+- Build the page from the settings primitives (`ToggleRow`, `ListRow`,
+  `SegmentedControl`, `Select*`) and persist with `ctx.storage` so it looks like
+  core Settings. Each page renders inside its own error boundary.
+- `registerSettingsPage` is new; the `?.` keeps the plugin loading on older
+  hosts. On those hosts, `ctx.register({ area: SETTINGS_PLUGINS_AREA, id, title,
+  render, data: { icon, children } })` is the same thing spelled out.
+- Deep link: `host.navigate(pluginSettingsHref('<your-plugin-id>', 'units'))`
+  (`/settings?tab=plugins&plugin=<id>&ppage=<sub-page>`). Sub-page ids are
+  yours: none is reserved.
+- **Agent plugins get a page automatically.** A `config_schema` in
+  `plugin.yaml` renders as a form under Settings → Plugins, saved through
+  `plugins.manage settings` for the profile the Settings scope selector targets
+  (`/settings?tab=plugins&agent=<key>`). The gear on the plugin's
+  Capabilities → Plugins row opens that page for the profile Capabilities has
+  selected. In a unified package (agent half plus `desktop/plugin.js`), when
+  the desktop half also registers a page, the schema form shows up as that
+  entry's **Agent settings** sub-page, so the package has one entry.
+
+`src/plugins/hello-runtime/plugin.runtime.js` is a complete runtime example: one
+page and two sub-pages, backed by `ctx.storage`.
 
 ### Embedding external content
 
@@ -1496,6 +1543,32 @@ such damage and replaced on the next **Rescan**, while a marker-less folder
 that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
 is never overwritten.
 
+#### Developing a unified package
+
+The app loads the **copy** in `desktop-plugins/<id>/`, not your package. An
+installed package (catalog, Git URL, `file://` path) is refreshed only when its
+source `plugin.js` is newer than the copy and something asks — **Rescan** in
+**Capabilities → Plugins**, an install/update through the app, or a restart —
+so editing `~/.hermes/plugins/<id>/desktop/plugin.js` in place does nothing
+on screen until then. Develop from a checkout linked into `plugins/` instead:
+
+```bash
+ln -s ~/src/my-plugin ~/.hermes/plugins/my-plugin
+```
+
+A linked package's copy is marked `"linked": true`. The app watches the
+checkout's `desktop/plugin.js`; every save re-syncs the copy (by content, not
+mtime, so `git stash pop` counts) and hot-reloads the plugin. Catalog and Git
+installs keep the mtime rule.
+
+`hermes plugins doctor <path-or-id>` warns when the copy differs from your
+source and names the copy it found:
+
+```text
+WARN: Desktop runs a stale copy of desktop/plugin.js (~/.hermes/desktop-plugins/my-plugin);
+your edits are not loaded. Refresh it with Capabilities → Plugins → Rescan …
+```
+
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
 disabled until the user toggles it — matching the Python half's
@@ -1649,7 +1722,9 @@ For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) an
 ## Settings, enable state, and storage
 
 Every plugin — enabled or not — inventories in **Capabilities → Plugins**, where the
-user toggles it live (no app restart), reveals its folder, or rescans. The user's
+user toggles it live (no app restart), reveals its folder, or rescans. A plugin's
+own preferences belong in **Settings → Plugins**
+([plugin settings pages](#plugin-settings-pages)). The user's
 choice is remembered:
 
 - No choice yet → the plugin's own `defaultEnabled` (default `true`). Set
@@ -1746,8 +1821,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
-| Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

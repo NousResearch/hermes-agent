@@ -13,6 +13,11 @@ export const ruModelMenu = {
   cacheRead: 'чтение из кэша',
   priceTitle: (input: string, output: string, cache: string) =>
     `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Запуск локально · бесплатно, приватно',
+    text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,
+    action: 'Настроить'
+  },
   limited: 'Лимит',
   limitedUntil: (time: string) => `Лимит до ${time}`,
   limitedTip: (provider: string, time: null | string) =>
@@ -24,6 +29,11 @@ export const ruModelMenu = {
     `Эта модель исчерпала собственный лимит и вернётся в ${time}. Остальные модели здесь работают.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `Осталось ${percent}% · сброс в ${time}` : `Осталось ${percent}%`,
+  poolAccounts: (count: number) => `Аккаунтов: ${count}`,
+  poolLimited: (limited: number, total: number) => `Лимит у ${limited}/${total} аккаунтов`,
+  poolAccount: (number: number) => `Аккаунт ${number}`,
+  poolUnknown: 'Данные об использовании недоступны',
+  poolUnavailable: 'Войдите снова',
   usageTip: (provider: string) => `${provider} почти исчерпал лимит использования.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: осталось ${percent}%, сброс в ${time}` : `${label}: осталось ${percent}%`

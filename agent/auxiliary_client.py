@@ -33,7 +33,9 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
-from agent.auxiliary_model_scope import _accepts_model_scope, _call_scoped_or_unscoped, _select_pool_entry
+from agent.auxiliary_model_scope import (
+    _accepts_model_scope, _call_scoped_or_unscoped, _peek_pool_entry, _select_pool_entry,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1027,28 +1029,6 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
         logger.debug("Auxiliary client: could not load pool for %s%s: %s", provider, note, exc)
         return None
     return pool if pool and pool.has_credentials() else None
-
-
-def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
-    """Best-effort current/next pool entry without mutating selection order.
-
-    ``pool`` skips the disk re-read when the caller already loaded it.
-    """
-    if pool is None:
-        pool = _load_pool_with_credentials(provider, " (peek)")
-    if pool is None:
-        return None
-    try:
-        current_fn = getattr(pool, "current", None)
-        current = current_fn() if callable(current_fn) else None
-        if current is not None:
-            return current
-        peek_fn = getattr(pool, "peek", None)
-        if callable(peek_fn):
-            return peek_fn()
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
-    return None
 
 
 def _pool_runtime_api_key(entry: Any) -> str:

@@ -1030,7 +1030,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
-        last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
         with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
@@ -1047,16 +1046,37 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 except Exception as exc:
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
-            for idx, chunk in enumerate(chunks):
-                client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
-                last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
-            return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+        return await self._send_text_chunks(chat_id, chunks, [], context_token)
+
+    async def _send_text_chunks(self, chat_id: str, chunks: List[str], delivered: List[str],
+                                context_token: Optional[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` client ids; a failure after one landed is a partial result
+        (see :meth:`_split_send_failed`), so the visible head is never sent again."""
+        for idx, chunk in enumerate(chunks):
+            if idx and self._send_chunk_delay_seconds > 0:
+                await asyncio.sleep(self._send_chunk_delay_seconds)
+            client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+            try:
+                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+            except Exception as exc:
+                logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+                return self._split_send_failed(SendResult(success=False, error=str(exc)), chunks[idx:], delivered,
+                                               unsent=self._send_never_landed(exc))
+            delivered.append(client_id)
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(self, chat_id: str, result: SendResult, *, reply_to: Optional[str],
+                                   metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+        # Media went out before the text on the first attempt; only the undelivered text is resumed.
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self._send_session or not self._token:
+            return None
+        return await self._send_text_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()),
+                                            self._token_store.get(self._account_id, chat_id))
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

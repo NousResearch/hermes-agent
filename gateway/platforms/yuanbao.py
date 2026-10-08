@@ -2411,10 +2411,14 @@ class MessageSender:
             chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
             logger.info("[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
                         adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK, len(chunks), [len(c) for c in chunks])
+            delivered: List[str] = []
             for i, chunk in enumerate(chunks):
                 result = await self.send_text_chunk(chat_id, chunk, reply_to if i == 0 else None, group_code=group_code)
                 if not result.success:
-                    return result
+                    # The WS dispatch swallows the transport error and a timed-out attempt may still land, so
+                    # after an earlier chunk landed report a partial delivery: no retry repeats the visible head.
+                    return adapter._split_send_failed(result, chunks[i:], delivered, unsent=False)
+                delivered.append(result.message_id or str(i))
         with contextlib.suppress(Exception):  # delivery done → FINISH heartbeat (RUNNING… → message → FINISH)
             await adapter._outbound.heartbeat.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
         return SendResult(success=True)

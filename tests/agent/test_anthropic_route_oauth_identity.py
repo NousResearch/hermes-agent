@@ -52,7 +52,7 @@ def test_key_cmd_oauth_route_builds_claude_code_identity_on_main_and_aux_clients
     _init_anthropic_client(agent, key_cmd, "https://api.anthropic.com", None)
     assert agent._is_anthropic_oauth is True
     headers = agent._anthropic_client._custom_headers
-    assert headers["user-agent"].startswith("claude-code/") and headers["x-app"] == "cli"
+    assert headers["User-Agent"].startswith("claude-code/") and headers["x-app"] == "cli"
     assert all(beta in headers["anthropic-beta"] for beta in _OAUTH_ONLY_BETAS)
 
     # Same token source at a third-party Anthropic-protocol host: no identity, no OAuth betas.

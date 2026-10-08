@@ -865,6 +865,7 @@ _RENAMED_TASK_COLUMNS = (
 # column existed.
 _LATER_TASK_COLUMNS = (
     ("max_runtime_seconds", "max_runtime_seconds INTEGER"),
+    ("estimated_runtime_seconds", "estimated_runtime_seconds INTEGER"),
     ("last_heartbeat_at", "last_heartbeat_at INTEGER"),
     # Forward-progress signal (kanban_progress); NULL/0 = legacy row, unknown.
     ("last_progress_at", "last_progress_at INTEGER"),
@@ -913,6 +914,7 @@ _TASK_RUN_COLUMNS = (
     ("last_progress_at", "last_progress_at INTEGER"),
     ("progress_repeat_count", "progress_repeat_count INTEGER NOT NULL DEFAULT 0"),
     ("tool_calls_total", "tool_calls_total INTEGER NOT NULL DEFAULT 0"),
+    ("estimated_runtime_seconds", "estimated_runtime_seconds INTEGER"),
 )
 
 
@@ -1091,6 +1093,7 @@ _REBUILD_SPECS = {
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
+        " estimated_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, last_progress_at INTEGER,"
         " progress_repeat_count INTEGER NOT NULL DEFAULT 0,"
         " tool_calls_total INTEGER NOT NULL DEFAULT 0,"

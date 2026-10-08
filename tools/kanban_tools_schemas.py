@@ -308,6 +308,12 @@ KANBAN_HEARTBEAT_SCHEMA = _schema(
                 "Optional short note describing current progress. "
                 "Shown in the event log."
         )),
+        "expected_runtime_seconds": _prop("integer", (
+                "Optional estimate of how many seconds this attempt still needs. "
+                "The dispatcher terminates and re-queues the card if it overruns "
+                "that (with 50% grace), so set it once you can see the shape of "
+                "the work instead of leaving the card unbounded."
+        )),
     },
     [],
 )

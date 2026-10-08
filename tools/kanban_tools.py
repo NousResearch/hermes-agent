@@ -969,7 +969,8 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
         ok = kbd.heartbeat_worker(
-            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
+            conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid),
+            estimated_runtime_seconds=args.get("expected_runtime_seconds"))
         _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
         return _ok(task_id=tid)
 

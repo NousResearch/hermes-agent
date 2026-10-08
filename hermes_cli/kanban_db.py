@@ -646,6 +646,11 @@ class Task:
     worker_pid: Optional[int] = None
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
+    # Worker/agent's own estimate of how long this attempt needs, recorded via
+    # ``kanban_heartbeat(expected_runtime_seconds=...)``. Enforced as
+    # ``estimate * grace`` when no explicit ``max_runtime_seconds`` is set; NULL =
+    # no self-estimate. See kanban_db_dispatch.enforce_max_runtime.
+    estimated_runtime_seconds: Optional[int] = None
     last_heartbeat_at: Optional[int] = None
     # Forward-progress rollup (kanban_progress); None/0 = legacy row or unknown.
     last_progress_at: Optional[int] = None
@@ -697,8 +702,8 @@ _TASK_REQUIRED_COLUMNS = (
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "last_progress_at", "progress_repeat_count",
-    "tool_calls_total", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "estimated_runtime_seconds", "last_heartbeat_at", "last_progress_at",
+    "progress_repeat_count", "tool_calls_total", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -732,6 +737,8 @@ class Run:
     last_progress_at: Optional[int] = None
     progress_repeat_count: int = 0
     tool_calls_total: int = 0
+    # Worker self-estimate for this attempt (see tasks.estimated_runtime_seconds).
+    estimated_runtime_seconds: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -746,6 +753,7 @@ class Run:
             last_progress_at=_opt_int(_row_get(row, "last_progress_at")),
             progress_repeat_count=int(_row_get(row, "progress_repeat_count") or 0),
             tool_calls_total=int(_row_get(row, "tool_calls_total") or 0),
+            estimated_runtime_seconds=_opt_int(_row_get(row, "estimated_runtime_seconds")),
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(_lossy_text(row["metadata"])),
@@ -850,6 +858,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
+    -- Worker/agent self-estimate for the attempt (kanban_heartbeat
+    -- expected_runtime_seconds), enforced as estimate*grace when no explicit
+    -- max_runtime cap is set. NULL = no estimate.
+    estimated_runtime_seconds INTEGER,
     last_heartbeat_at    INTEGER,
     -- Forward-progress signal (see hermes_cli/kanban_progress.py). The
     -- heartbeat above answers "is the process making API traffic?"; these
@@ -969,6 +981,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- still be found and reaped; NULL = legacy row, never signalled.
     worker_started_at   INTEGER,
     max_runtime_seconds INTEGER,
+    estimated_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     -- Per-run mirror of the task's forward-progress columns (kanban_progress),
     -- so a finished run keeps the state it ended with. NULL/0 = unknown.

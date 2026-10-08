@@ -70,7 +70,7 @@ def test_graph_occupies_one_slot_without_starving_other_dispatches():
         for event in started[:3]:
             assert event.wait(5)
         assert ad.active_count() == 1
-        assert ad.active_for_session("owner-ui") == 1
+        assert ad.has_live_for_session(origin_ui_session_id="owner-ui")
         assert ad.active_task_count() == 3
         assert [row["delegation_id"] for row in ad.list_async_delegations()] == ["deleg_graph"]
 
@@ -147,20 +147,30 @@ def test_session_interrupt_stops_whole_graph_without_touching_another_session():
         other_gate.set()
 
 
-@pytest.mark.parametrize("failure", ["persist", "executor", "submit"])
+@pytest.mark.parametrize("failure", ["persist", "executor", "submit", "component_submit"])
 def test_failed_group_admission_rolls_back_every_component(failure, monkeypatch):
     started = threading.Event()
     if failure == "persist":
-        persist = ad._persist_dispatch
+        persist = ad._insert_dispatch
 
-        def failing_persist(record):
-            persist(record)
+        def failing_persist(conn, record):
+            persist(conn, record)
             if record["delegation_id"].endswith("_2"):
                 raise OSError("test persistence failure")
 
-        monkeypatch.setattr(ad, "_persist_dispatch", failing_persist)
+        monkeypatch.setattr(ad, "_insert_dispatch", failing_persist)
     elif failure == "executor":
         monkeypatch.setattr(ad, "_get_executor", MagicMock(side_effect=RuntimeError("pool creation failed")))
+    elif failure == "component_submit":
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        class FailingComponentPool(DaemonThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                if self._threads:
+                    raise RuntimeError("second component cannot start")
+                return super().submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(ad, "DaemonThreadPoolExecutor", FailingComponentPool)
     else:
         executor = MagicMock()
         executor.submit.side_effect = RuntimeError("test submission failure")
@@ -186,6 +196,21 @@ def test_graph_cannot_combine_different_owners():
     assert ad.active_count() == 0
 
 
+@pytest.mark.parametrize("outcome", ["error", "failed", "timeout", "unknown", "interrupted", "stalled"])
+def test_unsuccessful_task_never_marks_its_graph_completed(outcome):
+    result = ad.dispatch_async_delegation_batches(graph_id="deleg_outcomes", batches=[{
+        "goals": ["Successful input", "Unsuccessful consumer"],
+        "runner": lambda: {"results": [
+            {"task_index": 0, "status": "completed", "summary": "input"},
+            {"task_index": 1, "status": outcome, "summary": "partial output"},
+        ]},
+    }])
+    assert result["status"] == "dispatched"
+    event = process_registry.completion_queue.get(timeout=5)
+    assert event["status"] == (outcome if outcome in {"interrupted", "stalled"} else "error")
+    assert event["results"][1]["summary"] == "partial output"
+
+
 @pytest.mark.parametrize("outcome", ["stalled", "error", "interrupted"])
 def test_graph_listing_preserves_failure_while_siblings_run_and_after_completion(outcome):
     gates = [threading.Event(), threading.Event()]
@@ -200,9 +225,9 @@ def test_graph_listing_preserves_failure_while_siblings_run_and_after_completion
         if outcome == "stalled":
             # Exercise the actual monitor terminalization path, including its
             # guard against a late worker return overwriting the stall.
-            ad._finalize_stalled(first_id)
+            ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
         else:
-            ad._finalize_batch(first_id, {"results": [], "error": "test outcome"}, outcome)
+            ad._finalize(first_id, {"results": [], "error": "test outcome"}, outcome)
         event = process_registry.completion_queue.get(timeout=5)
         assert event["status"] == outcome
         row = ad.list_async_delegations()[0]
@@ -238,7 +263,8 @@ def test_cli_agents_counts_a_stalled_graph_with_active_siblings(monkeypatch):
             graph_id="deleg_cli_stall", max_async_children=1,
             batches=[_batch(i, gate, threading.Event()) for i in range(2)],
         )
-        ad._finalize_stalled(result["delegations"][0]["delegation_id"])
+        first_id = result["delegations"][0]["delegation_id"]
+        ad._finalize(first_id, lambda record: ad._stalled_result(first_id, record), "stalled")
         CLICommandsMixin._handle_agents_command(CLICommandsMixin())
         output = "\n".join(printed)
         assert "Background delegations: 1 running" in output

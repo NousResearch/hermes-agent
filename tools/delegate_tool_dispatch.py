@@ -8,9 +8,10 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
@@ -21,6 +22,7 @@ from tools.delegate_tool_progress import (
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
+from tools.delegation_graph import DependencyPlan
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -49,7 +51,13 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    dependency_plan: Optional[DependencyPlan] = None
+    cancel_event: threading.Event = field(default_factory=threading.Event)
     live_home: Any = None  # explicit profile home for transcripts/manifest (#91996); None = ambient resolve
+
+    @property
+    def adaptive(self) -> bool:
+        return self.dependency_plan is not None and self.dependency_plan.enabled
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -124,13 +132,9 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # Daemon workers (tools.daemon_pool): the `with` block still joins normally, but if the parent is interrupted
     # while a child is wedged, the abandoned worker must not block interpreter exit.
     from tools.daemon_pool import DaemonThreadPoolExecutor
-    parent_agent, n_tasks = batch.parent_agent, len(batch.task_list)
-    task_labels = [t["goal"][:40] for t in batch.task_list]
-    spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
-    _tag = format_batch_tag(batch.live_deleg_id, parent_agent)
+    parent_agent = batch.parent_agent
     # Fabricated entries for still-pending / raised futures carry the correct _delegate_role.
     _child_by_index = {i: child for (i, _, child) in batch.children}
-    n_here = len(batch.children)  # a per-group unit runs a subset; ``n_tasks`` keeps the call-wide ``i/N`` slot
 
     def _entry_of(future, idx):
         if not future.done():
@@ -159,25 +163,31 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
                 entry = _entry_of(future, futures[future])
-                results.append(entry)
-                # Detached unit: a crash before the join must not lose children that already finished.
-                _record_finished_child(batch, entry, honor_parent_interrupt)
-                _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
-                if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
-                        and len(results) < n_here):
-                    # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
-                    # Non-durable and separate from the unit's final result (which is still delivered once).
-                    with _quiet("task failure notice failed", exc_info=True):
-                        from tools.async_delegation import push_task_failure_notice
-                        _i = entry.get("task_index", -1)
-                        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
-                        push_task_failure_notice(
-                            batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
+                _record_child_done(batch, results, entry, honor_parent_interrupt=honor_parent_interrupt)
     finally:
         # Abandoned workers unwind on their own (daemon threads, and the
         # child-run layer already applies the deferred-close transport drain).
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
+
+def _record_child_done(batch: _Batch, results: list, entry: dict, *, honor_parent_interrupt: bool) -> None:
+    """Share incremental persistence and failure notices with dependency-scheduled units."""
+    results.append(entry)
+    n_tasks, n_here = len(batch.task_list), len(batch.children)
+    if not honor_parent_interrupt and batch.unit_id:
+        record_unit_child(batch.unit_id, entry)
+    _report_child_done(
+        batch.parent_agent, getattr(batch.parent_agent, "_delegate_spinner", None), entry,
+        format_batch_tag(batch.live_deleg_id, batch.parent_agent), [t["goal"][:40] for t in batch.task_list],
+        n_tasks, n_here - len(results),
+    )
+    if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
+            and len(results) < n_here):
+        with _quiet("task failure notice failed", exc_info=True):
+            from tools.async_delegation import push_task_failure_notice
+            index = entry.get("task_index", -1)
+            live = batch.live_paths[index] if isinstance(index, int) and 0 <= index < len(batch.live_paths) else None
+            push_task_failure_notice(batch.unit_id, {**entry, **({"live_transcript": live} if live else {})}, n_tasks=n_tasks)
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
     """Run the batch's built children, join, finalize (hooks + cost rollup), return the combined dict. Shared by the
@@ -186,7 +196,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     record (retention pruning happens on future dispatches)."""
     from tools.delegation_live_log import update_manifest_statuses
     results: list = []
-    if len(batch.children) == 1:
+    if batch.adaptive:
+        from tools.delegate_tool_dependency import DependencyRunner
+        DependencyRunner(batch, results, honor_parent_interrupt).run()
+    elif len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
         # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
         # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
@@ -194,7 +207,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
-    _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
+    _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent,
+                            **({"batch_size": len(batch.task_list)} if batch.adaptive else {}))
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
         _idx = entry.get("task_index", -1)
@@ -217,6 +231,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:
         combined["group"] = batch.group
+    if batch.adaptive:
+        combined["adaptive_scheduling"] = True
     return combined
 
 _SYNC_FALLBACK_NOTES = {
@@ -374,6 +390,9 @@ def _units_of(batch: _Batch) -> List[_Batch]:
 
     Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
     A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
+    if batch.adaptive:
+        return [replace(batch, children=[child for child in batch.children if child[0] in component],
+                        cancel_event=threading.Event()) for component in batch.dependency_plan.components]
     from tools.delegate_tool_config import _get_independent_completions
     if not _get_independent_completions():
         return [batch]
@@ -387,26 +406,72 @@ def _units_of(batch: _Batch) -> List[_Batch]:
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
+    return dispatch_async_delegation_batch(**_unit_spec(unit), delegation_id=unit_id, slot_key=slot_key, **routing)
+
+def _unit_spec(unit: _Batch) -> dict:
+    """One source for runner, cancellation, and progress in flat and graph dispatch."""
     child_agents = [c for (_, _, c) in unit.children]
 
     def _interrupt():
+        unit.cancel_event.set()
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 
-    return dispatch_async_delegation_batch(
+    return dict(
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
         role=unit.top_role, model=unit.creds["model"],
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
-        interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
+        interrupt_fn=_interrupt,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
         # Persist locators before starting workers; live_paths omits failed writers and can be compressed.
         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
                           and unit.live_writers[i].path is not None},
-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        progress_fn=lambda: _batch_progress_token(child_agents),
+        **({"graph_id": unit.live_deleg_id, "batch_metadata": {"adaptive_scheduling": True,
+            "task_indices": [i for i, _, _ in unit.children],
+            "task_ids": [unit.dependency_plan.task_ids[i] for i, _, _ in unit.children]}} if unit.adaptive else {}),
     )
+
+def _dispatch_dependency_units(batch: _Batch, routing: dict) -> str:
+    from tools.async_delegation import dispatch_async_delegation_batches
+    batch.live_deleg_id = batch.live_deleg_id or _new_delegation_id()
+    units = _units_of(batch)
+    specs = []
+    for index, unit in enumerate(units):
+        unit.unit_id = f"{batch.live_deleg_id}_cluster_{index + 1}" if len(units) > 1 else batch.live_deleg_id
+        spec = {**_unit_spec(unit), **routing, "delegation_id": unit.unit_id}
+        spec["batch_metadata"].update(cluster_index=index + 1, cluster_count=len(units))
+        specs.append(spec)
+    max_async = routing["max_async_children"]
+    result = dispatch_async_delegation_batches(batches=specs, max_async_children=max_async, graph_id=batch.live_deleg_id)
+    fallback_reason = None
+    if result.get("status") != "dispatched":
+        # Atomic graph admission never starts a subset; retry the same DAG as
+        # one delivery unit, then run it synchronously if no async slot exists.
+        fallback_reason = result.get("error", "Independent cluster dispatch unavailable")
+        batch.unit_id = batch.live_deleg_id
+        result = _dispatch_unit(batch, batch.unit_id, None, routing)
+        units = [batch]
+        if result.get("status") != "dispatched":
+            return _run_sync_with_note(batch, "at_capacity")
+    for _, _, child in batch.children:
+        _detach_child(batch.parent_agent, child)
+    payload = _dispatched_payload(batch, [(unit, unit.unit_id) for unit in units])
+    payload.update(
+        mode="adaptive_background" if len(units) > 1 else "background",
+        adaptive_scheduling=True, graph_id=batch.live_deleg_id,
+        cluster_count=len(units), delegation_ids=[unit.unit_id for unit in units],
+        clusters=[{"delegation_id": unit.unit_id, "task_ids": [batch.dependency_plan.task_ids[i] for i, _, _ in unit.children],
+                   "task_indices": [i for i, _, _ in unit.children]} for unit in units],
+        note="Dependency-ready tasks run in the background. Each cluster returns when its prerequisites and dependents finish; "
+             "unrelated clusters return independently. Do not wait or poll; continue other work.",
+    )
+    if fallback_reason:
+        payload["independent_delivery_disabled_reason"] = fallback_reason
+    return json.dumps(payload, ensure_ascii=False)
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
     """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
@@ -432,6 +497,9 @@ def _dispatch_background(batch: _Batch) -> str:
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
     )
 
+    if batch.adaptive:
+        return _dispatch_dependency_units(batch, routing)
+
     units = _units_of(batch)
     dispatched: List[tuple[_Batch, str]] = []
     inline_results: List[dict] = []
@@ -447,6 +515,10 @@ def _dispatch_background(batch: _Batch) -> str:
             _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
+            # Ownership transfers only after acceptance. A rejected unit must
+            # remain attached so the parent can interrupt synchronous fallback.
+            for _, _, child in unit.children:
+                _detach_child(parent_agent, child)
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue

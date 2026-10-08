@@ -1,19 +1,19 @@
 name: hyatlas
 repo: https://github.com/tuancookiez-hub/HyAtlas-Memory
-sha: f92bfe0f461c1dda0c80e3d0a0edb9266902ac9f
+sha: f61727a84971dcf3b5bdd2a9a2a12e74b47695ba
 subdir: plugins/hyatlas
-version: "4.3.2"
-image: https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f92bfe0f461c1dda0c80e3d0a0edb9266902ac9f/docs/images/banner.png
+version: "4.5.0"
+image: https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f61727a84971dcf3b5bdd2a9a2a12e74b47695ba/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f92bfe0f461c1dda0c80e3d0a0edb9266902ac9f/docs/images/desktop-overview.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f92bfe0f461c1dda0c80e3d0a0edb9266902ac9f/docs/images/desktop-graph.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f61727a84971dcf3b5bdd2a9a2a12e74b47695ba/docs/images/desktop-overview.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/f61727a84971dcf3b5bdd2a9a2a12e74b47695ba/docs/images/desktop-graph.png
 title: HyAtlas Memory
-description: "HyAtlas v4 — self-hosted 7-layer memory provider backed by a pure-Go single-binary server you run yourself (chromem-go vectors, in-process BGE-small embeddings, bitemporal knowledge graph with source citations). Embeddings, the vector index and stored memories stay local. Ships agent tools (hyatlas_status/search/recent/add), a `hermes hyatlas` CLI, a Desktop pane with a starmap graph view, and a web dashboard. Disclosure — requires the separate hyatlas-go server, installed by the user. The plugin never downloads or bundles it, and it talks only to the configured server (default 127.0.0.1:19528). Embeddings and stored memories stay local. Extraction is opt-in: the server has no default LLM endpoint and makes no LLM call until HYATLAS_LLM_BASE, HYATLAS_LLM_MODEL and HYATLAS_LLM_KEY are all set. The repo installer pre-fills a free Nous Portal endpoint that Enter accepts, but nothing is sent until you also enter a key. Once configured, each turn, including that turn's tool output, goes to that endpoint. In the default ultra mode the server also sends batches of up to 200 stored facts to it every 6 hours and deletes the facts the model marks merged or stale. HYATLAS_MODE=lite makes no LLM call. The spawned server gets an allowlisted environment (OS essentials plus HYATLAS_*), not the agent's keys. auto_start is off by default. On Windows, if a hyatlas-go.ps1 launcher is configured or sits beside the binary, `hermes hyatlas start/stop` runs it; the repo's sample launcher reads your Nous token from Hermes auth.json and points extraction at the Nous Portal. No telemetry."
+description: "HyAtlas v4 — self-hosted 7-layer memory provider backed by a pure-Go single-binary server you run yourself (chromem-go vectors, in-process BGE-small embeddings, hybrid vector + keyword search, bitemporal knowledge graph with source citations). Embeddings, the vector index and stored memories stay local. Ships agent tools (hyatlas_status/search/recent/add), a `hermes hyatlas` CLI, a Desktop pane with a starmap graph view, and a web dashboard. Disclosure — requires the separate hyatlas-go server, installed by the user. The plugin never downloads or bundles it, and it talks only to the configured server (default 127.0.0.1:19528). Embeddings and stored memories stay local. Extraction is opt-in: the server has no default LLM endpoint and makes no LLM call until HYATLAS_LLM_BASE, HYATLAS_LLM_MODEL and HYATLAS_LLM_KEY are all set. The repo installer pre-fills a free Nous Portal endpoint that Enter accepts, but nothing is sent until you also enter a key. Once configured, each turn's user and assistant text goes to that endpoint (not tool output or context summaries; capped at 12,000 characters). In the default ultra mode the server also sends batches of up to 50 stored facts to it every 6 hours and supersedes (hides but keeps) the facts the model marks merged or stale, recording a reason for each drop. It also records relations corroborated across turns in the local knowledge graph (HYATLAS_CONSOLIDATE_GRAPH=off disables that). HYATLAS_MODE=lite makes no LLM call. Server endpoints that rewrite stored data are off unless the server runs with HYATLAS_ADMIN=on. The spawned server gets an allowlisted environment (OS essentials plus HYATLAS_*), not the agent's keys. auto_start is off by default. On Windows, if a hyatlas-go.ps1 launcher is configured, `hermes hyatlas start/stop` runs it; the repo's sample launcher reads your Nous token from Hermes auth.json and points extraction at the Nous Portal. No telemetry."
 maintainer: tuancookiez-hub
 tier: community
 category: memory
 requires_hermes: ">=0.21.4"
-docs_url: https://github.com/tuancookiez-hub/HyAtlas-Memory/tree/f92bfe0f461c1dda0c80e3d0a0edb9266902ac9f/plugins/hyatlas
+docs_url: https://github.com/tuancookiez-hub/HyAtlas-Memory/tree/f61727a84971dcf3b5bdd2a9a2a12e74b47695ba/plugins/hyatlas
 platforms:
   - linux
   - macos
@@ -27,3 +27,4 @@ known_issues:
   - "After enabling, select the provider with `hermes memory setup` (memory.provider: hyatlas) — installing and enabling alone does not activate memory."
   - "The agent tools and hooks arrive through the MemoryProvider interface, not ctx.register_tool, so they do not appear in the plugin tool list."
   - "Requires the separate hyatlas-go server binary (installed by the user); without a reachable server the provider reports unavailable and memory features degrade rather than fail."
+  - "Updating the plugin does not update the server: install hyatlas-go v4.5.0 too. A store written by an earlier version can be cleaned with the server's maintenance endpoints (see after-install.md, 'Upgrading a store written before 4.5.0')."

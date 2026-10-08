@@ -110,12 +110,19 @@ def test_encode_functions_are_deterministic():
                           hrr.encode_atom("__hrr_role_content__", 1024))
 
 # ---------------------------------------------------------------------------
-# Relevance floor on the pure-vector paths (#132347) — probe/related/reason
-# ranked EVERY fact with a ~0-similarity noise score and sliced the top
-# `limit`, so any query (including the empty string and strings that match
-# nothing) returned the whole store. Rows must clear a similarity floor to be
-# returned; when no row does, the query falls back to the FTS5 path, which
-# only ever returns rows FTS5 actually matched.
+# Relevance floor + zero-phase presence test on the pure-vector paths (#132347)
+# — probe/related/reason ranked EVERY fact with a ~0-similarity noise score and
+# sliced the top `limit`, so any query (including the empty string and strings
+# that match nothing) returned the whole store. Rows must clear a similarity
+# floor to be returned; when no row does, the query falls back to the FTS5
+# path, which only ever returns rows FTS5 actually matched.
+#
+# probe()/reason() additionally scored against the WRONG reference vector
+# (a role_content-bound target that is quasi-orthogonal to the unbind residual
+# whether or not the entity is present): unbind(bind(a, b), bind(a, b)) cancels
+# to the ZERO-PHASE vector, so that is the correct "term was present" reference.
+# With it, probe/reason carry real signal (match ~0.5-0.6, noise <=0.04) instead
+# of leaning on the FTS fallback.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -149,11 +156,10 @@ def test_related_keeps_true_structural_match(retriever_with_entities):
     results = retriever_with_entities.related("Alice Johnson")
     assert [f["content"] for f in results] == ["Alice Johnson lives in Paris and works at BNP Paribas"]
 
-def test_probe_falls_back_to_fts_when_vector_ranking_is_noise(retriever_with_entities):
-    """probe()'s per-fact vector score is noise-level even for a stored entity (the
-    bundle of content + entity roles buries the probe residual), so after the floor
-    filters every row it must degrade to the FTS5 path — which still finds the fact —
-    instead of returning unrelated rows."""
+def test_probe_returns_the_stored_entity_fact(retriever_with_entities):
+    """With the zero-phase presence test, probe('Alice Johnson') scores ~0.56 on the one
+    fact encoding the entity (noise <=0.04 elsewhere), so the vector path returns it
+    directly; the FTS fallback only ever sees queries no vector row cleared."""
     results = retriever_with_entities.probe("Alice Johnson")
     assert [f["content"] for f in results] == ["Alice Johnson lives in Paris and works at BNP Paribas"]
 
@@ -162,3 +168,48 @@ def test_probe_category_bank_does_not_leak(retriever_with_entities):
     residual; an unrelated query must not leak the category through it either."""
     assert retriever_with_entities.probe("ZZQQ_TOTALLY_UNRELATED_STRING", category="general") == []
     assert retriever_with_entities.probe("", category="general") == []
+
+@pytest.fixture
+def retriever_alice_variants(tmp_path):
+    """Three Alice-related facts: two encode the entity "Alice Johnson" structurally
+    (Capitalized Multi-Word names), one mentions it only in lowercase — FTS-visible
+    tokens but never an entity term, so the vector path cannot and must not return it."""
+    store = MemoryStore(str(tmp_path / "facts.db"))
+    for content in (
+        "Alice Johnson works on the vision team at Acme Robotics",
+        "Alice Johnson also reviews books on weekends",
+        "the passphrase alice johnson is lowercase",
+    ):
+        store.add_fact(content=content, category="general")
+    retriever = FactRetriever(store=store)
+    yield retriever
+    store.close()
+
+def test_probe_is_structural_not_keyword(retriever_alice_variants):
+    """probe('Alice Johnson') must return exactly the facts encoding the entity as a
+    structural term. The lowercase mention has no entity term (its zero-phase residual
+    is noise) yet its tokens ARE matched by the FTS fallback query — so excluding it
+    proves the zero-phase vector ranking carried the query, not keyword search."""
+    results = retriever_alice_variants.probe("Alice Johnson")
+    assert sorted(f["content"] for f in results) == [
+        "Alice Johnson also reviews books on weekends",
+        "Alice Johnson works on the vision team at Acme Robotics",
+    ]
+
+def test_reason_and_semantics_requires_every_entity(retriever_alice_variants):
+    """reason() is a vector-space JOIN: only the fact encoding BOTH entities survives
+    the floor (the Alice-only fact falls below it on the Acme Robotics residual). The
+    FTS fallback OR-joins tokens and would return the Alice-only fact too, so the
+    exact single-fact result proves the AND semantics ran on the vector path."""
+    results = retriever_alice_variants.reason(["Alice Johnson", "Acme Robotics"])
+    assert [f["content"] for f in results] == ["Alice Johnson works on the vision team at Acme Robotics"]
+
+def test_probe_category_bank_degrades_to_per_fact_vectors(retriever_alice_variants):
+    """The category-bank residual is diluted by the bank's superposition (even a
+    matching fact scores far below the floor), so the bank branch must fall through
+    to the per-fact zero-phase path and still return exactly the structural matches."""
+    results = retriever_alice_variants.probe("Alice Johnson", category="general")
+    assert sorted(f["content"] for f in results) == [
+        "Alice Johnson also reviews books on weekends",
+        "Alice Johnson works on the vision team at Acme Robotics",
+    ]

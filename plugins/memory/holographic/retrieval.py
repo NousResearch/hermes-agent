@@ -101,10 +101,14 @@ class FactRetriever:
                 ranked = self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
                 if ranked:  # no survivors -> keep falling through to per-fact vectors, then FTS
                     return ranked
-        role_content = self._atom(_ROLE_CONTENT)  # loop-invariant: encode once, not per row
-        # Does unbinding the probe key leave the fact's content signal?
-        return self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
-            hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)))
+        # Unbinding the probe key cancels the fact's bind(entity, ROLE_ENTITY) term to zero phase when the
+        # entity is present; every other term stays key-shifted noise. So the presence test is similarity
+        # of the residual to the zero-phase vector (~1/n_terms for a hit, ~0 noise otherwise), NOT similarity
+        # to a role_content-bound vector — that target is quasi-orthogonal to the residual either way, which
+        # is why probe used to score noise-level even for stored entities.
+        zero = hrr.zero_phase(self.hrr_dim)  # loop-invariant: build once, not per row
+        return self._vector_query(entity, category, limit, lambda _f, fact_vec: hrr.similarity(
+            hrr.unbind(fact_vec, probe_key), zero))
 
     def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Facts structurally connected to an entity (shared context), not just facts *about* it as in probe.
@@ -122,11 +126,13 @@ class FactRetriever:
         Falls back to FTS5 without numpy."""
         if not hrr._HAS_NUMPY or not entities:
             return self.search(" ".join(entities), category=category, limit=limit)
-        role_entity, role_content = self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT)
+        role_entity = self._atom(_ROLE_ENTITY)
         probe_keys = [hrr.bind(self._atom(entity.lower()), role_entity) for entity in entities]
-        # AND semantics via min: high only if EVERY entity is structurally present.
+        zero = hrr.zero_phase(self.hrr_dim)
+        # AND semantics via min: EVERY entity's unbind residual must sit near zero phase
+        # (each entity's ROLE_ENTITY term cancels only in facts that actually encode it).
         return self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
-            hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys))
+            hrr.similarity(hrr.unbind(fact_vec, key), zero) for key in probe_keys))
 
     def contradict(self, category: str | None = None, threshold: float = 0.3, limit: int = 10) -> list[dict]:
         """Pairs of facts sharing entities (same subject) with low content-vector similarity (different claims). Empty without numpy."""

@@ -251,6 +251,15 @@ def test_probe_resolved_injected_name_is_not_advisory(
     from agent.skill_commands import ADVISORY_SKILLS_ENV
     from tools import process_registry
 
+    # Hermeticity: ``_default_spawn`` builds the worker env through
+    # ``build_subprocess_env``, which COPIES ``os.environ``, and it only SETS
+    # ``ADVISORY_SKILLS_ENV`` when the dispatcher computed a non-empty advisory
+    # set. An ambient value (a review-lane worker always carries
+    # ``HERMES_KANBAN_ADVISORY_SKILLS=sdlc-review``) would therefore leak
+    # through and mask the dispatcher's own computation. Clear it so the
+    # assertion below measures the dispatcher, not the parent process.
+    monkeypatch.delenv(ADVISORY_SKILLS_ENV, raising=False)
+
     _patch_config(monkeypatch, {
         "injected_skills": {"builder": ["lane-skill"], "*": ["floor-skill"]},
     })

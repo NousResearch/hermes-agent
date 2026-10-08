@@ -68,6 +68,30 @@ It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
 
+## Local test build
+
+To build the commit you have checked out, without a tag and without pushing:
+
+```sh
+scripts/build-bundle.sh            # macOS DMG/ZIP, Linux AppImage
+```
+
+```powershell
+scripts\build-bundle.ps1           # Windows sideload MSIX
+scripts\build-bundle.ps1 -Store    # Windows Store MSIX
+```
+
+The checkout must be clean, because the build packages `HEAD`. Both scripts
+delete the previous build output first and write to `apps/desktop/release/`.
+The packages are unsigned.
+
+`-Store` allocates a local claim tag `rc.<N>-vX.Y.Z` (N starts at 900) for the
+next patch after the newest published stable tag, and deletes it when the
+build ends. The tag is never pushed. Each architecture builds on its own host.
+To combine the x64 and arm64 Store packages, copy both `Store-*.msix` files into
+one `apps/desktop/release` and run `node scripts/bundle-store-msixbundle.mjs --tag vX.Y.Z`.
+On Windows, use a short checkout path such as `C:\hsb`.
+
 ## Complete native build
 
 From a clean checkout whose `HEAD` equals the release tag, run:

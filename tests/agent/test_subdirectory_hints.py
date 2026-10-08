@@ -485,3 +485,19 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+class TestDirectlyReadHintFile:
+    """Reading a hint file itself must not append the same file again as a hint
+    (port of anomalyco/opencode#52382)."""
+
+    def test_reading_the_hint_file_is_not_echoed_as_a_hint(self, project):
+        tracker = SubdirectoryHintTracker(str(project))
+        assert tracker.check_tool_call("read_file", {"path": str(project / "backend" / "AGENTS.md")}) is None
+        # The model holds the content now: a later visit to the directory stays quiet too.
+        assert tracker.check_tool_call("read_file", {"path": str(project / "backend" / "src" / "main.py")}) is None
+
+    def test_reading_a_sibling_file_still_discovers_the_hint(self, project):
+        tracker = SubdirectoryHintTracker(str(project))
+        hints = tracker.check_tool_call("read_file", {"path": str(project / "backend" / "src" / "main.py")})
+        assert hints and "Use FastAPI" in hints

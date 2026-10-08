@@ -3462,7 +3462,26 @@ def request_changes(
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 
-        new_status = _landing_status_after_parents(conn, task_id)
+        from hermes_cli.kanban_review_rework_budget import max_review_rejections
+
+        rework_limit = max_review_rejections()
+        previous_rejections = 0
+        if rework_limit is not None:
+            previous_rejections = conn.execute(
+                "SELECT COUNT(*) FROM task_events "
+                "WHERE task_id = ? AND kind = 'changes_requested'",
+                (task_id,),
+            ).fetchone()[0]
+        owner_action_required = (
+            rework_limit is not None
+            and previous_rejections + 1 >= rework_limit
+        )
+        # 'blocked' is an existing operator-recoverable state; unlike 'triage',
+        # it does not depend on any unmerged triage-promotion features.
+        new_status = (
+            "blocked" if owner_action_required
+            else _landing_status_after_parents(conn, task_id)
+        )
         # consecutive_failures deliberately PRESERVED: a review transition is
         # not evidence the pathology cleared; only complete_task resets it.
         cur = conn.execute(
@@ -3472,10 +3491,11 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
+                   worker_pid = NULL, worker_started_at = NULL,
+                   block_kind = CASE WHEN ? THEN 'needs_input' ELSE block_kind END
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (new_status, implementer, int(owner_action_required), task_id, int(current_run_id)),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
@@ -3494,6 +3514,19 @@ def request_changes(
             },
             run_id=run_id,
         )
+        if owner_action_required:
+            _append_event(
+                conn, task_id, "blocked",
+                {
+                    "kind": "needs_input",
+                    "reason": (
+                        f"Review rework limit reached "
+                        f"({previous_rejections + 1}/{rework_limit}); "
+                        "operator decision required before further review"
+                    ),
+                },
+                run_id=run_id,
+            )
     return True, implementer
 
 

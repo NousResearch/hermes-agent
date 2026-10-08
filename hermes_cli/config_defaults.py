@@ -1897,6 +1897,11 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Optional same-card review churn guard. 0 = unlimited (default).
+        # The limit applies only to boards named in review_rework_boards; when
+        # exhausted, an owner-action block replaces automatic re-dispatch.
+        "max_review_rejections": 0,
+        "review_rework_boards": [],
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

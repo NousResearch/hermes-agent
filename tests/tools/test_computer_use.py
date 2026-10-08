@@ -1836,6 +1836,7 @@ class TestMcpInvocationResolution:
         assert cmd == wrapper
         assert args == ["mcp"]
 
+    @pytest.mark.platforms("posix")
     def test_bare_path_wrapper_remains_spawn_command(self, tmp_path, monkeypatch):
         """A bare PATH override is normalized by resolution before manifest
         discovery, so the wrapper—not the remote manifest path—remains the

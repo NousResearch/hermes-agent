@@ -63,21 +63,22 @@ def admit_attachments(attachments, *, admitted=None):
     mimes = [item['mime'] for item in attachments]
     row = admitted() if admitted is not None else None
     committed = row['payload'].get('attachments_v1') if row is not None else None
-    # A hardlink placed in staging is a second name for a file outside it (~/.ssh/id_rsa).
     try:
-        if any(path.lstat().st_nlink != 1 for path in paths):
-            raise RuntimeStoreError('invalid_params')
-        # Retry identity is the committed bytes, not the disposable staging name: a client that
-        # re-staged the same image under a new name is retrying, not sending different work.
-        retry = (committed is not None and committed['media_types'] == mimes
-                 and [r['sha256'] for r in committed['media']] == [_sha256(path) for path in paths])
-    except FileNotFoundError as exc:
-        if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
-                or committed['media_types'] != mimes):
-            raise RuntimeStoreError('invalid_params') from exc
-        retry = True
+        hashes = _attachment_hashes(paths)
     except (OSError, ValueError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
+    if None in hashes:
+        if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
+                or committed['media_types'] != mimes):
+            raise RuntimeStoreError('invalid_params')
+        if any(digest is not None and digest != reference['sha256']
+               for digest, reference in zip(hashes, committed['media'])):
+            raise RuntimeStoreError('admission_conflict')
+        retry = True
+    else:
+        # Retry identity is the committed bytes, not the disposable staging name.
+        retry = (committed is not None and committed['media_types'] == mimes
+                 and [r['sha256'] for r in committed['media']] == hashes)
     if retry:
         # A live row still executes these bytes, so they must verify; a terminal row is
         # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
@@ -85,6 +86,20 @@ def admit_attachments(attachments, *, admitted=None):
             restore_native_media(committed['media'])
         return {'attachments_v1': committed}
     return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
+
+
+def _attachment_hashes(paths):
+    hashes = []
+    for path in paths:
+        try:
+            # Staging must not provide a second name for a file outside it.
+            if path.lstat().st_nlink != 1:
+                raise RuntimeStoreError('invalid_params')
+            hashes.append(_sha256(path))
+        except FileNotFoundError:
+            # One pruned file cannot skip validation of the remaining batch.
+            hashes.append(None)
+    return hashes
 
 
 def _sha256(path):

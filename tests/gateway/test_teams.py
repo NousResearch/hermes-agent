@@ -415,6 +415,7 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        entities=None,
     ):
         activity = MagicMock()
         activity.text = text
@@ -429,12 +430,40 @@ class TestTeamsMessageHandling:
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = tenant_id
         activity.attachments = attachments or []
+        activity.entities = entities or []
         return activity
 
     def _make_ctx(self, activity):
         ctx = MagicMock()
         ctx.activity = activity
         return ctx
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("text, quote, expected", [
+        ('<quoted messageId="m1"/>Hello', {}, ("Hello", "m1", "quoted", False)),
+        ("Hello", {}, ("Hello", "m1", "quoted", False)),  # entity without placeholder
+        ('<quoted messageId="m1"/>', {}, ("", "m1", "quoted", False)),
+        ('before<quoted messageId="m1"/>after', {}, ("before after", "m1", "quoted", False)),
+        ('<quoted messageId="m1"/>\ndef f():\n    return 1', {}, ("def f():\n    return 1", "m1", "quoted", False)),
+        ('<quoted messageId="sent"/>Hi', {"message_id": "sent"}, ("Hi", "sent", "quoted", True)),
+        ('<quoted messageId="m1"/>Hi', {"sender_id": "28:bot-id"}, ("Hi", "m1", "quoted", True)),
+        ('<quoted messageId="m1"/>Hi', {"preview": None}, ("Hi", "m1", None, False)),
+        ('<quoted messageId="m1"/>Hi', {"is_reply_deleted": True}, ("Hi", None, None, False)),
+        ('<quoted messageId="ghost"/>Hi', None, ('<quoted messageId="ghost"/>Hi', None, None, False)),
+    ], ids=["placeholder", "entity-only", "quote-only", "inline", "multiline-code", "own-via-sent-ids",
+            "own-via-sender", "no-preview", "deleted", "placeholder-without-entity"])
+    async def test_quoted_reply_fills_reply_context(self, text, quote, expected):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter._sent_ids.append("sent")
+        entities = [] if quote is None else [SimpleNamespace(type="quotedReply", quoted_reply=SimpleNamespace(
+            **{"message_id": "m1", "sender_id": "29:alice", "sender_name": "Alice", "preview": "quoted", **quote}))]
+        await adapter._on_message(self._make_ctx(self._make_activity(text=text, entities=entities)))
+        e = adapter.handle_message.call_args[0][0]
+        assert (e.text, e.reply_to_message_id, e.reply_to_text, e.reply_to_is_own_message) == expected
+        assert e.reply_to_author_name == ("Alice" if e.reply_to_message_id else None)
 
     @pytest.mark.anyio
     async def test_personal_message_creates_dm_event(self):

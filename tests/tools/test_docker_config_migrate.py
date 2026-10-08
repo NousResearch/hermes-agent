@@ -208,6 +208,30 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     assert env_path.read_text(encoding="utf-8") == original_env
 
 
+def test_docker_config_migrate_keeps_known_pending_steps_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("_config_version: 12\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module, "_read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(
+        module, "migrate_config",
+        lambda **_kw: {"migration_failed": True, "pending_migrations": [21]},
+    )
+
+    assert module.main() == 0
+
+    captured = capsys.readouterr()
+    assert "pending steps: 21" in captured.err
+    assert config_path.read_text(encoding="utf-8") == "_config_version: 12\n"
+
+
 def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path: Path) -> None:
     """Regression for #51579: booting ``gateway run`` twice (i.e. a host
     reboot under ``--restart unless-stopped``) must not strip or rewrite

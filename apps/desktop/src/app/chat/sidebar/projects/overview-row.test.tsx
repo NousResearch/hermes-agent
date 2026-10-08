@@ -76,6 +76,15 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
 
+  // A parent whose only content is a subproject has no preview rows to fold — but the subprojects
+  // are what the fold is for, and without the control the subtree can never be closed (or reopened).
+  it('renders the disclosure toggle for a parent whose only content is a subproject', () => {
+    render(<ProjectOverviewRow hasNestedProjects project={project} />)
+
+    // Closed by default, so the control offers to show them.
+    expect(screen.getByRole('button', { name: 'Show Test D sessions' }))
+  })
+
   // Group by → Projects previews only the 3 most-recent sessions per project;
   // sessions 4+ need a visible, in-place way to be reached (#112406).
   it('offers "Show all N sessions" past the preview cap and reveals the rest of the project inline', async () => {

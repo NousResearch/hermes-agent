@@ -551,6 +551,9 @@ export function SidebarSessionsSection({
     // The sortable ids stay whole: a drop resolves against the FULL order, so reordering while a
     // parent is closed cannot renumber the rows it hides.
     const visibleProjects = visibleProjectRows(sortableProjects, id => nodeOpen[id] ?? true)
+    // A parent that folds its subprojects away cannot lose the control that opens it again, so this
+    // reads the WHOLE list: `visibleProjects` no longer holds the rows a closed parent hides.
+    const nestedParentIds = new Set(sortableProjects.map(project => project.parentId).filter(Boolean))
     const projectsDraggable = sortableProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
@@ -560,6 +563,7 @@ export function SidebarSessionsSection({
         // The loudest status anywhere under this project, folded up from its own sessions and every
         // nested project's — a collapsed row still reports work waiting inside it.
         attentionState={rollupDotState(dotStates, projectSubtreeSessionIds(projectOverview, project.id))}
+        hasNestedProjects={nestedParentIds.has(project.id)}
         hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
         isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}

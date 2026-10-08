@@ -102,6 +102,9 @@ interface ProjectOverviewRowProps {
    *  project's. Painted only while the row is collapsed: an expanded row shows its sessions' own
    *  dots, and a second dot on the parent would just double the ink. */
   attentionState?: SessionDotState
+  /** Whether any project nests under this one. A subproject-only parent has no preview rows to fold,
+   *  but it still has children — which is exactly what the fold is for. */
+  hasNestedProjects?: boolean
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -120,6 +123,7 @@ export function ProjectOverviewRow({
   isSessionHidden,
   hiddenSessionCount = 0,
   attentionState,
+  hasNestedProjects = false,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -293,7 +297,7 @@ export function ProjectOverviewRow({
       }}
       ref={rowRef}
       toggle={
-        preview.length > 0
+        preview.length > 0 || hasNestedProjects
           ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
           : undefined
       }

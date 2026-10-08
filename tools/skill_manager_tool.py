@@ -506,7 +506,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
 
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
-                 replace_all: bool = False) -> Dict[str, Any]:
+                 replace_all: bool = False, task_id: str = None) -> Dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
         return _err(_PATCH_NEEDS_OLD_STRING)
@@ -535,10 +535,27 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)
     if match_error:
+        recovery = {}
+        if match_count == 0 and match_error.startswith("Could not find"):
+            from tools.skills_tool_dedup import invalidate_skill_view_file
+            invalidate_skill_view_file(task_id, str(target))
+            recovery = {
+                "recovery": {"tool": "skill_view", "arguments": {
+                    "name": name, **({"file_path": file_path} if file_path else {})}},
+                "retry_hint": (
+                    "Read the target again using recovery, then copy the current text "
+                    "verbatim into old_string and retry the intended patch. Do not "
+                    "resend the unchanged call or copy line numbers from the suggestions. "
+                    "For a failed batch, read after rollback and rebuild the patch chain "
+                    "from the restored content; suggestions describe the failed operation's state."),
+            }
+            match_error += (
+                ". Re-read the target with skill_view using the recovery arguments, "
+                "then retry with current text in old_string. Do not resend this call unchanged.")
         with suppress(Exception):
             from tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
-        return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
+        return _err(match_error) | {"file_preview": _clip(content, 500, "...")} | recovery
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
@@ -711,7 +728,8 @@ def _act_patch(a):
         return tool_error(_PATCH_EITHER_OR, success=False)
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
-    return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
+    return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"],
+                        a["replace_all"], task_id=a.get("task_id"))
 
 
 # action -> handler(args dict) returning a result dict, or a tool_error JSON string for
@@ -804,7 +822,7 @@ def skill_manage(
                 _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
         handler = _ACTION_HANDLERS.get(action, lambda a: _err(
             f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-        result = handler({"name": name, **args})
+        result = handler({"name": name, **args, "task_id": task_id})
         if isinstance(result, str):
             return result  # tool_error JSON for argument-shape problems (patch)
         if result.get("success"):

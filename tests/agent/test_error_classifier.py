@@ -771,6 +771,17 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.payload_too_large
         assert result.should_compress is True
 
+    @pytest.mark.parametrize("body", [
+        {"error": {"message": "Rate limit reached for tokens per minute", "code": "rate_limit_exceeded"}},
+        {"error": {"message": "Limit 8000, Requested 8761 tokens per minute"}},
+    ])
+    def test_413_groq_tokens_per_minute_is_rate_limit(self, body):
+        e = MockAPIError("Request failed", status_code=413, body=body)
+        result = classify_api_error(e, provider="groq")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
     # ── Context overflow ──
 
 

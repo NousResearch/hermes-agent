@@ -1971,11 +1971,11 @@ class TestElementTokenAttachment:
     1. capture() refreshes a per-snapshot {index -> token} map from
        structuredContent.elements.
     2. Whenever an action carrying element_index is about to hit cua-driver,
-       look up the matching token and attach it — but ONLY for tools that
+       look up the matching token and replace the wrapper-only index with it — but ONLY for tools that
        advertise `accessibility.element_tokens` (Surface 4 gate). Older
        drivers reject unknown args via additionalProperties=false.
-    3. cua-driver prefers token over index when both are supplied, so
-       sending both is safe and stale-detection becomes explicit.
+    3. Modern cua-driver schemas reject element_index, while element_token
+       preserves explicit stale-detection.
     """
 
     def _backend_with_session(self, capabilities):
@@ -2007,8 +2007,8 @@ class TestElementTokenAttachment:
         backend.click(element=5, button="left")
         name, args = backend._session.call_tool.call_args.args
         assert name == "click"
-        assert args["element_index"] == 5
-        # The matching token rode along — cua-driver will prefer it.
+        assert "element_index" not in args
+        # The matching token replaced the wrapper-only index.
         assert args["element_token"] == "s0001:5"
 
     def test_token_attached_when_only_input_schema_advertises_it(self):
@@ -2020,6 +2020,7 @@ class TestElementTokenAttachment:
         backend._snapshot_tokens = {5: "s00000001:5"}
         backend.click(element=5, button="left")
         _, args = backend._session.call_tool.call_args.args
+        assert "element_index" not in args
         assert args["element_token"] == "s00000001:5"
 
 

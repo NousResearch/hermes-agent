@@ -212,10 +212,12 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         # never confirmed.
         if not result.get("confirm_required"):
             return
-        logger.warning("Queued model switch to %s dropped for session %s: selection guard needs a confirm", model, sid)
         detail = result.get("confirm_message") or result.get("warning") or ""
+        logger.warning("Queued model switch to %s dropped for session %s: %s", model, sid, detail.split("\n", 1)[0])
         current = getattr(session["agent"], "model", "") or "the current model"
-        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm.\n\n{detail}"
+        # One line: the TUI status bar truncates and the Desktop toast collapses newlines. The full
+        # guard text comes back in the confirm prompt when the user picks it again.
+        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm."
     except Exception as e:
         logger.warning("Queued model switch to %s failed for session %s: %s", model, sid, e)
         text = f"Could not switch model: {e}"

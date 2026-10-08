@@ -37,6 +37,7 @@ __all__ = [
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
     "pid_exists_stdlib",
+    "unescape_ps_command",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -669,6 +670,31 @@ def pid_exists_stdlib(pid: int) -> bool:
     except OSError:  # ProcessLookupError included
         return False
     return True
+
+
+def unescape_ps_command(command: str) -> str:
+    """Restore control characters macOS ``ps`` prints as literal backslash-octal (#126887).
+
+    BSD ``ps`` renders a newline embedded in argv as the four literal characters ``\\012``
+    (a tab as ``\\011``) so each process stays on one output line. Every matcher downstream
+    of a ``ps`` text read (``_hermes_holder_subcommand``, ``_parse_dashboard_runtime``,
+    the dashboard/orphan scans) then receives a corrupted inline bootstrap source — the
+    bootstrap regexes anchor on real whitespace — and goes blind on POSIX-launcher processes.
+    Undo that escaping at the read boundary so matchers see the real characters.
+
+    The restoration is knowingly lossy: BSD ``ps`` does not escape backslashes, so a literal
+    ``\\012`` typed into an argv element is byte-identical to an escaped newline and this
+    helper cannot tell them apart — it always restores. Only matcher/respawn readers consume
+    this text and they anchor on real whitespace, so the trade favors restoring.
+
+    Off macOS the text passes through unchanged, and that is measured, not assumed: procps-ng
+    replaces an embedded newline with a space (tab with a dot) instead of escaping, so the
+    corruption is unrecoverable at the text layer there — Linux readers prefer ``/proc``/psutil
+    anyway, which is why this helper is darwin-only.
+    """
+    if sys.platform != "darwin":
+        return command
+    return command.replace("\\012", "\n").replace("\\011", "\t")
 
 
 def _process_start_time(pid: int) -> int | None:

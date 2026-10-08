@@ -6263,7 +6263,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
 # re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+from agent.auxiliary_task_config import _as_seconds, _get_auxiliary_task_config, _user_set_task_timeout
 
 
 class CompressionFastLane(NamedTuple):
@@ -6351,27 +6351,12 @@ def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     return value
 
 
-def _as_seconds(raw: Any) -> Optional[float]:
-    with contextlib.suppress(ValueError, TypeError):
-        return float(raw)
-    return None
-
-
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """``auxiliary.<task>.timeout`` from config, else *default*."""
     if not task:
         return default
     seconds = _as_seconds(_get_auxiliary_task_config(task).get("timeout"))
     return default if seconds is None else seconds
-
-
-def _user_set_task_timeout(task: str) -> Optional[float]:
-    """``auxiliary.<task>.timeout`` (> 0) from config.yaml alone, so a schema default never counts as a choice."""
-    from hermes_cli.config_effective import load_user_config_effective
-    aux = load_user_config_effective().get("auxiliary")
-    block = aux.get(task) if isinstance(aux, dict) else None
-    seconds = _as_seconds(block.get("timeout")) if isinstance(block, dict) else None
-    return seconds if seconds is not None and seconds > 0 else None
 
 
 def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:

@@ -36,7 +36,7 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     latency or a failing request."""
     from agent.model_metadata import (
         DEFAULT_CONTEXT_LENGTHS, _load_model_metadata_disk_cache, _longest_key_match,
-        _strip_provider_prefix, get_cached_context_length,
+        _strip_provider_prefix, get_cached_context_length, is_local_endpoint,
     )
     model = _strip_provider_prefix(str(model or ""))
     if not model:
@@ -50,7 +50,22 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     if isinstance(ctx, int) and ctx > 0:
         return ctx
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    return hit[1] if hit else None
+    if not hit:
+        return None
+    # Same premise as _resolve_custom_endpoint_context_length step 3b: a local endpoint's catalog
+    # entry is a guess about the vendor's API, not something this server advertised. Treating it as
+    # an advertisement would tell a user whose pin is already correct to remove it.
+    #
+    # Deliberately STRICTER than step 3b, which keeps a local catalog value at or below the default
+    # as a usable window guess — this discards every local catalog answer. The two therefore
+    # disagree on purpose: `qwen2.5-coder-32b-instruct` at `127.0.0.1:8080` resolves to 131,072 as a
+    # window and to None as an advertisement. The split is the right one — a value good enough to
+    # guess a window with is not evidence of what the server claims, and a low entry can still be
+    # wrong (`gemma` = 8,192 would argue a correct 131,072 pin down). "Advertised nothing" is the
+    # honest answer, so the disagreement warning stays silent rather than act on a guess.
+    if is_local_endpoint(base_url):
+        return None
+    return hit[1]
 
 
 def warn_once_on_pin_disagreement(model: str, base_url: str, config_context_length) -> bool:

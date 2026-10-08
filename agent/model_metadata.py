@@ -565,6 +565,22 @@ def _longest_key_match(table: Dict[str, int], model_lower: str) -> Optional[Tupl
     return None
 
 
+def _largest_key_match_at_or_below(table: Dict[str, int], model_lower: str, limit: int) -> Optional[Tuple[str, int]]:
+    """Among **every** key matching ``model_lower``, the largest value not exceeding ``limit``; the
+    longest key wins ties.
+
+    ``_longest_key_match`` consults only the single most specific key, so an inflated specific entry
+    hides a shorter family entry that already holds the answer: ``qwen3.8-flash`` = 1,000,000 sits one
+    row from ``qwen`` = 131,072 — the real window of the local server being probed. Discarding the
+    longest key alone would then fall through to the generic default with that 131,072 never read.
+    """
+    best: Optional[Tuple[str, int]] = None
+    for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
+        if value <= limit and _catalog_key_matches(key, model_lower) and (best is None or value > best[1]):
+            best = (key, value)
+    return best
+
+
 def _ollama_show_context(data: Dict[str, Any], *, gguf_first: bool, minimum: Optional[int] = None) -> Optional[int]:
     """Context length from an Ollama ``/api/show`` payload. ``parameters.num_ctx`` is the RUNTIME
     window (Modelfile override), ``model_info.*.context_length`` the GGUF training max. Local users
@@ -2096,19 +2112,35 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     if ctx is not None:
         _save_unless_skipped(model, base_url, ctx, provider)
         return ctx
-    # 3. Probe-down fallback after endpoint-specific detection failed
+    # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
+    # but its model name still matches DEFAULT_CONTEXT_LENGTHS. For a LOCAL server the catalog
+    # describes the vendor's API, not this window — a local window is whatever the process was
+    # launched with (`--ctx-size`, `max_model_len`) — so only a value at or below the generic
+    # default can be the lower guess, and it is taken as the LARGEST such match rather than by
+    # discarding the longest key. Guessing high is the costly direction: the compression trigger
+    # derives from this window, so an inflated value puts compaction past the real limit and the
+    # session dies at the endpoint instead of compacting before it. Discarding the whole hit would
+    # leave a shorter family entry unread — `qwen3.8-flash` = 1,000,000 sits beside `qwen` =
+    # 131,072, which is that server's real window. A remote endpoint keeps the longest match: a
+    # proxied gateway's model name is real and the catalog is its answer.
+    if is_local_endpoint(base_url):
+        hit = _largest_key_match_at_or_below(DEFAULT_CONTEXT_LENGTHS, model.lower(), DEFAULT_FALLBACK_CONTEXT)
+    else:
+        hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    if hit:
+        logger.info(
+            "Could not detect context length for model %r at %s — using the hardcoded catalog value "
+            "%s (match on %r). Set model.context_length in config.yaml to override.",
+            model, base_url, f"{hit[1]:,}", hit[0],
+        )
+        return hit[1]
     logger.info(
         "Could not detect context length for model %r at %s — defaulting to %s tokens (probe-down). "
         "Set model.context_length in config.yaml to override.",
         model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
-    # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
-    # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    if hit:
-        logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
-        return hit[1]
-    # Same silent-256K bug class as the step-9 fallback — warn here too.
+    # Same silent-256K bug class as the step-9 fallback — warn here too: this branch is now the
+    # one that guesses, so the guess has to be visible.
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 

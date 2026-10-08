@@ -73,12 +73,16 @@ _PREAUTH_FETCH = (
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
+_MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
+_OPT_OUT_HINT = "set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk."
 # Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
 _DROP_HINTS = {
-    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
-    "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
+    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, " + _OPT_OUT_HINT,
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
+# A missing pin is account config, not one sender's mail, so connect() names its fix once per account.
+_MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
+                          "or " + _OPT_OUT_HINT)
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -189,11 +193,11 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
         try:
             from hermes_cli.version_info import get_version_info
             version = get_version_info().base_version
-        except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
+        except Exception:
             version = "0"
         imap.xatom("ID", f'("name" "hermes-agent" "version" "{version}" '
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
-    except Exception as e:  # noqa: BLE001 — best-effort, never fatal
+    except Exception as e:
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
 
 
@@ -306,7 +310,7 @@ def _strip_comments(text: str) -> str:
     return text
 
 
-def _ar_clauses(text: str) -> Optional[List[str]]:
+def _ar_clauses(text: str) -> Optional[list[str]]:
     """Split an Authentication-Results value on ``;`` outside quoted-strings and (nested) comments; comments are
     dropped, quoted-strings kept (``header.from="x"`` stays readable). ``None`` when a quote or comment is unbalanced."""
     clauses, cur, depth, quoted, i = [], [], 0, False, 0
@@ -340,7 +344,7 @@ def _ar_clauses(text: str) -> Optional[List[str]]:
     return None if quoted or depth else clauses + ["".join(cur)]
 
 
-def _auth_props(text: str) -> List[Tuple[str, str]]:
+def _auth_props(text: str) -> list[tuple[str, str]]:
     """``(property, value)`` pairs (``header.from=x``) of one comment-free Authentication-Results clause, property
     lowercased, surrounding quotes stripped. Quoted-string contents are never scanned for properties."""
     return [(p.lower(), v.strip('"')) for p, v in _AUTH_PROP_RE.findall(text) if p]
@@ -358,12 +362,13 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
-def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
+def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative; when *authserv_id* is set, that instance must match it exactly.
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
+    FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
+    pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
+    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
@@ -375,16 +380,18 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
     if (clauses := _ar_clauses(trusted)) is None:
         return False, "unbalanced quote or comment in Authentication-Results"
-    if authserv_id and clauses[0].strip().lower() != authserv_id.strip().lower():
+    if not authserv_id:  # without a pin the topmost header may be one the sender wrote
+        return False, _MISSING_AUTHSERV_REASON
+    if clauses[0].strip().lower() != authserv_id:
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
-    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
     for clause in clauses:
         if m := _AUTH_METHOD_RE.match(clause):
             results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
 
-    def aligned(props: List[Tuple[str, str]], names: Tuple[str, ...], *, required: bool = True) -> bool:
+    def aligned(props: list[tuple[str, str]], names: tuple[str, ...], *, required: bool = True) -> bool:
         domains = [_domain_of(v) for p, v in props if p in names]
         return (bool(domains) or not required) and all(_domains_aligned(d, from_domain) for d in domains)
 
@@ -404,7 +411,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     return False, f"authentication failed ({trusted[:120]})"
 
 
-def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool = False) -> List[Dict[str, Any]]:
+def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool = False) -> list[dict[str, Any]]:
     """Extract attachment metadata and cache files locally (nothing when *skip_attachments*)."""
     attachments = []
     if not msg.is_multipart():
@@ -447,15 +454,18 @@ class EmailAdapter(BasePlatformAdapter):
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
-    _seen_uids_snapshot: Dict[str, set] = {}
+    _seen_uids_snapshot: dict[str, set] = {}
+    # Accounts already warned about a missing authserv_id pin. Per address, not per first connect: an account whose
+    # first connect fails is brought up by the reconnect watcher (is_reconnect=True) and must still warn once.
+    _missing_pin_warned: set = set()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
         # Env first, then PlatformConfig.extra (config.yaml-only setups). Host/address are stripped: a stray
         # newline made IMAP4_SSL raise ``[Errno 8] nodename nor servname`` instead of "host not set".
         extra = config.extra or {}
-        setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
-        tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
+        setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")
+        tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))
         self._address = setting("EMAIL_ADDRESS", "address").strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
@@ -474,7 +484,8 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
         else:
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
-        # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
+        # Pin Authentication-Results to the operator's receiving MTA. With sender auth on, an absent pin fails
+        # closed for EVERY sender rather than trusting a sender-supplied result header; connect() warns once per account.
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -483,7 +494,7 @@ class EmailAdapter(BasePlatformAdapter):
         # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        self._thread_context: dict[str, dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
 
     def _trim_seen_uids(self) -> None:
@@ -599,6 +610,9 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
+        if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
+            EmailAdapter._missing_pin_warned.add(self._address)
+            logger.warning("[Email] %s: %s.%s", self._address, _MISSING_AUTHSERV_REASON, _MISSING_AUTHSERV_HINT)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
@@ -627,10 +641,10 @@ class EmailAdapter(BasePlatformAdapter):
         """Check INBOX for unseen messages and dispatch them."""
         loop = asyncio.get_running_loop()
 
-        async def authorize_on_loop(msg_data: Dict[str, Any]) -> bool:
+        async def authorize_on_loop(msg_data: dict[str, Any]) -> bool:
             return self._sender_accepted(msg_data["sender_addr"], msg_data)
 
-        def gate(candidate: Dict[str, Any]) -> bool:
+        def gate(candidate: dict[str, Any]) -> bool:
             # Authorization reads profile-scoped policy and pairing state on the adapter's event loop;
             # the blocking IMAP worker waits for that verdict before asking the server for RFC822.
             # A closed loop (stop race) yields None: fail closed without leaking the coroutine.
@@ -659,7 +673,7 @@ class EmailAdapter(BasePlatformAdapter):
         if status != "OK":
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
 
-    def _fetch_new_messages(self, preauthorize: Callable[[Dict[str, Any]], bool]) -> List[Dict[str, Any]]:
+    def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
         """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
         results = []
         try:
@@ -713,7 +727,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results
 
-    def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[Dict[str, Any]]:
+    def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[dict[str, Any]]:
         """Parse sender-facing headers and authentication without touching the MIME body."""
         if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
             logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))
@@ -730,11 +744,11 @@ class EmailAdapter(BasePlatformAdapter):
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
 
-    def _parse_fetched_headers(self, uid: bytes, raw_headers: "bytes | bytearray") -> Optional[Dict[str, Any]]:
+    def _parse_fetched_headers(self, uid: bytes, raw_headers: "bytes | bytearray") -> Optional[dict[str, Any]]:
         """Parse the bounded IMAP header preflight without constructing a MIME tree."""
         return self._message_metadata(uid, BytesHeaderParser().parsebytes(bytes(raw_headers)))
 
-    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
+    def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[dict[str, Any]]:
         """Parse an authorized RFC822 payload into a dispatchable dict."""
         msg = email_lib.message_from_bytes(raw_email)
         if (metadata := self._message_metadata(uid, msg)) is None:
@@ -757,7 +771,7 @@ class EmailAdapter(BasePlatformAdapter):
         behavior = (self.config.extra or {}).get("unauthorized_dm_behavior")
         return isinstance(behavior, str) and behavior.strip().lower() in {"pair", "decline"}
 
-    def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
+    def _sender_accepted(self, sender_addr: str, msg_data: dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
         if sender_addr == self._address.lower():
             return False
@@ -805,7 +819,7 @@ class EmailAdapter(BasePlatformAdapter):
             return False
         return True
 
-    async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
+    async def _dispatch_message(self, msg_data: dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
         if not self._sender_accepted(sender_addr, msg_data):
@@ -835,7 +849,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error(log_fmt, *log_args, e)
             return SendResult(success=False, error=str(e))
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
         return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
 
@@ -844,7 +858,7 @@ class EmailAdapter(BasePlatformAdapter):
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
+                   attach_empty_body: bool = False) -> tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
@@ -879,7 +893,7 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+    def _send_with_files(self, to_addr: str, body: str, files: list[tuple[Path, str]], *, lenient: bool,
                          reply_to_msg_id: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
         An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
@@ -895,12 +909,12 @@ class EmailAdapter(BasePlatformAdapter):
         return msg_id
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an image URL as part of an email body (``metadata`` unused)."""
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
-    async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
+    async def send_multiple_images(self, chat_id: str, images: list[tuple[str, str]],
+                                   metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
             return SendResult(success=False, error="no images to send")
@@ -924,7 +938,7 @@ class EmailAdapter(BasePlatformAdapter):
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         return SendResult(success=True, message_id=message_id)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: list[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
         msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
@@ -942,7 +956,7 @@ class EmailAdapter(BasePlatformAdapter):
         return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
                                      reply_to_msg_id=reply_to_msg_id)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about the email chat."""
         return {"name": chat_id, "type": "dm", "chat_id": chat_id, "subject": self._thread_context.get(chat_id, {}).get("subject", "")}
 

@@ -49,7 +49,7 @@ class TestCleanPlugin:
         result = scan_plugin(plugin, source="owner/repo")
         assert result.verdict == "safe"
         assert result.trust_level == "community"
-        allowed, reason = should_allow_plugin_install(result)
+        allowed, _reason = should_allow_plugin_install(result)
         assert allowed is True
 
     def test_provider_plugin_env_key_read_is_allowed(self, tmp_path):
@@ -192,7 +192,7 @@ class TestMaliciousPlugin:
         plugin = _mk_plugin(tmp_path, files)
         result = scan_plugin(plugin)
         assert result.verdict == "dangerous"
-        allowed, reason = should_allow_plugin_install(result, force=True)
+        allowed, _reason = should_allow_plugin_install(result, force=True)
         assert allowed is False  # --force never overrides dangerous
 
     def test_prompt_injection_in_docs_is_flagged(self, tmp_path):
@@ -276,9 +276,9 @@ class TestCautionPolicy:
         plugin = _mk_plugin(tmp_path, files)
         result = scan_plugin(plugin)
         assert result.verdict == "caution"
-        allowed, reason = should_allow_plugin_install(result)
+        allowed, _reason = should_allow_plugin_install(result)
         assert allowed is None  # needs confirmation
-        allowed, reason = should_allow_plugin_install(result, force=True)
+        allowed, _reason = should_allow_plugin_install(result, force=True)
         assert allowed is True
 
     def test_binary_file_is_caution_not_dangerous(self, tmp_path):
@@ -384,7 +384,7 @@ class TestInstallIntegration:
         # HERMES_HOME (autouse fixture) is that home.
         plugins_dir = pc._plugins_dir()
 
-        target, manifest, name = pc._install_plugin_core(
+        target, _manifest, name = pc._install_plugin_core(
             f"file://{repo}", force=False,
         )
         assert name == "test-plugin"
@@ -429,7 +429,7 @@ class TestInstallIntegration:
             )
         assert not (plugins_dir / "test-plugin").exists()
         # Accepted → installs
-        target, _, name = pc._install_plugin_core(
+        target, _, _name = pc._install_plugin_core(
             f"file://{repo}", force=False, scan_decision_cb=lambda r: True,
         )
         assert target.exists()

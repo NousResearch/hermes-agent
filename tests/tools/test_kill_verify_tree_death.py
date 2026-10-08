@@ -91,7 +91,7 @@ def test_kill_with_dead_tree_still_reports_killed():
     s.process.poll.return_value = -15
     reg._running[s.id] = s
     try:
-        _, _, save = _paused_registry_calls()
+        _, _, _save = _paused_registry_calls()
         with patch.object(ProcessRegistry, "_host_pid_is_ours", return_value=False), \
              patch("psutil.Process", side_effect=Exception("gone")):
             result = reg.kill_process(s.id)

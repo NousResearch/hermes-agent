@@ -88,7 +88,7 @@ def _run_on_daemon_thread(
     def _target() -> None:
         try:
             outcome["result"] = fn()
-        except BaseException as exc:  # noqa: BLE001 - propagated below
+        except BaseException as exc:
             outcome["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True, name=name)
@@ -257,7 +257,7 @@ def _load_segments_config() -> dict[str, Any]:
             max_turns = max(0, int(segments.get("max_turns", 0) or 0))
         except (TypeError, ValueError):
             max_turns = 0
-    except Exception:  # noqa: BLE001 - config absence (or a malformed section) must not crash
+    except Exception:
         pass
     return {"on_compaction": on_compaction, "max_turns": max_turns}
 

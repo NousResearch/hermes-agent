@@ -266,7 +266,6 @@ def _configure_manual_guard(monkeypatch, approval_module, manager, *, fallback=N
     monkeypatch.setattr(approval_module, "is_approved", lambda *args: False)
     monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
     monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", fallback))
-    monkeypatch.setattr("tools.tirith_security.check_command_security", lambda command: {"action": "allow"})
 
 
 def test_cli_selected_transport_replaces_builtin_prompt(monkeypatch):
@@ -492,7 +491,6 @@ def register(ctx):
                 "plugins": {"enabled": ["fixture-approval"]},
                 "approvals": {"mode": "manual", "timeout": 2},
                 "security": {
-                    "tirith_enabled": False,
                     "approval": {"transport": "fixture"},
                 },
             }
@@ -547,7 +545,7 @@ def register(ctx):
 
 def test_hardline_blocks_before_selected_transport(monkeypatch):
     from tools import approval
-    import tools.approval_detection as approval_detection
+    from tools import approval_detection
 
     manager = PluginManager()
     calls = []

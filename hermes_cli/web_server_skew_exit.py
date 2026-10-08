@@ -38,9 +38,9 @@ def should_retire_for_skew(*, skew: Skew, update_in_progress: bool) -> bool:
 
 def _update_in_progress() -> bool:
     try:
-        from hermes_cli.update_lock import read_live_update
+        from hermes_cli.update_lock import update_in_progress
 
-        return read_live_update() is not None
+        return update_in_progress()
     except Exception:
         return True  # cannot prove the swap is over: wait
 

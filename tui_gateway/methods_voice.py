@@ -766,7 +766,7 @@ def _(rid, params: dict) -> dict:
             silence_threshold=_voice_cfg_number(voice_cfg.get("silence_threshold"), 200),
             silence_duration=_voice_cfg_number(voice_cfg.get("silence_duration"), 3.0),
             auto_restart=False, max_recording_seconds=max_rec if max_rec > 0 else 0.0,
-            on_stop_phrase=_vr_on_stop_phrase)
+            on_stop_phrase=_vr_on_stop_phrase, on_partial=lambda t: _voice_emit("voice.partial", {"text": t}))
         if started is False:
             _resume_voice_wake()
         return _ok(rid, {"status": "busy" if started is False else "recording"})
@@ -784,7 +784,7 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        import hermes_cli.voice  # noqa: F401  (a missing module must answer 5026, not die in a thread)
+        import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()

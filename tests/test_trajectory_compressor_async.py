@@ -92,5 +92,5 @@ async def test_process_entry_async_passes_non_dict_through():
     from trajectory_compressor import TrajectoryCompressor
 
     compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
-    entry, metrics = await compressor.process_entry_async(42)
+    entry, _metrics = await compressor.process_entry_async(42)
     assert entry == 42

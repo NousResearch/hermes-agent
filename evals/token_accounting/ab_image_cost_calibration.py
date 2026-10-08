@@ -50,7 +50,7 @@ class _FakeVisionChat:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a):  # noqa: D401
+            def log_message(self, *_a):
                 pass
 
             def do_POST(self):

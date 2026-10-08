@@ -8,6 +8,9 @@ dependencies = [
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16",
   "truststore==0.10.4",
+  # Bundled provider plugins (e.g. solstice) import httpx at module load via
+  # agent.gemini_native_adapter; discovery runs in this venv during hermes update.
+  "httpx==0.28.1",
 ]
 
 [tool.uv]

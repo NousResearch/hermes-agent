@@ -1308,6 +1308,12 @@ DEFAULT_CONFIG = {
             "info_log_min_delta_mb": 0.0,
         },
     },
+    # File-backed declarative knowledge notes. Relative paths are resolved
+    # against the active profile's HERMES_HOME.
+    "knowledge_base": {
+        "path": "knowledge-base",
+    },
+
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,

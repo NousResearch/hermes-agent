@@ -2838,6 +2838,12 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 class TestBuildSchemaFromConfig:
 
 
+    def test_knowledge_base_merges_into_memory_category(self):
+        """The knowledge-base plugin's single path field must not become an orphan tab."""
+        from hermes_cli.web_server_config import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["knowledge_base.path"]["category"] == "memory"
+
     def test_timezone_field_is_searchable_select(self):
         """timezone must ship as a searchable, clearable select of IANA ids.
 

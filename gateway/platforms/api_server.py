@@ -633,17 +633,6 @@ def _clear_turn_process_ownership(agent: Any) -> None:
     agent._gateway_turn_process_epoch = None
 
 
-def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
-    """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
-    user_message = body.get("message") or body.get("input")
-    if not _content_has_visible_payload(user_message):
-        return None, _error_response("Missing 'message' field", 400, code="missing_message")
-    try:
-        return _normalize_multimodal_content(user_message), None
-    except ValueError as exc:
-        return None, _multimodal_validation_error(exc, param=param)
-
-
 def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalized body ``author``, None when absent or null, ValueError when not an object. It only labels memory."""
     raw = body.get("author")
@@ -3360,7 +3349,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return None, err
-        user_message, err = _session_chat_user_message(body)
+        from gateway.platforms.api_server_session_content import session_chat_user_message
+        user_message, err = session_chat_user_message(body)
         if err is not None:
             return None, err
         try:

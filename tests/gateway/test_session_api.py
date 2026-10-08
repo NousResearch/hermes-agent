@@ -1134,6 +1134,121 @@ _CHAT_REPLY = ({"final_response": "ok"}, {"input_tokens": 0, "output_tokens": 0,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+async def test_session_chat_preserves_long_plain_string_messages(adapter, session_db, suffix):
+    """Regression for #120937: session chat must not truncate plain-string input."""
+    session_id = session_db.create_session("long-message-session", "api_server")
+    message = "x" * 65_537
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json={"message": message})
+            assert resp.status == 200, await resp.text()
+            if suffix.endswith("/stream"):
+                await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("hello", "hello"),
+        (
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": "https://example.com/image.png"},
+            ],
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+            ],
+        ),
+    ],
+)
+async def test_session_chat_keeps_short_and_multimodal_message_handling(adapter, session_db, message, expected):
+    session_id = session_db.create_session("message-shape-session", "api_server")
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": message})
+            assert resp.status == 200, await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+async def test_session_chat_preserves_input_alias_and_surrounding_spaces(adapter, session_db, suffix):
+    session_id = session_db.create_session("input-alias-session", "api_server")
+    message = " " + "x" * 65_537 + " "
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(_create_session_app(adapter))) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json={"input": message})
+            assert resp.status == 200, await resp.text()
+            await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize("message, expected", [
+    ([{"type": "text", "text": "x" * 65_537}, {"type": "text", "text": "y" * 65_537}],
+     "x" * 65_536 + "\n" + "y" * 65_536),
+    ([{"type": "text", "text": "x"}] * 1_001, "\n".join(["x"] * 1_000)),
+    ([{"type": "text", "text": "x" * 65_537},
+      {"type": "image_url", "image_url": "https://example.com/image.png"}],
+     [{"type": "text", "text": "x" * 65_536},
+      {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}]),
+])
+async def test_session_chat_retains_structured_content_bounds(adapter, session_db, suffix, message, expected):
+    session_id = session_db.create_session("structured-bounds-session", "api_server")
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(_create_session_app(adapter))) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json={"message": message})
+            assert resp.status == 200, await resp.text()
+            await resp.text()
+    assert mock_run.call_args.kwargs["user_message"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize("body, code", [
+    ({}, "missing_message"),
+    ({"message": "   "}, "missing_message"),
+    ({"message": [{"type": "text", "text": "   "}]}, "missing_message"),
+    ({"message": [{"type": "text", "text": "hello"},
+                  {"type": "input_file", "file_id": "file-test"}]}, "unsupported_content_type"),
+])
+async def test_session_chat_keeps_empty_and_invalid_content_errors(adapter, session_db, suffix, body, code):
+    session_id = session_db.create_session("content-error-session", "api_server")
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(_create_session_app(adapter))) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json=body)
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["error"]["code"] == code
+    mock_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+async def test_session_chat_plain_strings_still_obey_http_body_limit(adapter, session_db, suffix):
+    from gateway.platforms.api_server import MAX_REQUEST_BYTES, body_limit_middleware
+
+    session_id = session_db.create_session("http-limit-session", "api_server")
+    app = web.Application(middlewares=[body_limit_middleware], client_max_size=MAX_REQUEST_BYTES)
+    handler = adapter._handle_session_chat_stream if suffix.endswith("/stream") else adapter._handle_session_chat
+    app.router.add_post(f"/api/sessions/{{session_id}}{suffix}", handler)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}{suffix}", json={"message": "x" * (MAX_REQUEST_BYTES + 1)}
+            )
+            assert resp.status == 413, await resp.text()
+            assert (await resp.json())["error"]["code"] == "body_too_large"
+    mock_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("body, expected", [
     ({"message": "hello", "author": {"id": " bot:dixie ", "name": "dixie", "is_bot": 1, "role": "admin"}},
      {"id": "bot:dixie", "name": "dixie", "is_bot": True}),

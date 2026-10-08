@@ -681,7 +681,13 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         try:
             resolved.relative_to(_REAL_KANBAN_ROOT)
         except ValueError:
-            # Resolved path is NOT under the real root — safe to write.
+            # Resolved path is NOT under the real root by the pre-sandbox env.
+            # That env is wrong under a remapped HOME, so consult the module
+            # guard, which resolves the root from HERMES_REAL_HOME, before
+            # treating the path as safe.
+            _module_guard = getattr(_kdbc, "_ensure_not_live_board", None)
+            if _module_guard is not None:
+                _module_guard(resolved)
             return _orig_connect(db_path, *args, **kwargs)
         raise RuntimeError(
             f"kanban_write_guard: kanban DB path resolved to {resolved}, "

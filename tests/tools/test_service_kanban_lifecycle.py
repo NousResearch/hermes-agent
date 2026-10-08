@@ -110,7 +110,7 @@ def test_admitted_worker_can_finish_real_task(worker_profile, monkeypatch, allow
     from hermes_cli import kanban_db as kb
     from tools.registry import invalidate_check_fn_cache, registry
     from model_tools import _clear_tool_defs_cache, get_tool_definitions
-    from toolsets import resolve_toolset
+    from toolsets import TOOLSETS, resolve_toolset
 
     resolved = kb._resolve_worker_cli_toolsets(str(profile))
     assert "terminal" in resolved
@@ -138,6 +138,19 @@ def test_admitted_worker_can_finish_real_task(worker_profile, monkeypatch, allow
         with kb.connect_closing() as conn:
             assert kb.get_task(conn, task_id).status == "done"
             assert kb.latest_run(conn, task_id).outcome == "completed"
+
+        # Narrowing a permitted composite keeps the worker's terminal
+        # lifecycle but must not reuse schemas for broader kanban effects.
+        lifecycle = {"kanban_complete", "kanban_block", "kanban_heartbeat"}
+        monkeypatch.setitem(TOOLSETS, "test-worker-lifecycle", {
+            "tools": sorted(lifecycle), "includes": [],
+        })
+        monkeypatch.setenv("HERMES_ALLOWED_TOOLSETS", "terminal,test-worker-lifecycle")
+        narrowed = get_tool_definitions(resolved, quiet_mode=True, skip_tool_search_assembly=True)
+        assert lifecycle <= {tool["function"]["name"] for tool in narrowed}
+        assert {tool["function"]["name"] for tool in narrowed} <= (
+            lifecycle | set(resolve_toolset("terminal"))
+        )
 
         # A cached schema must not authorize a later denied worker policy.
         monkeypatch.setenv("HERMES_ALLOWED_TOOLSETS", "terminal")

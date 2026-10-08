@@ -263,7 +263,8 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 # Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# effective toolsets, the service ceiling, disabled toolsets, registry generation,
+# and the config/schema/worker-context fingerprints assembled below.
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -345,6 +346,7 @@ def get_tool_definitions(
             frozenset(effective_enabled_toolsets)
             if effective_enabled_toolsets is not None
             else None,
+            frozenset(allowed_toolsets) if allowed_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,

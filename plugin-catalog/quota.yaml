@@ -1,17 +1,17 @@
 name: quota
 repo: https://github.com/rarf/hermes-quota-plugin
-sha: 07fb60fe2275c5bf1c3600b3de0b18f22b954a31
-version: "2.8.2"
-description: "Per-provider quota / rate-limit status via /quota command and desktop widget. Reads precomputed quota_cache.json so the widget never does network I/O. Disclosure — refreshes your Gemini OAuth token using the Gemini CLI's public client identity, in memory only; queries Copilot's internal usage endpoint with VS Code client headers and Anthropic's OAuth usage endpoint with a Claude Code User-Agent; the cursor check reads the Cursor CLI token from the macOS Keychain or Cursor's auth.json (read-only, never refreshed or rewritten; on expiry it asks you to run cursor-agent login) and queries api2.cursor.sh; the opt-in (default off) antigravity check reads Antigravity's OAuth token from Windows Credential Manager, the macOS Keychain or ~/.gemini/antigravity-cli (read-only), refreshes it in memory with Antigravity's public client identity and sends Antigravity's User-Agent to Google's cloudcode endpoint; the opt-in (default off) grok.com check reads local browser cookies, using secret-tool on Linux or the macOS Keychain for the browser's Safe Storage key and decrypting only grok.com cookies from a temporary copy of the cookie DB; the opencode-go check reads the OpenCode CLI's local auth.json (read-only); the commandcode check reads ~/.commandcode/auth.json (read-only) or Hermes' credential store and uses the Command Code CLI's User-Agent; zai, kimi, minimax, deepseek and openrouter send keys from Hermes' credential store or env only to their own vendor's usage or balance endpoints."
+sha: ce8593a25ff61c32dd1e929fe2f87502cb6408cc
+version: "2.10.0"
+description: "Per-provider quota / rate-limit status via /quota command and desktop widget. Reads precomputed quota_cache.json so the widget never does network I/O. Disclosure — refreshes your Gemini OAuth token using the Gemini CLI's public client identity, in memory only; queries Copilot's internal usage endpoint with VS Code client headers and Anthropic's OAuth usage endpoint using the hermes-quota-plugin User-Agent; optional additional Claude accounts read access tokens only from explicitly configured Claude Code credentials files and send them only to Anthropic's fixed OAuth usage endpoint (read-only, no refresh-token exchange or credential write-back; tokens and paths excluded from the quota cache). Linux extra accounts verified; Windows experimental, extra macOS Keychain accounts unsupported. The cursor check reads the Cursor CLI token from the macOS Keychain or Cursor's auth.json (read-only, never refreshed or rewritten; on expiry it asks you to run cursor-agent login) and queries api2.cursor.sh; the opt-in (default off) antigravity check reads Antigravity's OAuth token from Windows Credential Manager, the macOS Keychain or ~/.gemini/antigravity-cli (read-only), refreshes it in memory with Antigravity's public client identity and sends Antigravity's User-Agent to Google's cloudcode endpoint; the opt-in (default off) grok.com check reads local browser cookies, using secret-tool on Linux or the macOS Keychain for the browser's Safe Storage key and decrypting only grok.com cookies from a temporary copy of the cookie DB; the opencode-go check reads the OpenCode CLI's local auth.json (read-only); the commandcode check reads ~/.commandcode/auth.json (read-only) or Hermes' credential store and uses the Command Code CLI's User-Agent; zai, kimi, minimax, deepseek and openrouter send keys from Hermes' credential store or env only to their own vendor's usage or balance endpoints."
 maintainer: rarf
 tier: community
 category: desktop
 docs_url: https://github.com/rarf/hermes-quota-plugin#readme
 readme: true
-image: https://raw.githubusercontent.com/rarf/hermes-quota-plugin/07fb60fe2275c5bf1c3600b3de0b18f22b954a31/docs/images/quota-banner.png
+image: https://raw.githubusercontent.com/rarf/hermes-quota-plugin/ce8593a25ff61c32dd1e929fe2f87502cb6408cc/docs/images/quota-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/07fb60fe2275c5bf1c3600b3de0b18f22b954a31/docs/images/quota-pane.png
-  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/07fb60fe2275c5bf1c3600b3de0b18f22b954a31/docs/images/quota-app.png
+  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/ce8593a25ff61c32dd1e929fe2f87502cb6408cc/docs/images/quota-pane.png
+  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/ce8593a25ff61c32dd1e929fe2f87502cb6408cc/docs/images/quota-app.png
 capabilities:
   provides_tools: []
   provides_hooks:

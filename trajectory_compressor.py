@@ -765,10 +765,34 @@ def _sample(entries: list, sample_percent: float) -> list:
     return random.sample(entries, min(max(1, int(len(entries) * sample_percent / 100)), len(entries)))
 
 
+def _reject_in_place_output(input_path: Path, output_path: Path) -> bool:
+    """Return True (and print an error) if *output* aliases *input*.
+
+    ``os.path.samefile`` catches both symlink aliases and hardlinks — two names
+    for the same inode — and is the reliable check even when the paths resolve
+    to different syntactic strings. ``resolve()`` alone would miss hardlinks,
+    so compressing to a hardlink of the source could still truncate it.
+    """
+    try:
+        same = input_path.exists() and output_path.exists() and os.path.samefile(input_path, output_path)
+    except OSError:
+        # Fall back to lexical comparison if resolution fails (e.g. parent
+        # dir missing); a missing output parent can't be the input file.
+        same = output_path == input_path
+    if same:
+        print(
+            f"❌ Output path resolves to the input path ({input_path}); "
+            "refusing to overwrite the source dataset. Choose a different output."
+        )
+    return same
+
+
 def _run_file_mode(input_path: Path, output: Optional[str], compression_config: CompressionConfig, sample_percent: Optional[float], seed: int, dry_run: bool) -> None:
     """Single-file input: (sample,) compress via a temp directory, merge into one output file."""
     print("📄 Input mode: Single JSONL file")
     output_path = Path(output) if output else input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
+    if _reject_in_place_output(input_path, output_path):
+        raise SystemExit(1)
     entries = [entry for _, entry in _load_jsonl(input_path, lambda n, e: print(f"⚠️  Skipping invalid JSON at line {n}: {e}"), start=1)]
     total_entries = len(entries)
     print(f"   Loaded {total_entries:,} trajectories from {input_path.name}")
@@ -803,6 +827,8 @@ def _run_dir_mode(input_path: Path, output: Optional[str], compression_config: C
     """Directory input: compress in place, or per-file sample into a temp dir first."""
     print("📁 Input mode: Directory of JSONL files")
     output_path = Path(output) if output else input_path.parent / (input_path.name + compression_config.output_suffix)
+    if _reject_in_place_output(input_path, output_path):
+        raise SystemExit(1)
     if sample_percent is None:
         if dry_run:
             _print_dry_run("📁", input_path, output_path)

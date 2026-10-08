@@ -90,6 +90,25 @@ def _config_cdp_url() -> str:
     return ""
 
 
+_backend_resolution_logged = False
+
+
+def _log_backend_resolution_once(camofox: bool, gateway: bool) -> None:
+    """Observability for the backend split (t_ca2f1811): one INFO naming the
+    resolved browser backend family for this session/process, logged once."""
+    global _backend_resolution_logged
+    if _backend_resolution_logged:
+        return
+    _backend_resolution_logged = True
+    if gateway:
+        backend = "SaaS gateway (MCP transport)"
+    elif camofox:
+        backend = "Camofox REST"
+    else:
+        backend = "default (daemon/lightpanda)"
+    logging.getLogger(__name__).info("Browser backend resolved: %s", backend)
+
+
 def is_camofox_mode() -> bool:
     """True when the Camofox backend is selected and no CDP override is active.
 
@@ -106,7 +125,9 @@ def is_camofox_mode() -> bool:
     except Exception:  # pragma: no cover — helpers are in-repo
         selected = None
     if selected is not None:
+        _log_backend_resolution_once(selected == "camofox", False)
         return selected == "camofox"
+    _log_backend_resolution_once(bool(get_camofox_url()), False)
     return bool(get_camofox_url())
 
 
@@ -638,19 +659,47 @@ def _save_screenshot(content: bytes) -> str:
     return screenshot_path
 
 
+def _mcp_vision_flow(question: str, annotate: bool) -> str:
+    """Full browser_vision flow for gateway backends: MCP screenshot bytes + aux-LLM
+    analysis + redaction. Mirrors the local body() tail without the session plumbing."""
+    from tools.browser_mcp_transport import mcp_screenshot_b64
+    content = mcp_screenshot_b64()
+    if content is None:
+        return tool_error("MCP screenshot failed", success=False)
+    screenshot_path = _save_screenshot(content)
+    img_b64 = base64.b64encode(content).decode("utf-8")
+    annotation_context = ""
+    if annotate:
+        try:
+            from tools.browser_mcp_transport import mcp_snapshot
+            snap = json.loads(mcp_snapshot())
+            annotation_context = f"\n\nAccessibility tree (element refs for interaction):\n{(snap.get('snapshot') or '')[:3000]}"
+        except Exception:
+            pass
+    from agent.redact import redact_sensitive_text
+    from agent.auxiliary_client import call_llm
+    vision_prompt = f"Analyze this browser screenshot and answer: {question}{redact_sensitive_text(annotation_context)}"
+    timeout, temperature = _vision_llm_settings()
+    response = call_llm(
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": vision_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
+        task="vision", temperature=temperature, timeout=timeout)
+    analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
+    return json.dumps({"success": True, "analysis": redact_sensitive_text(analysis), "screenshot_path": screenshot_path})
+
+
 def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
+    # SEK-70: on SaaS gateway backends the whole flow runs MCP-side (implicit tab
+    # addressing) — no local session row exists, so _require_tab/_with_tab cannot
+    # gate this verb. Duplicate the annotation+LLM tail for the routed path.
+    if _mcp_verb_route("screenshot"):
+        return _mcp_vision_flow(question, annotate)
+
     def body(session):
-        # SEK-70: SaaS gateway → screenshot bytes via MCP (b64 text payload).
-        route = _mcp_verb_route("screenshot")
-        if route:
-            from tools.browser_mcp_transport import mcp_screenshot_b64
-            content = mcp_screenshot_b64()
-            if content is None:
-                return tool_error("MCP screenshot failed", success=False)
-        else:
-            resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))
-            content = resp.content
+        resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))
+        content = resp.content
         screenshot_path = _save_screenshot(content)
         img_b64 = base64.b64encode(content).decode("utf-8")
         annotation_context = ""

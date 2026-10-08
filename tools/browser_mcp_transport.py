@@ -60,7 +60,24 @@ def _is_gateway_backend() -> bool:
     key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
         get_secret("SEKRETO_API_KEY", "") or ""
     ).strip()
-    return bool(not loopback and key)
+    gateway = bool(not loopback and key)
+    _log_gateway_resolution_once(gateway)
+    return gateway
+
+
+_gateway_resolution_logged = False
+
+
+def _log_gateway_resolution_once(gateway: bool) -> None:
+    """t_ca2f1811 observability: one INFO naming the resolved browser backend."""
+    global _gateway_resolution_logged
+    if _gateway_resolution_logged:
+        return
+    _gateway_resolution_logged = True
+    import logging
+    logging.getLogger(__name__).info(
+        "Browser backend resolved: %s",
+        "SaaS gateway (MCP transport)" if gateway else "local/community (REST)")
 
 
 def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:

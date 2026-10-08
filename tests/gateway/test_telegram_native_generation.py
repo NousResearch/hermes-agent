@@ -31,6 +31,29 @@ async def test_native_stop_cancels_current_draft_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("draft_id", ["9", "281474976710655", "-9"])
+async def test_native_stop_accepts_server_string_draft_id(draft_id):
+    # The Bot API server serializes this int64 field with td::to_string.
+    tg = adapter()
+    cancel = AsyncMock()
+    tg.bind_generation_control("123", int(draft_id), None, cancel, lambda: True)
+    await tg._handle_generation_stopped(stop_update(draft_id=draft_id), None)
+    cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("draft_id", [True, 9.0, "", "0", "9.0", " 9", "9 ", "+9", "９", "9x", None])
+async def test_malformed_native_stop_cannot_cancel_current_draft(draft_id):
+    tg = adapter()
+    cancel = AsyncMock()
+    tg.bind_generation_control("123", 9, None, cancel, lambda: True)
+    await tg._handle_generation_stopped(stop_update(draft_id=draft_id), None)
+    cancel.assert_not_awaited()
+    await tg._handle_generation_stopped(stop_update(draft_id="9"), None)
+    cancel.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_late_stop_cannot_cancel_successor_turn():
     tg = adapter()
     old_cancel, new_cancel = AsyncMock(), AsyncMock()

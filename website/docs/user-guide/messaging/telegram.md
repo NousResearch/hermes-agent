@@ -1084,6 +1084,8 @@ When a DM reply streams through Telegram's native draft transport, the draft car
 
 The Stop binding is **turn-scoped, not chat-scoped**: it is keyed to the exact (chat, topic, draft) generation being streamed. A late Stop that arrives after the turn already completed (or while a successor turn is running) is ignored — it can never cancel someone else's turn. Long tool phases are covered by a heartbeat that re-frames the draft every 10 seconds, keeping Stop reachable past Telegram's ~30-second draft expiry.
 
+Telegram's server encodes the stopped update's `draft_id` as a decimal string, even though the API documents it as an integer. Hermes normalizes this wire value before matching the live draft; numeric SDK values remain accepted. Malformed IDs and updates for another draft cannot interrupt the turn.
+
 No configuration is required beyond streaming with the draft transport (`gateway.streaming.transport: auto` or `draft`). The control uses Telegram's `keep_on_stop` draft option so the completed portion of a stopped reply stays visible.
 
 ### Thinking drafts (`rich_messages` + `rich_drafts`)

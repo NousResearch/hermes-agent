@@ -1,6 +1,7 @@
 """Bot API 10.3 controls bound to one live draft, never a chat-wide /stop."""
 
 import html
+import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 from agent.i18n import t
@@ -69,6 +70,10 @@ class TelegramGenerationMixin:
         if not isinstance(chat, dict) or chat.get("type") != "private":
             return
         chat_id, draft_id = chat.get("id"), stopped.get("draft_id")
+        # Telegram's server emits this int64 as a JSON string (td::to_string),
+        # retained verbatim in PTB api_kwargs. Keep numeric updates supported too.
+        if isinstance(draft_id, str) and re.fullmatch(r"-?[0-9]{1,19}", draft_id):
+            draft_id = int(draft_id)
         if type(chat_id) is not int or type(draft_id) is not int or draft_id == 0:
             return
         thread = stopped.get("message_thread_id")

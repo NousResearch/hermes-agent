@@ -257,17 +257,6 @@ def delegation_model(
         base_url=str(getattr(parent_agent, "base_url", "") or ""))
 
 
-def worker_pin(cfg: Mapping[str, Any]) -> Optional[tuple[str, str]]:
-    """``(exec_model, provider)`` a detached worker (kanban) must be launched with when the profile's
-    default is ``opusplan``; None when it is not. ``provider`` is "" when the profile leaves it on auto."""
-    if not is_opusplan(configured_default_model(cfg)):
-        return None
-    model_cfg = _model_section(cfg)
-    provider = str(model_cfg.get("provider") or "").strip()
-    exec_model = resolve_model_in_config(OPUSPLAN, ROLE_EXEC, cfg)
-    return exec_model, "" if provider.lower() in _UNSET_PROVIDERS else provider
-
-
 def resolve_startup_model(
     model: Any, role: str, requested_provider: Any, *, base_url: str = "", cfg: Optional[Mapping[str, Any]] = None,
 ) -> tuple[Any, bool]:
@@ -302,20 +291,3 @@ def apply_session_override(agent: Any, override: Optional[Mapping[str, Any]]) ->
     flag = (override or {}).get(OPUSPLAN)
     if agent is not None and isinstance(flag, bool):
         agent.opusplan_active = flag
-
-
-def worker_exec_args(hermes_home: Optional[str]) -> list[str]:
-    """``-m <exec model> [--provider <p>]`` for a kanban worker of the profile at ``hermes_home`` whose default
-    model is ``opusplan``, else ``[]``. Resolved at dispatch time in the assignee's scope; a profile whose
-    provider has no plan/exec pair raises :class:`OpusplanError` rather than starting a worker on the literal
-    "opusplan"."""
-    if not hermes_home:
-        return []
-    from hermes_cli.config import load_config
-    from hermes_cli.kanban_db_dispatch import _worker_profile_scope
-    with _worker_profile_scope(hermes_home):
-        pin = worker_pin(load_config())
-    if pin is None:
-        return []
-    model, provider = pin
-    return ["-m", model, *(["--provider", provider] if provider else [])]

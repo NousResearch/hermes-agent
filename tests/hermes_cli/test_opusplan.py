@@ -14,7 +14,7 @@ import pytest
 from hermes_cli.model_switch import model_selection_config_updates, switch_model
 from hermes_cli.opusplan import (
     OpusplanError, ROLE_EXEC, ROLE_PLAN, is_opusplan, resolve_model_in_config, resolve_opusplan_model,
-    resolve_opusplan_pair, resolve_startup_model, worker_pin)
+    resolve_opusplan_pair, resolve_startup_model)
 from providers.base import ProviderProfile
 
 ROUTER_URL = "http://192.168.10.13:4000/v1"
@@ -104,14 +104,6 @@ class TestConfigHelpers:
     def test_startup_model_reports_whether_opusplan_was_used(self):
         assert resolve_startup_model("opusplan", ROLE_PLAN, "ecc-router", cfg=self.CFG) == ("GLM-5.3-Flash-850K", True)
         assert resolve_startup_model("qwen", ROLE_PLAN, "ecc-router", cfg=self.CFG) == ("qwen", False)
-
-    def test_worker_pin_only_for_opusplan_profiles(self):
-        assert worker_pin(self.CFG) == ("Qwen3.8FlashNext", "ecc-router")
-        assert worker_pin({"model": {"default": "gpt-5", "provider": "openai"}}) is None
-        auto = {**self.CFG, "model": {"default": "opusplan", "provider": "auto"}}
-        with patch("hermes_cli.auth.resolve_provider", return_value="ecc-router"):
-            assert worker_pin(auto) == ("Qwen3.8FlashNext", "")
-
 
 def _switch(raw, *, provider, providers, profile=None, base_url=ROUTER_URL):
     with patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \

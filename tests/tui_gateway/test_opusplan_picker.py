@@ -46,6 +46,10 @@ def test_inventory_options_has_selectable_model_row(offline, monkeypatch):
     assert payload["providers"][0]["total_models"] == 3
     assert payload["providers"][1]["models"] == ["ordinary"]
     assert payload["model"] == "ordinary"
+    # Non-picker consumers (recommended-default selection, raw catalogs) must not
+    # silently adopt an orchestration preset just because it is the first row.
+    ordinary = inventory.build_models_payload(ctx)
+    assert ordinary["providers"][0]["models"] == ["planner", "worker"]
 
 
 class Agent:
@@ -142,3 +146,27 @@ async def test_http_options_inventory_includes_preset(offline, monkeypatch):
         payload = await response.json()
     lab = next(row for row in payload["providers"] if row["slug"] == "lab")
     assert lab["models"][0] == "opusplan" and lab["total_models"] == 3
+
+
+@pytest.mark.asyncio
+async def test_desktop_rest_options_inventory_includes_preset(offline, monkeypatch):
+    from contextlib import nullcontext
+    from hermes_cli.web_routers import models
+    test_inventory_options_has_selectable_model_row(offline, monkeypatch)
+    ctx = inventory.ConfigContext("lab", "ordinary", "http://lab.invalid/v1", PAIR, [])
+    monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
+    monkeypatch.setattr(models, "_dashboard_code_skew_guard", lambda: "")
+    monkeypatch.setattr(models, "_config_profile_scope", lambda p: nullcontext())
+    payload = await models.get_model_options(profile=None, refresh=False, include_unconfigured=False, explicit_only=False)
+    lab = next(row for row in payload["providers"] if row["slug"] == "lab")
+    assert lab["models"][0] == "opusplan"
+
+
+def test_native_options_reports_selected_preset(offline, monkeypatch):
+    ctx = inventory.ConfigContext("lab", "ordinary", "", PAIR, [])
+    monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
+    agent = Agent()
+    agent.model, agent.opusplan_active = "planner", True
+    assert server._model_picker_context(agent).current_model == "opusplan"
+    agent.opusplan_active = False
+    assert server._model_picker_context(agent).current_model == "planner"

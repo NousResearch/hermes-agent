@@ -168,7 +168,7 @@ def build_models_payload(
     # Presets are selectable session modes, not upstream model IDs. Add after catalog
     # validation so no remote /models probe or model capability lookup sees the keyword.
     from hermes_cli.opusplan import picker_model_ids
-    for row in rows:
+    for row in rows if (for_picker or picker_hints) else []:
         original = row.get("models") or []
         models = picker_model_ids(original, _slug(row),
                                   base_url=str(row.get("api_url") or ""), user_providers=ctx.user_providers)

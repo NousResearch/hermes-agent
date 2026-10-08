@@ -23,6 +23,7 @@ from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
 from hermes_cli import kanban_workflow
+from hermes_cli import kanban_assignee_gate as gate
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -364,7 +365,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     # row is written, so the card can never rust in `skipped_nonspawnable` on a
     # profile nobody can dispatch.
     try:
-        kb.validate_assignee_exists(args.assignee)
+        gate.validate_assignee_exists(args.assignee)
     except ValueError as exc:
         return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
@@ -411,12 +412,12 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     # card's creator. Better refused here than half-frozen in
     # `skipped_nonspawnable` after the fact.
     try:
-        kb.validate_assignee_exists(args.verifier)
-        kb.validate_assignee_exists(args.synthesizer)
+        gate.validate_assignee_exists(args.verifier)
+        gate.validate_assignee_exists(args.synthesizer)
         if args.created_by:
-            kb.validate_assignee_exists(args.created_by)
+            gate.validate_assignee_exists(args.created_by)
         for spec in workers:
-            kb.validate_assignee_exists(spec.profile)
+            gate.validate_assignee_exists(spec.profile)
     except ValueError as exc:
         return _err(f"kanban swarm: {exc}", 2)
     with kbc.connect_closing() as conn:
@@ -596,7 +597,7 @@ def _cmd_assign(args: argparse.Namespace) -> int:
     # must be refused with the roster, not rust in `skipped_nonspawnable`.
     if profile is not None:
         try:
-            kb.validate_assignee_exists(profile)
+            gate.validate_assignee_exists(profile)
         except ValueError as exc:
             return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
@@ -638,7 +639,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
     # Ghost-assignee guard, same contract as _cmd_assign ("none" = unassign passes).
     if profile is not None:
         try:
-            kb.validate_assignee_exists(profile)
+            gate.validate_assignee_exists(profile)
         except ValueError as exc:
             return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:

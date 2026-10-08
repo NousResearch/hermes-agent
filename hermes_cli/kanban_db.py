@@ -1053,58 +1053,6 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def validate_assignee_exists(assignee: Optional[str]) -> Optional[str]:
-    """Canonicalize *assignee* and refuse profiles this host can never dispatch.
-
-    The agent ingress surfaces (``kanban_create`` tool, CLI
-    ``create``/``assign``/``reassign``/``swarm``) call this so a card can never
-    be parked on an assignee the dispatcher would refuse every tick as
-    ``skipped_nonspawnable`` (real case: 20.4h rusting on ``devon``, card
-    created via ``kanban_create`` by an orchestration).
-
-    The DB layer (``create_task``/``assign_task``) stays permissive: restore
-    flows, graph builders, and test fixtures keep working, and the
-    dispatcher-side ``profile_exists`` checks remain the last line of defense.
-
-    Accepted: ``None`` (unassigned), ``default``, live on-disk profiles, and
-    ``bot_peers`` entries (cross-host workers served by a remote gateway —
-    ``ON DISK no`` locally, by design). ``HERMES_KANBAN_ALLOW_ANY_ASSIGNEE=1``
-    overrides for a single operator command (CI seeding, break-glass).
-    """
-    if assignee is None:
-        return None
-    canonical = _canonical_assignee(assignee)
-    if canonical is None:
-        return None
-    from hermes_cli.profiles import profile_exists
-
-    if canonical == "default" or profile_exists(canonical):
-        return canonical
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly()
-    except Exception:
-        cfg = {}
-    peers = cfg.get("bot_peers") if isinstance(cfg, dict) else None
-    if isinstance(peers, dict) and canonical in peers:
-        return canonical
-    if os.environ.get("HERMES_KANBAN_ALLOW_ANY_ASSIGNEE") == "1":
-        return canonical
-    try:
-        from hermes_cli.profiles import list_profile_names
-
-        roster = ", ".join(list_profile_names())
-    except Exception:
-        roster = "?"
-    raise ValueError(
-        f"assignee {assignee!r} is not a profile this host can dispatch "
-        f"(not on disk and not a bot_peer). Installed profiles: {roster}. "
-        "Assign an installed profile, or register the worker as a bot_peer in "
-        "config.yaml (HERMES_KANBAN_ALLOW_ANY_ASSIGNEE=1 overrides for one command)."
-    )
-
-
 def _resolve_project_link(
     conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
     workspace_kind: str, workspace_path: Optional[str],

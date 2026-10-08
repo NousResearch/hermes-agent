@@ -51,7 +51,7 @@ def _make_profile(home: Path, name: str) -> None:
 
 
 def test_validate_accepts_none_default_and_live_profile(kanban_home):
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
     _make_profile(kanban_home, "vera")
     assert validate_assignee_exists(None) is None  # unassigned stays allowed
@@ -60,18 +60,18 @@ def test_validate_accepts_none_default_and_live_profile(kanban_home):
 
 
 def test_validate_refuses_ghost_with_roster_and_override_hint(kanban_home):
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
     with pytest.raises(ValueError) as exc:
         validate_assignee_exists("devon")
     msg = str(exc.value)
     assert "devon" in msg
     assert "default" in msg  # roster of installed profiles is in the message
-    assert "HERMES_KANBAN_ALLOW_ANY_ASSIGNEE" in msg  # exact oversteer knob
+    assert "allow_any_assignee" in msg  # config.yaml oversteer knob named
 
 
 def test_validate_normalizes_case(kanban_home):
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
     _make_profile(kanban_home, "vera")
     assert validate_assignee_exists("Vera") == "vera"
@@ -79,7 +79,7 @@ def test_validate_normalizes_case(kanban_home):
 
 def test_validate_tombstoned_profile_is_refused(kanban_home):
     """A deleted (tombstoned) profile directory must not pass ``profile_exists``."""
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
     _make_profile(kanban_home, "ghosty")
     marker = kanban_home / "profiles" / ".deleted" / "ghosty"
@@ -92,7 +92,7 @@ def test_validate_tombstoned_profile_is_refused(kanban_home):
 def test_validate_accepts_bot_peer_as_cross_host_worker(kanban_home):
     """bot_peers are remote gateways, not local profiles — a card for such a
     worker is delivered via the peer transport, never spawned locally."""
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
     (kanban_home / "config.yaml").write_text(
         "bot_peers:\n"
@@ -106,9 +106,15 @@ def test_validate_accepts_bot_peer_as_cross_host_worker(kanban_home):
 
 
 def test_validate_oversteer_env_allows_known_ghost(kanban_home, monkeypatch):
-    from hermes_cli.kanban_db import validate_assignee_exists
+    from hermes_cli.kanban_assignee_gate import validate_assignee_exists
 
-    monkeypatch.setenv("HERMES_KANBAN_ALLOW_ANY_ASSIGNEE", "1")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  allow_any_assignee: true\n",
+        encoding="utf-8",
+    )
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: kanban_home.parent)
     assert validate_assignee_exists("devon") == "devon"
 
 

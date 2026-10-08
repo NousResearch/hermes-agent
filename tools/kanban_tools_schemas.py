@@ -126,6 +126,13 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "possible; this exists for compatibility with "
                 "callers that still set --result on the CLI."
         )),
+        "off_board": _prop("boolean", (
+                "Set true ONLY when this card was NOT dispatched "
+                "on-board by the Kanban dispatcher. The completion "
+                "is then refused unless ``metadata.served_model`` "
+                "names the model that served the work. Omit for "
+                "normal dispatched work."
+        )),
         "created_cards": {
             "type": "array",
             "items": {"type": "string"},

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import logging
 import time
+import yaml
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -1004,6 +1005,11 @@ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, cre
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
+-- Idempotency-key indexes (P5) are created in kanban_db_connect
+-- _migrate_add_optional_columns AFTER the idempotency_key column exists:
+-- executescript parses against the live schema, so a stray CREATE INDEX over
+-- a reduced/legacy table would abort board init (re-found by the connect-suite
+-- during the 2026-10-04 audit wrap-up; original placement noted here).
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
@@ -1033,6 +1039,288 @@ def _host_prefix() -> str:
 
 # --- Task creation / mutation ---
 
+# ---------------------------------------------------------------------------
+# Model-routing policy (registry, binding) — refuse a prohibited model where the
+# override is STORED and where it is HANDED to the worker. The kanban-autopilot
+# preflight guards its own paths; these two are the hermes-agent core surfaces.
+# Independent of the registry's key names: whichever policy section declares the
+# slug wins, and a malformed/absent section never fabricates a prohibition.
+# ---------------------------------------------------------------------------
+POLICY_SECTIONS = ("gpt_5_6_deprecation", "gpt6_retired_models")
+# {(registry_path, mtime_ns): frozenset(canonical policy keys)} — the picker filter runs
+# on every catalogue read, so the registry is parsed once per change, not per model.
+_POLICY_KEYS_CACHE: dict = {}
+
+
+def _routing_registry_path() -> Optional[str]:
+    """The shared policy registry for the active root (and for a profile-scoped launch).
+
+    ``--profile`` points HERMES_HOME at ``<root>/profiles/<name>``, which has no
+    ``profiles/`` of its own; the policy is install-wide, so the owner root's copy is the
+    one to read — otherwise every session started with ``-p`` would silently disarm the
+    guard. Deliberately NOT a blanket "fall back to the process's original HERMES_HOME":
+    a test (or any other root) with no registry of its own must see no policy, since a
+    registry that is absent was never allowed to fabricate a prohibition either.
+    """
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    # ``/.`` and doubled separators keep naming the same directory but break the basename
+    # test below, which would silently drop the owner-root fallback.
+    home = os.path.normpath(home)
+    local = os.path.join(home, "profiles", "_shared", "MODEL_ROUTING_REGISTRY.yaml")
+    parent = os.path.dirname(home)
+    if os.path.basename(parent) == "profiles":
+        # A profile home (``hermes -p <name>``): the install-wide policy of the OWNER root
+        # comes first. A ``profiles/_shared`` nested inside a profile directory is not the
+        # shared policy and must not be able to shadow it with an empty or different file.
+        owner = os.path.join(os.path.dirname(parent), "profiles", "_shared",
+                             "MODEL_ROUTING_REGISTRY.yaml")
+        candidates = [owner, local]
+    else:
+        candidates = [local]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _canonical_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.strip().casefold())
+
+
+def _canonical_keys(value: str) -> set:
+    """Every canonical key a spelling can be judged by.
+
+    The qualifier segments are judged too: Hermes strips a ``provider:`` prefix and a
+    ``vendor/`` namespace before use, so ``openai-codex:gpt-6-sol`` must be caught by the
+    key of its ``gpt-6-sol`` segment, not only by the key of the whole string.
+    """
+    token = (value or "").strip().casefold()
+    if not token:
+        return set()
+    parts = re.split(r"[:/]", token)
+    keys = {_canonical_key(token)}
+    keys.update(_canonical_key(part) for part in parts if part.strip())
+    keys.discard("")
+    return keys
+
+
+def assert_model_route_allowed(model: Optional[str], *, source: str = "") -> None:
+    """Refuse a model any registry policy section prohibits (deprecated or retired).
+
+    Canonical-key exact-or-prefix match, so ``provider:``/``vendor/`` spellings, the
+    ``-900k`` picker suffix and dated snapshots of a prohibited slug are all caught.
+    """
+    slug = (model or "").strip().casefold()
+    if not slug:
+        return
+    path = _routing_registry_path()
+    if not path:
+        return  # no registry in this install: nothing declared, nothing to enforce
+    try:
+        with open(path) as fh:
+            registry = yaml.safe_load(fh) or {}
+    except Exception:
+        # A registry that exists but cannot be read is NOT permission for the
+        # GPT families this policy governs: fail closed for them, stay silent
+        # for every other model.
+        if any(k.startswith(("gpt56", "gpt6")) for k in _canonical_keys(slug)):
+            raise ValueError(
+                "GPT6_ROUTING_POLICY_UNREADABLE: ROUTE_LOCK_VIOLATION: routing registry "
+                f"{path} exists but could not be parsed; refusing model {model!r} rather "
+                "than reading an unreadable policy as permission")
+        return
+    keys = _canonical_keys(slug)
+    matched = False
+    for section_name in POLICY_SECTIONS:
+        section = registry.get(section_name)
+        entries = section.get("models") if isinstance(section, dict) else section
+        if isinstance(section, dict) and isinstance(section.get("deprecated_models"), list):
+            entries = section["deprecated_models"]
+        if isinstance(entries, list) and any(str(m).strip() for m in entries):
+            matched = True
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            policy_key = _canonical_key(str(entry))
+            if not policy_key:
+                continue
+            if any(k == policy_key or k.startswith(policy_key) for k in keys):
+                signal = ("GPT6_SOL_BASE_RETIRED" if section_name == "gpt6_retired_models"
+                          else "GPT56_ROUTE_DEPRECATED")
+                where = f"{source}: " if source else ""
+                raise ValueError(
+                    f"{signal}: ROUTE_LOCK_VIOLATION: {where}model {model!r} is prohibited by "
+                    f"{section_name} in {path}; choose an authorized successor instead")
+    if not matched and any(k.startswith(("gpt56", "gpt6")) for k in keys):
+        # The file parsed but declares no policy at all (`{}`, a renamed section, or a list
+        # where a mapping belongs). A registry that exists IS the policy source: a
+        # declaration that cannot be read must not degrade into permission. Raised only for
+        # the GPT families this policy governs, so unrelated models are never affected.
+        raise ValueError(
+            "GPT6_ROUTING_POLICY_UNREADABLE: ROUTE_LOCK_VIOLATION: routing registry "
+            f"{path} declares no readable policy for the GPT families; refusing model "
+            f"{model!r} rather than reading an empty policy as permission")
+
+
+def _policy_prohibited_keys() -> frozenset:
+    """Canonical keys of every slug the live registry prohibits (cached on file mtime).
+
+    Shared by :func:`filter_prohibited_models` (A3, picker) and the config guard. A
+    missing or unreadable registry yields no keys: the picker must not invent a
+    catalogue restriction out of a broken file, while ``assert_model_route_allowed``
+    stays fail-closed for the GPT families it governs.
+    """
+    path = _routing_registry_path()
+    if not path:
+        return frozenset()
+    try:
+        stamp = os.stat(path).st_mtime_ns
+    except OSError:
+        return frozenset()
+    cached = _POLICY_KEYS_CACHE.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    keys: set = set()
+    try:
+        with open(path) as fh:
+            registry = yaml.safe_load(fh) or {}
+        for section_name in POLICY_SECTIONS:
+            section = registry.get(section_name)
+            entries = section.get("models") if isinstance(section, dict) else section
+            if isinstance(section, dict) and isinstance(section.get("deprecated_models"), list):
+                entries = section["deprecated_models"]
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                key = _canonical_key(str(entry))
+                if key:
+                    keys.add(key)
+    except Exception:
+        return frozenset()
+    frozen = frozenset(keys)
+    _POLICY_KEYS_CACHE[path] = (stamp, frozen)
+    return frozen
+
+
+def filter_prohibited_models(models: Iterable[Any]) -> list:
+    """Drop every slug a registry policy section prohibits from a catalogue list.
+
+    Same exact-or-prefix canonical match as :func:`assert_model_route_allowed`, so
+    ``gpt-6-sol``, ``gpt-6-sol-900k``, dated snapshots and ``provider:``/``vendor/``
+    spellings all disappear from the picker while ``gpt-6.1-sol`` / ``gpt-6-luna``
+    survive (different canonical key, no shared prefix). Nothing to filter (no
+    registry, no policy entry) returns the input unchanged, list-typed.
+    """
+    policy = _policy_prohibited_keys()
+    if not policy:
+        return list(models)
+    kept = []
+    for model in models:
+        keys = _canonical_keys(str(model or "")) if model else set()
+        if any(k == p or k.startswith(p) for k in keys for p in policy):
+            continue
+        kept.append(model)
+    return kept
+
+
+# Config-level model pins (A2): a profile/cron ``model:`` is USED at startup, so it is
+# judged by the same policy before the session loads.
+_CONFIG_MODEL_VALUE_KEYS = ("default", "model", "name")
+_CONFIG_FALLBACK_KEYS = ("fallback", "fallbacks", "fallback_model", "fallback_models")
+
+
+def _config_model_strings(config: dict) -> list:
+    """``[(label, model_id)]`` for every model pin a config mapping can carry.
+
+    Covers ``model`` (shorthand string, ``default``/``model``/``name``, ``overrides``
+    keys) plus the ``model.<fallback*>`` and ``cron.model``/``cron.fallback*`` chains.
+    Deliberately narrow: provider catalog lists inside unrelated config subtrees are
+    data, not pins, and must never fail a config load.
+    """
+    found: list = []
+
+    def add(value: Any, label: str) -> None:
+        if isinstance(value, str) and value.strip():
+            found.append((label, value.strip()))
+
+    def add_chain(node: Any, label: str) -> None:
+        if isinstance(node, str):
+            add(node, label)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                if isinstance(item, str):
+                    add(item, f"{label}[{index}]")
+                elif isinstance(item, dict):
+                    for key in _CONFIG_MODEL_VALUE_KEYS:
+                        add(item.get(key), f"{label}[{index}].{key}")
+        elif isinstance(node, dict):
+            for key in _CONFIG_MODEL_VALUE_KEYS:
+                add(node.get(key), f"{label}.{key}")
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, str):
+        add(model_cfg, "model")
+    elif isinstance(model_cfg, dict):
+        for key in _CONFIG_MODEL_VALUE_KEYS:
+            add(model_cfg.get(key), f"model.{key}")
+        overrides = model_cfg.get("overrides")
+        if isinstance(overrides, dict):
+            for key in overrides:
+                add(key, "model.overrides")
+            for key, value in overrides.items():
+                if isinstance(value, dict):
+                    for sub in _CONFIG_MODEL_VALUE_KEYS:
+                        add(value.get(sub), f"model.overrides.{key}.{sub}")
+        for key in _CONFIG_FALLBACK_KEYS:
+            add_chain(model_cfg.get(key), f"model.{key}")
+
+    cron_cfg = config.get("cron")
+    if isinstance(cron_cfg, dict):
+        add(cron_cfg.get("model"), "cron.model")
+        for key in _CONFIG_FALLBACK_KEYS:
+            add_chain(cron_cfg.get(key), f"cron.{key}")
+
+    # Per-task auxiliary pins (compression, vision, web_extract, ...) are USED as the model
+    # of that auxiliary call — refusing only the main model would leave the retired slug
+    # reachable through the compressor or the vision task.
+    aux_cfg = config.get("auxiliary")
+    if isinstance(aux_cfg, dict):
+        for task, task_cfg in aux_cfg.items():
+            if isinstance(task_cfg, dict):
+                for key in _CONFIG_MODEL_VALUE_KEYS:
+                    add(task_cfg.get(key), f"auxiliary.{task}.{key}")
+            elif isinstance(task_cfg, str):
+                add(task_cfg, f"auxiliary.{task}")
+    return found
+
+
+def assert_model_config_route_allowed(config: Any, *, source: str = "", path: Any = "") -> None:
+    """Refuse a config mapping whose model pin names a prohibited slug (A2).
+
+    Raises the same policy signal as :func:`assert_model_route_allowed`, with the
+    offending key path and the config file named, so a profile or cron default
+    cannot be loaded while it points at a retired/deprecated route.
+    """
+    if not isinstance(config, dict):
+        return
+    for label, value in _config_model_strings(config):
+        try:
+            assert_model_route_allowed(value, source=f"{source}:{label}" if source else label)
+        except ValueError as exc:
+            where = f" in {path}" if path else ""
+            raise ValueError(f"{exc} [config{where}; pin '{label}']") from exc
+
+
+def assert_router_config_allowed(config_path: Any, *, source: str = "config-load") -> None:
+    """Load ``config_path`` and judge its model pins; a broken file is not judged here."""
+    try:
+        with open(config_path) as fh:
+            config = yaml.safe_load(fh) or {}
+    except Exception:
+        return
+    assert_model_config_route_allowed(config, source=source, path=config_path)
+
+
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Strip both; a provider without a model is rejected (a bare ``--provider``
     would re-resolve the profile's model against another backend — exactly
@@ -1041,6 +1329,7 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
     provider = (provider or "").strip() or None
     if provider and not model:
         raise ValueError("provider_override requires a model_override")
+    assert_model_route_allowed(model, source="_validate_model_override")
     return model, provider
 
 
@@ -1193,13 +1482,28 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    replace_state: Optional[tuple[str, str]] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
     forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
     ``idempotency_key``: an existing non-archived task with the key is returned
-    instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
+    instead of a duplicate. The dedup race is closed (P5, audit 2026-10-04):
+    the key is re-checked INSIDE the write transaction — BEGIN IMMEDIATE
+    serializes concurrent same-key creators — and the partial UNIQUE index
+    ``idx_tasks_idempotency_uniq`` (``WHERE idempotency_key IS NOT NULL AND
+    status != 'archived'``) is the backstop: a duplicate INSERT rolls this
+    transaction back and the caller below returns the winner's id, the same
+    semantics as the sequential second call. Archive-then-recreate stays
+    legal (the index excludes archived rows, and the archived card is never
+    read as a dedup hit).
+    ``replace_state``: the guarded retry half for replay/catch-up code paths
+    that must NOT take over an already-live key. A non-archived row found
+    with the key raises :class:`IdempotencyStateConflictError` (message
+    carries both ids) instead of silently returning the other card's id —
+    the archived card itself never counts as a hit.
+    ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
@@ -1212,7 +1516,19 @@ def create_task(
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
-    completion_contract = validate_contract(completion_contract)
+    # P3b: creation-time validation of the JSON requirements spec. It owns
+    # JSON-object strings ({"required_artifacts": [...]}): validated strictly
+    # here — ContractSpecError for malformed specs, canonical serialization
+    # stored — while every other shape (None, '', 'local-only', OWNER/REPO,
+    # PR URLs, legacy garbage) passes through untouched so the legacy
+    # validator below keeps its exact pre-P3b behavior (kept OFF the
+    # spec-owned shapes only). What is stored is EXACTLY the string the API
+    # accepted.
+    completion_contract = _validate_contract_spec(completion_contract)
+    if not _is_json_contract_spec(completion_contract):
+        # The legacy validator predates JSON-dict contracts; keep it off shapes
+        # the spec now owns (and only those).
+        completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1247,8 +1563,10 @@ def create_task(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
+    # Idempotency check BEFORE the write txn (no lock held) — the cheap
+    # fast path. P5: this is advisory; the authoritative re-check sits
+    # INSIDE the write txn below (the concurrent-create race between this
+    # lookup and the INSERT is closed there).
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -1256,6 +1574,12 @@ def create_task(
             "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
         ).fetchone()
         if row:
+            if replace_state is not None:
+                raise IdempotencyStateConflictError(
+                    idempotency_key,
+                    self_id=replace_state[0],
+                    dup_id=row["id"],
+                )
             return row["id"]
 
     now = int(time.time())
@@ -1274,6 +1598,27 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                # P5: the key lookup (above) ran with no lock held. Re-check it
+                # INSIDE the write txn: the BEGIN IMMEDIATE write lock is held
+                # from here to COMMIT, so a concurrent same-key creator's txn
+                # serializes BEHIND this one and its re-check sees this row.
+                # The partial UNIQUE index (idx_tasks_idempotency_uniq) is the
+                # second fence: a duplicate INSERT raises IntegrityError, which
+                # rolls back this txn and dedups on the winner's id (same
+                # semantics as the sequential second call).
+                if idempotency_key:
+                    dup = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+                    ).fetchone()
+                    if dup:
+                        if replace_state is not None:
+                            raise IdempotencyStateConflictError(
+                                idempotency_key, self_id=replace_state[0],
+                                dup_id=dup["id"],
+                            )
+                        return dup["id"]
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
@@ -1349,7 +1694,24 @@ def create_task(
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            # Two fences can land here: the id-primary-key retry below and,
+            # since P5, the partial UNIQUE index on the idempotency key
+            # (a creator that lost the in-txn re-check race to another
+            # creator's COMMIT). An id-collision retry is right — the
+            # winner of the key race is not.
+            if (
+                idempotency_key
+                and not attempt
+                and "tasks.idempotency_key" in str(exc).lower()
+            ):
+                winner = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "AND status != 'archived' "
+                    "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+                ).fetchone()
+                if winner is not None:
+                    return winner["id"]
             if attempt == 1:
                 raise
     raise RuntimeError("unreachable")
@@ -1711,6 +2073,93 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
         return int(cur.lastrowid or 0)
 
 
+# --- Human-gate marker comments (P2b; audit 2026-10-04) ----------------------
+#
+# The markers are the autopilot's machine-readable comment trail: a
+# ``HUMAN_GATE_PENDING: <gate_id>`` comment arms the gate and a
+# ``HUMAN_GATE_APPROVAL: <gate_id> artifact=<path>`` comment disarms it. The
+# constants and the two small parser helpers below are COPIED verbatim from
+# the kanban-autopilot skill script (the marker protocol's author) so the
+# product side is self-contained — the skill lives outside this repo.
+#
+# At completion time (``_gate_human_gate_pending``) the trail is scanned
+# NEWEST-FIRST: the first marker comment decides — a pending marker means the
+# gate is still armed (refuse), a matching approval means the human signed
+# off (proceed). Reading the first-DECIDING-marker rule this way keeps a
+# completed card whose approval followed its pending marker out of the gate
+# (P4 review-5/6 note: only the LAST-ARMED state is preserved anywhere in
+# the marker machinery, so refusing ANY armed pending gate at completion
+# time is the product rule that matters).
+
+_HUMAN_GATE_PENDING_PREFIX = "HUMAN_GATE_PENDING:"
+_HUMAN_GATE_APPROVAL_PREFIX = "HUMAN_GATE_APPROVAL:"
+# P2b CLOSE (operator decision 2026-10-05): an approval marker only RELEASES a
+# gate when (a) its AUTHOR is an authorized approval identity, and (b) the
+# marker carries the approval artifact's sha256 digest — which must MATCH the
+# actual bytes on disk (a stale digest = approval for bytes that changed
+# since = no release). Anything else refuses the release: a worker cannot
+# self-approve by commenting as `operator`, and an approval without a digest
+# (or with a stale one) is noise. The digest binds the approval to EXACT
+# evidence — no replay of an approval after the artifact changed.
+_AUTHORIZED_APPROVAL_AUTHORS = frozenset({
+    "operator", "orchestrator", "hermes-system", "hermes-system-", "hermes",
+    "autopilot",
+})
+
+
+def _parse_gate_marker(body: str) -> Optional[str]:
+    text = (body or "").strip()
+    if text.startswith(_HUMAN_GATE_PENDING_PREFIX):
+        gate_id = text[len(_HUMAN_GATE_PENDING_PREFIX):].strip()
+        return gate_id or None
+    return None
+
+
+def _parse_approval_marker(
+    body: str,
+) -> Optional[tuple[Optional[str], Optional[str], Optional[str]]]:
+    """``(gate_id, artifact_path, artifact_digest)``; digest = ``digest= hex64``
+    when present (P2b CLOSE: the digest binds the approval to exact bytes)."""
+    text = (body or "").strip()
+    if not text.startswith(_HUMAN_GATE_APPROVAL_PREFIX):
+        return None
+    rest = text[len(_HUMAN_GATE_APPROVAL_PREFIX):].strip()
+    if not rest:
+        return ("", None, None)
+    artifact = None
+    digest = None
+    if "artifact=" in rest:
+        gate_part, _, artifact_part = rest.partition("artifact=")
+        gate_id = gate_part.strip()
+        # Digest may follow the artifact (same part, whitespace separated).
+        head, _, tail = artifact_part.partition("digest=")
+        artifact = head.strip() or None
+        if tail:
+            candidate = tail.strip().split()[0] if tail.strip() else ""
+            if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate.lower()):
+                digest = candidate.lower()
+    else:
+        gate_id = rest
+        # A digest may still be present without an artifact (bound elsewhere)?
+        # No: without a path there is nothing to verify the digest against.
+    return (gate_id or None, artifact, digest)
+
+
+def _artifact_digest_matches(path: Optional[str], digest: Optional[str]) -> bool:
+    """P2b CLOSE: an approval WITH a digest requires the artifact bytes to
+    hash to exactly that digest right now (stale digest = changed bytes = no
+    release). WITHOUT a digest the release is refused (an approval not bound
+    to exact evidence releases nothing — pre-P2b-close noise rule)."""
+    if not path or not digest:
+        return False
+    try:
+        import hashlib
+        h = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return h == digest
+
+
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
     if not conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone():
         raise ValueError(f"unknown task {task_id}")
@@ -1785,7 +2234,40 @@ def store_attachment_bytes(
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
+    # R5-01 (review 5, 2026-10-05): the write is now PUBLISHED, not written.
+    # The old ``write_bytes`` could truncate a name a concurrent P3b
+    # preservation had just ``os.link``-published and bound inside a committed
+    # completion — corrupting a ``done`` card's proof while both calls returned
+    # ``ok``. The blob lands on a staging file and is atomically reserved onto
+    # a free name (O_EXCL ``os.link`` against the cooperative writers); a name
+    # won by another writer between precheck and link is NEVER overwritten —
+    # the upload shifts to the next free name instead (the incremental
+    # ``name (n)`` shape from the precheck-only chooser is preserved).
+    staging = dest_dir / f".upload-staging-{secrets.token_hex(12)}"
+    fd: Optional[int] = None
+    try:
+        fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = None
+            handle.write(data)
+        dest_path = _reserve_attachment_name(staging, dest_path)
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)  # hard link published; staging may go
+    except BaseException:
+        with contextlib.suppress(OSError):
+            if fd is not None:
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)
+        raise
+    # Identity of the exact file THIS attempt published — the cleanup below
+    # only ever unlinks a file still carrying it (a name reused meanwhile by
+    # another writer is not ours to remove).
+    try:
+        _pub_stat = os.stat(dest_path)
+        _pub_identity = (_pub_stat.st_ino, _pub_stat.st_dev, _pub_stat.st_ctime_ns)
+    except OSError:
+        _pub_identity = None
     try:
         return add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
@@ -1793,10 +2275,39 @@ def store_attachment_bytes(
         )
     except Exception:
         # Don't leave an orphan blob if the metadata insert fails (most
-        # commonly: the task id doesn't exist).
-        with contextlib.suppress(OSError):
-            dest_path.unlink(missing_ok=True)
+        # commonly: the task id doesn't exist). Identity-guarded (R5-01).
+        ours = False
+        if _pub_identity is not None:
+            try:
+                _cur = os.stat(dest_path)
+                ours = (_cur.st_ino, _cur.st_dev, _cur.st_ctime_ns) == _pub_identity
+            except OSError:
+                ours = False
+        if ours:
+            with contextlib.suppress(OSError):
+                os.unlink(dest_path)
         raise
+
+
+def _reserve_attachment_name(staging: Path, first_candidate: Path) -> Path:
+    """Atomically publish the staging blob onto ``first_candidate`` (or the
+    next free ``stem_Nsuffix`` name) via ``os.link`` — O_EXCL semantics: an
+    existing file is never truncated or replaced (R5-01). The caller removes
+    the staging file. Raises ``OSError`` when no free name is found within
+    the attempt budget."""
+    stem = first_candidate.stem or "attachment"
+    suffix = first_candidate.suffix
+    dest_dir = first_candidate.parent
+    candidate = first_candidate
+    for idx in range(100_000):
+        if idx:
+            candidate = dest_dir / f"{stem}_{idx}{suffix}"
+        try:
+            os.link(staging, candidate)
+            return candidate
+        except FileExistsError:
+            continue
+    raise OSError(f"could not find a free attachment name under {dest_dir}")
 
 
 def add_attachment(
@@ -1889,11 +2400,38 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    ``metadata`` MERGES with the run's existing metadata (S6-01, review 6
+    2026-10-04): the caller's fields win on key collisions, but fields an
+    earlier writer staged on the OPEN run — the dispatcher's
+    ``resolved_route_provenance`` written at claim/spawn time — SURVIVE the
+    closure instead of being wiped by whatever per-outcome payload the
+    closer carries. A non-dict legacy metadata is replaced (only a dict can
+    carry surviving keys)."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    merged_metadata = metadata
+    if run_id is not None:
+        try:
+            prior_row = conn.execute(
+                "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL",
+                (run_id,),
+            ).fetchone()
+            prior_meta = prior_row["metadata"] if prior_row is not None else None
+            if prior_meta:
+                try:
+                    prior = json.loads(prior_meta)
+                    if isinstance(prior, dict):
+                        merged = dict(prior)
+                        merged.update(metadata or {})
+                        merged_metadata = merged
+                except (ValueError, TypeError):
+                    pass  # non-dict stored text: plain replace (legacy shape)
+        except sqlite3.Error:
+            pass  # never let provenance preservation break the closure
     conn.execute(
         """
         UPDATE task_runs
@@ -1907,7 +2445,7 @@ def _end_run(
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(merged_metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -2622,8 +3160,191 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class BlockedCompletionError(ValueError):
+    """``complete_task`` refused: the card is parked in ``blocked``.
+
+    A blocked card is a human decision in flight (STUDY-03 F-01): collapsing
+    it to ``done`` in one hop — even with a reconciled result, even with
+    ``force=True`` — erases the blocker without the operator seeing it. The
+    legitimate exit is :func:`unblock_task` (which re-gates parents and
+    restores the resumable phase) followed by a normal claim/complete cycle.
+    A ``ValueError`` so tool error handlers treat it as recoverable."""
+
+    def __init__(self, task_id: str, prior_status: str = "blocked"):
+        self.task_id = task_id
+        self.prior_status = prior_status
+        super().__init__(
+            f"completion blocked: {task_id} is parked in '{prior_status}'; "
+            "reconcile it with kanban_unblock first, then complete normally"
+        )
+
+
+class HumanGatePendingError(ValueError):
+    """``complete_task`` refused: the card's comment trail still carries an
+    ARMED ``HUMAN_GATE_PENDING:`` marker (P2b) — a human decision in flight.
+
+    The marker comment trail is scanned oldest→newest (see
+    :func:`_latest_armed_human_gate`): pending markers arm gates, and a
+    matching approval WITH a real artifact on disk releases exactly its own
+    gate (N-1/N-2, dual audit 2026-10-04). Refusals are recorded as an
+    auditable ``completion_blocked_human_gate`` event (payload
+    ``gate_ids`` list) in their OWN transaction, so the marker survives any
+    surrounding rollback, then raised.
+
+    ``force=True`` does NOT bypass this gate (it only covers the live-claim
+    fence, like the ``blocked`` gate). The legitimate exit is the human
+    approval marker recorded on the trail, then a normal completion. A
+    ``ValueError`` so tool error handlers treat it as recoverable."""
+
+    def __init__(self, task_id: str, gate_ids: list[Optional[str]]):
+        self.task_id = task_id
+        self.gate_ids = list(gate_ids)
+        self.gate_id = self.gate_ids[0] if self.gate_ids else None  # back-compat
+        shown = ", ".join(repr(g) for g in self.gate_ids)
+        super().__init__(
+            f"completion blocked: {task_id} is halted at pending human "
+            f"gate(s) [{shown}]; record matching HUMAN_GATE_APPROVAL "
+            "marker(s) with a real artifact on the card before completing it"
+        )
+
+
+class OffBoardServedModelError(ValueError):
+    """``complete_task`` refused (P4 PARTE 2): the caller declared the
+    completion off-board (``off_board=True`` — the card was NOT dispatched
+    on-board by this dispatcher) but no non-blank ``metadata['served_model']``
+    names the model that actually served the work.
+
+    Off-board runs have no dispatcher-side provenance record, so the model
+    route for this completion must be supplied explicitly. Refusals are
+    recorded as an auditable ``completion_blocked_served_model`` event in
+    their OWN transaction (task-scoped, ``run_id=None`` — a completion may
+    span runs), then raised. ``force=True`` does NOT bypass this gate (it
+    only covers the live-claim fence). A ``ValueError`` so tool error
+    handlers treat it as recoverable."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            f"completion blocked: {task_id} is an off-board completion "
+            "(off_board=True) and metadata['served_model'] is missing or "
+            "blank — name the model that served the work"
+        )
+
+
+class OffBoardLaunchError(ValueError):
+    """``record_off_board_run`` refused (P4 PARTE 3): the external-launch
+    origin could not be persisted — no active run on the card, the active run
+    does not match ``expected_run_id``, or ``served_model`` is missing/blank.
+    A ``ValueError`` so callers treat the mis-use as recoverable."""
+
+    def __init__(self, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(
+            f"off-board launch not recorded for {task_id}: {reason}"
+        )
+
+
+class OffBoardOriginError(ValueError):
+    """``complete_task`` refused (P4 PARTE 3): the caller declared the
+    completion off-board and named a ``served_model``, but the card's ACTIVE
+    run carries no recorded external-launch origin
+    (``task_runs.metadata['off_board_run']``, written by
+    :func:`record_off_board_run` at launch time). An unattributed run cannot
+    be completed as off-board by passing ``off_board=True`` alone — the
+    omission of a launch step must never read as a valid external launch.
+
+    Refusals are recorded as an auditable ``completion_blocked_off_board_origin``
+    event in their OWN transaction (task-scoped), then raised. ``force=True``
+    does NOT bypass this gate (it only covers the live-claim fence). A
+    ``ValueError`` so tool error handlers treat it as recoverable — the caller
+    records the launch origin (or the surface passes
+    ``require_recorded_origin=False`` when no launch step exists)."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            f"completion blocked: {task_id} is declared off-board or its active "
+            "run carries a recorded external-launch origin, but the launch origin "
+            "is missing, invalid, or contradicts the completion (record_off_board_run "
+            "must be called before the work starts). If this surface has no launch "
+            "step, it must attest the served model directly and pass "
+            "explicitly (require_recorded_origin=False) — never rely on the default"
+        )
+
+
+class ContractCompletionError(ValueError):
+    """``complete_task`` refused: the card's ``completion_contract`` is a JSON
+    requirements dict (``{"required_artifacts": [...]}``) and a declared
+    artifact does not exist on disk. A ``ValueError`` so tool error handlers
+    treat it as recoverable — the worker can produce the artifact and retry."""
+
+    def __init__(self, task_id: str, missing: list[str]):
+        self.task_id = task_id
+        self.missing = list(missing)
+        super().__init__(
+            f"completion blocked: {task_id} contract requires artifacts that "
+            f"are missing on disk: {', '.join(self.missing)}"
+        )
+
+
+class ContractSpecError(ValueError):
+    """A ``completion_contract`` JSON spec (``{"required_artifacts": [...]}``)
+    is malformed — creation-time validation (P3b, audit 2026-10-04).
+
+    Before P3b a JSON contract could only reach ``tasks.completion_contract``
+    through raw writes, so malformed requirement lists were silently
+    ignored by the completion gate (TypeError-tolerant fail-open). P3b makes
+    them first-class at ``create_task``: the JSON object is validated once
+    (``required_artifacts`` is a list of absolute, non-blank string paths),
+    canonicalized, stored — and revalidated INSIDE the ``complete_task``
+    write transaction (see :func:`_recheck_contract_in_txn`) so a concurrent
+    contract swap cannot flip the gate after it passed.
+
+    A ``ValueError`` so tool error handlers treat it as recoverable. Legacy
+    shapes (``''``/``None``/'local-only'/OWNER/REPO/PR-URL) never raise this:
+    they keep the exact pre-P3b ``validate_contract`` behavior."""
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
+
+
+class ExternalArtifactPreservationError(ArtifactPreservationError):
+    """Raised when a declared EXTERNAL completion-contract artifact cannot be
+    preserved durably (Kanban P3b, audit 2026-10-04).
+
+    The artifact lives OUTSIDE managed scratch, so it is not ours to copy
+    in-txn; P3b captures it before the write lock and publishes a managed copy.
+    A preservation failure — the file exceeds ``KANBAN_ATTACHMENT_MAX_BYTES`` or
+    changes/disappears while being read — refuses the completion rather than
+    closing a ``done`` card onto content that is gone or unstable. Subclasses
+    :class:`ArtifactPreservationError` so the existing tool error handlers treat
+    it as a recoverable preservation failure (the worker can fix the file and
+    retry); a ``RuntimeError``, since it is not a caller input error."""
+
+
+class IdempotencyStateConflictError(RuntimeError):
+    """A task's state update would re-activate an idempotency key another
+    non-archived row already holds.
+
+    The create_task race is closed by the lookup-in-txn plus the partial
+    UNIQUE index (audit 2026-10-04, P5); this twin error closes the state
+    half: replaying an already-archived card into a live status while a
+    SAME-KEY card is active would leave two live rows on one dedup key —
+    the exact duplicate the closed race forbids — so it is refused with
+    the winner's id in the message instead of silently coexisting."""
+
+    def __init__(self, idempotency_key: str, self_id: str, dup_id: str):
+        self.idempotency_key = idempotency_key
+        self.self_id = self_id
+        self.dup_id = dup_id
+        super().__init__(
+            f"idempotency conflict: cannot set status of task {self_id} to a "
+            f"non-archived state while task {dup_id} holds the SAME idempotency "
+            f"key {idempotency_key!r} in a non-archived state; the database "
+            "would carry two live rows per dedup key"
+        )
 
 
 class LiveClaimError(ValueError):
@@ -2660,8 +3381,10 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    off_board: Optional[bool] = None,
+    require_recorded_origin: Optional[bool] = None,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``running|ready|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
@@ -2677,80 +3400,402 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+
+    A card parked in ``blocked`` is NEVER accepted — not with evidence, not
+    with ``force=True`` (``force`` only covers the live-claim fence). The
+    legitimate exit from ``blocked`` is :func:`unblock_task`, which re-gates
+    parents and restores the resumable phase; completing a parked card in one
+    hop raises :class:`BlockedCompletionError` after an auditable event.
+
+    A card halted at a still-armed HUMAN GATE (P2b) is likewise NEVER
+    accepted — not with evidence, not with ``force=True`` (``force`` only
+    covers the live-claim fence, same rule as ``blocked``). The card's
+    comment trail is scanned newest-first (:func:`_latest_armed_human_gate`):
+    the first marker comment decides, so a pending
+    ``HUMAN_GATE_PENDING: <gate_id>`` marker that was already answered by a
+    later matching ``HUMAN_GATE_APPROVAL:`` marker — authored by ANYONE — is
+    the normal post-approval flow and completes; an armed gate raises
+    :class:`HumanGatePendingError` after an auditable event. The gate runs
+    right after the blocked gate, BEFORE the created-cards gate: the
+    parked-gate refusal is the more specific signal.
+
+    OFF-BOARD completions (P4 PARTE 2/3): the CALLER passes
+    ``off_board=True`` when the card was NOT dispatched on-board by this
+    dispatcher (the decision is never inferred from ``routing_metadata``;
+    ``None``/falsy default keeps the on-board path unchanged). A card is ALSO
+    off-board when its active run carries a recorded launch origin written by
+    :func:`record_off_board_run` — a run launched outside the dispatcher can no
+    longer be closed as on-board by omitting the flag. Off-board completions
+    REQUIRE a non-blank string ``metadata['served_model']`` (or the origin's)
+    naming the model that served the work — its absence raises
+    :class:`OffBoardServedModelError` after an auditable event (task-scoped: no
+    dispatcher-side provenance exists off-board), its presence is recorded as a
+    ``route_served_model`` event on the closing run. A caller that DECLARES
+    off-board without a recorded origin raises :class:`OffBoardOriginError`
+    unless ``require_recorded_origin=False``. ``force=True`` does not bypass
+    either gate (it only covers the live-claim fence). Caller metadata may NOT
+    carry the trusted provenance keys (``off_board_run``,
+    ``resolved_route_provenance``).
     """
     now = int(time.time())
+    # P3b round 2: clear any stale per-connection gate-contract stash BEFORE the
+    # gate runs, so a leaked entry keyed by ``id(conn)`` (a prior completion on a
+    # since-garbage-collected connection reusing this address) can never feed
+    # ``_peek_gate_contract`` a contract this call did not enforce. The gate
+    # re-stashes the fresh value below.
+    _GATE_CONTRACT_STASH.pop(id(conn), None)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    # Blocked gate BEFORE the evidence gate: a parked card is refused as
+    # parked (the more specific signal), never folded into an empty-result
+    # or hallucination refusal. ``force`` does not bypass this — force
+    # covers the live-claim fence only. Re-checked inside the txn below.
+    pre_row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    # N-6 (dual audit): a card ALREADY in ``done``/``archived`` (idempotent
+    # re-close or a stale caller) is a plain False — NEVER an audited
+    # refusal: the terminal gates below (e.g. an armed human gate) would
+    # emit a post-terminal ``completion_blocked_*`` event the card never
+    # earned. Terminal statuses gate nothing else here.
+    if pre_row is not None and pre_row["status"] in ("done", "archived"):
+        return False
+    if pre_row is not None and pre_row["status"] == "blocked":
+        _gate_blocked_completion(conn, task_id)  # auditable event + raise
+    # P2b human gate RIGHT AFTER the blocked gate — the parked-gate refusal
+    # is the specific signal (an armed gate is a human decision in flight,
+    # same rule: force does not bypass, and a later matching approval marker
+    # is the legitimate exit). Never folded into empty-result/refusal noise.
+    # R5-02 (review 5, 2026-10-05): this pre-lock check alone is RACY — a
+    # marker armed between it and the completion txn used to skip the gate
+    # entirely; the authoritative check now rides INSIDE the txn. This one
+    # stays so an armed gate remains the SPECIFIC pre-lock refusal signal.
+    _gate_human_gate_pending(conn, task_id)  # auditable event + raise
+    # P4 PARTE 2: an off-board completion must name its serving model. Must
+    # run BEFORE the evidence gate too (specific signal first); the on-board
+    # path (off_board falsy) is untouched — no new events.
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
+    metadata = _strip_protected_run_metadata(metadata)
+    _require_origin = True if require_recorded_origin is None else bool(require_recorded_origin)
+    metadata, off_board_effective = _gate_off_board_served_model(
+        conn, task_id, metadata, bool(off_board),
+        require_recorded_origin=require_recorded_origin,
+        expected_run_id=expected_run_id,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    # Contract gate AFTER the evidence gate: a card that would be refused for
+    # empty evidence reports that (the more specific signal); a card WITH
+    # evidence is then held to its declared artifact requirements. Cards
+    # without a requirements contract (''/None/'local-only'/non-dict) pass
+    # through untouched.
+    _gate_contract_completion(conn, task_id)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
+    )
+    # P4 PARTE 2: the off-board route record is written AFTER the metadata
+    # merges (nothing can clobber served_model past this point) and rides the
+    # completion txn inside it — the event bills the run the gate may END
+    # (`_end_run`) or SYNTHESIZE (`_synthesize_ended_run`), so it is emitted
+    # after both. The on-board path never reaches this (off_board falsy).
+    # Contract survival rule (4th opinion 2026-10-04): artifacts required by
+    # completion_contract MUST be preserved even if the prose path never named
+    # them — the workspace cleanup deletes scratch content after commit and a
+    # declared requirement lost by cleanup fails the contract's purpose. Merge
+    # managed-scratch requirements into metadata.artifacts so the staging step
+    # copies them to attachments (external paths are handled in the gate).
+    if metadata is None:
+        metadata = {}
+    # P3b (round-2 HIGH #2): the contract version the gate enforced, taken ONCE
+    # here so BOTH the external capture and the scratch-requirement merge ride
+    # the SAME snapshot. ``_peek_gate_contract`` does NOT pop (the in-txn
+    # recheck owns the pop), so peeking early is safe.
+    _gate_snapshot = _peek_gate_contract(conn)
+    _capture_snapshot = (
+        _kea._NO_SNAPSHOT if _gate_snapshot is _CONTRACT_STASH_MISSING
+        else _gate_snapshot
+    )
+    # Round-3 HIGH #3: scratch requirements of the GATE's snapshot (NOT an
+    # autonomous re-read of the stored contract). These are both what the merge
+    # must stage and what the in-txn coverage check validates, so an A→B→A
+    # mixed swap can never drop the gate contract's scratch requirement.
+    _required_scratch = _kea.required_scratch_artifacts(
+        conn, task_id, _capture_snapshot,
+    )
+    _merge_contract_artifacts_into_metadata(
+        conn, task_id, metadata, required_artifacts=_required_scratch,
     )
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    with write_txn(conn):
-        # Hard invariant even for human review approval: a parent may have
-        # reopened while this task waited.
-        if not _parents_satisfied(conn, task_id):
-            return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
-        trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
-            raise LiveClaimError(task_id)
-        sql = """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
-                """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
-            return False
-        if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
-        run_id = _end_run(
-            conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
-        )
-        # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
-            synth_summary, synth_metadata = handoff_summary, metadata
-            if prior_status == "review" and not synth_summary and not synth_metadata:
-                synth_summary = _REVIEW_APPROVED_NOTE
-                synth_metadata = {"source_status": "review", "approval": "manual"}
-            run_id = _synthesize_ended_run(
-                conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+    # P3b external-artifact durability (audit 2026-10-04, round 2 2026-10-05): a
+    # contract artifact OUTSIDE managed scratch is not ours to copy in-txn, so
+    # capture + publish a managed copy NOW — before the write lock and before
+    # the in-txn recheck — so the closing txn binds the EXACT bytes the contract
+    # validated. Capture rides the SAME contract version the gate enforced
+    # (``_gate_snapshot``), so a concurrent A→B→A swap can never make it
+    # preserve a version the transaction will not validate. This is what closes
+    # the delete-after-recheck race: the durable copy, not the external
+    # pathname, is the proof; the original may vanish at any moment.
+    captured_external = _kea.capture_external_artifacts(
+        conn, task_id, contract_snapshot=_capture_snapshot,
+    )
+    published_external = _kea.publish_external_artifacts(captured_external, task_id)
+    # Set True inside the txn body (below) once the fence WILL commit: the
+    # copies are then bound and must never be discarded — a post-commit failure
+    # (e.g. ``_check_file_length_invariant`` after COMMIT) rolls nothing back.
+    committed = False
+    # R5-08 (review 5): scratch staging copies must ALSO be orphan-free on any
+    # non-commit exit. The in-txn staging assigns this ref; the uniform
+    # finally below discards them (rows never committed) together with the
+    # external copies.
+    staged_scratch_ref: list = []
+    try:
+        with write_txn(conn):
+            # Hard invariant even for human review approval: a parent may have
+            # reopened while this task waited.
+            if not _parents_satisfied(conn, task_id):
+                return False
+            if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+                return False
+            trow = conn.execute(
+                "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            prior_status = trow["status"] if trow else None
+            # Refuse to close a LIVE worker's run without proof of ownership
+            # (expected_run_id) or an explicit human override (force=True); see
+            # _claim_is_live for what "live" means.
+            if expected_run_id is None and not force and trow and _claim_is_live(trow):
+                raise LiveClaimError(task_id)
+            sql = """
+                    UPDATE tasks
+                       SET status       = 'done',
+                           result       = ?,
+                           completed_at = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL,
+                           block_kind   = NULL,
+                           block_recurrences = 0
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'review')
+                    """
+            params: tuple = (result, now, task_id)
+            if expected_run_id is not None:
+                sql += " AND current_run_id = ?"
+                params = (*params, int(expected_run_id))
+            if conn.execute(sql, params).rowcount != 1:
+                return False
+            # P2b human gate re-check INSIDE this txn (R5-02, review 5
+            # 2026-10-05): a ``HUMAN_GATE_PENDING`` marker armed between the
+            # pre-lock gate and this write lock must block the close — the
+            # old UPDATE fence covered statuses only, not marker state.
+            # Divergence rolls the whole txn back (the status UPDATE above
+            # un-commits) and the typed refusal is recorded durably below,
+            # exactly like the pre-lock refusal.
+            _armed_now, _gate_ids_now = _latest_armed_human_gate(conn, task_id)
+            if _armed_now:
+                raise _HumanGateArmedInTxn(list(_gate_ids_now))
+            # P3b TOCTOU: the artifact gate read the contract BEFORE this
+            # write txn (no lock held). Revalidate the contract the fence
+            # RODE ON — same rules as creation-time
+            # _validate_contract_spec — so a concurrent contract swap between
+            # gate and txn cannot flip the gate: raise
+            # _ContractSwappedInTxn (rolls the whole completion txn back —
+            # card keeps its prior status, nothing staged, no ``completed``
+            # event) and turn it into an audible, durable refusal below.
+            _recheck_contract_in_txn(conn, task_id)
+            # P4 PARTE 3 TOCTOU: re-classify off-board INSIDE the txn the fence
+            # rides — a concurrent record_off_board_run between gate and lock
+            # must not let the close ride an on-board verdict (review 2026-10-05
+            # HIGH #2/#3). Divergence rolls the whole txn back.
+            off_board_effective, _txn_served = _off_board_state_in_txn(
+                conn, task_id, bool(off_board), _require_origin, metadata,
+                expected_run_id, off_board_effective,
             )
-        event_summary = handoff_summary
-        if prior_status == "review" and not event_summary:
-            event_summary = _REVIEW_APPROVED_NOTE
-        _append_event(
-            conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
-            run_id=run_id,
-        )
+            if _txn_served is not None and isinstance(metadata, dict):
+                metadata["served_model"] = _txn_served
+            # P3b round 2 HIGH #2: the captured/published set must COVER every
+            # external requirement of the contract IN FORCE (the same snapshot
+            # capture rode). A requirement the set does not cover — e.g. an
+            # A→B→A swap left the txn validating B while capture preserved A —
+            # rolls the txn back with the existing divergence mechanism instead
+            # of closing onto an incomplete proof set.
+            uncovered = _kea.uncaptured_external_requirements(
+                conn, task_id, published_external, _capture_snapshot,
+            )
+            if uncovered:
+                raise _ContractSwappedInTxn(
+                    {
+                        "missing_artifacts": uncovered,
+                        "gate_contract": str(_gate_snapshot or "")[:200],
+                        "in_txn_contract": str(_gate_snapshot or "")[:200],
+                        "reason": "external_artifact_not_preserved",
+                    },
+                    f"completion blocked: {task_id} external contract artifacts "
+                    f"were not preserved in this transaction: {', '.join(uncovered)}",
+                )
+            # P3b: bind the captured external copies INSIDE this txn — attachment
+            # row + auditable event + run-metadata binding — so the fence and the
+            # proof commit together. The bytes were captured before the lock;
+            # this only records them (no large I/O under the write lock).
+            _external_bindings: list[dict] = []
+            if isinstance(metadata, dict):
+                _external_bindings = _kea.bind_external_artifacts(
+                    conn, task_id, published_external, metadata, now,
+                )
+            # Round-3 HIGH #2: the staging may only treat THIS invocation's
+            # actual bindings as already-preserved — never caller metadata.
+            _bound_external = {
+                str(b.get("stored_path")) for b in _external_bindings
+                if b.get("stored_path")
+            }
+            _covered_scratch: set[str] = set()
+            if isinstance(metadata, dict):
+                _staged, _covered_scratch = _stage_completion_artifacts(
+                    conn, task_id, metadata, now,
+                    bound_external=_bound_external,
+                )
+                staged_scratch_ref.extend(_staged)
+            # Round-3 HIGH #3: the scratch staging must COVER every scratch
+            # requirement of the gate's snapshot — the analogue of the external
+            # coverage check above. An A→B→A mixed swap that staged only B's
+            # requirement while the txn validates A's would otherwise let the
+            # cleanup delete A's artifact. Roll back with the divergence
+            # mechanism so the card is NOT closed with a lost requirement.
+            _scratch_uncovered = []
+            for req in _required_scratch:
+                # Compare on the RESOLVED form: the requirement keeps its
+                # declared spelling (for lexical classification) while the
+                # staging records the resolved source it copied — resolving both
+                # sides makes the coverage check correct across symlinked
+                # workspaces (round-4 re-review).
+                try:
+                    req_key = str(Path(str(req).strip()).expanduser().resolve())
+                except OSError:
+                    req_key = str(req).strip()
+                if req_key not in _covered_scratch:
+                    _scratch_uncovered.append(req)
+            if _scratch_uncovered:
+                raise _ContractSwappedInTxn(
+                    {
+                        "missing_artifacts": _scratch_uncovered,
+                        "gate_contract": str(_gate_snapshot or "")[:200],
+                        "in_txn_contract": str(_gate_snapshot or "")[:200],
+                        "reason": "scratch_artifact_not_preserved",
+                    },
+                    f"completion blocked: {task_id} scratch contract artifacts "
+                    f"were not preserved in this transaction: "
+                    f"{', '.join(_scratch_uncovered)}",
+                )
+            run_id = _end_run(
+                conn, task_id, outcome="completed", status="done", summary=handoff_summary,
+                metadata=metadata,
+            )
+            # Never-claimed task: synthesize a run so the handoff fields survive.
+            if run_id is None and (summary or metadata or result or prior_status == "review"):
+                synth_summary, synth_metadata = handoff_summary, metadata
+                if prior_status == "review" and not synth_summary and not synth_metadata:
+                    synth_summary = _REVIEW_APPROVED_NOTE
+                    synth_metadata = {"source_status": "review", "approval": "manual"}
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+                )
+            event_summary = handoff_summary
+            if prior_status == "review" and not event_summary:
+                event_summary = _REVIEW_APPROVED_NOTE
+            _append_event(
+                conn, task_id, "completed",
+                _completed_event_payload(result, event_summary, verified_cards, metadata),
+                run_id=run_id,
+            )
+            if off_board_effective:
+                # P4 PARTE 2/3: the ONLY record of which model served an
+                # off-board completion (no dispatcher-side provenance
+                # exists off-board). Driven by the EFFECTIVE classification
+                # (flag OR recorded origin), so an origin-forced close without
+                # the flag still gets its completion event (review #8).
+                _append_event(
+                    conn, task_id, "route_served_model",
+                    {"served_model": (metadata or {}).get("served_model")},
+                    run_id=run_id,
+                )
+        # ``committed`` is set INSIDE the ``with`` body: ``write_txn`` runs
+        # COMMIT in its ``__exit__``, so reaching the end of the body means the
+        # fence WILL commit. A post-commit failure from the context manager
+        # itself (e.g. ``_check_file_length_invariant``) then can neither
+        # suppress the commit nor let the handlers below delete bound copies.
+        committed = True
+    except _ContractSwappedInTxn as exc:
+        # The completion txn rolled back (card keeps its prior status). The
+        # divergence marker must SURVIVE the rollback: separate txn, like the
+        # other auditable refusal paths (+ then raise ContractSpecError). The
+        # published copies never got bound — the uniform ``finally`` below
+        # discards copies WITHOUT a committed binding (recoverable orphan),
+        # ONCE (round-3 HIGH #1: no double-discard from this handler too).
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_contract_changed", exc.payload,
+            )
+        raise ContractSpecError(exc.message) from exc
+    except _HumanGateArmedInTxn as exc:
+        # R5-02: the in-txn human-gate recheck tripped. The completion txn
+        # rolled back (card keeps its prior status); record the durable
+        # refusal in its own txn — same event and payload as the pre-lock
+        # refusal — then raise the typed, recoverable error.
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_human_gate",
+                {"gate_ids": exc.gate_ids},
+            )
+        raise HumanGatePendingError(task_id, exc.gate_ids) from exc
+    except _OffBoardGateChangedInTxn as exc:
+        # P4 PARTE 3: the off-board recheck inside the txn diverged (a
+        # concurrent origin write / run swap). The rollback already restored
+        # the card; record the durable refusal in its own txn, then raise the
+        # typed, recoverable OffBoardOriginError. Cleanup is the ``finally``.
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_off_board_origin", exc.payload,
+            )
+        raise OffBoardOriginError(task_id) from exc
+    except BaseException:
+        # Any other failure: the uniform ``finally`` below discards copies whose
+        # binding did not commit. ``discard`` also cross-checks the DB
+        # (round-2 HIGH #3): a copy already bound by a COMMITTED txn is KEPT, so
+        # a post-commit failure can never delete a durable proof.
+        raise
+    finally:
+        # MEDIUM #4 + round-3 HIGH #1: the SINGLE discard site, on EVERY exit
+        # that did not commit — the ``except`` handlers above no longer discard
+        # separately (a second pass could delete a copy a concurrent attempt
+        # republished onto a freed name; the per-attempt identity guard in
+        # ``discard_published_artifacts`` is the backstop, but one pass is the
+        # fix). Covers the ``return False`` refusals (parents reopened /
+        # acceptance CAS lost / status CAS lost), exceptions, and the typed
+        # refusal paths alike. ``committed`` is False on all non-commit exits.
+        if not committed:
+            _kea.discard_published_artifacts(published_external, conn)
+            # R5-08 (F5-FINAL-01 correction): scratch staging copies go too —
+            # but ONLY when their rows are not part of the COMMITTED database
+            # state. A post-COMMIT invariant failure reaches this finally with
+            # ``committed`` still False (it is set after the context manager
+            # returns) while the transaction HAS committed; the committed-row
+            # probe below (same fail-closed read the external lane uses) keeps
+            # bound scratch proofs, so an invariant failure can never erase a
+            # durable attachment the done card points at.
+            scratch_bound = _kea._committed_attachment_paths(
+                conn, [str(Path(str(p))) for p in staged_scratch_ref],
+            ) if staged_scratch_ref else set()
+            if staged_scratch_ref:
+                _discard_staged_copies(
+                    [p for p in staged_scratch_ref
+                     if str(Path(str(p)).resolve()) not in scratch_bound],
+                    Path(str(staged_scratch_ref[0])).parent,
+                )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2763,6 +3808,439 @@ def complete_task(
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."
+
+
+def _latest_armed_human_gate(
+    conn: sqlite3.Connection, task_id: str,
+) -> tuple[bool, list[Optional[str]]]:
+    """Every still-armed human gate on a card's comment trail (N-1/N-2, dual
+    audit 2026-10-04). Comments are scanned OLDEST→NEWEST accumulating the
+    armed ids — the exact semantics of the autopilot's preflight-side
+    ``_latest_pending_human_gate`` (kanban_autopilot.py), so product and
+    preflight can never disagree on the same trail:
+
+    * a ``HUMAN_GATE_PENDING:`` marker arms its gate id (``None`` for a
+      blank-id marker — such a gate cannot name what it waits on, and only
+      a matching-id approval with a REAL artifact on disk can release a
+      named gate, so a blank gate stays armed at completion time);
+    * an ``HUMAN_GATE_APPROVAL: <id> artifact=<path>`` marker releases the
+      armed gate ``<id>`` ONLY when the artifact path EXISTS on disk
+      (N-2: an approval without an artifact, or naming a missing file,
+      releases nothing — author identity remains design-open);
+    * an approval for a NON-armed id is noise (ignored);
+    * blank-id approvals (`approval[0]` falsy) never release (mirror of the
+      autopilot guard), and prose between markers is ignored.
+
+    Returns ``(armed, gate_ids)``: ``armed`` is True iff the accumulated
+    list is non-empty (a blank-id pending marker is a ``None`` member). An
+    UNREADABLE trail fails CLOSED (``(True, [None])``) — same direction as
+    the autopilot preflight, so a read error can never pass a card the
+    preflight would hold.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT id, author, body FROM task_comments WHERE task_id = ? ORDER BY id ASC",
+            (task_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        # Fail CLOSED on an unreadable trail: same direction as the
+        # preflight (read error = reason, not "no gate"). The refusal event
+        # carries (True, [None]) to keep the audible shape.
+        return (True, [None])
+    armed: list[Optional[str]] = []
+    for row in rows:
+        author = _row_get(row, "author") if isinstance(row, sqlite3.Row) else None
+        body = row["body"] if not isinstance(row, sqlite3.Row) or "body" in row.keys() else row[0]
+        if (body or "").strip().startswith(_HUMAN_GATE_PENDING_PREFIX):
+            pending = _parse_gate_marker(body)  # None for a blank-id marker
+            if pending in armed:
+                armed.remove(pending)  # dedupe re-arm of the same id
+            armed.append(pending)
+            continue
+        approval = _parse_approval_marker(body)
+        if approval is None or not approval[0]:
+            continue  # prose or blank-id approval: ignored (blank approves nothing)
+        gate_id, artifact, digest = approval
+        # P2b CLOSE: the release requires an AUTHORIZED approval author AND a
+        # digest-bound real artifact — a worker cannot self-approve by
+        # commenting as `operator`, and an approval without exact evidence
+        # (missing file, missing/stale digest) releases nothing.
+        if author not in _AUTHORIZED_APPROVAL_AUTHORS:
+            continue  # unauthenticated identity: noise, keep scanning
+        if gate_id in armed and artifact and _artifact_digest_matches(artifact, digest):
+            armed.remove(gate_id)
+        # non-armed id OR unauth'd OR no/stale digest: noise, keep scanning
+    return (bool(armed), armed)
+
+
+def _pending_gate_id_before(
+    conn: sqlite3.Connection, task_id: str, comment_id: int,
+) -> Optional[str]:
+    """The id of the NEWEST ``HUMAN_GATE_PENDING:`` marker comment BEFORE
+    ``comment_id`` — N-5 (dual audit): uses the SAME ``_parse_gate_marker``
+    parser as the arming scan instead of a ``LIKE`` prefix query, so a
+    marker the parser arms (e.g. leading whitespace) can never be
+    invisible to this lookup."""
+    rows = conn.execute(
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND id < ? ORDER BY id DESC",
+        (task_id, comment_id),
+    ).fetchall()
+    for row in rows:
+        body = row["body"] if not isinstance(row, sqlite3.Row) or "body" in row.keys() else row[0]
+        if (body or "").strip().startswith(_HUMAN_GATE_PENDING_PREFIX):
+            return _parse_gate_marker(body)
+    return None
+def _gate_human_gate_pending(conn: sqlite3.Connection, task_id: str) -> None:
+    """Refuse to complete a card halted at a still-armed human gate (P2b).
+
+    The Autopilot arms the gate with a ``HUMAN_GATE_PENDING: <gate_id>``
+    marker comment and the human signs off with the matching
+    ``HUMAN_GATE_APPROVAL:`` marker; the newest-first scan
+    (:func:`_latest_armed_human_gate`) decides whether the gate is STILL
+    pending at completion time. An armed gate is a human decision in flight,
+    the same shape as a card parked in ``blocked`` — one-hop collapsing it
+    to ``done`` erases the decision without the operator seeing it, so it is
+    refused with the parked-gate signal BEFORE the evidence/created-cards
+    gates can fold it into a less specific refusal. ``force=True`` does NOT
+    bypass this: it covers the live-claim fence only. A refusal with an
+    armed gate is recorded as an auditable
+    ``completion_blocked_human_gate`` event (own txn, task-scoped
+    ``run_id=None`` — a completion may span runs), then raised as
+    :class:`HumanGatePendingError`.
+
+    R5-02 (review 5, 2026-10-05): this gate is ALSO re-evaluated INSIDE the
+    completion write txn — a marker armed between this pre-lock check and
+    the lock used to complete unimpeded (the status UPDATE fence covers
+    statuses only, not marker state). The in-txn trip rolls the completion
+    back and emits the same auditable refusal before raising the same
+    error.
+    """
+    armed, gate_ids = _latest_armed_human_gate(conn, task_id)
+    if not armed:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_human_gate", {"gate_ids": gate_ids},
+        )
+    raise HumanGatePendingError(task_id, gate_ids)
+
+
+def record_off_board_run(
+    conn: sqlite3.Connection, task_id: str, *, served_model: str,
+    provider: Optional[str] = None, executor: Optional[str] = None,
+    launch_ref: Optional[str] = None, expected_run_id: Optional[int] = None,
+) -> int:
+    """P4 PARTE 3: persist the EXTERNAL-LAUNCH origin of the card's active run.
+
+    Called by the surface that launches a run OUTSIDE the dispatcher, BEFORE
+    the work starts, so a later off-board completion is backed by a durable
+    origin instead of the caller's bare ``off_board=True`` claim. Writes
+    ``task_runs.metadata['off_board_run']`` (schema v1) on the active run and
+    emits a ``route_off_board_launch`` event. Returns the run id.
+
+    ``served_model`` is required and non-blank (recorded as observed by the
+    launching surface; the completion gate re-reads it). ``expected_run_id``,
+    when given, must match the active run. Raises :class:`OffBoardLaunchError`
+    when there is no active run, no non-blank served model, or the run id
+    diverges. Idempotent-ish: a second call on the same run merges the new
+    origin fields over the prior ones (a retry does not create a second run)."""
+    run_id = _current_run_id(conn, task_id)
+    if run_id is None:
+        raise OffBoardLaunchError(task_id, "no active run")
+    if expected_run_id is not None and int(expected_run_id) != run_id:
+        raise OffBoardLaunchError(
+            task_id, f"active run {run_id} != expected {expected_run_id}",
+        )
+    if not isinstance(served_model, str) or not served_model.strip():
+        raise OffBoardLaunchError(task_id, "served_model is missing or blank")
+    origin = {
+        "schema": "v1",
+        "off_board": True,
+        "served_model": served_model,
+        "provider": provider,
+        "executor": executor,
+        "launch_ref": launch_ref,
+        "launch_ts": int(time.time()),
+    }
+    with write_txn(conn):
+        # Resolve the ACTIVE run INSIDE the txn and require it to still be open
+        # (review 2026-10-05 HIGH #3): a run swap between the pre-read and the
+        # lock must never let the origin land on a run that is no longer the
+        # card's active one while the new active run stays unattributed.
+        run_id = _current_run_id(conn, task_id)
+        if run_id is None:
+            raise OffBoardLaunchError(task_id, "no active run")
+        if expected_run_id is not None and int(expected_run_id) != run_id:
+            raise OffBoardLaunchError(
+                task_id, f"active run {run_id} != expected {expected_run_id}",
+            )
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None:
+            raise OffBoardLaunchError(task_id, f"run {run_id} not open")
+        merged: dict = {}
+        if row["metadata"]:
+            try:
+                prior = json.loads(row["metadata"])
+                if isinstance(prior, dict):
+                    merged = dict(prior)
+            except (ValueError, TypeError):
+                merged = {}
+        merged["off_board_run"] = origin
+        updated = conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+            (_json_or_null(merged), run_id, task_id),
+        ).rowcount
+        if updated != 1:
+            # A concurrent close raced us after the SELECT: the txn rolls back
+            # on the raise (write_txn body), nothing is mis-recorded.
+            raise OffBoardLaunchError(task_id, f"run {run_id} closed during record")
+        _append_event(
+            conn, task_id, "route_off_board_launch",
+            {"run_id": run_id, "served_model": served_model,
+             "provider": provider, "executor": executor, "launch_ref": launch_ref},
+            run_id=run_id,
+        )
+    return run_id
+
+
+_PROTECTED_RUN_METADATA_KEYS = (
+    "off_board_run", "resolved_route_provenance", "external_artifacts_preserved",
+)
+"""Run-metadata keys owned by TRUSTED writers (the dispatcher's route
+provenance and :func:`record_off_board_run`'s launch origin). A caller-supplied
+``metadata`` dict must never overwrite them at completion (review 2026-10-05
+MEDIUM #5): otherwise a caller could erase an origin (downgrading to on-board)
+or forge one whose launch was never recorded.
+
+``external_artifacts_preserved`` is stripped from caller metadata too (P3b
+round 3 HIGH #2): it is written ONLY by ``bind_external_artifacts`` for the
+copies produced in the CURRENT invocation. A caller that forged it (e.g. with a
+``stored_path`` naming an un-preserved scratch requirement) could otherwise make
+``_persist_scratch_completion_artifacts`` skip that requirement's copy, close the
+card, and let cleanup delete the file — a broken reference. The staging no
+longer trusts stored metadata for this key either (it uses only this
+invocation's explicit bindings)."""
+
+
+_LAUNCH_KEY = ("off_board_run",)
+
+
+def _strip_protected_run_metadata(
+    metadata: Optional[dict], keys: tuple[str, ...] = _PROTECTED_RUN_METADATA_KEYS,
+) -> Optional[dict]:
+    """Drop trusted provenance keys from CALLER-supplied metadata so a merge in
+    :func:`_end_run` / :func:`_synthesize_ended_run` / :func:`edit_task` cannot
+    clobber or forge them. Strips IN PLACE when a dict is given (callers pass a
+    freshly built dict)."""
+    return _strip_keys(metadata, keys)
+
+
+def _strip_keys(metadata: Optional[dict], keys: tuple[str, ...]) -> Optional[dict]:
+    """Drop the given trusted keys from caller metadata before a merge."""
+    if isinstance(metadata, dict):
+        for key in keys:
+            metadata.pop(key, None)
+    return metadata
+
+
+def _launch_event_exists(conn: sqlite3.Connection, task_id: str, run_id: Optional[int]) -> bool:
+    """Whether a ``route_off_board_launch`` event exists for this (task, run)."""
+    if run_id is None:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? "
+        "AND kind = 'route_off_board_launch' LIMIT 1",
+        (task_id, run_id),
+    ).fetchone()
+    return row is not None
+
+
+def _off_board_run_origin_state(
+    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int],
+) -> tuple[Optional[dict], bool, bool]:
+    """``(origin, invalid, ambiguous)`` for the card's ACTIVE run.
+
+    ``origin`` is the validated origin dict (``schema == "v1"``, ``off_board is
+    True`` — identity, not truthiness — and a non-blank string ``served_model``)
+    written by :func:`record_off_board_run`; the active run must match
+    ``expected_run_id`` when the caller names one.
+
+    ``invalid`` is **True** when the run carries an ``off_board_run`` key that is
+    present but malformed/incomplete — a non-dict, a non-``True`` indicator, a
+    wrong/missing schema, or a blank model (review HIGH #1).
+
+    ``ambiguous`` is **True** when the run's metadata is *unreadable* (bad JSON
+    or a non-dict envelope) **and** a ``route_off_board_launch`` event exists for
+    that run — the origin was recorded but cannot be re-read, so the run must
+    NOT be silently downgraded to on-board (review round-2 HIGH). Both
+    ``invalid`` and ``ambiguous`` MUST refuse.
+
+    ``(None, False, False)`` = "no origin recorded" — the ordinary on-board run.
+    A ``route_off_board_launch`` event for the run OVERRIDES any metadata-derived
+    "no origin": if the launch event exists but the metadata no longer carries a
+    valid origin, the state is ``ambiguous`` (refuse), regardless of whether the
+    metadata is missing/empty/unparseable (review round-3 HIGH)."""
+    run_id = _current_run_id(conn, task_id)
+    if run_id is None:
+        return None, False, False
+    if expected_run_id is not None and int(expected_run_id) != run_id:
+        return None, False, False
+    launched = _launch_event_exists(conn, task_id, run_id)
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE id = ?", (run_id,),
+    ).fetchone()
+    if row is None or not row["metadata"]:
+        return None, False, launched
+    try:
+        meta = json.loads(row["metadata"])
+    except (ValueError, TypeError):
+        return None, False, launched
+    if not isinstance(meta, dict):
+        return None, False, launched
+    if "off_board_run" not in meta:
+        return None, False, launched
+    origin = meta.get("off_board_run")
+    if not isinstance(origin, dict):
+        return None, True, False
+    if origin.get("off_board") is not True:
+        return None, True, False
+    if origin.get("schema") != "v1":
+        return None, True, False
+    served = origin.get("served_model")
+    if not (isinstance(served, str) and served.strip()):
+        return None, True, False
+    return origin, False, False
+
+
+def _off_board_caller_model(metadata: Optional[dict]) -> Optional[str]:
+    """The caller-attested served model from ``metadata`` (valid non-blank
+    string), or ``None``. This is the ONLY value that may outrank the recorded
+    origin model — never a value the gate itself injected (review round-2 #2)."""
+    if isinstance(metadata, dict):
+        raw = metadata.get("served_model")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return None
+
+
+def _off_board_served_model(
+    metadata: Optional[dict], origin: Optional[dict], *, allow_origin: bool = True,
+) -> Optional[str]:
+    """The effective served model: the caller's valid ``metadata['served_model']``
+    first, else the recorded origin's model (when ``allow_origin``). ``None`` when
+    neither is a non-blank string."""
+    caller = _off_board_caller_model(metadata)
+    if caller is not None:
+        return caller
+    if allow_origin and origin is not None:
+        raw = origin.get("served_model")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return None
+
+
+def _gate_off_board_served_model(
+    conn: sqlite3.Connection, task_id: str, metadata: Optional[dict], off_board: bool,
+    *, require_recorded_origin: Optional[bool] = None, expected_run_id: Optional[int] = None,
+) -> tuple[Optional[dict], bool]:
+    """P4 PARTE 2/3: an off-board completion must name its serving model — and
+    a run LAUNCHED off-board cannot be completed as normal dispatched work.
+
+    The card is off-board when EITHER the caller declared it (``off_board=True``)
+    OR the active run carries a recorded external-launch origin. A present-but-
+    invalid or unreadable-but-launched origin REFUSES — never silently dropped
+    (review HIGH #1 + round-2 residual).
+
+    Returns ``(metadata, effective)``. The ``metadata`` is NOT pre-baked with the
+    origin's model: only the caller-attested model is normalized here; the
+    origin's model is resolved FRESH inside the txn (review round-2 #2). The
+    caller must drive the ``route_served_model`` event off ``effective``."""
+    origin, invalid, ambiguous = _off_board_run_origin_state(conn, task_id, expected_run_id)
+    run_id = _current_run_id(conn, task_id)
+    declared = bool(off_board)
+    if invalid or ambiguous:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_off_board_origin",
+                {"reason": "invalid_origin" if invalid else "origin_lost",
+                 "declared": declared, "run_id": run_id},
+            )
+        raise OffBoardOriginError(task_id)
+    effective = declared or (origin is not None)
+    if not effective:
+        return metadata, False
+    served = _off_board_served_model(metadata, origin)
+    if served is None:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_served_model",
+                {"reason": "served_model_missing", "off_board": True,
+                 "declared": declared, "recorded_origin": origin is not None,
+                 "served_model": None, "run_id": run_id},
+            )
+        raise OffBoardServedModelError(task_id)
+    require = True if require_recorded_origin is None else bool(require_recorded_origin)
+    if declared and origin is None and require:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_off_board_origin",
+                {"reason": "declared_no_origin", "off_board": True,
+                 "served_model": served, "run_id": run_id},
+            )
+        raise OffBoardOriginError(task_id)
+    if metadata is None:
+        metadata = {}
+    # Persist the caller's validated model ONLY; the origin's model is added
+    # fresh in-txn so a stale origin value can never be selected (review #2).
+    if _off_board_caller_model(metadata) is not None:
+        metadata["served_model"] = served
+    elif origin is None and served is not None:
+        metadata["served_model"] = served
+    return metadata, True
+
+
+def _off_board_state_in_txn(
+    conn: sqlite3.Connection, task_id: str, declared: bool, require: bool,
+    metadata: Optional[dict], expected_run_id: Optional[int], pre_effective: bool,
+) -> tuple[bool, Optional[str]]:
+    """Re-classify off-board INSIDE the completion txn (review HIGH #2/#3 +
+    round-2 #2). The verdict binds to the run being closed: a concurrent
+    ``record_off_board_run``, an origin that became unreadable, or an
+    effective→on-board flip (e.g. a run swap) raises
+    :class:`_OffBoardGateChangedInTxn` → rollback + durable refusal. The served
+    model is resolved FRESH (caller-attested value only outranks the origin) so a
+    pre-txn value can never be reused. Returns ``(effective, served)``.
+
+    ``pre_effective`` is the caller-facing verdict; a flip to non-effective is a
+    divergence, not a silent on-board close."""
+    origin, invalid, ambiguous = _off_board_run_origin_state(conn, task_id, expected_run_id)
+    run_id = _current_run_id(conn, task_id)
+    if invalid or ambiguous:
+        raise _OffBoardGateChangedInTxn(
+            "origin_invalid_in_txn" if invalid else "origin_lost_in_txn",
+            {"reason": "invalid_origin" if invalid else "origin_lost",
+             "run_id": run_id})
+    now_effective = declared or (origin is not None)
+    if pre_effective and not now_effective:
+        raise _OffBoardGateChangedInTxn(
+            "classification_flipped_in_txn",
+            {"reason": "classification_flipped", "run_id": run_id})
+    if not now_effective:
+        return False, None
+    served = _off_board_served_model(metadata, origin)
+    if served is None:
+        raise _OffBoardGateChangedInTxn(
+            "served_model_missing_in_txn",
+            {"reason": "served_model_missing", "run_id": run_id})
+    if declared and origin is None and require:
+        raise _OffBoardGateChangedInTxn(
+            "origin_missing_in_txn",
+            {"reason": "declared_no_origin", "run_id": run_id})
+    return True, served
 
 
 def _gate_created_cards(
@@ -2826,21 +4304,634 @@ def _gate_empty_completion(
     raise EmptyCompletionError(task_id)
 
 
+# Contracts that declare NO completion requirements. ``local-only`` and the
+# empty string are the shapes every board carries today (validate_contract's
+# other legal shapes are OWNER/REPO strings and GitHub PR URLs — those are the
+# pr_acceptance store's business, and they fail OPEN below like any other
+# non-dict contract, because this gate only understands requirements dicts).
+_INERT_COMPLETION_CONTRACTS = frozenset({"", "local-only"})
+
+
+def _is_pr_contract_shape(text: str) -> bool:
+    """True for the pr-acceptance store's contract shapes (OWNER/REPO or an
+    exact GitHub PR URL). Those are legal contracts this gate does not own."""
+    from hermes_cli.kanban_pr_acceptance import _PR, _REPO
+    return bool(_REPO.fullmatch(text) or _PR.fullmatch(text))
+
+
+def _contract_spec_reason(text: str) -> Optional[str]:
+    """First reason a JSON-dict contract fails P3b spec validation.
+
+    Returns ``None`` when *text* is a legal requirements dict. Every other
+    failure mode returns a human-readable reason. Pure (no I/O): used both by
+    creation-time validation and the in-txn TOCTOU re-check so the two rules
+    can never drift."""
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return "completion_contract is not valid JSON"
+    if not isinstance(parsed, dict):
+        return "completion_contract JSON must be an object (dict), not " + type(parsed).__name__
+    if "required_artifacts" not in parsed:
+        return None  # a dict without the key declares nothing to enforce
+    entries = parsed["required_artifacts"]
+    if not isinstance(entries, (list, tuple)):
+        return (
+            "required_artifacts must be a list, got " + type(entries).__name__
+        )
+    for item in entries:
+        if not isinstance(item, str):
+            return f"required_artifacts entries must be strings, got {item!r}"
+        if not item.strip():
+            return "required_artifacts entries must be non-blank paths"
+        if not item.startswith("/"):
+            # P3b pins the ONLY absolute form: str starting with '/'.
+            return f"required_artifacts entries must be absolute paths, got {item!r}"
+    return None
+
+
+def _looks_like_json_contract(text: Optional[str]) -> bool:
+    """True when *text* is (a candidate) JSON-object contract: stripped starts
+    with ``{`` and parses to a dict. Malformed REQUIREMENTS (bad entries) do
+    not matter here — only the top-level shape."""
+    if text is None:
+        return False
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(parsed, dict)
+
+
+def _is_json_contract_spec(text: Optional[str]) -> bool:
+    """True when *text* is exactly what :func:`_validate_contract_spec`
+    returns for a contract it owns: the canonical serialization of a VALID
+    JSON requirements contract. Creation uses this to keep the legacy
+    validator off the spec-owned shapes it predates."""
+    if not _looks_like_json_contract(text):
+        return False
+    return _contract_spec_reason(str(text).strip()) is None
+
+
+def _validate_contract_spec(completion_contract: Optional[str]) -> Optional[str]:
+    """Creation-time validation of the JSON requirements contract (P3b).
+
+    Module-level in :mod:`hermes_cli.kanban_db`, called from ``create_task``
+    with the SAME precedence as the legacy :func:`validate_contract`
+    (which keeps owning None/'local-only'/OWNER-REPO/PR-URL shapes and keeps
+    raising its plain ValueError for invalid legacy strings — but must stay
+    OFF the JSON-dict shapes it predates).
+
+    Semantics:
+      * ``None`` / ``''`` / ``'local-only'``: returned untouched — inert.
+      * A string that parses as a JSON object: strictly validated —
+        ``required_artifacts`` (optional) must be a list of absolute,
+        non-blank string paths. Legal → the canonical serialization
+        (``json.dumps(..., separators=(',', ':'))``, insertion order) is
+        returned and that exact string is what gets stored. Illegal →
+        :class:`ContractSpecError`.
+      * A string that parses as another JSON shape (list / scalar): also
+        creation-time MAKER's error → :class:`ContractSpecError` (pre-P3b
+        these JSON shapes were silently fail-open at the gate).
+      * A string that does NOT parse as JSON at all: returned untouched —
+        the legacy validator owns it (invalid strings raise its plain
+        ValueError; OWNER/REPO and PR URLs pass).
+    """
+    if completion_contract is None:
+        return None
+    stripped = completion_contract.strip()
+    if stripped.lower() in _INERT_COMPLETION_CONTRACTS:
+        return completion_contract
+    if not stripped.startswith("{"):
+        # Parseable JSON of another shape is now a spec error at creation;
+        # everything else stays the legacy validator's business.
+        try:
+            maybe = json.loads(stripped)
+        except (ValueError, TypeError):
+            return completion_contract  # legacy/pr-acceptance shape: untouched
+        raise ContractSpecError(
+            "completion_contract spec invalid: JSON must be an object (dict), "
+            f"not {type(maybe).__name__}"
+        )
+    reason = _contract_spec_reason(stripped)
+    if reason is not None:
+        raise ContractSpecError(f"completion_contract spec invalid: {reason}")
+    return json.dumps(json.loads(stripped), separators=(",", ":"))
+
+
+def _parse_contract_requirements(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[dict]:
+    """The card's contract as a requirements dict, or ``None`` when the gate
+    must not enforce anything.
+
+    ``''`` / ``None`` / ``'local-only'``: inert (``None``) — the historical
+    behaviour for every card that exists today. A JSON object is returned
+    as-is for requirement checks. Anything else (unparseable JSON, JSON
+    lists/scalars, OWNER/REPO strings) fails OPEN with an audible
+    ``contract_unparseable`` event: pre-P3 contracts were strings, so failing
+    closed would strand every legacy card on a gate it never opted into.
+    """
+    row = conn.execute(
+        "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    raw = row["completion_contract"]
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text.lower() in _INERT_COMPLETION_CONTRACTS:
+        return None
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    if _is_pr_contract_shape(text):
+        # OWNER/REPO / PR-URL: legal, owned by the pr-acceptance store. Not a
+        # requirements dict, and not garbage — no fail-open marker.
+        return None
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "contract_unparseable",
+            {
+                "contract_preview": text[:200] or None,
+                "reason": "completion_contract is not a JSON requirements object",
+                "enforcement": "fail-open",
+            },
+        )
+    return None
+
+
+def _contract_missing_artifacts(
+    conn: sqlite3.Connection, task_id: str, contract: dict,
+) -> list[str]:
+    """Declared contract artifacts that do not exist as regular files.
+
+    Requirements shape: ``{"required_artifacts": [path, ...]}`` (non-string
+    entries and blank strings are ignored — a legacy dict without the key or
+    with an empty list declares nothing). Paths inside managed scratch storage
+    must exist as files; paths OUTSIDE scratch must exist too — their
+    existence-vs-absence is audited separately by
+    :func:`_persist_scratch_completion_artifacts` (``external_artifact_recorded``
+    / ``external_artifact_missing``), which runs later inside the completion txn.
+    """
+    raw = contract.get("required_artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    workspace = _scratch_workspace(conn, task_id)
+    missing: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        path = Path(item).expanduser()
+        if path.is_file():
+            continue
+        # Inside a managed scratch workspace a missing file is unambiguously a
+        # contract violation (that storage is ours). Outside it, treat the
+        # same way — existence is existence — but keep the event below honest
+        # about where the artifact was supposed to be.
+        in_managed = bool(workspace) and _is_managed_scratch_path(path)
+        missing.append(str(item))
+        del in_managed  # documented above; existence is the only test
+    return missing
+
+
+_CONTRACT_STASH_MISSING = object()
+
+# P3b TOCTOU: the contract the artifact gate just checked, keyed by ``id(conn)``
+# (C-extension instances refuse ``setattr``, and complete_task may be called
+# concurrently on different connections). One entry per live connection,
+# overwritten (and popped on read) by the next completion on that conn.
+_GATE_CONTRACT_STASH: "dict[int, object]" = {}
+
+
+def _stash_gate_contract(conn: sqlite3.Connection, text: Optional[str]) -> None:
+    """Remember what the gate just enforced for THIS connection (best effort)."""
+    try:
+        _GATE_CONTRACT_STASH[id(conn)] = text
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
+def _peek_gate_contract(conn: sqlite3.Connection) -> object:
+    """The raw contract text the gate just stashed for THIS connection, WITHOUT
+    popping it (``_recheck_contract_in_txn`` owns the pop). Returns
+    ``_CONTRACT_STASH_MISSING`` when no gate ran on this conn, or ``None`` when
+    the gate enforced nothing. Used by ``complete_task`` so P3b capture rides
+    the exact contract version the gate validated (round-2 HIGH #2)."""
+    return _GATE_CONTRACT_STASH.get(id(conn), _CONTRACT_STASH_MISSING)
+
+
+class _HumanGateArmedInTxn(Exception):
+    """INTERNAL: the in-txn human-gate recheck refused the completion (R5-02,
+    review 5 2026-10-05).
+
+    Raised INSIDE the completion write txn so the enclosing context manager
+    ROLLS BACK the fence flip (card keeps its prior status, no ``completed``
+    event, nothing staged/bound). The caller catches it OUTSIDE the txn,
+    records ``completion_blocked_human_gate`` durably in its own txn (same
+    event + payload shape as the pre-lock refusal), then raises
+    :class:`HumanGatePendingError`.
+    """
+
+    def __init__(self, gate_ids: list):
+        self.gate_ids = list(gate_ids)
+        super().__init__(
+            "completion blocked: a HUMAN_GATE_PENDING marker was armed between "
+            "the pre-lock gate and the completion transaction"
+        )
+
+
+class _OffBoardGateChangedInTxn(Exception):
+    """INTERNAL: the in-txn off-board recheck refused the completion (review
+    2026-10-05 HIGH #2/#3). Raised INSIDE the completion write txn so the
+    enclosing context manager ROLLS BACK the fence flip (card keeps its prior
+    status, nothing is staged, no ``completed`` event). The caller catches it
+    OUTSIDE the txn, records ``completion_blocked_off_board_origin`` durably in
+    its own txn, then raises :class:`OffBoardOriginError`."""
+
+    def __init__(self, reason: str, payload: dict):
+        self.reason = reason
+        self.payload = payload
+        super().__init__(reason)
+
+
+class _ContractSwappedInTxn(Exception):
+    """INTERNAL: the in-txn contract recheck refused the completion.
+
+    Raised INSIDE the completion write txn so the enclosing context manager
+    ROLLS BACK the fence flip (card keeps its prior status, nothing is
+    staged, no ``completed`` event). The caller catches it OUTSIDE the txn,
+    records ``completion_blocked_contract_changed`` durably in its own txn,
+    then raises :class:`ContractSpecError`."""
+
+    def __init__(self, payload: dict, message: str):
+        self.payload = payload
+        self.message = message
+        super().__init__(message)
+
+
+def _assert_contract_spec_shape(text: Optional[str]) -> None:
+    """Raise :class:`ContractSpecError` when *text* IS a JSON-object contract
+    but its shape is NOT what :func:`_validate_contract_spec` accepts at
+    creation time (P3b round 3 — review 5 ``swap_between_parse_and_stash``).
+
+    THE reusable single point for schema-shape validation of a stored
+    value: :func:`_contract_spec_reason` (the creation-time pure helper) is
+    the sole source of truth, so in-txn revalidation can never drift from
+    creation. Non-dict fail-open shapes (inert strings, PR shapes, legacy
+    garbage, JSON lists/scalars) are NOT this function's business — the
+    callers own those classes; a value that parses to JSON or a schema-
+    invalid dict gets the loud, typed error.
+    """
+    if text is None or not text.strip():
+        return
+    if text.strip().lower() in _INERT_COMPLETION_CONTRACTS:
+        return
+    if _is_pr_contract_shape(text.strip()):
+        return
+    try:
+        parsed_from_text = json.loads(text)
+    except (ValueError, TypeError):
+        return  # unparseable: legacy fail-open class, owned by the gate
+    if not isinstance(parsed_from_text, dict):
+        # JSON list/scalar: creation-time spec error; at completion this is
+        # handled by the pre-existing unenforced/diff classes — do NOT raise
+        # here (round-3 refactor edge: keep the caller's semantics intact).
+        return
+    reason = _contract_spec_reason(text)
+    if reason is not None:
+        raise ContractSpecError(f"completion_contract spec invalid: {reason}")
+
+
+def _recheck_contract_in_txn(conn: sqlite3.Connection, task_id: str) -> None:
+    """Re-validate the contract INSIDE the completion write txn (P3b TOCTOU).
+
+    ``complete_task`` runs its artifact gate BEFORE the write txn with no
+    lock held, so a concurrent writer can swap ``tasks.completion_contract``
+    between the gate's read and this transaction's UPDATE — the gate's
+    decision would ride a fence on a contract it never examined. Closed by
+    re-reading the contract AFTER the UPDATE fence succeeds (rowcount == 1)
+    and inside the same write txn, with the SAME rules as
+    :func:`_validate_contract_spec` (pure function of the value, no I/O):
+
+    * The gate checked a DICT contract (stashed by
+      :func:`_gate_contract_completion`) and the in-txn read is a different
+      value (a different dict, swapped to inert/garbage, or NULLed): the
+      gate's no-longer-current decision must not close the card —
+      :class:`_ContractSwappedInTxn` rolls the completion back and the
+      caller refuses with an audible
+      ``completion_blocked_contract_changed`` event.
+    * The in-txn read is the SAME dict contract the gate checked: enforced
+      artifacts are re-checked for existence UNDER THE WRITE LOCK, so an
+      artifact deleted between gate and commit cannot ride the fence
+      (:class:`_ContractSwappedInTxn`, ``reason`` = ``artifact_missing_in_txn``).
+    * The gate checked NOTHING (inert / OWNER-REPO / PR-URL / non-dict
+      fail-open shapes — no stash): no-op, byte-for-byte pre-P3b behavior.
+    """
+    stash = _GATE_CONTRACT_STASH.pop(id(conn), _CONTRACT_STASH_MISSING)
+    if stash is _CONTRACT_STASH_MISSING:
+        return  # no gate ran on this conn: nothing to revalidate
+    # N-4 (dual audit): the stash text keeps whatever the gate read; the
+    # in-txn value is stripped below — strip BOTH here so a trailing
+    # newline (or outer whitespace) can never read as "different text".
+    gate_text: Optional[str] = str(stash).strip() if stash is not None else None
+
+    def _unenforced(text: Optional[str]) -> bool:
+        """The 'gate had nothing to enforce' class, shared by both sides of the diff:
+        absent value/row, whitespace-only, ``local-only``, OWNER/REPO and PR-URL shapes,
+        AND the non-dict fail-open shapes (unparseable JSON, JSON lists/scalars). All of
+        these leave the artifact gate with zero requirements — including ``''``
+        vs ``'local-only'`` vs pr-shapes vs legacy garbage, which textually differ but
+        enforce identically nothing (review 5 round 2 inert-class finding)."""
+        if text is None or not text.strip():
+            return True
+        if text.strip().lower() in _INERT_COMPLETION_CONTRACTS:
+            return True
+        if _is_pr_contract_shape(text):
+            return True
+        try:
+            return not isinstance(json.loads(text), dict)
+        except (ValueError, TypeError):
+            return True  # unparseable: fail-open class (contract_unparseable event, no reqs)
+
+
+    trow = conn.execute(
+        "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    in_txn = trow["completion_contract"] if trow is not None else None
+    in_txn_text = in_txn.strip() if isinstance(in_txn, str) else None
+    if _unenforced(gate_text) and _unenforced(in_txn_text):
+        return  # both sides unenforced (pre-P3b semantics, byte-for-byte): nothing was enforced
+    # P3b ROUND 3 (review 5 MEDIUM): schema-shape revalidation runs on the
+    # RAW in-txn value BEFORE any comparison branch — a concurrent writer
+    # may have swapped in a schema-INVALID dict (raw UPDATE bypasses
+    # create_task's canonization). Whether it matches the gate text
+    # byte-for-byte (the sneaky case: the gate's tolerant loop sees a
+    # non-list ``required_artifacts`` as "no requirements", stash +
+    # same-text recheck both rode it) or differs, the completion must not
+    # close the card riding a value creation would have rejected. convert
+    # the spec error into the SAME rollback/refusal contract as the other
+    # in-txn divergences: the completion txn rolls back, the audible event
+    # is written by the caller in its own txn, and the caller re-raises
+    # ContractSpecError.
+    try:
+        _assert_contract_spec_shape(in_txn_text)
+    except ContractSpecError as exc:
+        raise _ContractSwappedInTxn(
+            {
+                "gate_contract": (gate_text or "")[:200],
+                "in_txn_contract": (in_txn_text or "")[:200],
+                "reason": "schema_invalid_in_txn",
+                "spec_reason": str(exc),
+            },
+            f"completion blocked: {task_id} contract schema invalid in this "
+            f"transaction: {exc}",
+        ) from exc
+    if gate_text is not None and in_txn_text == gate_text:
+        # Same contract the gate checked: artifacts are re-verified under the
+        # write lock — artifact deletion POST-gate is the other TOCTOU half.
+        try:
+            parsed = json.loads(in_txn_text or "")
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            missing = _contract_missing_artifacts(conn, task_id, parsed)
+            if missing:
+                raise _ContractSwappedInTxn(
+                    {
+                        "missing_artifacts": missing,
+                        "gate_contract": (gate_text or "")[:200],
+                        "in_txn_contract": (in_txn_text or "")[:200],
+                        "reason": "artifact_missing_in_txn",
+                    },
+                    f"completion blocked: {task_id} contract artifacts "
+                    f"disappeared between the artifact gate and this "
+                    f"transaction: {', '.join(missing)}",
+                )
+        return
+    # DIFFERENT contract than the gate checked: the gate's decision referred
+    # to a value this txn does not carry — refuse regardless of direction.
+    raise _ContractSwappedInTxn(
+        {
+            "gate_contract": (gate_text or "")[:200],
+            "in_txn_contract": (in_txn_text or "")[:200],
+            "reason": "contract_changed_in_txn",
+        },
+        f"completion blocked: {task_id} contract changed between the artifact "
+        f"gate and this transaction (was: {(gate_text or '')[:100]!r}; "
+        f"now: {(in_txn_text or '')[:100]!r})",
+    )
+
+
+def _gate_contract_completion(
+    conn: sqlite3.Connection, task_id: str,
+) -> None:
+    """Enforce a JSON-dict ``completion_contract`` BEFORE the completion txn.
+
+    Accepts when every declared artifact exists on disk; refuses with
+    :class:`ContractCompletionError` after an auditable
+    ``completion_blocked_contract`` event otherwise. Cards whose contract is
+    inert (``''``/``None``/``'local-only'``) or not a requirements dict are
+    handled by :func:`_parse_contract_requirements` (``None`` = no enforcement,
+    with a ``contract_unparseable`` event for the non-dict shapes).
+    """
+    contract = _parse_contract_requirements(conn, task_id)
+    if contract is None:
+        # P3b TOCTOU: remember for ``complete_task``'s in-txn recheck that the
+        # gate enforced nothing here (inert / OWNER-REPO / PR-URL / non-dict
+        # fail-open shapes). A dict contract would stash its RAW string below.
+        _stash_gate_contract(conn, None)
+        return
+    # P3b TOCTOU: stash the contract AS READ (raw string) so the in-txn
+    # recheck can diff the version the fence actually rode on against what
+    # the concurrent path has put there meanwhile. The read in the gate comes
+    # from _parse_contract_requirements (stripped, json-parsed) — re-read the
+    # stored value here for the stash so the comparison is byte-exact.
+    raw_row = conn.execute(
+        "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    _stash_gate_contract(
+        conn, raw_row["completion_contract"] if raw_row is not None else None
+    )
+    missing = _contract_missing_artifacts(conn, task_id, contract)
+    # P3b round 3: tolerate a schema-INVALID requirements dict here the same
+    # way _contract_missing_artifacts does (non-list key = declares nothing)
+    # — the in-txn recheck is the enforcement point that refuses the illegal
+    # shape (schema_invalid_in_txn); the gate's evidence loop and refusal
+    # event must never crash on the malformed value it is about to leave to
+    # the recheck.
+    required = contract.get("required_artifacts")
+    if not isinstance(required, (list, tuple)):
+        required = []
+    if not missing:
+        # Pass, but keep the evidence trail honest: a requirement satisfied by
+        # a file OUTSIDE managed scratch cannot be staged/preserved by the
+        # completion path (it is not ours to copy), so its existence is
+        # recorded now, at gate time.
+        workspace = _scratch_workspace(conn, task_id)
+        for item in required:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            path = Path(item).expanduser()
+            if path.is_file() and not _is_managed_scratch_path(path):
+                _append_event(
+                    conn, task_id, "external_artifact_recorded",
+                    {"artifact": item, "exists": True, "source": "completion_contract"},
+                )
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_contract",
+            {
+                "missing_artifacts": missing,
+                "required_artifacts": [
+                    req for req in required
+                    if isinstance(req, str)
+                ],
+            },
+        )
+    raise ContractCompletionError(task_id, missing)
+
+
+def _merge_contract_artifacts_into_metadata(
+    conn: sqlite3.Connection, task_id: str, metadata: dict, *,
+    required_artifacts: Optional[list[str]] = None,
+) -> None:
+    """Stage contract-required artifacts (4th opinion, 2026-10-04).
+
+    ``_gate_contract_completion`` verified that every ``required_artifacts``
+    entry exists; for entries INSIDE managed scratch we append them to
+    ``metadata['artifacts']`` (dedup) so the in-txn staging copies them to the
+    attachments dir before workspace cleanup runs post-commit. External paths
+    (outside managed scratch) are skipped: they are not ours to copy and the
+    gate already recorded ``external_artifact_recorded``.
+
+    Round-3 HIGH #3: the SCRATCH requirement set must ride the SAME contract
+    snapshot the gate enforced (``required_artifacts``, from
+    ``kea.required_scratch_artifacts``), NOT a fresh autonomous re-read — an
+    A→B→A mixed-contract swap between the gate and this merge used to let a
+    scratch requirement of the gate's contract (A) be silently dropped (only
+    B's ``t`` staged), so cleanup deleted ``s``. When ``required_artifacts`` is
+    ``None`` (a caller with no gate snapshot) the stored contract is read as
+    before.
+    """
+    if required_artifacts is None:
+        try:
+            contract = _parse_contract_requirements(conn, task_id)
+        except Exception:
+            return
+        if not contract:
+            return
+        raw = contract.get("required_artifacts")
+        if not isinstance(raw, (list, tuple)):
+            return
+    else:
+        raw = required_artifacts
+    if not isinstance(metadata, dict):
+        return
+    workspace = _scratch_workspace(conn, task_id)
+    if workspace is None:
+        return
+    is_managed_ws, _ = _managed_scratch_path_info(workspace)
+    if not is_managed_ws:
+        return
+    artifacts = metadata.get("artifacts")
+    if isinstance(artifacts, tuple):
+        # Round 4 (re-review HIGH): a caller/tool may pass a TUPLE of paths;
+        # normalising to [] silently dropped every element and the staging then
+        # skipped the copy. Preserve the elements (list and tuple alike).
+        artifacts = list(artifacts)
+        metadata["artifacts"] = artifacts
+    elif not isinstance(artifacts, list):
+        artifacts = []
+        metadata["artifacts"] = artifacts
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        path = Path(item).expanduser()
+        try:
+            # R5-05/R5-06: ONE ownership partition — the same resolved test
+            # ``kea._is_external_requirement`` applies at capture. An item the
+            # external lane owns (foreign scratch, unmanaged) is not staged
+            # here; an OWN-scratch item is staged whatever spelling it carries
+            # (the old lexical-AND filter dropped the resolved spelling of a
+            # symlinked workspace, leaving the in-txn coverage uncovered and
+            # refusing VALID contracts).
+            in_owned_scratch = (
+                path.is_file()
+                and not _kea._is_external_requirement(
+                    item, own_workspace=workspace,
+                )
+            )
+        except OSError:
+            continue
+        if in_owned_scratch and item not in artifacts and str(path) not in artifacts:
+            artifacts.append(str(path))
+
+
+def _gate_blocked_completion(conn: sqlite3.Connection, task_id: str) -> None:
+    """Refuse to complete a card parked in ``blocked`` (STUDY-03 F-01 guard).
+
+    A blocked card is a human decision in flight; the one-hop collapse to
+    ``done`` — with or without evidence, with or without ``force`` — erases
+    the blocker without the operator seeing it. The legitimate path out is
+    :func:`unblock_task` (re-gates parents, restores the resumable phase),
+    then a normal completion. Recorded as an auditable
+    ``completion_blocked_card_blocked`` event, then raised as
+    :class:`BlockedCompletionError`.
+    """
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_card_blocked",
+            {"prior_status": "blocked"},
+        )
+    raise BlockedCompletionError(task_id)
+
+
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
-) -> list[Path]:
+    bound_external: Optional[set[str]] = None,
+) -> tuple[list[Path], set[str]]:
     """Copy scratch artifacts to the attachments dir and record each as an
-    attachment row; returns the copies so the caller can discard them if its
-    transaction rolls back."""
-    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    attachment row; returns ``(staged_copies, covered_scratch)``.
+
+    ``bound_external`` is the set of ``stored_path`` values THIS invocation's
+    ``bind_external_artifacts`` actually produced (round-3 HIGH #2) — the ONLY
+    trusted source for "this path is already bound". It is passed explicitly so
+    a forged ``metadata['external_artifacts_preserved']`` can never make staging
+    skip a scratch requirement's copy.
+
+    ``covered_scratch`` is the set of resolved SOURCE paths this call actually
+    copied (round-3 HIGH #3), so the caller can validate in-txn that every
+    scratch requirement of the gate's snapshot was preserved.
+    """
+    covered = _persist_scratch_completion_artifacts(
+        conn, task_id, metadata, bound_external=bound_external,
+    )
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
-        _insert_completion_attachment(
-            conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
-        )
-    return staged
+    try:
+        for path in staged:
+            _insert_completion_attachment(
+                conn, task_id, filename=path.name, stored_path=str(path),
+                size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
+            )
+    except Exception:
+        # R5-08: a row failure mid-staging must not leak the copies already on
+        # disk (rows never committed; the retry would stage name_1.ext beside
+        # the orphans). Discard ALL of this call's copies, then re-raise — the
+        # enclosing completion request rolls its txn back as before.
+        if staged:
+            _discard_staged_copies(staged, staged[0].parent)
+        raise
+    return staged, covered
 
 
 def _cleaned_artifact_paths(metadata: Any) -> list[str]:
@@ -2934,27 +5025,55 @@ def _merge_completion_prose_artifacts(
 
 
 def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    conn: sqlite3.Connection, task_id: str, metadata: dict, *,
+    bound_external: Optional[set[str]] = None,
+) -> set[str]:
+    """Copy scratch-workspace completion artifacts before cleanup removes them.
+
+    Round-3 HIGH #2: ``bound_external`` is the set of ``stored_path`` values
+    THIS invocation's ``bind_external_artifacts`` produced — passed in
+    explicitly. The staging NEVER reads ``metadata['external_artifacts_preserved']``
+    (which a caller could forge to make a scratch requirement be skipped, letting
+    cleanup delete it). When ``bound_external`` is ``None`` no path is treated as
+    already-bound (the pre-round-2 behaviour for scratch-only callers such as
+    ``request_review``).
+
+    Returns the set of resolved SOURCE paths THIS call actually copied
+    (round-3 HIGH #3), so ``complete_task`` can validate in-txn that every
+    scratch requirement of the gate's snapshot was preserved.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
-        return
+        return set()
 
     workspace = _scratch_workspace(conn, task_id)
     if workspace is None:
-        return
+        return set()
     is_managed, board = _managed_scratch_path_info(workspace)
     if not is_managed:
-        return
+        return set()
 
     try:
         workspace_root = workspace.resolve()
     except OSError:
-        return
+        return set()
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
+    # P3b round 2 (MEDIUM #6): only the files THIS scratch step actually copies
+    # may be re-staged as attachment rows. A contract mixing a scratch artifact
+    # with an external one has the external copy already bound (and named in
+    # ``metadata['artifacts']``) by ``bind_external_artifacts``; blindly
+    # staging every path under the attachments dir would insert a SECOND row
+    # and a SECOND ``attached`` event for the same file.
+    scratch_copies: list[str] = []
+    # Resolved SOURCE paths copied by this call — the scratch coverage result.
+    covered_scratch: set[str] = set()
+    # Stored paths already bound as preserved external copies, taken from THIS
+    # invocation's explicit bindings only (round-3 HIGH #2): re-processing one
+    # would emit a spurious ``external_artifact_recorded`` for our own managed
+    # copy. Caller metadata is NEVER trusted for this decision.
+    bound_external = set(bound_external or ())
     used_destinations: set[Path] = set()
     changed = False
 
@@ -2972,7 +5091,25 @@ def _persist_scratch_completion_artifacts(
             persisted.append(artifact)
             continue
 
+        if str(resolved_src) in bound_external:
+            # Already bound by bind_external_artifacts: keep the path in the
+            # payload but do NOT copy/re-stage/record it again.
+            persisted.append(str(resolved_src))
+            continue
+
         if not resolved_src.is_relative_to(workspace_root):
+            # Artifact OUTSIDE the task's scratch workspace: it is not copied
+            # (nothing to preserve — it lives in the operator's own storage),
+            # the declared path persists as a plain string (P2 behaviour), but
+            # the declaration is no longer silent: a real file is recorded
+            # (``external_artifact_recorded``) and a missing one is flagged
+            # (``external_artifact_missing``) so a completion whose evidence
+            # points at nothing is discoverable in the event log.
+            _append_event(
+                conn, task_id,
+                "external_artifact_recorded" if src.is_file() else "external_artifact_missing",
+                {"artifact": artifact, "exists": bool(src.is_file())},
+            )
             persisted.append(artifact)
             continue
 
@@ -3005,13 +5142,14 @@ def _persist_scratch_completion_artifacts(
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
+        scratch_copies.append(str(dest.resolve()))
+        covered_scratch.add(str(resolved_src))
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+        metadata["_staged_artifacts"] = scratch_copies
+    return covered_scratch
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
@@ -3070,6 +5208,13 @@ def edit_task(
     metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
+    # An edit carries caller metadata; it must never clobber the trusted launch
+    # origin on a historical run (review round-2 residual of MEDIUM #5). The
+    # dispatcher's ``resolved_route_provenance`` stays editable on purpose
+    # (operator correction), so only the launch origin is stripped here.
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
+    metadata = _strip_keys(metadata, _LAUNCH_KEY)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
@@ -3123,9 +5268,30 @@ def edit_task(
                 run_id = int(run["id"])
                 conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
                 if metadata is not None:
+                    # S6-01: the operator's edit REPLACES the completion prose
+                    # metadata, but the dispatcher-controlled
+                    # ``resolved_route_provenance`` staged on that run at
+                    # dispatch time must survive the edit (caller fields still
+                    # win on collision — an explicit edit may correct it only
+                    # by naming it).
+                    try:
+                        prior_row = conn.execute(
+                            "SELECT metadata FROM task_runs WHERE id = ?", (run_id,),
+                        ).fetchone()
+                        prior = (
+                            json.loads(prior_row["metadata"])
+                            if prior_row is not None and prior_row["metadata"]
+                            else {}
+                        )
+                        if not isinstance(prior, dict):
+                            prior = {}
+                    except (ValueError, TypeError, sqlite3.Error):
+                        prior = {}
+                    merged = dict(prior)
+                    merged.update(metadata)
                     conn.execute(
                         "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                        (json.dumps(metadata, ensure_ascii=False), run_id),
+                        (json.dumps(merged, ensure_ascii=False), run_id),
                     )
             _append_event(
                 conn, task_id, "edited",
@@ -3305,7 +5471,18 @@ def request_review(
         return (ok, reason) if with_reason else ok
 
     summary = redact_review_value(summary)
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
     metadata = redact_review_value(metadata)
+    # A review handoff carries UNTRUSTED caller metadata; it must never clobber
+    # or forge the trusted launch origin (review round-2 residual of MEDIUM #5),
+    # NOR the other trusted run-metadata keys (R5-04, review 5 2026-10-05): a
+    # worker that never spawned a dispatcher could otherwise forge
+    # ``resolved_route_provenance`` onto the closing run, or pre-stage
+    # ``external_artifacts_preserved``. Same policy as complete_task
+    # (_strip_protected_run_metadata); ``edit_task`` keeps its narrower
+    # launch-only strip deliberately (operator corrections are auditable).
+    metadata = _strip_protected_run_metadata(metadata)
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
@@ -3383,7 +5560,7 @@ def request_review(
                     False, "task is not in running/ready (or expected_run_id did not match the current run)",
                 )
             if isinstance(metadata, dict):
-                staged_copies = _stage_completion_artifacts(
+                staged_copies, _covered = _stage_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
                 )
             run_id = _end_or_synthesize_run(
@@ -4435,6 +6612,7 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli import kanban_external_artifacts as _kea  # noqa: E402
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

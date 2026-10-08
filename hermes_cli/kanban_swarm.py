@@ -46,6 +46,12 @@ class SwarmCreated:
     worker_ids: list[str]
     verifier_id: str
     synthesizer_id: str
+    # True quando o root foi devolvido por idempotência (topologia do
+    # blackboard) em vez de criado agora. Um root recuperado pode estar
+    # ``blocked`` por decisão humana (needs_input/gate) — reativá-lo em
+    # silêncio apagaria o bloqueador (4.ª opinião 2026-10-04): o caller
+    # SÓ auto-ativa roots FRESH.
+    recovered: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -132,7 +138,14 @@ def create_swarm(
             priority=priority, idempotency_key=idempotency_key,
         )
         root = kb.get_task(conn, created.root_id)
-        if root is not None and root.status == "blocked":
+        # Auto-ativar APENAS o root desta corrida (fresh): um root devolvido
+        # pela idempotência pode estar blocked por decisão humana — o replay
+        # não o pode desbloquear por conta própria (4.ª opinião 2026-10-04).
+        if (
+            root is not None
+            and root.status == "blocked"
+            and not getattr(created, "recovered", False)
+        ):
             if not _activate_root_inline(
                 conn,
                 created.root_id,
@@ -206,7 +219,7 @@ def _create_swarm_uncommitted(
         verifier_id = existing.get("verifier_id")
         synthesizer_id = existing.get("synthesizer_id")
         if worker_ids and verifier_id and synthesizer_id:
-            return SwarmCreated(root, worker_ids, str(verifier_id), str(synthesizer_id))
+            return SwarmCreated(root, worker_ids, str(verifier_id), str(synthesizer_id), recovered=True)
 
     context_suffix = _swarm_context(root, goal)
     worker_ids = [

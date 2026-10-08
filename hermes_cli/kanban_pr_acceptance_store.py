@@ -1,8 +1,10 @@
 """Persist acceptance with the same ownership snapshot as the terminal write."""
 from __future__ import annotations
 
+import json
+
 from hermes_cli.kanban_db_connect import write_txn
-from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_pr_acceptance import _PR, _REPO, collect_acceptance
 
 
 def _snapshot(conn, task_id):
@@ -16,6 +18,15 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
         return False
     run_id, status, contract = snapshot
     if not contract or contract == "local-only":
+        return None
+    # This store only engages on contract shapes it understands: OWNER/REPO
+    # strings and GitHub PR URLs. Anything else is either the completion-contract
+    # gate's requirements dict (P3: artifact existence, not PR acceptance) or a
+    # value that was never producible through create_task's validate_contract —
+    # a direct-DB write — which the gate audits as ``contract_unparseable``.
+    # Skipping here keeps PR acceptance from refusing cards whose contract it
+    # cannot even parse, which would override the gate's fail-open decision.
+    if isinstance(contract, str) and not (_REPO.fullmatch(contract) or _PR.fullmatch(contract)):
         return None
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False

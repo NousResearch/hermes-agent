@@ -537,7 +537,10 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # worker context (no ``HERMES_KANBAN_TASK``). - No durable note on these auto-heartbeats; that's reserved
 # for the explicit tool which carries a model-supplied note.
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
-_auto_heartbeat_last_attempt: float = 0.0
+# -inf, not 0.0: the limiter compares against time.monotonic(), whose origin is
+# host boot on Linux. On a freshly booted host/CI microVM (uptime < interval) a
+# 0.0 seed reads as "attempted just now" and silently drops the first write.
+_auto_heartbeat_last_attempt: float = float("-inf")
 _auto_heartbeat_fence_warned = False
 
 
@@ -610,7 +613,7 @@ def heartbeat_current_worker_from_env() -> bool:
 # OUT-OF-BAND, so a user can talk to a running task without block → comment → unblock.
 # Watermarked per task (seeded on first poll: that history is already in the context).
 _COMMENT_POLL_MIN_INTERVAL_SECONDS = 6.0
-_comment_poll_last_attempt: float = 0.0
+_comment_poll_last_attempt: float = float("-inf")  # see _auto_heartbeat_last_attempt
 _comment_watermark: dict[str, int] = {}
 
 

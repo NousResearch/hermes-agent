@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import tui_gateway.server as server
@@ -52,7 +53,14 @@ def test_sessions_signature_changes_for_session_metadata_updates(tmp_path, monke
     monkeypatch.setattr(server, "_watcher_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_served_profile_homes", [])
 
+    seeded_mtime = db_path.stat().st_mtime_ns
     before = getattr(server, "_sessions_sig")()
+    # The digest is cached behind the DB mtime. On a coarse timestamp clock (~4 ms ticks on the
+    # Blacksmith slices) the UPDATE below can land in the same tick as the seed write, so the
+    # cache reads it as "no commit yet" and returns the stale digest. Let the clock tick first
+    # (the #111105 idiom), so the only thing under test is the content digest.
+    while db_path.stat().st_mtime_ns <= seeded_mtime:
+        os.utime(db_path)
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE sessions SET title = 'Renamed' WHERE id = 'session-1'")
     conn.commit()

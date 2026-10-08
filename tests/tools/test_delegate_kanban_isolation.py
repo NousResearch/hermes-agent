@@ -193,23 +193,27 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
         task_before = kb.get_task(conn, tid)
         events_before = kb.list_events(conn, tid)
         monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
-        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        # -inf, never 0.0: the limiter compares against time.monotonic(), whose origin is host
+        # boot on Linux. On a fresh CI microVM (uptime < 60 s) a 0.0 seed reads as "attempted
+        # just now" and the call returns False before it ever reaches the fence (#1487 class).
+        never = float("-inf")
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", never)
         # raising=False: a regression that drops the module flag must fail on the
         # symptom assertions below, not on this attribute probe.
         monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False, raising=False)
 
         with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
             assert kanban_tools.heartbeat_current_worker_from_env() is False
-            monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+            monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", never)
             assert kanban_tools.heartbeat_current_worker_from_env() is False
         fence_warnings = [r for r in caplog.records if "HERMES_DELEGATED_CHILD_CONTEXT" in r.getMessage()]
         assert len(fence_warnings) == 1 and tid in fence_warnings[0].getMessage()
 
         monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT")
-        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", never)
         with delegated_child_context("child-1"):
             assert kanban_tools.heartbeat_current_worker_from_env() is False
-        assert kanban_tools._auto_heartbeat_last_attempt == 0.0
+        assert kanban_tools._auto_heartbeat_last_attempt == never
 
         task_after = kb.get_task(conn, tid)
         assert task_after.claim_expires == task_before.claim_expires

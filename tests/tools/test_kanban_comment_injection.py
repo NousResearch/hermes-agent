@@ -50,13 +50,13 @@ def worker_home(tmp_path, monkeypatch):
     kb._INITIALIZED_PATHS.clear()
     # Reset module-level poll state so tests don't leak into each other.
     kt._comment_watermark.clear()
-    kt._comment_poll_last_attempt = 0.0
+    kt._comment_poll_last_attempt = float("-inf")
     return home
 
 
 def _unthrottle():
     """Bypass the inter-poll rate limit for deterministic tests."""
-    kt._comment_poll_last_attempt = 0.0
+    kt._comment_poll_last_attempt = float("-inf")
 
 
 def test_noop_without_worker_env(worker_home, monkeypatch):

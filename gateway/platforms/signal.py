@@ -65,6 +65,34 @@ _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
 
 
+def _send_result_entries(result: Any) -> list[dict]:
+    results = result.get("results") if isinstance(result, dict) else None
+    return [entry for entry in results if isinstance(entry, dict)] if isinstance(results, list) else []
+
+
+def _recipient_send_error(entry: dict) -> Optional[str]:
+    rtype = entry.get("type")
+    if rtype and rtype != "SUCCESS":
+        return str(rtype)
+    if "success" in entry and not entry.get("success"):
+        return str(entry.get("failure") or "Recipient delivery failed")
+    return None
+
+
+def _has_successful_recipient(result: Any) -> bool:
+    """Only an explicit recipient success proves that retrying would duplicate a group send."""
+    return any((entry.get("type") == "SUCCESS" or entry.get("success") is True)
+               and _recipient_send_error(entry) is None for entry in _send_result_entries(result))
+
+
+def _failed_send_response(error: Any) -> Optional[dict]:
+    """Keep recipient failure details from an RPC error without ever turning it into success."""
+    data = error.get("data") if isinstance(error, dict) else None
+    response = data.get("response") if isinstance(data, dict) else None
+    entries = _send_result_entries(response)
+    return response if entries and all(_recipient_send_error(entry) for entry in entries) else None
+
+
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
@@ -615,11 +643,11 @@ class SignalAdapter(BasePlatformAdapter):
                     err_msg = str(err.get("message", "")) if isinstance(err, dict) else str(err)
                     raise SignalRateLimitError(err_msg, retry_after=_extract_retry_after_seconds(err))
                 logger.log(fail_level, "Signal RPC error (%s): %s", method, err)
-                return None
+                return _failed_send_response(err) if method == "send" else None
             result = data.get("result")
-            if isinstance(result, dict) and raise_on_rate_limit:
-                for r in result.get("results") if isinstance(result.get("results"), list) else ():
-                    if isinstance(r, dict) and r.get("type") == "RATE_LIMIT_FAILURE":
+            if raise_on_rate_limit and not ("groupId" in params and _has_successful_recipient(result)):
+                for r in _send_result_entries(result):
+                    if r.get("type") == "RATE_LIMIT_FAILURE":
                         raise SignalRateLimitError("Rate limit exceeded for recipient",
                                                    retry_after=r.get("retryAfterSeconds"))
             return result
@@ -633,17 +661,26 @@ class SignalAdapter(BasePlatformAdapter):
         """Plain-text fallback for the base-class send path; send() applies rich styles itself."""
         return content
 
-    def _validate_send_result(self, result: Any) -> tuple[bool, Optional[str]]:
-        """Validate signal-cli send response results. Returns (success, error_message)."""
-        results = result.get("results") if isinstance(result, dict) else None
-        for r in results if isinstance(results, list) else ():
-            if not isinstance(r, dict):
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        # Changing formatting cannot repair a recipient's identity or registration.
+        return result.error in {"IDENTITY_FAILURE", "UNREGISTERED_FAILURE"}
+
+    @staticmethod
+    def _is_rate_limited_error(error: Optional[str]) -> bool:
+        return error == "RATE_LIMIT_FAILURE" or BasePlatformAdapter._is_rate_limited_error(error)
+
+    def _validate_send_result(self, result: Any, *, is_group: bool = False) -> tuple[bool, Optional[str]]:
+        """Preserve total failures but do not resend a group message that already reached a member."""
+        partly_delivered = is_group and _has_successful_recipient(result)
+        for entry in _send_result_entries(result):
+            if (error := _recipient_send_error(entry)) is None:
                 continue
-            rtype = r.get("type")
-            if rtype and rtype != "SUCCESS":
-                return False, str(rtype)
-            if "success" in r and not r.get("success"):
-                return False, str(r.get("failure") or "Recipient delivery failed")
+            if not partly_delivered:
+                return False, error
+            address = entry.get("recipientAddress")
+            recipient = (address.get("number") or address.get("uuid")) if isinstance(address, dict) else None
+            logger.warning("Signal group send partly delivered; recipient %s failed: %s",
+                           redact_phone(str(recipient or "")), error)
         return True, None
 
     @staticmethod
@@ -695,9 +732,13 @@ class SignalAdapter(BasePlatformAdapter):
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
         if (result := await self._rpc("send", params)) is None:
             return None, SendResult(success=False, error=fail_error)
-        success, err_msg = self._validate_send_result(result)
+        success, err_msg = self._validate_send_result(result, is_group="groupId" in params)
         if not success:
-            return None, SendResult(success=False, error=err_msg, raw_response=result)
+            rate_limited = err_msg == "RATE_LIMIT_FAILURE"
+            retry_after = (_extract_retry_after_seconds({"data": {"response": result}})
+                           if rate_limited else None)
+            return None, SendResult(success=False, error=err_msg, raw_response=result, retry_after=retry_after,
+                                    error_kind="rate_limited" if rate_limited else None)
         self._track_sent_timestamp(result)
         return result, None
 
@@ -839,7 +880,8 @@ class SignalAdapter(BasePlatformAdapter):
                                "scheduler will pace the retry", label, attempt, max_attempts, retry_after)
                 continue
             duration = time.monotonic() - t0
-            success, err_msg = self._validate_send_result(result) if result is not None else (False, None)
+            success, err_msg = (self._validate_send_result(result, is_group="groupId" in params)
+                                if result is not None else (False, None))
             if success:
                 self._track_sent_timestamp(result)
                 await scheduler.report_rpc_duration(duration, n)

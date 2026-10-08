@@ -206,6 +206,37 @@ test('a stamp-only change reuses the renderer bytes and rebakes only main/preloa
   expect(files(join(input.out, 'assets')).map(([, b]) => Buffer.from(b, 'base64').toString()).join('')).toContain('changed source')
 }, 60000)
 
+test('a renderer built under different VITE_*/NODE_ENV settings is never reused or certified', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  const restamp = commit => put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit }))
+  const saved = { probe: process.env.VITE_PERF_PROBE, node: process.env.NODE_ENV }
+  try {
+    process.env.NODE_ENV = 'production' // vitest itself runs with NODE_ENV=test
+    process.env.VITE_PERF_PROBE = '1'
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    delete process.env.VITE_PERF_PROBE
+    // The probe build's receipt no longer describes a plain build: neither gate accepts it.
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+    restamp('e'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    // Unset NODE_ENV means production (vite's own build default): the production receipt stays
+    // current without it, and the next stamp-only build reuses it.
+    delete process.env.NODE_ENV
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+    restamp('f'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+    process.env.NODE_ENV = 'development'
+    restamp('a'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  } finally {
+    for (const [key, value] of [['VITE_PERF_PROBE', saved.probe], ['NODE_ENV', saved.node]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
+}, 90000)
+
 test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')

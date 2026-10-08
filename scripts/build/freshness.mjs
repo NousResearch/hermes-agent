@@ -127,12 +127,23 @@ function stampClock(prepared = {}) {
   return identity ? (identity.builtAt ?? null) : null
 }
 
-export function buildInputs(source, product, prepared = {}) {
+// Vite inlines every VITE_* variable into the renderer and NODE_ENV selects its mode (and the React
+// Compiler's dev output), so a renderer is a function of these as much as of its sources: a
+// VITE_PERF_PROBE=1 build must never be reused or certified for a plain one. An unset NODE_ENV is
+// the production default vite's build() itself writes into process.env, so a build that started
+// without one still matches the receipt it records afterwards.
+function rendererEnv(env) {
+  return Object.entries({ ...env, NODE_ENV: env.NODE_ENV || 'production' })
+    .filter(([key]) => key === 'NODE_ENV' || key.startsWith('VITE_')).sort()
+}
+
+export function buildInputs(source, product, prepared = {}, env = process.env) {
   return {
     sourceHash: sourceHash(source, product),
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
       name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
+    ...(product === 'desktop' ? { env: rendererEnv(env) } : {}),
   }
 }
 
@@ -184,15 +195,17 @@ export function productCurrent({ source, product, out, prepared }) {
   } catch { return false }
 }
 
-/** True when ``out`` holds a desktop product whose receipt matches ``inputs`` in everything but
- *  the install stamp and whose bytes are intact. Only the main/preload bundles bake the stamp, so
- *  the renderer such a product carries is still the one these inputs compile to. */
+/** True when ``out`` holds a desktop product whose receipt matches ``inputs`` (sources, renderer
+ *  environment, prepared inputs) in everything but the install stamp and whose bytes are intact.
+ *  Only the main/preload bundles bake the stamp, so the renderer such a product carries is still
+ *  the one these inputs compile to. */
 export function rendererCurrent(out, inputs) {
   try {
     const saved = hostReceipt(out, 'desktop')
     const unstamped = list => JSON.stringify(list.filter(({ name }) => name !== 'stamp'))
     return !!saved
       && saved.inputs.sourceHash === inputs.sourceHash
+      && JSON.stringify(saved.inputs.env) === JSON.stringify(inputs.env)
       && unstamped(saved.inputs.prepared) === unstamped(inputs.prepared)
       && saved.outputHash === outputHash(out)
   } catch { return false }

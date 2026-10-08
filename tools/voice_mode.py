@@ -371,9 +371,9 @@ def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
     sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    deadline = time.monotonic() + timeout
-    while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
-        time.sleep(0.01)
+    from agent.deadline import poll_until
+
+    poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
     sd.stop()
 
 

@@ -16,7 +16,7 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 from .auth import broker_token_request, discover_client
-from .transport import INFERENCE_BASE_URL, SolsticeClient
+from .transport import INFERENCE_BASE_URL
 
 # Verified on the per-user-quota endpoint, which has no model listing a user token may read (its
 # /models answers 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Quota is per model, so lite stays last as the
@@ -43,6 +43,10 @@ def _auth_handler(action: str, args: Any) -> bool:
 
 class SolsticeProfile(ProviderProfile):
     def create_client(self, **client_kwargs: Any) -> Any:
+        # Deferred: importing the transport's client pulls the native Gemini adapter (httpx),
+        # which minimal discovery contexts — the pm runtime — deliberately do not ship.
+        from .transport import SolsticeClient
+
         allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
         return SolsticeClient(**{k: v for k, v in client_kwargs.items() if k in allowed})
 

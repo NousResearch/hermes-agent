@@ -42,26 +42,35 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns2.accept_hooks is True
 
 
-def test_script_path_flags_name_the_per_profile_scripts_dir():
-    """Regression for #99583 (help-text half): ``--script`` help said ``~/.hermes/scripts/`` while the scheduler and webhook
-    filter resolve under the job's own ``$HERMES_HOME/scripts/`` — a ``-p <name>`` job whose script
-    was placed per the help failed at run time. Every script-path flag must state the profile rule."""
-    from hermes_cli.subcommands._shared import SCRIPTS_DIR_HELP
+def test_cron_script_help_explains_the_active_profile_home():
+    """Every cron script option must explain the profile home, even in cached help."""
+    parser = _build()
+    cron = parser._subparsers._group_actions[0].choices["cron"]
+    commands = cron._subparsers._group_actions[0].choices
+    for command, flag in (("create", "--script"), ("create", "--monitor-script"),
+                          ("edit", "--script")):
+        action = commands[command]._option_string_actions[flag]
+        help_text = action.help
+        assert "$HERMES_HOME/scripts/" in help_text
+        assert "active profile" in help_text
+        assert "-p <name>" in help_text
+
+
+def test_webhook_script_help_distinguishes_route_and_gateway_profiles():
+    """The subscription owner and script owner can differ on multiplexed gateways."""
     from hermes_cli.subcommands.webhook import build_webhook_parser
 
-    parser = _build()
-    build_webhook_parser(parser._subparsers._group_actions[0], cmd_webhook=_sentinel_handler)
-    sub = parser._subparsers._group_actions[0].choices
-    flags = [
-        (sub["cron"], ("create",), "--script"),
-        (sub["cron"], ("create",), "--monitor-script"),
-        (sub["cron"], ("edit",), "--script"),
-        (sub["webhook"], ("subscribe",), "--script"),
-    ]
-    for root, path, flag in flags:
-        node = root
-        for name in path:
-            node = next(a for a in node._actions if isinstance(a, argparse._SubParsersAction)).choices[name]
-        action = next(a for a in node._actions if flag in a.option_strings)
-        assert SCRIPTS_DIR_HELP in action.help, (path, flag, action.help)
-        assert "$HERMES_HOME/scripts/" in SCRIPTS_DIR_HELP
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_webhook_parser(subparsers, cmd_webhook=_sentinel_handler)
+    webhook = subparsers.choices["webhook"]
+    commands = next(action for action in webhook._actions
+                    if isinstance(action, argparse._SubParsersAction))
+    subscribe = commands.choices["subscribe"]
+    action = subscribe._option_string_actions["--script"]
+    assert "$HERMES_HOME/scripts/" in action.help
+    assert "--route-profile" in action.help
+    assert "bare URLs" in action.help and "gateway's own profile" in action.help
+    assert "-p <name>" not in action.help
+    rendered = " ".join(subscribe.format_help().split())
+    assert " ".join(action.help.split()) in rendered

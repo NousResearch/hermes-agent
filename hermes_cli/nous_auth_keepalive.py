@@ -165,7 +165,11 @@ def refresh_nous_auth_keepalive_once(
         if not get_provider_auth_state("nous"):
             return False
         try:
-            resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
+            # Nobody is waiting on a keepalive tick: a free-tier browser challenge is announced to the
+            # desktop (so it can clear before a token is needed) but never waited on here.
+            from hermes_cli.anon_challenge import background_caller
+            with background_caller():
+                resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
             logger.debug("Nous auth keepalive: refreshed singleton auth state")
             return True
         except Exception as exc:

@@ -174,7 +174,6 @@ def _answering(answer, *, session_id="s1", delay=0.01):
 
         if answer is not None:
             threading.Timer(delay, respond).start()
-        return None
 
     callback.seen = seen
     return callback
@@ -388,7 +387,7 @@ def _profile_home(tmp_path, name):
 def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
     """Close a runner whose operation parked one approved OAuth attempt, the way
     ``_Runner.close`` does at the end of a tool call bound to ``home``."""
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
     from hermes_constants import hermes_home_key
     from tools.connectors.operation import ConnectionOperation
 
@@ -410,7 +409,7 @@ def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
 
 def _adopt_as(home, agent=None, session_id="s1"):
     """adopt_late_connections as it runs inside a turn bound to ``home``."""
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
 
     registered = []
     agent = agent or SimpleNamespace(session_id=session_id, enabled_toolsets=[])
@@ -423,7 +422,7 @@ def _adopt_as(home, agent=None, session_id="s1"):
 
 @pytest.fixture(autouse=True)
 def _clear_late_attempts():
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
 
     mcp._LATE_ATTEMPTS.clear()
     yield
@@ -434,7 +433,7 @@ def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
     """Two multiplexed profiles can carry the same session key (the api_server's
     X-Hermes-Session-Key header is client-chosen, and live.py keys _open by
     (profile, session) for exactly this reason). A parked grant must not leak."""
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")
@@ -453,7 +452,7 @@ def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
 def test_late_attempt_keyed_by_detached_path_uses_calling_profile(tmp_path):
     """The no-card DetachedOperation never passes through live.open, so profile_key is empty;
     the park must still record the home the tool thread was scoped to."""
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")
@@ -474,7 +473,7 @@ def test_e2e_carded_oauth_park_and_adopt_stay_inside_their_profile(tmp_path):
     profile key live.open stamped. The browser-side approval that lands afterwards may only
     be adopted by a turn bound to the same home — never by the other multiplexed profile,
     even one that configures the same-named server."""
-    import tools.connectors.mcp as mcp
+    from tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")

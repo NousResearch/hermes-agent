@@ -18,8 +18,10 @@ def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subp
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
-    return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    from hermes_cli.update_custody import run_git
+
+    return run_git(
+        git_cmd, args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
         **kwargs,
     )
 
@@ -36,31 +38,28 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
-    A partial clone's on-demand fetches also strand one small packfile each — fold those
-    back in (#129712).
+    A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
-    fold_lazy_fetch_packs(root)
+    settle_partial_clone_maintenance(root)
 
 
-def fold_lazy_fetch_packs(root: Path) -> None:
-    """Fold a partial clone's lazy-fetch packs (#129712), announcing a slow fold and a timed-out one."""
-    from hermes_cli.gitlock import LAZY_FETCH_GC_TIMEOUT_SECONDS, consolidate_lazy_fetch_packs
+def report_pack_tidy(root: Path) -> None:
+    """Spend the update's bounded slice on a partial clone's on-demand packs, and say what it did."""
+    from hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
 
-    folded = consolidate_lazy_fetch_packs(root, on_fold_start=lambda count: print(
-        f"  Folding {count} lazy-fetch packs into one (one-time; can take several minutes)...", flush=True))
-    if folded is None:
-        print(f"  ⚠ Folding lazy-fetch packs did not finish within {LAZY_FETCH_GC_TIMEOUT_SECONDS // 60} min."
-              " With Hermes closed, run:")
-        print(f'      git -C "{root}" -c gc.writeCommitGraph=false gc --auto')
-    elif folded:
-        print(f"  (folded {folded} lazy-fetch pack(s) into one)")
+    tidy = tidy_partial_clone_packs(root)
+    if tidy.erased or tidy.merged:
+        print(f"  (git cleanup: erased {tidy.erased} duplicate pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
+              f" merged {tidy.merged}; {tidy.packs_left} left)")
+    if tidy.out_of_time:
+        print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

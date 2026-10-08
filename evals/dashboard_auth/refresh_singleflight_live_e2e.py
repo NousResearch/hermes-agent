@@ -20,12 +20,12 @@ os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-e2e-55712-")
 for m in [k for k in sys.modules if k.startswith(("hermes", "tools", "plugins"))]:
     del sys.modules[m]
 
-import uvicorn  # noqa: E402
+import uvicorn
 
-from hermes_cli import web_server  # noqa: E402
-from hermes_cli.dashboard_auth import register_provider  # noqa: E402
-from hermes_cli.dashboard_auth.base import RefreshExpiredError, Session  # noqa: E402
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider  # noqa: E402
+from hermes_cli import web_server
+from hermes_cli.dashboard_auth import register_provider
+from hermes_cli.dashboard_auth.base import RefreshExpiredError, Session
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
 class SlowRotatingIdP(StubAuthProvider):

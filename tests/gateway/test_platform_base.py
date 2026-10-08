@@ -22,7 +22,7 @@ from gateway.platforms.event import MessageEvent
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
-    import gateway.platforms.base as base
+    from gateway.platforms import base
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -43,7 +43,7 @@ class TestInboundMediaSizeCap:
 
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")

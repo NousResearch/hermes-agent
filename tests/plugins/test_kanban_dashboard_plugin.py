@@ -7,6 +7,7 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -73,7 +74,10 @@ def test_board_empty(client):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
-    assert data["assignees"] == []
+    # Assignee lanes union task-holders with profiles on disk, so the
+    # implicit `default` profile that the fixture's HERMES_HOME creates is
+    # present even on an empty board (no task-holders yet).
+    assert data["assignees"] == ["default"]
     assert data["latest_event_id"] == 0
 
 # ---------------------------------------------------------------------------
@@ -1171,3 +1175,86 @@ def test_board_card_exposes_current_run_start(client):
     # The detail endpoint carries the same contract.
     detail = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]
     assert detail["current_run_started_at"] == retry_start
+
+
+def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch):
+    """A stale dashboard tab reopens /events?board=<slug> after the operator
+    archived or deleted that board. The stream must close instead of handing
+    the slug to connect(), which used to resurrect an empty DB-only board
+    (#43243)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    def _fake_ws_auth_ok(ws):
+        return ws.query_params.get("token", "") == "secret-xyz"
+
+    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz", _ws_auth_ok=_fake_ws_auth_ok)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    for action, board in (("archive", "gone"), ("delete", "nuked")):
+        kb.create_board(board)
+        kb.remove_board(board, archive=(action == "archive"))
+
+        # Stale tab: open the event stream for the dead board. Bounded
+        # receive: with the fix the handshake rejects the slug and closes
+        # immediately; on an unfixed build nothing is ever sent, so the
+        # receive runs on a daemon thread and must not block the suite.
+        import threading
+
+        recv: dict = {}
+        ws_cm = c.websocket_connect(
+            f"/api/plugins/kanban/events?token=secret-xyz&board={board}&since=0"
+        )
+        ws = ws_cm.__enter__()
+
+        def _recv() -> None:
+            try:
+                ws.receive_json()
+            except WebSocketDisconnect:
+                recv["closed"] = True
+            except Exception as exc:
+                recv["error"] = exc
+
+        thread = threading.Thread(target=_recv, daemon=True)
+        thread.start()
+        thread.join(timeout=2.0)  # unfixed build: stream stays open, times out
+        received_close = bool(recv.get("closed"))
+        try:
+            ws.close()
+        except Exception:
+            pass
+        try:
+            ws_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+
+        # With the fix the stream rejects the dead slug at the handshake.
+        assert received_close, (
+            f"event stream stayed open for the {action}d board {board!r}"
+        )
+        # No DB-only stub may reappear at the original slug.
+        assert not (kb.board_dir(board) / "kanban.db").exists()
+        if action == "archive":
+            assert kb.read_board_metadata(board)["archived"] is True
+        else:
+            assert board not in [b["slug"] for b in kb.list_boards(include_archived=True)]
+
+    # A live board still streams.
+    kb.create_board("alive")
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=alive"
+    ) as ws:
+        assert ws is not None

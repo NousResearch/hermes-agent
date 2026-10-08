@@ -22,7 +22,7 @@ from hermes_cli.release_channels import ChannelReader
 from scripts.releases import channel_releases, handoff
 from tests.ci.desktop_release_roles import canary_publisher, native_builds, stage_step
 from tests.ci.test_desktop_release_tag_admission import _git, _seed_repo
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.platforms("posix")

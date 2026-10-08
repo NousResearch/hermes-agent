@@ -422,7 +422,7 @@ class ManagedLlmStream(Iterator[Any]):
                 return
             try:
                 if self._loop is not None:
-                    self._finish_logical("cancelled" if _is_cancellation(exc) else "failed")
+                    self._finish_logical("cancelled" if _is_cancellation(exc) else "failed", error=exc)
                     self._loop.close()
             finally:
                 self._loop = None
@@ -460,14 +460,23 @@ class ManagedLlmStream(Iterator[Any]):
             )
         return recoverable
 
-    def _finish_logical(self, outcome: str) -> None:
-        """Complete the logical LLM scope unless the caller deferred it."""
+    def _finish_logical(self, outcome: str, error: BaseException | None = None) -> None:
+        """Complete the logical LLM scope unless the caller deferred it. An auxiliary stream
+        that ended in ``error`` reports it like a deferred auxiliary call does."""
         if self._defer_logical_completion:
             return
+        error_class = None
+        if error is not None and self._logical_model_name is not None:
+            from agent import auxiliary_call_outcome
+            if auxiliary_call_outcome.is_cancellation(error):
+                outcome = "cancelled"
+            else:
+                error_class = auxiliary_call_outcome.error_class(
+                    error, provider=self._logical_provider_name or "", model=self._logical_model_name)
         _complete_logical(
             self._logical, outcome=outcome, model_name=self._logical_model_name,
             provider_name=self._logical_provider_name, response_model_name=self._logical_response_model_name,
-            operation_lease=self._runtime_lease,
+            operation_lease=self._runtime_lease, error_class=error_class,
         )
         self._logical = None
 
@@ -497,12 +506,12 @@ class ManagedLlmStream(Iterator[Any]):
         except BaseException as exc:
             callback_error = self._callback_error
             if callback_error is not None and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error):
-                self._close(logical_outcome="failed")
+                self._close(logical_outcome="failed", error=callback_error)
                 raise callback_error
             if self._recoverable_relay_failure(exc):
                 self._preserve_pending_provider_chunks()
                 return next(self)
-            self._close(logical_outcome="cancelled" if _is_cancellation(exc) else "failed")
+            self._close(logical_outcome="cancelled" if _is_cancellation(exc) else "failed", error=exc)
             raise
         for index, (encoded, raw) in enumerate(self._raw_chunks):
             if _json_equal(chunk, encoded):
@@ -558,7 +567,7 @@ class ManagedLlmStream(Iterator[Any]):
                 self._keep_first_close_error(exc)
                 logger.debug("Provider stream cleanup failed", exc_info=True)
 
-    def _close(self, *, logical_outcome: str) -> None:
+    def _close(self, *, logical_outcome: str, error: BaseException | None = None) -> None:
         if self._closed:
             return
         self._closed = True
@@ -573,7 +582,7 @@ class ManagedLlmStream(Iterator[Any]):
                     close_loop = _aclose_on_loop(loop, self._stream)
                 except Exception as exc:
                     self._keep_first_close_error(exc)
-            self._finish_logical(logical_outcome)
+            self._finish_logical(logical_outcome, error)
             if close_loop:
                 loop.close()
         finally:
@@ -639,7 +648,9 @@ class AnthropicStreamAccumulator:
         if "usage" in payload:
             usage, current_usage = payload["usage"], self._message.get("usage")
             if isinstance(current_usage, dict) and isinstance(usage, dict):
-                usage = {**current_usage, **usage}
+                # The SDK's MessageDeltaUsage serializes unset fields as null; they must not
+                # erase message_start's input/cache counts.
+                usage = {**current_usage, **{k: v for k, v in usage.items() if v is not None}}
             self._message["usage"] = usage
 
     _EVENT_HANDLERS = {
@@ -693,6 +704,7 @@ def _logical_parent(
 def _complete_logical(
     logical: _LogicalCall | None, *, outcome: str, model_name: str | None = None, provider_name: str | None = None,
     response_model_name: str | None = None, operation_lease: relay_runtime.RelayOperationLease | None = None,
+    error_class: str | None = None,
 ) -> None:
     if logical is None:
         return
@@ -705,6 +717,8 @@ def _complete_logical(
         output.update({"model": model_name, "provider": provider_name})
         if response_model_name is not None:
             output["response_model"] = response_model_name
+        if error_class is not None:
+            output["error_class"] = error_class
     with turn.finalize_lock:
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is not handle:
@@ -726,8 +740,11 @@ def _complete_logical(
             logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
             return
         if popped is False:
+            # A call running beside the turn (title generation) finishes under the turn's own
+            # live scopes; keep its result so the drain reports it instead of an orphan.
+            lease.host.defer_scope_output(handle, output)
             logger.debug(
-                "Left logical LLM scope %s under a concurrent turn's scope; session close drains it",
+                "Left logical LLM scope %s under a concurrent scope; the drain closes it with its result",
                 request_id,
             )
         with turn.logical_llm_lock:
@@ -742,8 +759,11 @@ def _is_cancellation(error: BaseException) -> bool:
 def complete_logical_call(
     api_request_id: str, *, outcome: str, model_name: str | None = None,
     provider_name: str | None = None, response_model_name: str | None = None,
+    error_class: str | None = None,
 ) -> None:
-    """Complete the active turn's logical LLM call after caller validation."""
+    """Complete the active turn's logical LLM call after caller validation. ``error_class``
+    (a classifier reason) rides on a call that reports its route: the error that ended a
+    failed call, or the last one a successful call recovered from."""
     turn = relay_runtime.active_turn()
     if turn is None or not api_request_id:
         return
@@ -752,7 +772,7 @@ def complete_logical_call(
     if handle is not None:
         _complete_logical(
             (turn, handle, api_request_id), outcome=outcome, model_name=model_name,
-            provider_name=provider_name, response_model_name=response_model_name,
+            provider_name=provider_name, response_model_name=response_model_name, error_class=error_class,
         )
 
 

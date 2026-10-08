@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def opencode_go_profile():
     """Resolve the registered OpenCode Go provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-go")
@@ -19,7 +19,7 @@ def opencode_go_profile():
 @pytest.fixture
 def opencode_zen_profile():
     """Resolve the registered OpenCode Zen provider profile."""
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("opencode-zen")

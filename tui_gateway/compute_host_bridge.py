@@ -316,6 +316,13 @@ def _send_compute_host_control(
         on_late_ack=on_late_ack)
 
 
+def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
+    """``_err`` for a ``control.error``/``error`` ack, else None."""
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, code, str(ack.get("message") or default))
+    return None
+
+
 def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:
     """RPC wait budget for a compute-host compress control: the configured compression
     ceiling plus slack, capped below the desktop's RPC timeout (a fixed waiter reported

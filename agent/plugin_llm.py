@@ -41,7 +41,7 @@ class PluginLlmImageInput:
     type: str = "image"
 
 
-PluginLlmInput = Union[PluginLlmTextInput, PluginLlmImageInput, Dict[str, Any]]
+PluginLlmInput = Union[PluginLlmTextInput, PluginLlmImageInput, dict[str, Any]]
 """One structured input block: a dataclass above or a plain dict of the same shape."""
 
 
@@ -66,7 +66,7 @@ class PluginLlmCompleteResult:
     model: str
     agent_id: str
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
-    audit: Dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -83,7 +83,7 @@ class PluginLlmStructuredResult:
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     parsed: Optional[Any] = None
     content_type: str = "text"
-    audit: Dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -236,12 +236,12 @@ def _check_task(policy: _TrustPolicy, *, plugin_id: str, requested_task: Optiona
     )
 
 
-def _normalize_input_block(block: PluginLlmInput) -> Dict[str, Any]:
+def _normalize_input_block(block: PluginLlmInput) -> dict[str, Any]:
     """Coerce a structured input block to a plain dict. Unknown shapes raise ``ValueError``."""
     if isinstance(block, PluginLlmTextInput):
         return {"type": "text", "text": block.text}
     if isinstance(block, PluginLlmImageInput):
-        d: Dict[str, Any] = {"type": "image", "mime_type": block.mime_type, "file_name": block.file_name}
+        d: dict[str, Any] = {"type": "image", "mime_type": block.mime_type, "file_name": block.file_name}
         if block.data is not None:
             d["data"] = block.data
         if block.url:
@@ -262,7 +262,7 @@ def _normalize_input_block(block: PluginLlmInput) -> Dict[str, Any]:
     raise ValueError(f"Unknown input block type: {kind!r}")
 
 
-def _image_part(norm: Dict[str, Any]) -> Dict[str, Any]:
+def _image_part(norm: dict[str, Any]) -> dict[str, Any]:
     """Normalized image block → OpenAI ``image_url`` part (data: URL for bytes)."""
     url = norm.get("url")
     if not url:
@@ -276,12 +276,12 @@ def _image_part(norm: Dict[str, Any]) -> Dict[str, Any]:
 def _build_structured_messages(
     *, instructions: str, inputs: Sequence[PluginLlmInput], json_mode: bool,
     json_schema: Optional[Any], schema_name: Optional[str], system_prompt: Optional[str],
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """OpenAI-style messages for a structured call: optional system message (prompt +
     JSON-only directive), then a user message whose first text part is the
     instructions (+ schema name / JSON schema) followed by the input blocks."""
-    messages: List[Dict[str, Any]] = []
-    sys_parts: List[str] = [system_prompt.strip()] if system_prompt else []
+    messages: list[dict[str, Any]] = []
+    sys_parts: list[str] = [system_prompt.strip()] if system_prompt else []
     if json_mode or json_schema is not None:
         sys_parts.append("Respond with a single JSON object that matches the requested shape. "
                          "Do not include prose or markdown fences.")
@@ -296,7 +296,7 @@ def _build_structured_messages(
         except (TypeError, ValueError):
             schema_text = str(json_schema)
         header = f"{header}\n\nJSON schema:\n{schema_text}"
-    user_parts: List[Dict[str, Any]] = [{"type": "text", "text": header}]
+    user_parts: list[dict[str, Any]] = [{"type": "text", "text": header}]
     for block in inputs:
         norm = _normalize_input_block(block)  # always "text" or "image"
         user_parts.append({"type": "text", "text": norm["text"]} if norm["type"] == "text" else _image_part(norm))
@@ -386,7 +386,7 @@ def _main_config_value(reader: str, default: str) -> str:
 
 
 def _resolve_attribution(*, provider_override: Optional[str], model_override: Optional[str], response: Any,
-                         route_info: Optional[Dict[str, str]] = None) -> tuple[str, str]:
+                         route_info: Optional[dict[str, str]] = None) -> tuple[str, str]:
     """``(provider, model)`` to record on the result.
 
     Provider: route selected by ``auxiliary_client`` > explicit override > current
@@ -400,7 +400,7 @@ def _resolve_attribution(*, provider_override: Optional[str], model_override: Op
     return provider, route_info.get("model") or model_override or _main_config_value("_read_main_model", "default")
 
 
-def _json_response_format(*, json_mode: bool, json_schema: Optional[Any]) -> Optional[Dict[str, Any]]:
+def _json_response_format(*, json_mode: bool, json_schema: Optional[Any]) -> Optional[dict[str, Any]]:
     """``extra_body.response_format``; falls back to ``json_object`` without a
     schema so schema-blind providers still get a hint."""
     if json_schema is not None:
@@ -414,7 +414,7 @@ def _json_response_format(*, json_mode: bool, json_schema: Optional[Any]) -> Opt
 def _structured_spec(
     name: str, instructions: str, input: Sequence[PluginLlmInput], system_prompt: Optional[str],
     json_mode: bool, json_schema: Optional[Any], schema_name: Optional[str],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Argument check for the structured methods (runs before the trust gate)."""
     if not instructions or not instructions.strip():
         raise ValueError(f"{name} requires non-empty instructions")
@@ -444,7 +444,7 @@ class PluginLlm:
         self._async_caller = async_caller
 
     def complete(
-        self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
+        self, messages: list[dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
@@ -474,7 +474,7 @@ class PluginLlm:
         return self._finish("complete_structured", agent, kw, self._invoke_sync(kw), purpose, spec)
 
     async def acomplete(
-        self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
+        self, messages: list[dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
@@ -497,9 +497,9 @@ class PluginLlm:
 
     def _gate(
         self, provider: Optional[str], model: Optional[str], agent_id: Optional[str], profile: Optional[str],
-        task: Optional[str], messages: Optional[List[Dict[str, Any]]], temperature: Optional[float],
-        max_tokens: Optional[int], timeout: Optional[float], spec: Optional[Dict[str, Any]] = None,
-    ) -> tuple[Optional[str], Dict[str, Any]]:
+        task: Optional[str], messages: Optional[list[dict[str, Any]]], temperature: Optional[float],
+        max_tokens: Optional[int], timeout: Optional[float], spec: Optional[dict[str, Any]] = None,
+    ) -> tuple[Optional[str], dict[str, Any]]:
         """Trust gate (task first, then overrides), then — for a structured ``spec`` —
         build messages/response_format (input-shape errors surface only after trust
         passes). Returns the effective agent id and the call kwargs, in the documented
@@ -519,16 +519,16 @@ class PluginLlm:
                                timeout=timeout, extra_body=extra_body, task=eff_task)
 
     def _finish(
-        self, name: str, agent_id: Optional[str], kw: Dict[str, Any], invoked: tuple[str, str, Any],
-        purpose: Optional[str], spec: Optional[Dict[str, Any]] = None,
+        self, name: str, agent_id: Optional[str], kw: dict[str, Any], invoked: tuple[str, str, Any],
+        purpose: Optional[str], spec: Optional[dict[str, Any]] = None,
     ) -> Any:
         """Build the result object + audit dict and emit the INFO audit line."""
         real_provider, real_model, response = invoked
         text = _extract_text(response)
         usage = _extract_usage(response)
         eff_task = kw["task"] or ""
-        audit: Dict[str, Any] = {"plugin_id": self._plugin_id, "purpose": purpose or "", "profile": kw["profile_override"] or ""}
-        fields: Dict[str, Any] = dict(text=text, provider=real_provider, model=real_model, agent_id=agent_id or "default", usage=usage)
+        audit: dict[str, Any] = {"plugin_id": self._plugin_id, "purpose": purpose or "", "profile": kw["profile_override"] or ""}
+        fields: dict[str, Any] = dict(text=text, provider=real_provider, model=real_model, agent_id=agent_id or "default", usage=usage)
         fmt = f"plugin_llm.{name} plugin=%s provider=%s model=%s task=%s purpose=%s "
         log_args = [self._plugin_id, real_provider, real_model, eff_task, purpose or ""]
         cls: Any = PluginLlmCompleteResult
@@ -544,24 +544,24 @@ class PluginLlm:
         return cls(**fields, audit=audit)
 
     @staticmethod
-    def _host_kwargs(kw: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[Dict[str, str]]]:
+    def _host_kwargs(kw: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, str]]]:
         """Call kwargs → ``call_llm`` kwargs. The auth profile rides in
         ``extra_body.metadata.auth_profile``; ``route_info`` is only requested when
         routing through a task slot."""
         merged_extra = dict(kw["extra_body"] or {})
         if kw["profile_override"]:
             merged_extra.setdefault("metadata", {})["auth_profile"] = kw["profile_override"]
-        route_info: Optional[Dict[str, str]] = {} if kw["task"] else None
+        route_info: Optional[dict[str, str]] = {} if kw["task"] else None
         return dict(task=kw["task"], provider=kw["provider_override"], model=kw["model_override"],
                     messages=kw["messages"], temperature=kw["temperature"], max_tokens=kw["max_tokens"],
                     timeout=kw["timeout"], extra_body=merged_extra or None, route_info=route_info), route_info
 
     @staticmethod
-    def _attributed(kw: Dict[str, Any], response: Any, route_info: Optional[Dict[str, str]]) -> tuple[str, str, Any]:
+    def _attributed(kw: dict[str, Any], response: Any, route_info: Optional[dict[str, str]]) -> tuple[str, str, Any]:
         return (*_resolve_attribution(provider_override=kw["provider_override"], model_override=kw["model_override"],
                                       response=response, route_info=route_info), response)
 
-    def _invoke_sync(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
+    def _invoke_sync(self, kw: dict[str, Any]) -> tuple[str, str, Any]:
         """Host ``call_llm`` (lazy import: circular deps at plugin discovery) →
         ``(provider, model, response)``. An injected ``sync_caller`` replaces the
         whole path and receives the call kwargs."""
@@ -571,7 +571,7 @@ class PluginLlm:
         call_kw, route_info = self._host_kwargs(kw)
         return self._attributed(kw, call_llm(**call_kw), route_info)
 
-    async def _invoke_async(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
+    async def _invoke_async(self, kw: dict[str, Any]) -> tuple[str, str, Any]:
         """Async sibling of :meth:`_invoke_sync` (``async_call_llm`` / ``async_caller``)."""
         if self._async_caller is not None:
             return await self._async_caller(**kw)

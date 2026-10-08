@@ -20,12 +20,12 @@ import pytest
 def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""
-    from tools.computer_use.tool import reset_backend_for_tests
-    reset_backend_for_tests()
+    from tools.computer_use import tool as cu_tool
+    cu_tool.reset_backend_for_tests()
     # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.object(cu_tool, "_new_backend", lambda mode: cu_tool._NoopBackend()):
         yield
-    reset_backend_for_tests()
+    cu_tool.reset_backend_for_tests()
 
 
 @pytest.fixture
@@ -414,7 +414,7 @@ class TestAnthropicAdapterMultimodal:
 
         fake_png = "iVBORw0KGgo="
 
-        def _mm_tool(call_id: str) -> Dict[str, Any]:
+        def _mm_tool(call_id: str) -> dict[str, Any]:
             return {
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -434,7 +434,7 @@ class TestAnthropicAdapterMultimodal:
         from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         total = OUTBOUND_IMAGE_LIMIT + 1
-        messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
         for i in range(total):
             messages.append({
                 "role": "assistant", "content": "",
@@ -552,7 +552,7 @@ class TestAnthropicAdapterMultimodal:
         fake_png = "iVBORw0KGgo="
 
         def placeholder_count(n: int) -> int:
-            messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+            messages: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
             for i in range(n):
                 messages.append({
                     "role": "assistant", "content": "",
@@ -913,7 +913,7 @@ class TestCaptureAfterAppContext:
 #   matches nothing instead of silently picking the frontmost window.
 # ---------------------------------------------------------------------------
 
-def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
+def _make_cua_backend_with_windows(windows: list[dict[str, Any]]):
     """Construct a CuaDriverBackend with a mocked MCP session that returns
     the supplied list_windows payload."""
     from tools.computer_use.cua_backend import CuaDriverBackend
@@ -930,7 +930,7 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
 
 
 def _make_cua_backend_with_windows_and_apps(
-    windows: List[Dict[str, Any]], apps: List[Dict[str, Any]]
+    windows: list[dict[str, Any]], apps: list[dict[str, Any]]
 ):
     """Construct a backend whose mocked session serves list_windows/list_apps."""
     from tools.computer_use.cua_backend import CuaDriverBackend
@@ -968,7 +968,7 @@ def _make_cua_backend_with_windows_and_apps(
     return backend
 
 
-def _make_cua_backend_with_tool_result(result: Dict[str, Any]):
+def _make_cua_backend_with_tool_result(result: dict[str, Any]):
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend()
@@ -1460,7 +1460,7 @@ class TestCuaEnvironmentScrubbing:
         bridge = _AsyncBridge()
         session = _CuaDriverSession(bridge)
 
-        captured_env: Dict[str, str] = {}
+        captured_env: dict[str, str] = {}
 
         async def drive_lifecycle():
             test_env = {
@@ -2147,7 +2147,7 @@ class TestCuaToolCoverageExpansion:
     audit decision: every call gets `session=...`).
     """
 
-    def _backend(self, structured: Optional[Dict[str, Any]] = None,
+    def _backend(self, structured: Optional[dict[str, Any]] = None,
                  data: Any = "ok"):
         from unittest.mock import MagicMock
         from tools.computer_use.cua_backend import CuaDriverBackend

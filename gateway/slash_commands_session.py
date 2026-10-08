@@ -145,9 +145,10 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
-            await self._finalize_session_off_loop(
+            messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
                 old_session_id=old_sid, new_session_id=new_sid)
+            await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
@@ -716,8 +717,7 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, drop_undone_rows, export_projection,
-            normalize_save_format, render_session_for_save)
+            SAVE_USAGE, default_save_filename, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -738,17 +738,14 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        if fmt not in SAVE_TRANSCRIPT_FORMATS:
-            from hermes_state import SessionExportTooLargeError
-            try:
-                await self._session_db.assert_export_safe(session_id)  # the JSON backup loads every stored row
-            except SessionExportTooLargeError as e:
-                return str(e)
-        export_data = await self._session_db.export_session(session_id, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
+        from hermes_state import SessionExportTooLargeError
+        try:
+            # One off-loop hop for the cap check + read; the helper is shared with the CLI and TUI /save.
+            export_data = await asyncio.to_thread(load_save_snapshot, self._session_db._db, session_id, fmt)
+        except SessionExportTooLargeError as e:
+            return str(e)
         if not export_data:
             return t("gateway.save.no_messages", session_id=session_id)
-        if fmt not in SAVE_TRANSCRIPT_FORMATS:
-            drop_undone_rows(export_data)
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             export_data = redact_session_data(export_data)

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { atom } from 'nanostores'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -14,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $localSetupMenuRequest, acceptLocalSetupOffer } from '@/store/local-setup-offer'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
@@ -28,6 +30,8 @@ import type { ChatBarState } from './types'
 // No `max-w-*` cap: the pill sizes to its label, so a long model name only
 // truncates when the row is genuinely out of room (#49340) — not at an
 // arbitrary 160px.
+const UNKNOWN_TIER = atom('')
+
 const PILL = cn(
   'h-(--composer-control-size) min-w-0 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -61,6 +65,7 @@ export function ModelPill({
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
   const fastMode = useStore(view.$fast)
+  const serviceTier = useStore(view.$serviceTier ?? UNKNOWN_TIER)
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
@@ -117,6 +122,22 @@ export function ModelPill({
     [scope.target, disabled, hasLiveMenu]
   )
 
+  // The local-setup card's "Show me": open THIS composer's menu (the card names
+  // its own composer), where the offer row sits on top. The offer is accepted
+  // only once a menu actually opened. A click fired it, never a background event.
+  useEffect(
+    () =>
+      $localSetupMenuRequest.listen(request => {
+        if (!request || request.target !== scope.target || disabled || !hasLiveMenu) {
+          return
+        }
+
+        acceptLocalSetupOffer()
+        setOpen(true)
+      }),
+    [scope.target, disabled, hasLiveMenu]
+  )
+
   // The composer pick is sticky: a manual selection is pinned and every NEW
   // chat uses it instead of the Settings → Model default — silently, which has
   // cost users real money on a forgotten paid-model pick (#62055). Surface the
@@ -140,7 +161,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode })}</span>
+        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

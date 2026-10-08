@@ -543,7 +543,7 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
                 "auth add --type api-key requires --api-key in Hermes Console.")
     if getattr(args, "import_name", None) is not None:
         return  # profile import has no prompt flag; leave it alone.
-    if getattr(args, "skills_action", None) in {"install", "reset", "opt-out", "repair-official"}:
+    if getattr(args, "skills_action", None) in {"install", "reset", "opt-out", "repair-official", "import-all"}:
         args.yes = True
     if getattr(args, "memory_command", None) == "reset":
         args.yes = True

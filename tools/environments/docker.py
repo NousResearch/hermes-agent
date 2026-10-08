@@ -36,6 +36,12 @@ from tools.environments.docker_egress import (
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+from tools.execution_observability import (
+    capture_docker_attempt,
+    docker_exec_started,
+    record_docker_result,
+    suppress_docker_attempt_capture,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1074,7 +1080,8 @@ class DockerEnvironment(BaseEnvironment):
         """Spawn bash inside the container. Init seeds the snapshot; profile-scoped passthrough
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
-        assert self._container_id, "Container not started"
+        container_id = self._container_id
+        assert container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
         if stdin_data is not None:
             cmd.append("-i")
@@ -1092,10 +1099,18 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
+        cmd += [container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        process = _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        docker_exec_started(container_id)
+        return process
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        # BaseEnvironment may probe sudo through _run_bash here. That probe
+        # must not stand in for the tool command if the latter never spawns.
+        with suppress_docker_attempt_capture():
+            return super()._prepare_command(command)
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")
@@ -1154,14 +1169,39 @@ class DockerEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,
         docker prune, OOM, daemon restart) recreate it and retry once."""
-        result = super().execute(command, cwd, **kwargs)
-        if (
-            result.get("returncode", 0) != 0
-            and self._is_container_gone(result.get("output", ""))
-            and self._persist_across_processes
-            and self._recreate_container()):
-            result = super().execute(command, cwd, **kwargs)
-        return result
+        attempted_targets: list[str | None] = []
+
+        def attempt() -> dict:
+            with capture_docker_attempt() as targets:
+                result: dict | None = None
+                try:
+                    result = super(DockerEnvironment, self).execute(command, cwd, **kwargs)
+                    return result
+                finally:
+                    # A failed command may have run before printing a recovery
+                    # keyword. Retain both targets rather than claiming the
+                    # replacement alone performed the whole tool call.
+                    observed_targets = targets[-1:]
+                    attempted_targets.extend(observed_targets)
+                    # The deadline backstop can return before its worker has
+                    # finished spawning docker exec. In that case, the target
+                    # is unknown at tool-end even if an earlier retry target
+                    # was observed; do not export that earlier ID as complete.
+                    if result is not None and result.get("hermes_timed_out") and not observed_targets:
+                        attempted_targets.append(None)
+
+        try:
+            result = attempt()
+            if (
+                result.get("returncode", 0) != 0
+                and self._is_container_gone(result.get("output", ""))
+                and self._persist_across_processes
+                and self._recreate_container()):
+                result = attempt()
+            return result
+        finally:
+            for target in attempted_targets:
+                record_docker_result(target)
 
     @staticmethod
     def _storage_opt_supported() -> bool:
@@ -1228,7 +1268,7 @@ class DockerEnvironment(BaseEnvironment):
         if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
             filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
+            [self._docker_exe, "ps", "-a", "--no-trunc", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:

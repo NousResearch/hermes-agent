@@ -1150,6 +1150,11 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    if not blocked and function_name == "publish_html":
+        from agent.inline_artifacts import artifact_from_result
+        artifact = artifact_from_result(function_name, function_result)
+        if artifact is not None:
+            tool_message.setdefault("display_metadata", {})["inline_artifact"] = artifact
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

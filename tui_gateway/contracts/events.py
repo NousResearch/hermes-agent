@@ -291,6 +291,7 @@ class ToolCompletePayload(Payload):
     summary: str | None = None
     result_text: str | None = None
     inline_diff: str | None = None
+    inline_artifact: dict[str, JsonValue] | None = None  # content-free publish_html summary; fetch via authenticated JSON
     todos: list[JsonValue] | None = None
     revision: int | None = None
     labels: list[ToolLabel] | None = None

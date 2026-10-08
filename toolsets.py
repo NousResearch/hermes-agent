@@ -24,7 +24,7 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "publish_html",
     "cronjob_manage",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
@@ -73,6 +73,7 @@ CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui", "catalog"})
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+    "artifacts": _ts("Publish static inline HTML in the current conversation", ["publish_html"]),
     "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
     "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),
     "x_search": _ts(

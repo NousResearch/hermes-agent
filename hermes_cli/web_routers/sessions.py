@@ -35,6 +35,49 @@ list_router = APIRouter()
 search_router = APIRouter()
 manage_router = APIRouter()
 
+
+@manage_router.get("/api/sessions/{session_id}/artifacts")
+def list_inline_artifacts(session_id: str, request: Request, profile: Optional[str] = None):
+    return get_inline_artifact(session_id, None, request, profile)
+
+
+@manage_router.get("/api/sessions/{session_id}/artifacts/{artifact_id}")
+def get_inline_artifact(session_id: str, artifact_id: Optional[str], request: Request,
+                        profile: Optional[str] = None, row_id: Optional[int] = None):
+    """Authenticated JSON, scoped to a canonical conversation. Never serve executable HTML."""
+    late("_require_token")(request)
+    from agent.inline_artifacts import ARTIFACT_ID, artifact_response
+    if artifact_id is not None and not ARTIFACT_ID.fullmatch(artifact_id):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        db = _open_session_db_for_profile(profile, read_only=True)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        if not db.get_session(session_id):
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        from agent.inline_artifacts import artifact_from_result, artifact_summary
+        from fastapi.responses import JSONResponse
+        matches = []
+        # Includes compaction display rows and compression ancestors, never rewound rows or sibling chats.
+        for row in db.get_messages(session_id, include_compacted=True, include_ancestors=True):
+            artifact = artifact_from_result("publish_html", {"artifact": (row.get("display_metadata") or {}).get("inline_artifact")})
+            if (row.get("role") != "tool" or row.get("tool_name") != "publish_html"
+                    or artifact is None):
+                continue
+            association = {"session_id": row["session_id"], "row_id": row["id"], "tool_call_id": row["tool_call_id"]}
+            if artifact_id is None:
+                matches.append({"artifact": artifact_summary(artifact), "association": association})
+            elif artifact.get("id") == artifact_id and (row_id is None or row["id"] == row_id):
+                return JSONResponse(artifact_response(artifact, **association),
+                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        if artifact_id is None:
+            return JSONResponse({"artifacts": matches, "count": len(matches)},
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    finally:
+        db.close()
+
 _cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")

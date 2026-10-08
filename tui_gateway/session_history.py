@@ -327,12 +327,19 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
+            if name == "publish_html":
+                args = {key: value for key, value in args.items() if key != "html"}
+            from agent.inline_artifacts import project_artifact_metadata
+            display_fields = {key: m[key] for key in ("tool_call_id", "timestamp") if m.get(key) is not None}
+            if m.get("display_metadata"):
+                display_fields["display_metadata"] = project_artifact_metadata(m["display_metadata"])
+            if m.get("_row_id") is not None:
+                display_fields["row_id"] = m["_row_id"]
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
                              # Edit cards need the original result; other tool outputs
                              # remain omitted from this compact display projection.
                              **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
-                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
-                                if m.get(key) is not None},
+                             **display_fields,
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.

@@ -336,6 +336,11 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result).get("tool_result_metadata", {})
         prepared.pop(tool_call_id, None)
     payload.update(metadata)
+    if name == "publish_html":
+        from agent.inline_artifacts import artifact_from_result, artifact_summary
+        artifact = artifact_from_result(name, result)
+        if artifact is not None:
+            payload["inline_artifact"] = artifact_summary(artifact)
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
@@ -356,7 +361,12 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
+    if payload.get("inline_artifact"):
+        # Content is fetched only through the authenticated JSON route, not broadcast.
+        payload["args"] = {key: value for key, value in args.items() if key != "html"}
+        payload["result"] = {"artifact": payload["inline_artifact"], "text": payload["inline_artifact"]["fallback"]}
+        payload.pop("result_text", None)
+    if (_tool_progress_enabled(sid) or payload.get("inline_artifact") or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)

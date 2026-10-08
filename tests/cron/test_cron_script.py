@@ -830,3 +830,52 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+@pytest.mark.platforms("windows")
+class TestWindowsNativeScriptRouting:
+    """Windows-native job scripts must run under their own interpreter, not fall through
+    to the Python interpreter (where a ``.bat``/``.ps1`` body is a guaranteed ``SyntaxError``
+    and the real reason users are still shelling out ``cmd //c`` wrappers by hand)."""
+
+    def _argv(self, cron_env, name):
+        from cron.scheduler_script import _script_argv
+
+        script = cron_env / "scripts" / name
+        script.write_text("placeholder", encoding="utf-8")
+        argv, env_overlay, error = _script_argv(script)
+        return argv, env_overlay, error
+
+    def test_bat_routes_to_cmd(self, cron_env):
+        argv, env_overlay, error = self._argv(cron_env, "native.bat")
+        assert error is None and argv is not None
+        assert env_overlay == {}
+        assert argv[1] == "/c"
+        assert "native.bat" in argv[2].lower()
+        assert argv[0].split("\\")[-1].lower() in {"cmd.exe", "cmd"}
+
+    def test_cmd_routes_to_cmd_uppercase_extension(self, cron_env):
+        # Extension matching is case-insensitive: ``native.CMD`` must route the same way.
+        argv, env_overlay, error = self._argv(cron_env, "native.CMD")
+        assert error is None and argv is not None
+        assert argv[1] == "/c"
+
+    def test_ps1_routes_to_powershell(self, cron_env):
+        argv, env_overlay, error = self._argv(cron_env, "native.ps1")
+        assert error is None and argv is not None
+        assert env_overlay == {}
+        assert "-NoProfile" in argv
+        assert "-ExecutionPolicy" in argv and "Bypass" in argv
+        assert "-File" in argv
+        assert "native.ps1" in argv[-1]
+        assert argv[0].split("\\")[-1].lower() in {"powershell.exe", "powershell"}
+
+    def test_py_still_routes_to_python(self, cron_env):
+        # The new branch must not capture Python scripts — .py falls through to the
+        # interpreter/Python path exactly as before.
+        argv, env_overlay, error = self._argv(cron_env, "native.py")
+        assert error is None and argv is not None
+        exe = argv[0].split("\\")[-1].lower() if "\\" in argv[0] else (argv[0].split("/")[-1].lower())
+        assert "python" in exe, f".py must still run under Python, got argv={argv!r}"
+        joined = " ".join(str(part) for part in argv)
+        assert "cmd" not in joined.split(" ")[0].lower()

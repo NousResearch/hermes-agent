@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import shutil
 import subprocess
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +22,6 @@ from state_store_postgresql import PostgreSQLStateStore
 from tests.integration.postgresql_test_target import OwnedPostgreSQLTestTarget
 
 _DSN = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
-_CONTAINER = "hermes-agent-postgresql-state-store-dev"
 
 
 def _psycopg():
@@ -27,28 +29,78 @@ def _psycopg():
 
 
 def _runner(arguments, **kwargs):
-    command = list(arguments)
-    if command[0] == "pg_dump" and "--version" not in command:
-        output_index = next(index for index, value in enumerate(command) if value.startswith("--file="))
-        output = Path(command[output_index].removeprefix("--file="))
-        internal = f"/tmp/{uuid.uuid4().hex}.dump"
-        command[output_index] = f"--file={internal}"
-        result = subprocess.run(["docker", "exec", _CONTAINER, *command], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        if result.returncode == 0:
-            subprocess.run(["docker", "cp", f"{_CONTAINER}:{internal}", str(output)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            subprocess.run(["docker", "exec", _CONTAINER, "rm", "-f", internal], check=True)
-        return result
-    if command[0] == "pg_restore" and "--version" not in command:
-        archive = Path(command[-1])
-        internal = f"/tmp/{uuid.uuid4().hex}.dump"
-        subprocess.run(["docker", "cp", str(archive), f"{_CONTAINER}:{internal}"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        command[-1] = internal
-        try:
-            return subprocess.run(["docker", "exec", _CONTAINER, *command], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        finally:
-            subprocess.run(["docker", "exec", _CONTAINER, "rm", "-f", internal], check=True)
-    return subprocess.run(["docker", "exec", _CONTAINER, *command], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    executable, *options = arguments
+    if executable not in {"pg_dump", "pg_restore"}:
+        raise ValueError(f"unexpected PostgreSQL client: {executable}")
+    client = shutil.which(executable)
+    if client is None:
+        raise FileNotFoundError(f"host PostgreSQL client is absent: {executable}")
+    version = subprocess.run(
+        [client, "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    match = re.search(r"\(PostgreSQL\) (\d+)(?:\.|\s|$)", version.stdout or "")
+    if version.returncode or match is None:
+        raise RuntimeError(f"host PostgreSQL client version is unavailable: {executable}")
+    with _psycopg().connect(_DSN) as connection:
+        server_major = connection.info.server_version // 10000
+    if server_major != 18 or int(match.group(1)) != server_major:
+        raise RuntimeError(f"host {executable} major must match PostgreSQL 18 server major")
+    return subprocess.run([client, *options], **kwargs)
 
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "tests.integration.test_postgresql_state_store_operations",
+        "tests.integration.test_postgresql_state_store_sqlite_import",
+    ),
+)
+def test_host_backup_client_runner_keeps_arguments_and_fails_closed(
+    monkeypatch, tmp_path: Path, module_name: str,
+):
+    module = importlib.import_module(module_name)
+    calls = []
+    versions = {"pg_dump": "pg_dump (PostgreSQL) 18.6", "pg_restore": "pg_restore (PostgreSQL) 18.6"}
+    server = SimpleNamespace(info=SimpleNamespace(server_version=180006))
+    monkeypatch.setattr(module, "_psycopg", lambda: SimpleNamespace(connect=lambda _dsn: nullcontext(server)))
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[-1] == "--version":
+            name = Path(command[0]).name
+            return subprocess.CompletedProcess(command, 0, versions[name], "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    for executable, options in (
+        ("pg_dump", [f"--file={tmp_path / 'tenant.dump.partial'}"]),
+        ("pg_restore", [str(tmp_path / "tenant.dump")]),
+        ("pg_restore", ["--version"]),
+    ):
+        forwarded = {"env": {"PGHOST": "test-host"}, "text": True, "stdout": subprocess.PIPE,
+                     "stderr": subprocess.PIPE, "check": False}
+        assert module._runner([executable, *options], **forwarded).returncode == 0
+        assert calls[-1] == ([f"/usr/bin/{executable}", *options], forwarded)
+
+    calls.clear()
+    monkeypatch.setattr(module.shutil, "which", lambda _name: None)
+    with pytest.raises(FileNotFoundError, match="host PostgreSQL client is absent"):
+        module._runner(["pg_dump", "--version"])
+    assert calls == []
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    versions["pg_dump"] = "pg_dump (PostgreSQL) 17.8"
+    with pytest.raises(RuntimeError, match="major must match PostgreSQL 18"):
+        module._runner(["pg_dump", f"--file={tmp_path / 'tenant.dump.partial'}"])
+    assert len(calls) == 1 and calls[0][0] == ["/usr/bin/pg_dump", "--version"]
+
+    calls.clear()
+    versions["pg_dump"] = "pg_dump (PostgreSQL) 18.6"
+    server.info.server_version = 170008
+    with pytest.raises(RuntimeError, match="major must match PostgreSQL 18"):
+        module._runner(["pg_dump", f"--file={tmp_path / 'tenant.dump.partial'}"])
+    assert len(calls) == 1 and calls[0][0] == ["/usr/bin/pg_dump", "--version"]
 
 
 @pytest.fixture

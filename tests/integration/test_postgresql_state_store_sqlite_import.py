@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -31,7 +32,6 @@ from state_store import PostgreSQLStateStoreConfig
 from tests.integration.postgresql_test_target import OwnedPostgreSQLTestTarget
 
 _DSN = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
-_CONTAINER = "hermes-agent-postgresql-state-store-dev"
 
 
 def _psycopg():
@@ -39,56 +39,23 @@ def _psycopg():
 
 
 def _runner(arguments, **kwargs):
-    command = list(arguments)
-    if command[0] == "pg_dump" and "--version" not in command:
-        output_index = next(
-            index for index, value in enumerate(command) if value.startswith("--file=")
-        )
-        output, internal = (
-            Path(command[output_index].removeprefix("--file=")),
-            f"/tmp/{uuid.uuid4().hex}.dump",
-        )
-        command[output_index] = f"--file={internal}"
-        result = subprocess.run(
-            ["docker", "exec", _CONTAINER, *command],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if result.returncode == 0:
-            subprocess.run(
-                ["docker", "cp", f"{_CONTAINER}:{internal}", str(output)], check=True
-            )
-            subprocess.run(
-                ["docker", "exec", _CONTAINER, "rm", "-f", internal], check=True
-            )
-        return result
-    if command[0] == "pg_restore" and "--version" not in command:
-        archive, internal = Path(command[-1]), f"/tmp/{uuid.uuid4().hex}.dump"
-        subprocess.run(
-            ["docker", "cp", str(archive), f"{_CONTAINER}:{internal}"], check=True
-        )
-        command[-1] = internal
-        try:
-            return subprocess.run(
-                ["docker", "exec", _CONTAINER, *command],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-        finally:
-            subprocess.run(
-                ["docker", "exec", _CONTAINER, "rm", "-f", internal], check=True
-            )
-    return subprocess.run(
-        ["docker", "exec", _CONTAINER, *command],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    executable, *options = arguments
+    if executable not in {"pg_dump", "pg_restore"}:
+        raise ValueError(f"unexpected PostgreSQL client: {executable}")
+    client = shutil.which(executable)
+    if client is None:
+        raise FileNotFoundError(f"host PostgreSQL client is absent: {executable}")
+    version = subprocess.run(
+        [client, "--version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
+    match = re.search(r"\(PostgreSQL\) (\d+)(?:\.|\s|$)", version.stdout or "")
+    if version.returncode or match is None:
+        raise RuntimeError(f"host PostgreSQL client version is unavailable: {executable}")
+    with _psycopg().connect(_DSN) as connection:
+        server_major = connection.info.server_version // 10000
+    if server_major != 18 or int(match.group(1)) != server_major:
+        raise RuntimeError(f"host {executable} major must match PostgreSQL 18 server major")
+    return subprocess.run([client, *options], **kwargs)
 
 
 @pytest.fixture

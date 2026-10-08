@@ -178,7 +178,7 @@ def test_pg18_server_fault_rolls_back_message_usage_and_pool_waiter_recovers(pha
     try:
         store.ensure_session(session_id, source="phase12")
         state_target.execute(f"""CREATE FUNCTION \"{schema}\".phase12_message_fault() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN IF NEW.content='fault-message' THEN RAISE EXCEPTION 'phase12 message fault'; END IF; RETURN NEW; END $$""")
+                BEGIN IF to_jsonb(NEW)->>'content'='fault-message' THEN RAISE EXCEPTION 'phase12 message fault'; END IF; RETURN NEW; END $$""")
         state_target.execute(f"CREATE TRIGGER phase12_message_fault BEFORE INSERT ON \"{schema}\".messages FOR EACH ROW EXECUTE FUNCTION \"{schema}\".phase12_message_fault()")
         with pytest.raises(Exception, match="phase12 message fault"):
             store.append_message_records(session_id, [MessageRecord(role="user", content="before"), MessageRecord(role="assistant", content="fault-message")])
@@ -272,7 +272,7 @@ def test_pg18_backup_failure_and_interrupted_import_are_isolated(tmp_path: Path,
         _SETTINGS, _DSN, schema=schema, owned_target=state_target
     )
     try:
-        with pytest.raises(SQLitePostgreSQLImportError, match="target remains isolated"):
+        with pytest.raises(SQLitePostgreSQLImportError, match="injected interruption"):
             importer.import_source(source, snapshot_root=tmp_path, fail_after="messages")
         with state_target.connect() as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT status, destination_counts FROM {schema}.sqlite_import_manifests")

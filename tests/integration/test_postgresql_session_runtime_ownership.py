@@ -10,6 +10,7 @@ import pytest
 
 from hermes_state_runtime_ownership import RuntimeOwner
 from state_store import open_state_store
+from state_store_alembic.runner import CURRENT_STATE_STORE_REVISION
 from tests.integration.postgresql_test_target import OwnedPostgreSQLTestTarget
 
 _DSN = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
@@ -128,7 +129,7 @@ def test_pg18_namespace_isolation_release_fence_and_catalog_rollback():
         assert store.begin_session_runtime_turn(successor, "after-rollback")
         with store._connection() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT version_num FROM alembic_version")
-            assert cursor.fetchall() == [("state_store_v26_sqlite_import",)]
+            assert cursor.fetchall() == [(CURRENT_STATE_STORE_REVISION,)]
     finally:
         store.close()
 

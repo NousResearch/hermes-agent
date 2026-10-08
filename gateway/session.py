@@ -537,13 +537,16 @@ class SessionEntry:
     # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
     # older positional construction of transport_profile keeps its meaning.
     prompt_pin: Optional[Dict[str, Any]] = None
+    # Gateway ``/yolo`` bypass for this lane, mirrored from ``tools.approval``'s in-memory set so a restart
+    # keeps it; cleared with it at every conversation boundary (``_clear_session_boundary_security_state``).
+    yolo: bool = False
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
     _PLAIN_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "total_tokens", "last_prompt_tokens", "estimated_cost_usd", "cost_status",
-        "expiry_finalized", "suspended", "resume_pending", "resume_reason",
+        "expiry_finalized", "suspended", "resume_pending", "resume_reason", "yolo",
     )
     _RESET_FIELDS = (
         "is_fresh_reset", "was_auto_reset", "auto_reset_reason", "reset_had_activity",
@@ -1114,6 +1117,14 @@ class SessionStore(
             self._persist_routing_data(data, generation)
             entry.model_override = cleaned
 
+    def set_session_yolo(self, session_key: str, enabled: bool) -> bool:
+        """Persist the lane's ``/yolo`` bypass; False when the key has no entry yet or it is unchanged."""
+        def _apply(entry: SessionEntry):
+            if entry.yolo is enabled:
+                return False
+            entry.yolo = enabled
+        return self._update_entry(session_key, _apply)
+
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
         with self._lock:
@@ -1260,6 +1271,7 @@ class SessionStore(
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
                 display_name=old_entry.display_name, model_override=old_entry.model_override,
+                yolo=old_entry.yolo,
                 prompt_pin=(
                     dict(old_entry.prompt_pin)
                     if preserve_prompt_pin and old_entry.prompt_pin is not None else None

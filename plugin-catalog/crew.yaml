@@ -1,16 +1,16 @@
 name: crew
 repo: https://github.com/macd2/Crew
-sha: 2f82dcd34181dd433dfca06355f4adfbadc2a40a
+sha: 317c08ce760bc17665d34d595d962d5a6b524583
 description: "One /crew message becomes verified work on the kanban board. A coordinator owns every card until its proof command exits 0 - one writer per card, an independent verifier, a hard token budget per card, and a live local dashboard of every card, run and tool call. Disclosure — install.py creates four crew-* profiles cloned from your chat profile (including its .env provider keys and memories), deletes non-crew skills in them, updates crew in other profiles and starts a loopback dashboard service (127.0.0.1:8799, transcript excerpts; --publish serves it to one tailnet login); a detached coordinator makes read-only model decisions and runs card proof commands unattended with a scrubbed env, flagged or changed proofs only after the owner answers /crew-proof; card reports and questions are sent to the originating chat via hermes send; agent-written per-role lessons are injected into later crew turns."
 maintainer: macd2
 tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/macd2/Crew#readme
-version: "0.7.8"
-image: https://raw.githubusercontent.com/macd2/Crew/2f82dcd34181dd433dfca06355f4adfbadc2a40a/assets/banner.png
+version: "0.7.9"
+image: https://raw.githubusercontent.com/macd2/Crew/317c08ce760bc17665d34d595d962d5a6b524583/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/macd2/Crew/2f82dcd34181dd433dfca06355f4adfbadc2a40a/assets/dashboard.webp
+  - https://raw.githubusercontent.com/macd2/Crew/317c08ce760bc17665d34d595d962d5a6b524583/assets/dashboard.webp
 platforms: [linux]
 capabilities:
   provides_tools: []

@@ -2868,6 +2868,10 @@ def reload_env() -> int:
         if key in os.environ:
             del os.environ[key]
             count += 1
+    if count:
+        from agent.bedrock_adapter import invalidate_bedrock_openai_sessions
+
+        invalidate_bedrock_openai_sessions()
     return count
 
 

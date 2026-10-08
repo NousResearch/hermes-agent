@@ -207,7 +207,7 @@ def test_declined_clarify_aborts_instead_of_waiting_for_a_reply():
 
     cleared = []
     clarify_mod = SimpleNamespace(
-        clear_session=lambda sk: cleared.append(sk),
+        cancel_prompt=lambda cid: (cleared.append(cid), True)[1],
         get_clarify_timeout=lambda: 600,
         wait_for_response=lambda *a, **k: pytest.fail(
             "waited for a reply to a prompt the connector refused"
@@ -223,10 +223,10 @@ def test_declined_clarify_aborts_instead_of_waiting_for_a_reply():
             )
 
     abort = _clarify_send_disposition(
-        _Fut(), session_key="sk1", clarify_mod=clarify_mod
+        _Fut(), clarify_id="cid1", clarify_mod=clarify_mod
     )
     assert abort is not None
-    assert cleared == ["sk1"]
+    assert cleared == ["cid1"]
 
 
 def test_ambiguous_clarify_still_waits():
@@ -237,7 +237,7 @@ def test_ambiguous_clarify_still_waits():
 
     cleared = []
     clarify_mod = SimpleNamespace(
-        clear_session=lambda sk: cleared.append(sk),
+        cancel_prompt=lambda cid: (cleared.append(cid), True)[1],
         get_clarify_timeout=lambda: 600,
         wait_for_response=lambda *a, **k: "answer",
     )
@@ -251,7 +251,7 @@ def test_ambiguous_clarify_still_waits():
             )
 
     assert (
-        _clarify_send_disposition(_Fut(), session_key="sk1", clarify_mod=clarify_mod)
+        _clarify_send_disposition(_Fut(), clarify_id="cid1", clarify_mod=clarify_mod)
         is None
     )
     assert cleared == []

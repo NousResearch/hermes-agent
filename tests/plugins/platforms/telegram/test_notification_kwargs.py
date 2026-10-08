@@ -31,13 +31,19 @@ def test_clarify_text_fallback_pushes_in_important_mode():
 
     from gateway.config import PlatformConfig
     from gateway.run_turn_runner_clarify_delivery import text_fallback_coro
+    from tools import clarify_gateway
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
     adapter._bot, adapter._app = AsyncMock(), MagicMock()
     adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
     adapter._notifications_mode = "important"
 
-    asyncio.run(text_fallback_coro(
-        adapter, chat_id="123", question="Which env?", choices=None, clarify_id="c1", session_key="s", metadata=None))
+    # The fallback only sends for a still-pending prompt, as when the runner retries a failed card.
+    clarify_gateway.register("c1", "s", "Which env?", None)
+    try:
+        asyncio.run(text_fallback_coro(
+            adapter, chat_id="123", question="Which env?", choices=None, clarify_id="c1", session_key="s", metadata=None))
+    finally:
+        clarify_gateway.clear_session("s")
 
     assert adapter._bot.send_message.await_args.kwargs.get("disable_notification") is None

@@ -67,20 +67,23 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
 
     def _schedule(coro, label):
         labels.append(label)
-        return _Fut(asyncio.run(coro))
+        response = asyncio.run(coro)
+        if label == "Clarify send failed to schedule":
+            index = seen["n"] - 1
+            target = answers[index] if index < len(answers) else None
+            if target is not None:
+                cm.resolve_gateway_clarify(seen["id"], target)
+        return _Fut(response)
 
     runner._schedule = _schedule
     runner._close_native_stream_boundary = lambda *a, **k: None
     real_register = cm.register
-    seen = {"n": 0}
+    seen: dict = {"n": 0}
 
     def _register(**kwargs):
         entry = real_register(**kwargs)
-        index = seen["n"]
         seen["n"] += 1
-        target = answers[index] if index < len(answers) else None
-        if target is not None:
-            cm.resolve_gateway_clarify(kwargs["clarify_id"], target)
+        seen["id"] = kwargs["clarify_id"]
         return entry
 
     with patch.object(cm, "register", _register), \

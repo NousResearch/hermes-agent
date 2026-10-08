@@ -31,7 +31,7 @@ def test_timeout_keeps_registration_armed_and_proceeds_to_wait():
     fut.result.side_effect = concurrent.futures.TimeoutError()
     clarify_mod = MagicMock()
     disposition = _clarify_send_disposition(
-        fut, session_key="sk", clarify_mod=clarify_mod
+        fut, clarify_id="cid123", clarify_mod=clarify_mod
     )
     assert disposition is None, (
         "a send timeout aborted the clarify wait — this is the "
@@ -45,7 +45,7 @@ def test_successful_send_proceeds_to_wait():
     fut.result.return_value = _Result(True)
     clarify_mod = MagicMock()
     assert (
-        _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
+        _clarify_send_disposition(fut, clarify_id="cid123", clarify_mod=clarify_mod)
         is None
     )
     clarify_mod.clear_session.assert_not_called()
@@ -55,28 +55,28 @@ def test_definitive_error_result_tears_down_and_aborts():
     fut.result.return_value = _Result(False, "relay prompt op unavailable")
     clarify_mod = MagicMock()
     assert (
-        _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
+        _clarify_send_disposition(fut, clarify_id="cid123", clarify_mod=clarify_mod)
         == SENTINEL
     )
-    clarify_mod.clear_session.assert_called_once_with("sk")
+    clarify_mod.cancel_prompt.assert_called_once_with("cid123")
 
 def test_non_timeout_exception_tears_down_and_aborts():
     fut = MagicMock()
     fut.result.side_effect = RuntimeError("loop unavailable")
     clarify_mod = MagicMock()
     assert (
-        _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
+        _clarify_send_disposition(fut, clarify_id="cid123", clarify_mod=clarify_mod)
         == SENTINEL
     )
-    clarify_mod.clear_session.assert_called_once_with("sk")
+    clarify_mod.cancel_prompt.assert_called_once_with("cid123")
 
 def test_missing_future_tears_down_and_aborts():
     clarify_mod = MagicMock()
     assert (
-        _clarify_send_disposition(None, session_key="sk", clarify_mod=clarify_mod)
+        _clarify_send_disposition(None, clarify_id="cid123", clarify_mod=clarify_mod)
         == SENTINEL
     )
-    clarify_mod.clear_session.assert_called_once_with("sk")
+    clarify_mod.cancel_prompt.assert_called_once_with("cid123")
 
 # --- Caller-path contract: the disposition feeds the bounded wait ---------
 
@@ -126,7 +126,7 @@ def test_definitive_failure_never_waits():
         == (SENTINEL, False)
     )
     clarify_mod.wait_for_response.assert_not_called()
-    clarify_mod.clear_session.assert_called_once_with("sk")
+    clarify_mod.cancel_prompt.assert_called_once_with("cid123")
 
 def test_no_response_returns_timeout_sentinel():
     fut = MagicMock()

@@ -540,6 +540,7 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
     """#111105: a same-size config.yaml swapped in with the old mtime must change the memo key."""
     import os
     import shutil
+    import time
 
     from model_tools import _tool_defs_cache_key
 
@@ -550,6 +551,18 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         st = cfg.stat()
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
+        # An in-place copy within one filesystem clock tick can leave ctime unchanged.
+        # Wait on the scratch file so the copy still tests ctime, not a new inode.
+        deadline = time.monotonic() + 5
+        while other.stat().st_ctime_ns <= st.st_ctime_ns:
+            assert time.monotonic() < deadline, "filesystem ctime did not advance"
+            time.sleep(0.01)
+            os.utime(other)
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+        after = cfg.stat()
+        assert (after.st_mtime_ns, after.st_size, after.st_ino) == (
+            st.st_mtime_ns, st.st_size, st.st_ino,
+        )
+        assert after.st_ctime_ns > st.st_ctime_ns
         assert _tool_defs_cache_key(None, None, False) != before

@@ -19,6 +19,7 @@ from agent import relay_llm
 from tests.agent.test_relay_llm import relay_turn  # noqa: F401
 
 
+@pytest.mark.platforms("posix")
 def test_signal_during_blocked_provider(relay_turn):
     entered, release, exited = threading.Event(), threading.Event(), threading.Event()
     workers, close_errors = [], []

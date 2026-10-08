@@ -142,8 +142,14 @@ async def _handle_room_member_invitation(
             execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
             ttl_seconds=ttl, status_ttl_seconds=status_ttl)
         claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
+        from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+        authority = room_authority(claims)
+        if not self._run_idempotency_store.accepts_room_authority(authority):
+            raise RoomGrantReauthorizationRequired("room authority has already advanced")
         hosted_rooms.reserve_peer_room(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+        if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority):
+            raise RoomGrantReauthorizationRequired("room authority has already advanced")
     except Exception as exc:
         return _json_error(_openai_error, str(exc), code="invalid_room_invitation", status=400)
     return web.json_response({
@@ -211,9 +217,9 @@ async def _handle_room_member_grant_revoke(
     body, error = await self._read_json_body(request)
     if error:
         return error
-    if body:
+    if set(body) - {"retire_authority"} or ("retire_authority" in body and type(body["retire_authority"]) is not bool):
         return _json_error(
-            _openai_error, "Grant revoke accepts no fields.",
+            _openai_error, "Grant revoke accepts only the boolean retire_authority option.",
             code="invalid_room_grant_revoke", status=400)
     try:
         from gateway import hosted_rooms
@@ -221,8 +227,15 @@ async def _handle_room_member_grant_revoke(
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
         claims = _decode_request_grant(self, request, permission="status")
         _local_target(claims, _api_request_profile)
+        if body.get("retire_authority"):
+            if "retire" not in claims["permissions"]:
+                return _json_error(_openai_error, "This grant does not authorize room retirement.",
+                                   code="room_retirement_not_granted", status=403)
+            from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+            self._run_idempotency_store.retire_room_authority(room_run_scope(claims), room_authority(claims))
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
-    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})
+    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True,
+                              "authority_retired": bool(body.get("retire_authority"))})

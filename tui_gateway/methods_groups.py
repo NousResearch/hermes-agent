@@ -154,6 +154,18 @@ def _room_link_run_storage_durable() -> bool:
     return bool(getattr(store, "durable", False))
 
 
+def _record_peer_run_authority(claims, *, publish=False):
+    if _bound_server is None:
+        return  # Embedded callers expose no peer-run transport/store.
+    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    store = _bound_server._run_idempotency_store
+    authority = room_authority(claims)
+    if not store.accepts_room_authority(authority):
+        raise ValueError("room authority has already advanced")
+    if publish and not store.observe_room_authority(room_run_scope(claims), authority):
+        raise ValueError("room authority has already advanced")
+
+
 def _local_catalog(installation_id: str, profile: str, execution_policy: dict) -> dict:
     """Advertise this gateway's direct-only, text-only RoomLink catalog."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
@@ -246,7 +258,8 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
 
 
 @_room_method("groups.peer.invite", code=4120, db=True)
-def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry) -> dict:
+def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry,
+      _record_authority=_record_peer_run_authority) -> dict:
     """Mint one target-issued room/profile grant for a prospective home."""
     from gateway.hosted_room_peer import (
         decode_room_grant, gateway_room_grant_secret, issue_room_grant)
@@ -270,7 +283,9 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
         ttl_seconds=ttl)
     claims = decode_room_grant(grant_secret, token, permission="status")
+    _record_authority(claims)
     reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
+    _record_authority(claims, publish=True)
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,

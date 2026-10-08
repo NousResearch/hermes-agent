@@ -219,7 +219,7 @@ class HostedRoomService:
             if revoke is None:
                 raise RuntimeError("peer room grant cannot be revoked safely")
             try:
-                revoke(grant=route.grant)
+                revoke(grant=route.grant, retire_authority=True)
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise

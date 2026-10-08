@@ -394,9 +394,14 @@ async def test_cancel_of_absent_deferred_peer_fences_late_admission_after_restar
                 with sqlite3.connect(tmp_path / "target-runs.db") as conn:
                     rows = conn.execute(
                         "SELECT status_json FROM run_idempotency WHERE idempotency_key=?", (key,)).fetchall()
-                assert len(rows) == 1
-                proof = json.loads(rows[0][0])
-                assert proof["status"] == "cancelled" and proof["admission_cancelled"] is True
+                if operation == "stop":
+                    assert len(rows) == 1
+                    proof = json.loads(rows[0][0])
+                    assert proof["status"] == "cancelled" and proof["admission_cancelled"] is True
+                else:
+                    assert rows == []
+                    with sqlite3.connect(tmp_path / "target-runs.db") as conn:
+                        assert conn.execute("SELECT retired_through FROM run_room_authorities").fetchall() == [(1,)]
                 assert sum(admission.call_count for admission in admissions) == 0
                 assert sum(factory.call_count for factory in factories) == 0
                 assert agent.run_conversation.call_count == 0
@@ -465,7 +470,7 @@ async def test_retry_of_a_deferred_turn_follows_its_running_attempt_to_the_reply
     is going: either the first attempt arrived, or Retry's same-key replay starts it now. Retry
     must not report failure or leave the turn deferred; it follows that one run to its reply."""
     target, server, home = await _linked_home(tmp_path)
-    home.runtime.lease_ttl_seconds = 1.0
+    home.runtime.lease_ttl_seconds = 5.0
     home.runtime.poll_interval_seconds = 0.05
     home.runtime.indeterminate_defer_seconds = 0.5
     real_open = urllib_security.open_credentialed_url

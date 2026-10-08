@@ -33,7 +33,9 @@ _MIGRATIONS = {
     "owner_started": "INTEGER NOT NULL DEFAULT 0",
     "retention_until": "REAL NOT NULL DEFAULT 0",
     "acknowledged_at": "REAL",
-    "stop_requested": "INTEGER NOT NULL DEFAULT 0"}
+    "stop_requested": "INTEGER NOT NULL DEFAULT 0",
+    "room_authority_key": "TEXT",
+    "room_authority_epoch": "INTEGER"}
 
 
 def _encode_status(status: Dict[str, Any]) -> str:
@@ -110,6 +112,8 @@ class RunIdempotencyStore:
                 add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
+        from gateway.platforms.api_server_run_authority import initialize
+        initialize(self._conn)
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
@@ -136,7 +140,7 @@ class RunIdempotencyStore:
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
-                cancel_if_missing: bool = False):
+                cancel_if_missing: bool = False, room_authority=None):
         """Reserve admission, or atomically fence an absent key and stop its existing run.
 
         Cancellation addresses the scoped identity, not a payload fingerprint. Its durable
@@ -157,6 +161,10 @@ class RunIdempotencyStore:
                         (scope, key))
                 self._conn.commit()
                 return ("reused", _record(*row[1:])) if cancel_if_missing else _outcome(row, fingerprint)
+            from gateway.platforms.api_server_run_authority import superseded
+            if superseded(self._conn, room_authority):
+                self._conn.commit()
+                return "authority_retired", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -164,10 +172,13 @@ class RunIdempotencyStore:
                 ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now))
+            if room_authority is not None:
+                self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
+                                   (*room_authority[:2], run_id))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
-    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
+    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0, room_authority=None):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -176,8 +187,30 @@ class RunIdempotencyStore:
                 self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
             self._prune_stale_terminal_locked(now)
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            from gateway.platforms.api_server_run_authority import superseded
+            retired = row is None and superseded(self._conn, room_authority)
             self._conn.commit()
+        if retired:
+            return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
+
+    def accepts_room_authority(self, authority):
+        from gateway.platforms.api_server_run_authority import superseded
+        with self._lock:
+            return not superseded(self._conn, authority)
+
+    def observe_room_authority(self, scope, authority):
+        from gateway.platforms.api_server_run_authority import observe
+        with self._immediate_txn():
+            current = observe(self._conn, scope, authority)
+            self._conn.commit()
+        return current
+
+    def retire_room_authority(self, scope, authority):
+        from gateway.platforms.api_server_run_authority import retire
+        with self._immediate_txn():
+            retire(self._conn, scope, authority)
+            self._conn.commit()
 
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the
@@ -252,6 +285,10 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
+            row = self._conn.execute("SELECT room_authority_key FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+            if row and row[0]:
+                from gateway.platforms.api_server_run_authority import compact
+                compact(self._conn, row[0])
             self._conn.commit()
 
     def close(self) -> None:

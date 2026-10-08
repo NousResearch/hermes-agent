@@ -77,6 +77,9 @@ _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
 # Forwarded subagent lifecycle fields; free-text ones are secret-redacted.
+_ROOM_AUTHORITY_REQUEST_KEY = (
+    RequestKey("hermes.room_run_authority", tuple) if RequestKey is not None
+    else "hermes.room_run_authority")
 _SUBAGENT_EVENT_KEYS = (
     "goal", "task_count", "task_index", "subagent_id", "child_session_id", "delegation_id", "parent_id",
     "depth", "model", "tool_count", "status", "summary", "duration_seconds", "input_tokens",
@@ -365,9 +368,15 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        parts = (claims[k] for k in (
-            "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
-            "member_id", "target_install_id", "target_profile"))
+        from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+        authority = room_authority(claims)
+        try:
+            request[_ROOM_AUTHORITY_REQUEST_KEY] = authority
+        except (AttributeError, TypeError):
+            setattr(request, "_hermes_room_run_authority", authority)
+        scope = room_run_scope(claims)
+        self._run_idempotency_store.observe_room_authority(scope, authority)
+        return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
                  self._expected_api_key() or "unauthenticated-test-listener")
@@ -475,6 +484,10 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
+    if outcome == "authority_retired":
+        return _json_error(
+            _openai_error, "Room authority has advanced; this attempt cannot be admitted.",
+            code="run_history_retired", status=409)
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
@@ -685,8 +698,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if idempotency_key:
         outcome, record = self._run_idempotency_store.lookup(
             idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
+            retention_until=_room_retention_until(request),
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+        if outcome != "missing":
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     # Enforce concurrency only for a genuinely new run.
     limited = self._concurrency_limited_response()
@@ -727,7 +741,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         outcome, record = self._run_idempotency_store.reserve(
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
             owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
+            retention_until=_room_retention_until(request),
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
         if outcome != "created":
             _forget_run(
                 self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
@@ -1295,9 +1310,13 @@ async def _handle_stop_run_admission(self, request: "web.Request", *, _api_serve
     cancelled = {
         "object": "hermes.run", "run_id": run_id, "status": "cancelled",
         "admission_cancelled": True, "created_at": now, "updated_at": now}
-    _, record = self._run_idempotency_store.reserve(
+    outcome, record = self._run_idempotency_store.reserve(
         scope, request.headers["Idempotency-Key"].strip(), "", run_id, cancelled,
-        retention_until=_room_retention_until(request), cancel_if_missing=True)
+        retention_until=_room_retention_until(request), cancel_if_missing=True,
+        room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+    if outcome == "authority_retired":
+        return _json_error(_api_server._openai_error, "Room authority has advanced.",
+                           code="run_history_retired", status=409)
     run_id = str(record["run_id"])
     status = self._durable_run_status(request, run_id) or record["status"]
     return _stop_loaded_run(

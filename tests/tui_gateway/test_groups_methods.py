@@ -13,19 +13,20 @@ from tui_gateway import methods_groups
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    class DurableRunStore:
-        durable = True
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     path = tmp_path / ".hermes"
     path.mkdir()
     (path / "profiles" / "ops").mkdir(parents=True)
     (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
     monkeypatch.setenv("HERMES_HOME", str(path))
-    monkeypatch.setattr(srv, "_run_idempotency_store", DurableRunStore(), raising=False)
+    run_store = RunIdempotencyStore(str(path / "runs_idempotency.db"))
+    monkeypatch.setattr(srv, "_run_idempotency_store", run_store, raising=False)
     methods_groups.stop_hosted_room_service(timeout=1.0)
     methods_groups.start_hosted_room_service()
     yield path
     methods_groups.stop_hosted_room_service(timeout=1.0)
+    run_store.close()
 
 
 def _result(envelope):

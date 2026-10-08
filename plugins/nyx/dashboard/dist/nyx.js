@@ -20,6 +20,7 @@ import { UnrealBloomPass } from './vendor/UnrealBloomPass.js';
 const HEAD = [[134,0,12,30],[136,10,37,30],[142,45,69,30],[148,62,86,30],[154,78,99,30],[160,90,111,30],[166,100,121,30],[172,109,130,30],[178,116,137,30],[184,124,145,30],[190,128,151,30],[196,135,157,30],[202,140,163,30],[208,144,168,30],[214,149,173,30],[220,154,176,30],[226,157,180,30],[232,160,183,30],[238,164,186,30],[244,166,189,30],[250,168,191,30],[256,170,194,29],[262,172,196,29],[268,174,198,29],[274,176,199,29],[280,178,201,29],[286,178,203,29],[292,180,204,29],[298,181,204,29],[304,182,205,29],[310,182,206,29],[316,183,206,29],[322,184,206,29],[328,184,206,29],[334,184,207,29],[340,184,207,28],[346,183,206,27],[352,183,206,26],[364,184,204,24],[376,185,201,24],[388,186,199,25],[400,188,197,27],[412,187,195,30],[424,186,195,35],[436,184,192,40],[448,182,190,46],[460,180,187,52],[472,177,184,57],[484,173,181,60],[496,170,180,64],[508,156,181,66],[520,152,182,67],[532,149,179,68],[544,145,172,72],[556,141,161,78],[568,136,148,85],[578,131,135,93],[590,125,118,103],[600,120,102,112],[607,116,89,119],[615,108,75,127],[624,98,59,136],[633,88,43,144],[641,70,28,152],[650,48,11,160],[655,24,9,161],[658,3,7,162]];
 const BODY = [[520,116,112,-2],[560,118,112,0],[600,128,112,-6],[610,128,112,-8],[620,128,113,-9],[630,128,114,-10],[640,128,114,-12],[650,129,116,-13],[660,130,118,-15],[670,133,120,-16],[680,138,123,-17],[690,144,125,-19],[700,152,128,-20],[710,162,132,-22],[720,172,136,-24],[730,186,140,-26],[740,202,145,-28],[750,220,150,-29],[760,241,155,-30],[770,262,160,-31],[780,284,165,-32],[790,309,170,-33],[795,322,172,-34],[800,338,175,-34],[805,354,178,-34],[810,380,180,-34],[815,406,182,-34],[820,429,184,-35],[825,446,186,-36],[830,459,188,-36],[840,480,192,-36],[850,498,195,-36],[860,513,198,-36],[870,526,200,-36],[880,537,203,-36],[890,546,204,-36],[900,556,206,-36],[910,562,207,-36],[920,571,208,-36],[930,576,209,-36],[940,581,210,-36]];
 const U = 0.01, Y0 = 380;
+const DIST = 17.6, ALVO_Y = -0.9;             // câmera: o mesmo enquadramento da foto (1 px da foto = 1 px na tela de 941)
 const CABECA = new THREE.Vector3(0, -(410 - Y0) * U, 0.3);   // centro do crânio na cena
 
 function row(T, y) {                          // Catmull-Rom entre as linhas medidas
@@ -77,7 +78,7 @@ export function alvoGalaxia(s, t) {
 }
 
 /* ---------- partículas ---------- */
-const BLUE = [0.08, 0.42, 1.0], CYAN = [0.45, 0.85, 1.0], WHITE = [0.85, 0.95, 1.0], GOLD = [1.0, 0.62, 0.14];
+const DEEP = [0.0, 0.17, 1.0], BLUE = [0.0, 0.3, 1.0], CYAN = [0.12, 0.58, 1.0], WHITE = [0.6, 0.86, 1.0], GOLD = [1.0, 0.62, 0.14];
 
 function criarAleatorio(semente) {
   let s = semente;
@@ -103,60 +104,102 @@ function sampler(rnd, T, y0, y1, vol) {
   };
 }
 
+function insideBody(x, y, z) {                // px; a parte de baixo da mandíbula que fica dentro do pescoço
+  if (y < 520 || y > 940) return false;
+  const r = row(BODY, y);
+  return (x / r[0]) ** 2 + ((z - r[2]) / r[1]) ** 2 < 0.97;
+}
+
+// O busto só com partículas, como na foto: uma poeira azul profunda dá o corpo e, por cima, contas
+// claras em correntinhas curtas (os "riscos pontilhados" da foto). Nada de contorno desenhado: cada grão
+// guarda a normal da superfície e o shader acende os grãos vistos de raspão, então a borda e o volume
+// aparecem sozinhos, pela luz. Cabeça e pescoço não se atravessam (cada casca some dentro da outra),
+// senão a interseção vira um traço no queixo.
 function gerarBusto(densidade) {
   const { rnd, gauss } = criarAleatorio(7);
-  const pos = [], col = [], inf = [];
-  const put = (x, y, z, b, sz) => {
-    const g = (z > 40 ? 1 : 0) * Math.exp(-((x / 60) ** 2 + ((y - 552) / 62) ** 2));   // dourado: frente baixa do rosto
-    const r = rnd(), c = rnd() < g ? GOLD : r < 0.62 ? BLUE : r < 0.93 ? CYAN : WHITE;
+  const pos = [], col = [], inf = [], nor = [];
+  const ouro = (x, y, z) => (z > 40 ? 1 : 0) * Math.exp(-((x / 60) ** 2 + ((y - 552) / 62) ** 2));   // frente baixa do rosto
+  const corBase = (x, y, z) => (rnd() < ouro(x, y, z) ? GOLD : rnd() < 0.7 ? DEEP : BLUE);
+  const corConta = (x, y, z) => { const r = rnd(); return rnd() < ouro(x, y, z) ? GOLD : r < 0.45 ? BLUE : r < 0.93 ? CYAN : WHITE; };
+  const put = (x, y, z, n, b, sz, cor) => {
     pos.push(x * U, -(y - Y0) * U, z * U);
-    col.push(...c);
+    col.push(...cor);
     inf.push(b, rnd(), sz);
+    nor.push(...n);
   };
-  const fadeY = (y) => (y < 860 ? 1 : Math.max(0, 1 - (y - 860) / 80));   // a base se desfaz
-  const casca = (T, y0, y1, n, skip) => {
-    const pick = sampler(rnd, T, y0, y1, false);
-    for (let i = 0; i < n * densidade; i++) {
-      const y = pick(), [w, d, c] = row(T, y), ph = rnd() * 6.283185, t = gauss() * 4;
-      const nx = d * Math.sin(ph), nz = w * Math.cos(ph), nl = Math.hypot(nx, nz) || 1;
-      const x = w * Math.sin(ph) + nx / nl * t, z = c + d * Math.cos(ph) + nz / nl * t;
-      if ((skip && skip(x, y, z)) || rnd() > fadeY(y)) continue;
-      put(x, y, z, 0.55 + 0.45 * rnd(), 0.7 + 0.6 * rnd() ** 2);
+  const SEM_NORMAL = [0, 0, 0];               // miolo e poeira: sem superfície, luz neutra
+  const fadeY = (y) => (y < 905 ? 1 : Math.max(0, 1 - (y - 905) / 36));   // só a borda de baixo se desfaz
+  // ponto da casca e a normal de verdade: inclui a inclinação vertical (topo dos ombros, queixo, alto da
+  // cabeça), senão uma rampa acende como se estivesse de frente pra câmera
+  const naCasca = (T, y, ph, t) => {
+    const [w, d, c] = row(T, y), [w1, d1, c1] = row(T, y + 1), [w0, d0, c0] = row(T, y - 1);
+    const sn = Math.sin(ph), cs = Math.cos(ph);
+    const ay = [(w1 - w0) / 2 * sn, -1, (c1 - c0) / 2 + (d1 - d0) / 2 * cs];   // ∂P/∂y (y da cena = -y da foto)
+    const ap = [w * cs, 0, -d * sn];                                           // ∂P/∂φ
+    let n = [ay[1] * ap[2] - ay[2] * ap[1], ay[2] * ap[0] - ay[0] * ap[2], ay[0] * ap[1] - ay[1] * ap[0]];
+    const nl = Math.hypot(...n) || 1;
+    n = n.map((v) => v / nl);
+    if (n[0] * sn * w + n[2] * cs * d < 0) n = n.map((v) => -v);              // pra fora
+    return { x: w * sn + n[0] * t, z: c + d * cs + n[2] * t, dy: -n[1] * t, n };
+  };
+  const casca = (T, y0, y1, n, fora, ganho = 1) => {
+    const pick = sampler(rnd, T, y0, y1, false), yMin = T[0][0] + 1, yMax = T[T.length - 1][0];
+    for (let feitos = 0; feitos < n * densidade;) {
+      let y = pick(), ph = rnd() * 6.283185, dir = rnd() * 6.283185;
+      // duas camadas, como na foto: névoa azul lisa (grãos grandes e fracos) e contas nítidas e claras
+      const corrente = rnd() < 0.42, passos = corrente ? 3 + ((rnd() * 5) | 0) : 1;
+      const brilho = corrente ? 0.85 + 0.6 * rnd() : 0.11 + 0.09 * rnd(), t0 = gauss() * 3.5;
+      for (let k = 0; k < passos; k++, feitos++) {
+        if (k) {                              // a corrente anda ~4,6 px pela superfície, quase reta
+          dir += (rnd() - 0.5) * 0.6;
+          y += Math.sin(dir) * 4.6;
+          ph += Math.cos(dir) * 4.6 / Math.max(40, row(T, y)[0]);
+        }
+        if (y < yMin || y > yMax) break;
+        const p = naCasca(T, y, ph, t0 + gauss() * 0.6);
+        if (fora(p.x, y, p.z) || rnd() > fadeY(y)) continue;
+        put(p.x, y + p.dy, p.z, p.n, ganho * brilho * (0.85 + 0.3 * rnd()),
+            corrente ? 0.75 + 0.45 * rnd() ** 2 : 2.4 + 1.6 * rnd(), corrente ? corConta(p.x, y, p.z) : corBase(p.x, y, p.z));
+      }
     }
   };
-  const miolo = (T, y0, y1, n, skip) => {
+  const miolo = (T, y0, y1, n, fora) => {
     const pick = sampler(rnd, T, y0, y1, true);
     for (let i = 0; i < n * densidade; i++) {
       const y = pick(), [w, d, c] = row(T, y), ph = rnd() * 6.283185, r = Math.sqrt(rnd());
       const x = w * r * Math.sin(ph), z = c + d * r * Math.cos(ph);
-      if ((skip && skip(x, y, z)) || rnd() > fadeY(y)) continue;
-      put(x, y, z, 0.25 + 0.3 * rnd(), 0.55 + 0.4 * rnd());
+      if (fora(x, y, z) || rnd() > fadeY(y)) continue;
+      put(x, y, z, SEM_NORMAL, 0.2 + 0.2 * rnd(), 0.55 + 0.4 * rnd(), corBase(x, y, z));
     }
   };
-  casca(HEAD, 136, 658, 42000);
-  casca(BODY, 520, 940, 52000, insideHead);
-  miolo(HEAD, 136, 658, 9000);
-  miolo(BODY, 520, 940, 9000, insideHead);
-  for (const sg of [-1, 1]) {                 // orelhas: presas no crânio, borda de trás aberta pra fora
-    for (let i = 0; i < 3500 * densidade; i++) {
-      const t = (rnd() * 2 - 1) * Math.PI, r = Math.sqrt(rnd());
+  casca(HEAD, 136, 658, 44000, insideBody);
+  casca(BODY, 520, 940, 54000, insideHead, 1.4);   // na foto pescoço e ombros brilham mais que o rosto
+  miolo(HEAD, 136, 658, 4000, () => false);
+  miolo(BODY, 520, 940, 4000, insideHead);
+  for (const sg of [-1, 1]) {                 // orelhas: aro claro (hélice) e concha rala, na densidade da pele
+    for (let i = 0; i < 1500 * densidade; i++) {
+      const aro = rnd() < 0.65, t = (rnd() * 2 - 1) * Math.PI * (aro ? 0.93 : 1);
+      const r = aro ? 0.86 + 0.14 * rnd() : Math.sqrt(rnd()) * 0.8;
       const ey = 442 - Math.sin(t) * 62 * r - 6 * Math.cos(t) * r, ez = 2 - Math.cos(t) * 46 * r;
       const h = row(HEAD, ey), zz = (ez - h[2]) / h[1], xs = h[0] * Math.sqrt(Math.max(0, 1 - zz * zz));
       const out = 2 + 28 * r * (0.2 + 0.8 * Math.max(0, Math.cos(t)) ** 1.5) * (ey < 482 ? 1 : Math.max(0.2, 1 - (ey - 482) / 30));
-      put(sg * (xs - 2 + out), ey, ez, r > 0.85 ? 0.9 : 0.5, 0.8);
+      const nz = 0.66 - 0.3 * Math.cos(t), nl = Math.hypot(0.75, nz);
+      put(sg * (xs - 2 + out), ey, ez, [sg * 0.75 / nl, 0, nz / nl], aro ? 1.5 : 0.35, aro ? 0.9 : 0.7,
+          aro ? (rnd() < 0.85 ? CYAN : WHITE) : DEEP);
     }
   }
   {                                           // poeira rala colada no corpo
     const ph = sampler(rnd, HEAD, 140, 640, false), pb = sampler(rnd, BODY, 640, 900, false);
-    for (let i = 0; i < 3000 * densidade; i++) {
+    for (let i = 0; i < 1200 * densidade; i++) {
       const head = rnd() < 0.55, T = head ? HEAD : BODY, y = head ? ph() : pb(), [w, d, c] = row(T, y);
-      const a = rnd() * 6.283185, out = 6 + 70 * rnd() ** 2.5;
+      const a = rnd() * 6.283185, out = 4 + 40 * rnd() ** 2.5;
       const nx = d * Math.sin(a), nz = w * Math.cos(a), nl = Math.hypot(nx, nz) || 1;
       const top = head && y < 260 ? -Math.abs(gauss()) * 30 * (260 - y) / 120 : 0;
-      put(w * Math.sin(a) + nx / nl * out, y + gauss() * 12 + top, c + d * Math.cos(a) + nz / nl * out, 0.3 + 0.6 * rnd() ** 3, 0.5 + 0.8 * rnd());
+      const x = w * Math.sin(a) + nx / nl * out, z = c + d * Math.cos(a) + nz / nl * out;
+      put(x, y + gauss() * 12 + top, z, SEM_NORMAL, 0.3 + 0.6 * rnd() ** 3, 0.5 + 0.8 * rnd(), rnd() < 0.6 ? BLUE : CYAN);
     }
   }
-  return { pos, col, inf };
+  return { pos, col, inf, nor };
 }
 
 // braços: (ângulo inicial, raio px, altura px) — a receita da forma "galáxia" do avatar
@@ -214,14 +257,26 @@ const VS_COMUM = `
     float tw = 1.0 + (0.9 + uPensa * 0.6) * pow(0.5 + 0.5 * sin(uTime * rit + sd * 50.0), 12.0);
     float ouro = step(0.9, color.r) * step(color.b, 0.3);
     float boca = 1.0 + ouro * uFala * (0.7 + 0.6 * sin(uTime * 9.0 + sd * 3.0));   // falando: o dourado pulsa
-    vCol = color * b * mix(0.28, 1.15, k) * tw * boca * 0.45 * uExpo;
+    vCol = color * b * mix(0.28, 1.15, k) * tw * boca * 0.32 * uExpo;
     gl_Position = projectionMatrix * mv;
     float persp = uScale / -mv.z;
     gl_PointSize = uSize * aInf.z * mix(0.7, 1.2, k) * persp * (1.0 + 0.4 * (tw - 1.0));
     return p;
   }`;
 const VS_BUSTO = VS_COMUM + `
-  void main() { fimDoPonto(position, aInf.y, aInf.x); }`;
+  attribute vec3 aNor;
+  void main() {
+    // grão visto de frente apaga, de raspão acende: a borda e o volume saem da luz, não de um contorno
+    float luz = 0.8;
+    if (dot(aNor, aNor) > 0.25) {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float fd = dot(normalize(normalMatrix * aNor), normalize(-mv.xyz));
+      luz = mix(2.0, 0.22, pow(abs(fd), 0.55));   // luz de recorte: só o raspão acende de verdade
+      if (fd < 0.0) luz *= 0.12;              // o lado de trás quase some: lê como superfície, não como nuvem
+
+    }
+    fimDoPonto(position, aInf.y, aInf.x * luz);
+  }`;
 const VS_BRACOS = VS_COMUM + `
   uniform float uGal, uTilt, uR0, uR1, uGiro;
   uniform vec3 uCentro;
@@ -265,9 +320,10 @@ const FS = `
   varying vec3 vCol;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
-    float rd = clamp(1.0 - dot(c, c) * 4.0, 0.0, 1.0);   // ponto de luz redondo
-    if (rd <= 0.001) discard;
-    gl_FragColor = vec4(vCol * rd * rd * 1.6, 1.0);
+    float r = length(c) * 2.0;                             // ponto de luz redondo: miolo nítido, borda curta
+    if (r >= 1.0) discard;
+    float a = smoothstep(1.0, 0.35, r);
+    gl_FragColor = vec4(vCol * a * a * 1.5, 1.0);
   }`;
 
 function pontos(dados, material) {
@@ -275,6 +331,7 @@ function pontos(dados, material) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(dados.pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(dados.col, 3));
   g.setAttribute('aInf', new THREE.Float32BufferAttribute(dados.inf, 3));
+  if (dados.nor) g.setAttribute('aNor', new THREE.Float32BufferAttribute(dados.nor, 3));
   const p = new THREE.Points(g, material);
   p.frustumCulled = false;                    // braços e cometas guardam parâmetros em position, não xyz
   return p;
@@ -291,10 +348,10 @@ export function montar(el, { densidade = 1 } = {}) {
   const group = new THREE.Group();
   scene.add(group);
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
-  camera.position.set(0, -1.6, 19);
+  camera.position.set(0, ALVO_Y, DIST);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-  controls.target.set(0, -1.9, 0);
+  controls.target.set(0, ALVO_Y, 0);
   controls.minDistance = 8;
   controls.maxDistance = 40;
 
@@ -334,10 +391,10 @@ export function montar(el, { densidade = 1 } = {}) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     // tela estreita (celular em pé): afasta a câmera pra caber cabeça e ombros, mantendo a direção do giro
-    const dist = 19 * Math.max(1, 0.9 / camera.aspect);
+    const dist = DIST * Math.max(1, 1.35 / camera.aspect);   // em tela estreita afasta até caber os ombros
     camera.position.sub(controls.target).setLength(dist).add(controls.target);
     // a figura ocupa ~metade da altura; com a contagem de grãos fixa, a sobreposição cresce com 1/altura²
-    uniforms.uExpo.value = Math.min(1.2, Math.max(0.2, (h * 19 / dist / 940) ** 2));
+    uniforms.uExpo.value = Math.min(1.2, Math.max(0.2, (h * DIST / dist / 820) ** 2));
   };
   const ro = new ResizeObserver(ajustar);
   ro.observe(el);
@@ -394,13 +451,14 @@ export function montar(el, { densidade = 1 } = {}) {
     uniforms.uFala.value = fala;
     group.rotation.y = 0.1 * Math.sin(t * 0.21);                 // respiração do corpo
     controls.update();
-    uniforms.uC.value = alvoCamera.set(0, -1.9, 0).applyMatrix4(camera.matrixWorldInverse).z;
+    uniforms.uC.value = alvoCamera.copy(controls.target).applyMatrix4(camera.matrixWorldInverse).z;
     composer.render();
   }
   loop();
 
   return {
     evento,
+    camera, controls,                         // pra integrações e testes (enquadrar, girar a vista)
     get estado() { return estado; },
     destruir() {
       vivo = false;

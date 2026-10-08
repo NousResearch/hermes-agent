@@ -47,7 +47,7 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
 # (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. Not a user preference: never written to
+# tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 # Preview cohort for the free tier's connector set, sent once on account creation so the account
@@ -155,7 +155,7 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
 
 def guest_enabled() -> bool:
     """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off."""
+    True) has not switched it off. The only place either is read."""
     if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
         return False
     try:

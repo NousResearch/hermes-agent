@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import shutil
 from datetime import datetime, timezone
@@ -10,7 +9,8 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 from hermes_cli import profiles as profiles_mod
-from hermes_constants import get_hermes_home, profile_name_for_home
+from hermes_cli.onboarding_run import install_has_history
+from hermes_constants import get_default_hermes_root, get_hermes_home, profile_name_for_home
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +139,8 @@ def _live_owner(owner: str) -> str:
 
 
 def onboarding_eligible() -> bool:
-    from hermes_cli.anon_auth import GUEST_ONBOARDING_ENV
-    return os.environ.get(GUEST_ONBOARDING_ENV, "").strip() == "1"
+    from hermes_cli.anon_auth import guest_enabled
+    return guest_enabled()
 
 
 def read_state() -> dict:
@@ -159,7 +159,7 @@ def settle_returning_user() -> None:
     """
     if find_setup_profile() is not None or _returning_user_latched():
         return
-    if _install_has_history():
+    if install_has_history(get_default_hermes_root()):
         from agent.onboarding import mark_seen
         mark_seen(get_hermes_home() / "config.yaml", RETURNING_USER_FLAG)
 
@@ -168,24 +168,6 @@ def _returning_user_latched() -> bool:
     from agent.onboarding import is_seen
     from hermes_cli.config import read_user_config_raw
     return is_seen(read_user_config_raw(get_hermes_home() / "config.yaml"), RETURNING_USER_FLAG)
-
-
-def _install_has_history() -> bool:
-    """A session row in the launch home, or a profile the user made. A fresh boot creates neither:
-    it leaves an empty ``state.db``, ``auth.json`` (the free-tier mint) and ``SOUL.md``, which is
-    why the signal is a session row and not a file."""
-    if any(not (path / profiles_mod.SETUP_PROFILE_MARKER).is_file()
-           for path in profiles_mod._iter_named_profile_dirs()):
-        return True
-    db_path = get_hermes_home() / "state.db"
-    if not db_path.is_file():
-        return False
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path)
-    try:
-        return db.session_count_ge(1)
-    finally:
-        release_or_close(db)
 
 
 def record_failed_start() -> dict:

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _GITHUB = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 _TIMEOUT = 5.0
 _MAX_BYTES = 256 * 1024
+_DISCLOSURE = re.compile(r"\bDisclosure\s*[:\u2014]\s*(.+)")
 # (repo, sha, subdir) -> manifest dict, or None when the pin has no readable plugin.json. A pin is
 # immutable, so the process keeps the answer.
 _manifests: Dict[Tuple[str, str, str], Optional[Dict[str, Any]]] = {}
@@ -146,6 +147,35 @@ def onboarding_entries() -> list[Dict[str, Any]]:
             "sentence": found.sentence,
         })
     return rows
+
+
+def presence_for(names: list[str]) -> list[Dict[str, Any]]:
+    """The named catalog plugins this OS runs, in the order asked, each with its app state and the
+    catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_cli.plugin_catalog import load_catalog_live
+    from hermes_cli.plugins_cmd_catalog import normalized_platforms
+    from hermes_platform.host.facts import os_family
+
+    here = os_family()
+    by_name = {entry.name: entry for entry in load_catalog_live()}
+    entries = [by_name[name] for name in dict.fromkeys(names) if name in by_name
+               and (not by_name[name].platforms or here in normalized_platforms(by_name[name].platforms))]
+    if not entries:
+        return []
+    # Each manifest read is bounded by _TIMEOUT; in parallel the whole answer waits one timeout, not one per name.
+    with ThreadPoolExecutor(max_workers=len(entries)) as pool:
+        found = list(pool.map(presence, entries))
+    return [{"name": entry.name, "title": entry.title or entry.name, "state": state.state,
+             "sentence": state.sentence, "disclosure": _disclosure(entry.description)}
+            for entry, state in zip(entries, found)]
+
+
+def _disclosure(text: str) -> str:
+    """The sentence after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent."""
+    match = _DISCLOSURE.search(" ".join(str(text or "").split()))
+    return _first_sentence(match.group(1)) if match else ""
 
 
 def _first_sentence(text: str) -> str:

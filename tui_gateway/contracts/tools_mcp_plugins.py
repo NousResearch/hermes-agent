@@ -589,13 +589,15 @@ class PluginsAction(WireEnum):
     remove = "remove"
     settings = "settings"
     onboarding = "onboarding"
+    presence = "presence"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
-    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
+    ``presence``: ``names`` (catalog names, answered in that order)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -608,6 +610,7 @@ class PluginsManageParams(ProfileParams):
     ref: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
+    names: list[str] | None = None
 
 
 class PluginSettingFieldType(WireEnum):
@@ -729,6 +732,18 @@ class OnboardingCatalogPlugin(Result):
     sentence: str
 
 
+class CatalogPluginPresence(Result):
+    """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
+    on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
+    catalog description's ``Disclosure:`` sentence (empty when it has none)."""
+
+    name: str
+    title: str
+    state: CatalogAppState
+    sentence: str
+    disclosure: str
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
@@ -767,6 +782,8 @@ class PluginsManageResult(Result):
     written: list[str] | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.
     onboarding: list[OnboardingCatalogPlugin] | None = None
+    # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
+    presence: list[CatalogPluginPresence] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

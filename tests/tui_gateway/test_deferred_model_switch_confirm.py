@@ -223,5 +223,38 @@ class TestDroppedQueuedPickIsLogged:
         assert "dropped" in caplog.text and UNGUARDED_MODEL in caplog.text, (
             "a dropped pick used to exist only as a client toast, invisible in server logs"
         )
-        assert emitted and emitted[0][0] == "error"
         assert "pending_model_switch" not in session
+
+
+class TestDroppedQueuedPickIsNotATurnError:
+    """A pick dropped at turn start must not fail the turn: Desktop paints ``error`` as the red retry card
+    under the user's message, while the turn itself runs on the old model."""
+
+    def _run(self, monkeypatch, apply):
+        session = _session(pending_model_switch={
+            "raw": UNGUARDED_MODEL, "confirm_expensive_model": False,
+            "display_model": UNGUARDED_MODEL, "display_provider": ""})
+        session["agent"] = types.SimpleNamespace(model="deepseek/deepseek-v4.1-flash")
+        monkeypatch.setattr(server, "_apply_model_switch", apply)
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda *a, **_kw: emitted.append(a))
+        server._apply_pending_model_switch("sid", session)
+        return [a[0] for a in emitted], emitted
+
+    def test_guarded_drop_is_a_warning_and_resyncs_the_pill(self, monkeypatch):
+        kinds, emitted = self._run(
+            monkeypatch, lambda *_a, **_kw: {"confirm_required": True, "confirm_message": "guarded"})
+
+        assert "error" not in kinds
+        notice = next(a[2] for a in emitted if a[0] == "notification.show")
+        assert notice["level"] == "warn" and UNGUARDED_MODEL in notice["text"]
+        assert "session.info" in kinds
+
+    def test_failed_switch_is_a_warning(self, monkeypatch):
+        def _boom(*_a, **_kw):
+            raise ValueError("no credentials")
+
+        kinds, _ = self._run(monkeypatch, _boom)
+
+        assert "error" not in kinds
+        assert "notification.show" in kinds

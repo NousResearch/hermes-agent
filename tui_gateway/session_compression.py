@@ -197,20 +197,32 @@ def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
 def _apply_pending_model_switch(sid: str, session: dict) -> None:
     """Apply a model switch queued (``session["pending_model_switch"]``) while a turn was running. Runs on
     the TURN thread at turn start — nothing in flight — so the in-place swap (client rebuild) is safe. A
-    failed switch keeps the current model and never blocks the turn."""
+    failed switch keeps the current model and never blocks the turn.
+
+    A dropped pick is a warning notice, not an ``error``: clients paint ``error`` as a failed turn
+    (Desktop's red retry card under the user's message) while this turn runs normally on the old model.
+    The session.info re-sync moves the pill off the pick the session never adopted."""
     pending = session.pop("pending_model_switch", None)
     if not pending or session.get("agent") is None:
         return
+    model = pending.get("display_model") or pending["raw"]
     try:
         result = _apply_model_switch(sid, session, pending["raw"], confirm_expensive_model=bool(pending.get("confirm_expensive_model")))
-        # Honour the expensive-model confirm: surface the warning and drop the switch rather than spend
-        # on a model the user never confirmed.
-        if result.get("confirm_required"):
-            logger.warning("Queued model switch to %s dropped for session %s: selection guard needs a confirm",
-                           pending.get("display_model") or pending["raw"], sid)
-            _emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
+        # Honour the expensive-model confirm: drop the switch rather than spend on a model the user
+        # never confirmed.
+        if not result.get("confirm_required"):
+            return
+        logger.warning("Queued model switch to %s dropped for session %s: selection guard needs a confirm", model, sid)
+        detail = result.get("confirm_message") or result.get("warning") or ""
+        current = getattr(session["agent"], "model", "") or "the current model"
+        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm.\n\n{detail}"
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch model: {e}"})
+        logger.warning("Queued model switch to %s failed for session %s: %s", model, sid, e)
+        text = f"Could not switch model: {e}"
+    _emit("notification.show", sid, {
+        "text": text.rstrip(), "level": "warn", "kind": "ttl", "ttl_ms": 12000,
+        "key": "model_switch.dropped", "id": "model_switch.dropped"})
+    _emit_session_info(sid, session)
 
 
 class CompressionLockHeld(Exception):

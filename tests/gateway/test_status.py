@@ -745,6 +745,34 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == [os.getpid()]
 
+    @staticmethod
+    def _status_raises_no_such_process(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+
+        def raise_no_such_process(self):
+            raise psutil.NoSuchProcess(self.pid)
+
+        monkeypatch.setattr(psutil.Process, "status", raise_no_such_process)
+
+    def test_no_such_process_with_live_pid_reports_alive(self, monkeypatch):
+        """#135102: under hidepid=2 / ProtectProc=invisible the status read raises
+        NoSuchProcess for ANOTHER user's live worker (its /proc/<pid> is unreadable), which
+        must not be booked as "pid not alive" — pid_exists() answers EPERM=True for it.
+        Without the fall-through a foreign gateway's kanban sweep reclaims the live run."""
+        psutil = pytest.importorskip("psutil")
+        self._status_raises_no_such_process(monkeypatch)
+        monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+
+        assert status._pid_exists(4242) is True
+
+    def test_no_such_process_with_dead_pid_reports_dead(self, monkeypatch):
+        # A pid that fails both probes is really gone: fall-through must not flip it alive.
+        psutil = pytest.importorskip("psutil")
+        self._status_raises_no_such_process(monkeypatch)
+        monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+
+        assert status._pid_exists(4242) is False
+
 
 class TestScopedLocks:
     @pytest.mark.platforms("windows")

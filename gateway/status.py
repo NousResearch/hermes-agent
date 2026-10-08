@@ -953,7 +953,12 @@ def _pid_exists(pid: int) -> bool:
             if probe_zombie and psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
-            return False
+            # NoSuchProcess from the status read is ambiguous, not a death sentence: under
+            # hidepid=2 / ProtectProc=invisible another user's LIVE process has no readable
+            # /proc/<pid>, so psutil reports it exactly like a dead one (#135102). Fall
+            # through to pid_exists(), whose os.kill(pid, 0) answers EPERM=True for a live
+            # foreign pid (a really-dead pid still fails it with ESRCH=False).
+            pass
         except Exception:
             pass
         return bool(psutil.pid_exists(pid))

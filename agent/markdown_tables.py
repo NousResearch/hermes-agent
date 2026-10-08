@@ -136,7 +136,6 @@ def _render_vertical(rows: List[List[str]], ncols: int, available_width: int) ->
         return []
     labels = [h or f"Column {i + 1}" for i, h in enumerate(rows[0] + [""] * (ncols - len(rows[0])))]
     separator = "─" * (max(20, min(40, available_width - 2)) if available_width else 30)
-    cont_budget = max(10, available_width - 2)  # continuation lines are indented two spaces
     out: List[str] = []
     for ri, row in enumerate(rows[1:]):
         if ri > 0:
@@ -148,8 +147,9 @@ def _render_vertical(rows: List[List[str]], ncols: int, available_width: int) ->
                 continue
             wrapped = _wrap_to_width(value, max(10, available_width - _disp_width(label) - 2))
             out.append(f"{label}: {wrapped[0]}")
-            # Re-flow continuation text at the wider continuation budget.
-            for cl in _wrap_to_width(" ".join(wrapped[1:]), cont_budget) if len(wrapped) > 1 else ():
+            # Hard-broken pieces of one word have no separator; joining them with
+            # spaces here would corrupt URLs, hashes, and other opaque values.
+            for cl in wrapped[1:]:
                 if cl.strip():
                     out.append(f"  {cl}")
     return out

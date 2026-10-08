@@ -38,7 +38,12 @@ logger = logging.getLogger("hermes_cli.plugins")
 # the tool loop hot path. - kanban_task_* — fire after the board DB commit, observers only, in
 # dispatcher/worker processes; kanban has its own heartbeat/stale reclaim. Abandon-without-join also leaves
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
-# gates/flushes.
+# gates/flushes. - gateway_platform_event — deliberately unbounded here. The bounded path still blocks
+# the caller for the full timeout, then suppresses the callback for 60s, and its running-gate keys on
+# tool_call_id/turn_id, which these events lack: a second Telegram button tap while the first is being
+# handled would be skipped, and one slow tap would disable the plugin for a minute. Instead the gateway
+# runs ``callback_query`` events off the loop (asyncio.to_thread) and the Telegram adapter answers the tap
+# itself after 10s when no plugin claims it (gateway/run_adapters.py, plugins/platforms/telegram).
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
@@ -56,6 +61,24 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+
+
+def _pre_tool_call_timeout_message(callback_name: str) -> str:
+    """Block message for a pre_tool_call callback that hit the HOST timeout.
+
+    Measured on the hub 2026-09-09: 675 timeout blocks in 7 days, 95% alone in
+    their turn. The old flat message gave the agent no callback name and no
+    remedy, so every one cost a blind retry with different quoting. Name the
+    callback, say plainly this is a host timeout and not a policy verdict, and
+    give a next action (retry) so the agent does not thrash.
+    """
+    name = callback_name or "the guard"
+    return (
+        f"{_PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}: {name} did not answer in time. "
+        "This is a host timeout, not a policy denial: nothing was disallowed. "
+        "Retry the same tool call once; if it times out again, report the stall "
+        f"naming {name}."
+    )
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> Dict[str, str]:
@@ -170,6 +193,14 @@ def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
         value = kwargs.get(field)
         if isinstance(value, str) and value:
             return value
+    # No per-call id: fall back to the session so concurrent SESSIONS still get
+    # distinct gate keys. Without this, a caller that omits tool_call_id/turn_id
+    # collapses every session onto (hook, cb, None) and the first one to enter
+    # makes all others skip - for pre_tool_call that fails closed (2026-08-28
+    # restart replay: 7 sessions, 600+ refused tool calls, zero real timeouts).
+    session_id = kwargs.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        return f"session:{session_id}"
     return None
 
 
@@ -232,7 +263,7 @@ class PluginDispatchMixin:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append({"action": "block", "message": _pre_tool_call_timeout_message(getattr(cb, "__name__", repr(cb)))})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -511,7 +542,7 @@ class PluginDispatchMixin:
             except asyncio.TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                    results.append({"action": "block", "message": _pre_tool_call_timeout_message(callback_name)})
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).

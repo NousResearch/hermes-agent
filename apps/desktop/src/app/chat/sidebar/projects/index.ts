@@ -2,11 +2,14 @@
 export { EnteredProjectContent } from './entered-content'
 export { enteredProjectLiveRows } from './gateway-project-rows'
 export {
+  nestProjectsByParent,
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,
+  projectSubtreeSessionIds,
   projectTreeCwd,
   sortProjectsForOverview,
-  useRepoWorktreeMap
+  useRepoWorktreeMap,
+  visibleProjectRows
 } from './model'
 export { ProjectBackRow, ProjectOverviewRow } from './overview-row'
 export { ProjectMenu } from './project-menu'

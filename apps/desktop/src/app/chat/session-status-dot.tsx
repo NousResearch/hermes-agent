@@ -92,6 +92,17 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
  *  of its own (it inherits the project's), so callers supply one. */
 export const sessionDotClassName = (state: SessionDotState): string => DOT_VARIANTS[state].className
 
+/** The dot's spoken name and tooltip, for surfaces that describe a rolled-up status rather than a
+ *  session — a collapsed project whose nested work needs attention. Same table the rows use, so the
+ *  two can never describe one state differently. */
+export const sessionDotLabel = (
+  state: SessionDotState,
+  r: Translations['sidebar']['row']
+): { ariaLabel?: string; title?: string } => ({
+  ariaLabel: DOT_VARIANTS[state].ariaLabel?.(r),
+  title: DOT_VARIANTS[state].title?.(r)
+})
+
 export interface SessionStatusDotProps {
   /** The STORED session id — the key every live-state atom (working /
    *  attention / stalled / unread / background) is keyed by, on BOTH surfaces:

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import {
+  nestProjectsByParent,
+  orderProjectsByIds,
+  projectDescendantIds,
+  projectSubtreeSessionIds,
+  sortProjectsForOverview,
+  visibleProjectRows
+} from './model'
 import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
@@ -74,5 +81,134 @@ describe('sortProjectsForOverview', () => {
     const projects = [makeProject('scanned', 0), active, home()]
 
     expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+  })
+})
+
+describe('nestProjectsByParent', () => {
+  // An explicit project keeps its own sessions; `parentId` only decides where
+  // its row renders. The backend derives it from nested project folders.
+  const child = (id: string, parentId: string): SidebarProjectTree => ({
+    ...makeProject(id, 1),
+    isAuto: false,
+    parentId
+  })
+
+  it('moves a nested project directly under its parent', () => {
+    const projects = [makeProject('other', 1), makeProject('dev', 1), child('align', 'dev')]
+
+    expect(ids(nestProjectsByParent(projects))).toEqual(['other', 'dev', 'align'])
+  })
+
+  it('keeps Home first and the incoming order within a level', () => {
+    const projects = [
+      home(),
+      makeProject('dev', 1),
+      makeProject('other', 1),
+      child('align', 'dev'),
+      child('router', 'dev')
+    ]
+
+    expect(ids(nestProjectsByParent(projects))).toEqual([
+      NO_PROJECT_ID,
+      'dev',
+      'align',
+      'router',
+      'other'
+    ])
+  })
+
+  it('nests a chain parent-first', () => {
+    const projects = [child('align', 'dev'), child('dev', 'ws'), makeProject('ws', 1)]
+
+    expect(ids(nestProjectsByParent(projects))).toEqual(['ws', 'dev', 'align'])
+  })
+
+  it('leaves a child at top level when its parent is gone', () => {
+    // Hiding or dismissing the parent must not take the child's row with it.
+    const projects = [makeProject('other', 1), child('align', 'gone')]
+
+    expect(ids(nestProjectsByParent(projects))).toEqual(['other', 'align'])
+  })
+
+  it('ignores a self-referential parent id', () => {
+    const projects = [child('align', 'align')]
+
+    expect(nestProjectsByParent(projects)).toBe(projects)
+  })
+
+  it('returns the same list when nothing nests', () => {
+    const projects = [makeProject('a', 1), makeProject('b', 1)]
+
+    expect(nestProjectsByParent(projects)).toBe(projects)
+  })
+
+  it('never drops a row when parent ids form a cycle', () => {
+    const projects = [child('a', 'b'), child('b', 'a')]
+
+    expect(ids(nestProjectsByParent(projects)).sort()).toEqual(['a', 'b'])
+  })
+})
+
+describe('projectDescendantIds', () => {
+  it('walks the nest transitively and includes the project itself', () => {
+    const projects = [
+      makeProject('dev', 0),
+      { ...makeProject('align', 0), parentId: 'dev' },
+      { ...makeProject('leaf', 0), parentId: 'align' },
+      makeProject('other', 0)
+    ]
+
+    expect([...projectDescendantIds(projects, 'dev')].sort()).toEqual(['align', 'dev', 'leaf'])
+    expect([...projectDescendantIds(projects, 'leaf')]).toEqual(['leaf'])
+    expect([...projectDescendantIds(projects, 'other')]).toEqual(['other'])
+  })
+})
+
+describe('projectSubtreeSessionIds', () => {
+  // Ownership is deepest-wins, so a subproject's sessions are absent from its
+  // ancestor's own `sessionIds` — which is exactly why a collapsed parent has to
+  // collect them to show a status.
+  const projects = [
+    { ...makeProject('dev', 1), sessionIds: ['s_dev'] },
+    { ...makeProject('align', 1), parentId: 'dev', sessionIds: ['s_align'] },
+    { ...makeProject('leaf', 0), parentId: 'align', sessionIds: ['s_leaf'] },
+    { ...makeProject('other', 1), sessionIds: ['s_other'] }
+  ]
+
+  it('folds nested sessions into their ancestors', () => {
+    expect(projectSubtreeSessionIds(projects, 'dev').sort()).toEqual(['s_align', 's_dev', 's_leaf'])
+    expect(projectSubtreeSessionIds(projects, 'align').sort()).toEqual(['s_align', 's_leaf'])
+    expect(projectSubtreeSessionIds(projects, 'other')).toEqual(['s_other'])
+  })
+})
+
+describe('visibleProjectRows', () => {
+  const child = (id: string, parentId: string): SidebarProjectTree => ({ ...makeProject(id, 0), parentId })
+
+  const projects = [
+    makeProject('dev', 0),
+    child('align', 'dev'),
+    child('leaf', 'align'),
+    makeProject('other', 0)
+  ]
+
+  const open = (...ids: string[]) => (id: string) => ids.includes(id)
+
+  it('hides everything under a collapsed project, however deep', () => {
+    expect(visibleProjectRows(projects, open('dev', 'align', 'other')).map(p => p.id)).toEqual([
+      'dev',
+      'align',
+      'leaf',
+      'other'
+    ])
+    // `align` is open, but its parent `dev` is closed — align and leaf go with it. `dev` itself
+    // keeps its row: a project is only ever hidden by an ancestor, never by its own flag.
+    expect(visibleProjectRows(projects, open('align', 'other')).map(p => p.id)).toEqual(['dev', 'other'])
+    // The parent open again: only what its own closed child hides is gone.
+    expect(visibleProjectRows(projects, open('dev', 'other')).map(p => p.id)).toEqual(['dev', 'align', 'other'])
+  })
+
+  it('leaves a project whose parent is not in the list standing on its own', () => {
+    expect(visibleProjectRows([child('orphan', 'gone')], open('dev')).map(p => p.id)).toEqual(['orphan'])
   })
 })

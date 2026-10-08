@@ -345,6 +345,69 @@ def _project_for_session(
     return max((index.match(t) for t in candidates), key=lambda hit: hit[1])[0]
 
 
+def _node_folders(node: dict) -> list[str]:
+    """Declared folders for a project row, falling back to its single path (auto/discovered rows)."""
+    if node.get("folders"):
+        return [str(f.get("path") or "") for f in node["folders"]]
+    return [str(node.get("path") or "")]
+
+
+def effective_parent_map(rows: list[dict]) -> dict[str, Optional[str]]:
+    """Resolve every project's parent id: a stored ``parent_id`` wins, else folder containment.
+
+    ``parent_id`` is the store's tri-state (``hermes_cli.projects_db``): None means "never moved", so
+    the nearest OTHER row whose folder strictly contains one of this one's becomes the parent; ``""``
+    means the user put it at the top level; anything else is that project.
+
+    DISPLAY GROUPING ONLY. Session ownership stays with ``_FolderIndex``, so a parent never also claims
+    its child's sessions — the duplicate-listing class #109007 / #91932 / #70790 / #114638 were closed
+    against. An explicit parent outside this set (archived, deleted) falls back to the top level.
+    """
+    present = {str(row.get("id") or "") for row in rows}
+    keys = {
+        str(row.get("id") or ""): [_comparison_segments(f) for f in _node_folders(row) if f]
+        for row in rows
+    }
+    resolved: dict[str, Optional[str]] = {}
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        explicit = row.get("parent_id")
+        if explicit is not None:
+            parent_id = str(explicit)
+            resolved[row_id] = parent_id if parent_id and parent_id in present else None
+            continue
+        own = keys.get(row_id) or []
+        best_id, best_len = None, -1
+        for other in rows:
+            other_id = str(other.get("id") or "")
+            if other_id == row_id:
+                continue
+            for parent_key in keys.get(other_id) or []:
+                if not parent_key or len(parent_key) <= best_len:
+                    continue
+                if any(len(parent_key) < len(own_key) and own_key[:len(parent_key)] == parent_key
+                       for own_key in own):
+                    best_id, best_len = other_id, len(parent_key)
+        resolved[row_id] = best_id
+    return resolved
+
+
+def _assign_parent_projects(nodes: list[dict], sources: list[dict]) -> None:
+    """Stamp ``parentId`` onto each wire node (see ``effective_parent_map``).
+
+    ``sources`` are the project rows behind those nodes: a wire node carries only what the renderer
+    needs, so declared folders and the stored ``parent_id`` are read from the row, with the node's own
+    ``path`` covering auto/discovered rows that have no row behind them.
+    """
+    by_id = {str(row.get("id") or ""): row for row in sources}
+    resolved = effective_parent_map([
+        {**by_id.get(str(node.get("id") or ""), {}), "id": node.get("id"), "path": node.get("path")}
+        for node in nodes
+    ])
+    for node in nodes:
+        node["parentId"] = resolved.get(str(node.get("id") or ""))
+
+
 def _project_node(
     pid: str, label: str, path: Optional[str], repos: list[dict], session_count: int,
     last_active: float, preview_sessions: list[dict], sessions: Optional[list[dict]] = None,
@@ -481,6 +544,10 @@ def build_tree(
         info = resolve(raw_root) if resolve else None
         root = (info or {}).get("repo_root") or raw_root
         root_key = _path_key(root)
+        # `folder_index` holds only DECLARED projects, so this is the "inside a real project" case:
+        # its sessions are owned there, and it is not surfaced a second time as its own row. A repo
+        # inside another DISCOVERED repo is not in this index and does get its own row — that is the
+        # nested repo `_assign_parent_projects` then nests under its parent, one step below.
         if root_key in seen or _junk(root) or folder_index.match(root)[0]:
             continue
         seen.add(root_key)
@@ -497,5 +564,9 @@ def build_tree(
         homeless.sort(key=_session_time, reverse=True)
         _scope(homeless)
         result.insert(0, _home_project(homeless, hydrate, _previews(homeless)))
+
+    # Display grouping: a stored parent wins, else a project whose folder sits inside another
+    # project's folder renders nested under it. Ownership was decided above, not here.
+    _assign_parent_projects(result, active_projects)
 
     return {"projects": result, "scoped_session_ids": scoped_ids}

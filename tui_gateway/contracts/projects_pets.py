@@ -182,6 +182,7 @@ class RepoDiscoveryPolicyParams(Params):
     repo_scan_enabled: bool | None = None
     repo_scan_roots: list[str] | None = None
     repo_scan_exclude_paths: list[str] | None = None
+    repo_scan_nested: bool | None = None
 
 
 class DiscoveredRepo(Result):

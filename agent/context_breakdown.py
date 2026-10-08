@@ -143,7 +143,7 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
 def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
-    from agent.message_sanitization import stale_thinking_reaches_wire
+    from agent.turn_context import _agent_stale_thinking_on_wire
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -156,6 +156,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         _strip_blocks(stable, skills_index), _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block)
     )
     builtin_tools, mcp_tools, subagent_tools = _split_tools(list(getattr(agent, "tools", None) or []))
+    on_wire = _agent_stale_thinking_on_wire(agent)
     tokens_by_id = {
         "system_prompt": _chars_to_tokens(system_prompt_text),
         "tool_definitions": _json_tokens(builtin_tools),
@@ -166,9 +167,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "memory": _chars_to_tokens(_join(memory_block, user_block)),
         "conversation": estimate_messages_tokens_rough(
             messages,
-            charge_stale_thinking=stale_thinking_reaches_wire(
-                *(getattr(agent, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
-            ),
+            charge_stale_thinking=on_wire,
         ),
     }
     estimated_total = sum(tokens_by_id.values())
@@ -185,7 +184,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     context_used = anchored_context_tokens(messages, anchor, charge_stale_thinking=False)
     if context_used is None:
         anchor = getattr(agent, "_usage_anchor", None)
-        context_used = anchored_context_tokens(messages, anchor)
+        context_used = anchored_context_tokens(messages, anchor, charge_stale_thinking=on_wire)
     if context_used is None:
         measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
         context_used = measured_used if measured_used > 0 else estimated_total

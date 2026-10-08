@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   createProjectNestResolver,
-  expandRowsToGroups,
   type ProjectNestRow,
   resolveProjectDropIntent,
   resolveProjectSlot
@@ -17,18 +16,17 @@ const project = (id: string, over: Partial<SidebarProjectTree> = {}): SidebarPro
 const GAP = 4
 
 // Geometry only matters for the hit test; the element is never read by the pure resolvers. `box` is
-// the project's whole area — its row plus its session rows — and `rect` its own row inside it.
+// the project's whole area — its row plus its session rows — and it is both the target and the frame.
 const row = (
   id: string,
   index: number,
   top: number,
   height: number
-): Pick<ProjectNestRow, 'box' | 'el' | 'id' | 'index' | 'rect'> => ({
+): Pick<ProjectNestRow, 'box' | 'el' | 'id' | 'index'> => ({
   box: { bottom: top + height, left: 0, right: 220, top },
   el: null as unknown as HTMLElement,
   id,
-  index,
-  rect: { bottom: top + 18, left: 0, right: 220, top }
+  index
 })
 
 /** `dev` is open with `align` nested inside it; `other` and `tail` follow. */
@@ -39,12 +37,12 @@ const tree = [
   project('tail')
 ]
 
-const laidOut = expandRowsToGroups(tree, [
+const laidOut: ProjectNestRow[] = [
   row('dev', 0, 0, 38), //        row 0–18,   session row 18–38
   row('align', 1, 42, 38), //     row 42–60,  session row 60–80
   row('other', 2, 84, 18), //     row 84–102
   row('tail', 3, 106, 18) //      row 106–124
-])
+]
 
 /** Release `activeId` at a point. */
 const drop = (activeId: string, y: number, over: SidebarProjectTree[] = tree, overRows = laidOut) =>
@@ -91,41 +89,19 @@ describe('resolveProjectDropIntent', () => {
     const scanned = project('scanned', { isAuto: true })
     const projects = [...tree, scanned]
 
-    const withAuto = expandRowsToGroups(projects, [
+    const withAuto: ProjectNestRow[] = [
       row('dev', 0, 0, 38),
       row('align', 1, 42, 38),
       row('other', 2, 84, 18),
       row('tail', 3, 106, 18),
       row('scanned', 4, 128, 18)
-    ])
+    ]
 
     // Its own row, and a descendant's row (which cannot take its own ancestor).
     expect(drop('dev', 10, projects, withAuto)).toBeNull()
     expect(drop('dev', 50, projects, withAuto)).toBeNull()
     // An auto row has no project record to nest into.
     expect(drop('tail', 138, projects, withAuto)).toBeNull()
-  })
-})
-
-describe('expandRowsToGroups', () => {
-  it('stretches each row over the region it heads, from the row down', () => {
-    // dev's region ends where `other` — the next project outside its subtree — begins, so it covers
-    // its own area, align's, and the gaps between them. Every project owns the gap beneath it, so
-    // each one reaches the next row that is outside its subtree (and the last one stops at itself).
-    expect(laidOut.map(row => [row.id, row.rect.bottom, row.group.bottom])).toEqual([
-      ['dev', 18, 84],
-      ['align', 60, 84],
-      ['other', 102, 106],
-      ['tail', 124, 124]
-    ])
-  })
-
-  it('contains a nested project inside its parent', () => {
-    const dev = laidOut.find(row => row.id === 'dev')!
-    const align = laidOut.find(row => row.id === 'align')!
-
-    expect(align.group.top).toBeGreaterThan(dev.group.top)
-    expect(align.group.bottom).toBe(dev.group.bottom)
   })
 })
 
@@ -248,32 +224,31 @@ describe('the projects list policy', () => {
       strings: { nestInto: (name: string) => `Add subproject to ${name}`, topLevel: 'Top level' }
     })
 
-  /** Stand the rows up in a document the way `readProjectRows` expects to find them: a wrapper per
-   *  project (its area) holding the project's own row, and a session row inside it. */
+  /** Stand the rows up in a document the way `readProjectRows` expects to find them: one wrapper per
+   *  project, holding the project's own row and a session row — the area is the whole wrapper. */
   const mountRows = () => {
     const tops = new Map<string, { bottom: number; top: number }>()
     let cursor = 0
 
     for (const node of projects()) {
       tops.set(`block:${node.id}`, { bottom: cursor + 38, top: cursor })
-      tops.set(`row:${node.id}`, { bottom: cursor + 18, top: cursor })
       cursor += 42
     }
 
     for (const node of projects()) {
       const block = document.createElement('div')
-      const row = document.createElement('div')
 
       block.setAttribute('data-sessions-project', node.id)
-      row.setAttribute('data-project-row', node.id)
-      block.append(row)
+      block.append(document.createElement('div'))
       document.body.append(block)
     }
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      const id = this.dataset.sessionsProject
-      const key = id ? `block:${id}` : this.dataset.projectRow ? `row:${this.dataset.projectRow}` : ''
-      const rect = tops.get(key) ?? { bottom: 0, top: 0 }
+      // The pane the outline is clamped to is taller than the list, so the clamp is not what a height
+      // assertion measures.
+      const rect = this.hasAttribute('data-project-pane')
+        ? { bottom: 1000, top: 0 }
+        : (tops.get(`block:${this.dataset.sessionsProject ?? ''}`) ?? { bottom: 0, top: 0 })
 
       return {
         ...rect,
@@ -302,14 +277,14 @@ describe('the projects list policy', () => {
 
     const { resolve } = policy()
 
-    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
-    // Over `other` (84–122), so the frame outlines its region — which runs on to `tail`, the next
-    // project outside it.
-    resolve({ activeId: 'tail', overId: null, phase: 'move', pointer: { dx: 0, x: 40, y: 100 } })
+    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { x: 40, y: 130 } })
+    // Over `other` (84–122), so the frame outlines ITS area — 38px of it, not the space below it.
+    resolve({ activeId: 'tail', overId: null, phase: 'move', pointer: { x: 40, y: 100 } })
 
     const outline = () => document.querySelector<HTMLElement>('[data-project-nest-zone]')
 
     expect(outline()?.style.top).toBe('84px')
+    expect(outline()?.style.height).toBe('38px')
 
     // The list moves under a pointer that has not: every row is 20px higher (a scroll, or the reflow
     // the drag itself just caused).
@@ -323,6 +298,7 @@ describe('the projects list policy', () => {
     // Repainted from the geometry of THIS frame, not from the one the last pointer move saw — which
     // is what left the frame (and the chip) pointing at where a row used to be.
     expect(outline()?.style.top).toBe('64px')
+    expect(outline()?.style.height).toBe('38px')
 
     resolve({ activeId: 'tail', overId: null, phase: 'cancel', pointer: null })
 
@@ -338,7 +314,7 @@ describe('the projects list policy', () => {
 
     const { resolve, slot } = policy()
 
-    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
+    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { x: 40, y: 130 } })
 
     // Every row is at 0, 42, 84, 126 — 38px tall with a 4px gap — and `tail` is the last of them, so
     // its own area has no row below it to take. Walking up, `other` is taken once the pointer is
@@ -352,7 +328,7 @@ describe('the projects list policy', () => {
     resolve({ activeId: 'tail', overId: null, phase: 'cancel', pointer: null })
 
     // The next drag starts from the dragged row's own place again.
-    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
+    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { x: 40, y: 130 } })
 
     expect(slot({ x: 40, y: 90 })).toBe(null)
 

@@ -6,7 +6,7 @@
  * far it has travelled:
  *
  *   over a project's own area — its row and the session rows under it → add it as a subproject of that
- *   project, with the region it would join outlined whole
+ *   project, with that area outlined
  *   anywhere else: a gap between rows, empty space below the list → a plain reorder, the project
  *   titles moving around the release point
  *
@@ -23,7 +23,7 @@
  * it, and it is what makes dragging a project INTO a list of projects possible at all.
  *
  * What the release will do is said before it happens: a chip beside the pointer reads "Add subproject
- * to <name>" or "Top level", and the region it would land in is outlined. Both are repainted every
+ * to <name>" or "Top level", and the area it would land in is outlined. Both are repainted every
  * frame of the drag, so a list that scrolls or reorders underneath a still pointer cannot leave either
  * one stale — the outline is clipped to the pane the list lives in, and neither appears while the
  * answer is a reorder or a place a project cannot go: a discovered (auto) row owns no project record,
@@ -50,10 +50,7 @@ import type { SidebarProjectTree } from './workspace-groups'
 
 /** Row tag `ProjectOverviewRow` puts on every project wrapper — the row plus its own session rows. */
 const ROW_ATTR = 'data-sessions-project'
-/** The project's own row element inside that wrapper. Names the project, and gives the region its
- *  left and right edges. */
-const HEADER_ATTR = 'data-project-row'
-/** Marks the outline drawn around the region a drop would nest into. */
+/** Marks the outline drawn around the area a drop would nest into. */
 const ZONE_ATTR = 'data-project-nest-zone'
 /** Set on `<body>` for the length of a project drag. */
 const DRAG_ATTR = 'data-project-drag'
@@ -76,15 +73,9 @@ export interface ProjectNestRow {
   /** Place in the list, read from the DOM: the reorder measures every crossing from the dragged row's
    *  own index, and the dragged row is out of the geometry, so its index has to come from elsewhere. */
   index: number
-  /** The project's own row — the part that names it. */
-  rect: ZoneRect
-  /** The row plus every row of the area it is drawn with, which is what a drop can land on: the whole
-   *  thing counts as the clickable area. */
+  /** The project's own row plus its session rows: the whole thing counts as the clickable area, and
+   *  it is what a drop is resolved against and what the outline frames. */
   box: ZoneRect
-  /** The region the row heads — through its own area and every row under it in its subtree, nested
-   *  subprojects included. Painted as the frame; a drop is resolved against `box`, not this, so the
-   *  space between two projects stays a gap. */
-  group: ZoneRect
 }
 
 export interface ProjectDropPoint {
@@ -105,35 +96,22 @@ const snapRect = (el: HTMLElement): ZoneRect => {
   return { bottom: r.bottom, left: r.left, right: r.right, top: r.top }
 }
 
-/** Every visible project row with the geometry of the moment: a `rect` for the row itself, a `box`
- *  for the area it is drawn with, a `group` for the region it heads. Re-read on every pointer move and
+/** Every visible project row with the geometry of the moment. Re-read on every pointer move and
  *  every frame of the drag, so the answer survives a list that scrolls or reorders underneath the
  *  pointer.
  *
- *  `excludeId` drops the row being dragged. It is not a boundary: dnd-kit slides it under the pointer,
- *  so leaving it in would end the region above it exactly where the pointer is — the frame would stop
- *  at the dragged row and nothing under the pointer would match at all.
+ *  `excludeId` drops the row being dragged: dnd-kit slides it under the pointer, and its own area
+ *  would otherwise be the thing the release lands on.
  */
-export function readProjectRows(projects: SidebarProjectTree[], excludeId = ''): ProjectNestRow[] {
-  return expandRowsToGroups(
-    projects,
-    queryAllVisible<HTMLElement>(`[${ROW_ATTR}]`)
-      .map((el, index) => {
-        const box = snapRect(el)
-        const header = el.querySelector<HTMLElement>(`[${HEADER_ATTR}]`)
-
-        return {
-          box,
-          el,
-          id: el.dataset.sessionsProject || '',
-          index,
-          // No header element (an older row, or a skin that drops it): the area stands in, and the
-          // whole row counts as the project's own.
-          rect: header ? snapRect(header) : box
-        }
-      })
-      .filter(row => row.id !== excludeId)
-  )
+export function readProjectRows(excludeId = ''): ProjectNestRow[] {
+  return queryAllVisible<HTMLElement>(`[${ROW_ATTR}]`)
+    .map((el, index) => ({
+      box: snapRect(el),
+      el,
+      id: el.dataset.sessionsProject || '',
+      index
+    }))
+    .filter(row => row.id !== excludeId)
 }
 
 /** The dragged row's place in the list. It is out of `readProjectRows`, and the reorder counts its
@@ -143,39 +121,13 @@ export function projectRowIndex(id: string): number {
 }
 
 /**
- * Give each project row the extent of the region it heads: its own area plus every row rendered under
- * it while it is open, down to the next row that is NOT nested inside it.
- *
- * Rows arrive as areas only, so no element carries the region's extent — the extent is what the
- * neighbouring header says: this project's region ends where the next project outside its subtree
- * begins, and the last region ends at the list's last row. A nested project's region sits inside its
- * parent's, which keeps going over the child's own subprojects. The region is what the frame outlines
- * — the hit test deliberately does NOT use it, so a gap between two projects stays a gap.
- */
-export function expandRowsToGroups(
-  projects: SidebarProjectTree[],
-  rows: (Pick<ProjectNestRow, 'box' | 'el' | 'id' | 'index' | 'rect'>)[]
-): ProjectNestRow[] {
-  const sorted = [...rows].sort((a, b) => a.box.top - b.box.top)
-  const last = sorted[sorted.length - 1]
-
-  return sorted.map((row, index) => {
-    const subtree = projectDescendantIds(projects, row.id)
-    const next = sorted.slice(index + 1).find(candidate => !subtree.has(candidate.id))
-    const bottom = Math.max(row.box.bottom, next ? next.box.top : (last?.box.bottom ?? row.box.bottom))
-
-    return { ...row, group: { ...row.rect, bottom } }
-  })
-}
-
-/**
  * Pure resolution, so the policy can be tested without a DOM: what does a release here do?
  *
  * A project nests when the pointer is over another project's area — the same clickable area that
- * enters it, session rows included. A release anywhere else is a reorder, and a reorder is not this
- * module's decision: it answers null and lets the list run its own. The row's region is drawn as the
- * frame, never hit tested, so the space between two projects stays a gap instead of falling into
- * whichever project happens to be nearest.
+ * enters it, session rows included, and the same one the outline frames. A release anywhere else is a
+ * reorder, and a reorder is not this module's decision: it answers null and lets the list run its own.
+ * The space between two projects stays a gap instead of falling into whichever project happens to be
+ * nearest.
  *
  * Outdenting is the exception, and only because it cannot be expressed as a reorder: a subproject
  * released in a gap has to leave its parent AND land where it was dropped, and only the list can do
@@ -316,7 +268,7 @@ export function resolveProjectSlot({
   return (below ?? above)?.id ?? null
 }
 
-/** The outline around the pending target region — the "it will land in here" affordance, clamped to
+/** The outline around the pending target area — the "it will land in here" affordance, clamped to
  *  the pane the list lives in so it never hangs out over the chat beside it. */
 function createZoneOutline(pane: HTMLElement | null) {
   const el = document.createElement('div')
@@ -330,9 +282,8 @@ function createZoneOutline(pane: HTMLElement | null) {
   return {
     destroy: () => el.remove(),
     paint: (rect: ZoneRect) => {
-      // The region's bottom is the end of the last row it heads, which on a scrolled list can be
-      // well past the pane's own bottom edge. Clamp, or the outline is drawn over whatever sits
-      // beside the sidebar.
+      // A row can hang past the pane's own bottom edge on a scrolled list. Clamp, or the outline is
+      // drawn over whatever sits beside the sidebar.
       const paneRect = pane?.getBoundingClientRect()
       const left = paneRect ? Math.max(rect.left, paneRect.left) : rect.left
       const top = paneRect ? Math.max(rect.top, paneRect.top) : rect.top
@@ -418,7 +369,7 @@ export function createProjectNestResolver(deps: {
 
     const projects = deps.projects()
 
-    rows = readProjectRows(projects, activeId)
+    rows = readProjectRows(activeId)
 
     const intent = resolveProjectDropIntent({ activeId, pointer, projects, rows })
     const row = intent?.kind === 'into' ? rows.find(candidate => candidate.id === intent.targetId) : null
@@ -441,7 +392,7 @@ export function createProjectNestResolver(deps: {
       // The pane is resolved per drag, not per render: the list can be re-measured while one is in
       // flight, and a stale reference would clamp the outline to a stale box.
       zone ??= createZoneOutline(document.querySelector<HTMLElement>(`[${PANE_ATTR}]`))
-      zone.paint(row.group)
+      zone.paint(row.box)
     } else {
       zone?.destroy()
       zone = null
@@ -497,7 +448,7 @@ export function createProjectNestResolver(deps: {
       return null
     }
 
-    rows = readProjectRows(deps.projects(), activeId)
+    rows = readProjectRows(activeId)
     slot = resolveProjectSlot({ activeIndex, pointer, rows, slot })
 
     return slot
@@ -507,7 +458,7 @@ export function createProjectNestResolver(deps: {
     if (info.phase === 'start') {
       activeId = info.activeId
       activeIndex = projectRowIndex(info.activeId)
-      rows = readProjectRows(deps.projects(), activeId)
+      rows = readProjectRows(activeId)
       slot = null
       muteTooltips(true)
 
@@ -534,7 +485,7 @@ export function createProjectNestResolver(deps: {
     // parent, wherever that sits in the order.
     const projects = deps.projects()
 
-    rows = readProjectRows(projects, info.activeId)
+    rows = readProjectRows(info.activeId)
 
     const intent = info.pointer
       ? resolveProjectDropIntent({ activeId: info.activeId, pointer: info.pointer, projects, rows })
@@ -558,9 +509,9 @@ export function createProjectNestResolver(deps: {
       deps.setParent(info.activeId, intent.targetId)
     }
 
-    // The element of the region the pointer was over, so the release click can be swallowed: it
-    // lands somewhere in that region — the target's own row, one of its session rows, a nested
-    // project — and that row's own press is "enter this project".
+    // The element of the area the pointer was over, so the release click can be swallowed: it lands
+    // somewhere in that area — the target's own row, one of its session rows, a nested project — and
+    // that row's own press is "enter this project".
     const targetRow = rows.find(candidate => candidate.id === intent.targetId)
 
     return { targetEl: targetRow?.el ?? null, targetId: intent.targetId }

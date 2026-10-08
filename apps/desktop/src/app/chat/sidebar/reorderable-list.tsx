@@ -33,8 +33,9 @@ export interface NestDropInfo {
   /** The row dnd-kit calls the drop target (null = released in the list's empty space). */
   overId: null | string
   phase: NestPhase
-  /** Pointer position at this move/release, plus the drag's horizontal travel. */
-  pointer: null | { dx: number; x: number; y: number }
+  /** Pointer position at this move/release, in client coordinates — the last collision pass's own
+   *  reading (see `ReorderPin.pointer`), not something derived from the event's delta. */
+  pointer: null | { x: number; y: number }
 }
 
 export type NestResolver = (info: NestDropInfo) => null | NestOutcome
@@ -46,8 +47,8 @@ export type NestResolver = (info: NestDropInfo) => null | NestOutcome
  * `createDropClickSwallow`.
  */
 export interface NestOutcome {
-  /** The element of the region the pointer was over, when the policy committed a nest: everything the
-   *  release `click` can land on inside it is covered by the swallow. */
+  /** The element the pointer was over when the policy committed a nest: everything the release
+   *  `click` can land on inside it is covered by the swallow. */
   targetEl?: HTMLElement | null
   targetId: null | string
 }
@@ -90,8 +91,8 @@ const pointerOf = (
  *
  * Scope, in order of what the browser can do:
  *  - the click's target is the dragged row or something inside it → always ours (the row never moved)
- *  - the click's target is inside the dragged row's region and the drag ended ON a nest target →
- *    ours; that release is a nest, and the row under the pointer must not also activate
+ *  - the click's target is inside the dragged row and the drag ended ON a nest target → ours; that
+ *    release is a nest, and the row under the pointer must not also activate
  *  - anything else (a release in a gap, a keyboard drag, a click far from the drag) → not ours
  *
  * The armed flag is per-list: two sidebar lists can have a drag in flight independently, and one
@@ -135,9 +136,9 @@ export function createDropClickSwallow(): DropClickSwallow {
       return true
     }
 
-    // A nest release: the pointer was over the target's region, so the release click belongs to it —
-    // whichever row inside that region it landed on (the target's own row, one of its session rows, a
-    // nested project) must not also run its own press.
+    // A nest release: the pointer was over the target, so the release click belongs to it — whichever
+    // row inside it the click landed on (the target's own row, one of its session rows, a nested
+    // project) must not also run its own press.
     return Boolean(nestTarget && target instanceof Node && nestTarget.contains(target))
   }
 
@@ -185,20 +186,37 @@ export function createDropClickSwallow(): DropClickSwallow {
  */
 export interface ReorderPin {
   detect: CollisionDetection
+  /** The pointer the last collision pass saw, in client coordinates, or null when the drag has no
+   *  pointer (the keyboard sensor).
+   *
+   *  A drag event cannot answer this: dnd-kit's `event.delta` is `scrollAdjustedTranslate`, which
+   *  folds in the auto-scroll the drag itself asked for — a list scrolling under a still pointer then
+   *  reads as the pointer racing ahead of it, and anything placed from that (a chip, a target frame,
+   *  a nest target) drifts off the pointer by however far the list has scrolled. The collision pass is
+   *  handed `pointerCoordinates`, which is the activation point plus the pointer's OWN movement, so it
+   *  is the one reading a drag can be placed by. */
+  readonly pointer: null | { x: number; y: number }
   /** The policy this pin was built for, so a changed policy can replace it rather than go stale. */
   slot: ReorderSlotResolver | undefined
 }
 
 export function createReorderPin(resolveSlot: ReorderSlotResolver | undefined): ReorderPin {
+  let pointer: null | { x: number; y: number } = null
+
   return {
     detect: args => {
+      // Recorded on every pass, the null ones included: a keyboard drag must not be placed by the
+      // pointer position left over from the drag before it.
+      pointer = pointerOf(args.pointerCoordinates)
+
       if (!resolveSlot) {
         return closestCenter(args)
       }
 
-      const pointer = pointerOf(args.pointerCoordinates)
-
       return [{ id: (pointer && resolveSlot(pointer)) || args.active.id }]
+    },
+    get pointer() {
+      return pointer
     },
     slot: resolveSlot
   }
@@ -225,32 +243,25 @@ export function ReorderableList({
   resolveNest?: NestResolver
   sensors?: ReturnType<typeof useSensors>
 }) {
-  const nestInfo = (phase: NestPhase, event: NestDragEvent): NestDropInfo => {
-    const activator = event.activatorEvent
-    const delta = 'delta' in event ? event.delta : { x: 0, y: 0 }
-
-    return {
-      activeId: String(event.active.id),
-      overId: 'over' in event && event.over ? String(event.over.id) : null,
-      phase,
-      // A keyboard drag activates on a KeyboardEvent and has no pointer.
-      pointer:
-        activator instanceof MouseEvent
-          ? { dx: delta.x, x: activator.clientX + delta.x, y: activator.clientY + delta.y }
-          : null
-    }
-  }
-
   // One swallow per list instance (see createDropClickSwallow): the flag must not be shared.
   const swallow = useRef(createDropClickSwallow()).current
 
-  // The pin is rebuilt whenever the policy changes: a stale one would answer for the old list. It
-  // holds no per-drag state of its own — a policy that has any starts a drag with fresh state.
+  // The pin is rebuilt whenever the policy changes: a stale one would answer for the old list. The
+  // pointer it keeps is per drag, and a rebuilt pin starts without one.
   const pin = useRef(createReorderPin(resolveSlot))
 
   if (pin.current.slot !== resolveSlot) {
     pin.current = createReorderPin(resolveSlot)
   }
+
+  const nestInfo = (phase: NestPhase, event: NestDragEvent): NestDropInfo => ({
+    activeId: String(event.active.id),
+    overId: 'over' in event && event.over ? String(event.over.id) : null,
+    phase,
+    // The pin's reading, not one derived from the event: see `ReorderPin.pointer` for why the delta
+    // cannot be trusted once the list auto-scrolls.
+    pointer: pin.current.pointer
+  })
 
   const detectCollision = pin.current.detect
 

@@ -28,8 +28,8 @@ jobs:
     name: Desktop install/update E2E (Linux, ${{ matrix.cell }})
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
-    # Advisory until stable on CI (see ci.yaml): a red shard does not fail the caller.
-    continue-on-error: true
+    # Required whenever the e2e_desktop_update lane fires (see ci.yaml): it was
+    # advisory until it proved stable, and every main push shard since has passed.
     strategy:
       fail-fast: false
       # One install per shard (every spec restores it; paths are baked in, so

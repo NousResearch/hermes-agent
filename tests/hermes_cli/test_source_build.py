@@ -299,21 +299,55 @@ def test_update_recompiles_only_products_whose_inputs_changed(source_products):
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("step", ["tui", "web", "desktop"])
 def test_update_failure_raises_without_retries_or_replacing_live_app(source_products, step):
-    from hermes_cli.source_build import build_update_products
+    from hermes_cli.source_build import ProductBuildError, build_update_products
 
     root, acquired = source_products
     app = root / "apps/desktop/release/linux-unpacked/hermes"
     app.parent.mkdir(parents=True)
     app.write_text("previous app")
     (root / f"fail-{step}").touch()
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ProductBuildError) as failure:
         build_update_products(root, desktop=True)
-    assert app.read_text() == "previous app"
-    assert not list((root / "apps/desktop").glob(".staging-*"))
-    order = ["deps", "tui", "web", "desktop"]
-    assert [event["step"] for event in _events(root)] == order[:order.index(step) + 1]
+    # The failure is still raised, naming the one product that failed (no retries) ...
+    assert len(failure.value.failures) == 1
+    assert isinstance(failure.value.failures[0][1], subprocess.CalledProcessError)
+    # ... but it no longer skips the independent products after it (was order[:index + 1]).
+    assert [event["step"] for event in _events(root)] == ["deps", "tui", "web", "desktop"]
     assert acquired == ["npm"]
-    assert not (Path(os.environ["HERMES_HOME"]) / "desktop-build-stamp.json").exists()
+    assert not list((root / "apps/desktop").glob(".staging-*"))
+    if step == "desktop":
+        # A failed desktop build never replaces the live app nor stamps it.
+        assert app.read_text() == "previous app"
+        assert not (Path(os.environ["HERMES_HOME"]) / "desktop-build-stamp.json").exists()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("failure", ["npm-unavailable", "desktop-after-long-feature-failure"])
+def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch, capsys, failure):
+    # The Desktop hand-off keys on this line: the receipt follow-up is truncated and leads with
+    # whichever product failed first, and an npm acquisition failure used to escape un-named.
+    import hermes_cli.main_install_repair as install_repair
+    from hermes_cli.source_build import ProductBuildError, build_update_products
+
+    root, _ = source_products
+
+    def fail(error):
+        def raiser(*_args, **_kwargs):
+            raise error
+        return raiser
+
+    if failure == "npm-unavailable":
+        monkeypatch.setattr(pm, "ensure", fail(pm.InstallError("npm", "unavailable")))
+        expected = "Desktop app build owed: Node dependencies failed"
+    else:
+        monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps",
+                            fail(RuntimeError("pip install failed: " + "x" * 600)))
+        (root / "fail-desktop").touch()
+        expected = "Desktop app build owed: desktop app build failed"
+    with pytest.raises(ProductBuildError):
+        build_update_products(root, desktop=True)
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert [line for line in lines if line.startswith("Desktop app build owed:")] == [expected]
 
 
 @pytest.mark.platforms("linux")

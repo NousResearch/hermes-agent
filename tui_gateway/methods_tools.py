@@ -140,7 +140,7 @@ def _mcp_config_server_or_error(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, busy_message(cmd))
+        return _err(rid, 4009, busy_message(cmd, bool(session.get("_manual_compress_active"))))
     return None
 
 
@@ -492,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.get_skill_commands().items()):
+    for k, info in sorted(sc.get_interactive_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -645,7 +645,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
     """
     try:
         with _session_home_scope(session):
-            return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+            return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
     except Exception:
         return None
 
@@ -718,12 +718,12 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.get_skill_commands(), f"/{name}"
+        cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
-            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg, interactive=True)
             if extra_keys:
                 stacked = sc.build_stacked_skill_invocation_message(
                     [key, *extra_keys], user_instruction,
@@ -868,13 +868,6 @@ def _cmd_retry(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": content})
 
 
-def _tui_model_friction(signal, session, turns=1):
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
-    record_model_friction(
-        signal, session_id=session.get("session_key"), agent=session.get("agent"),
-        hermes_home=session.get("profile_home"), turns=turns)
-
-
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
@@ -1004,6 +997,8 @@ def _cmd_compress(rid, params, session, name, arg):
     try:
         output = _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True)
         return _exec_out(rid, output)
+    except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
+        return _err(rid, 4009, str(exc))
     except Exception as exc:
         _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
@@ -1092,7 +1087,7 @@ _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
-    "compress": _cmd_compress, "compact": _cmd_compress,
+    "compress": _cmd_compress, "compact": _cmd_compress, "initiate-setup": lambda *a: _cmd_initiate_setup(*a),
     "memory": _cmd_memory, "skills": _cmd_skills}
 
 @method("command.dispatch")
@@ -1230,7 +1225,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, busy_message("rollback restore"))
+        return _err(rid, 4009, busy_message("rollback restore", bool(session.get("_manual_compress_active"))))
 
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
@@ -1346,7 +1341,7 @@ def _(rid, params: dict) -> dict:
     session = None
     if sid:
         session, err = _sess_nowait(params, rid)
-        if err:
+        if err or (err := _busy_error(rid, session, "tools")):  # the reset bumps history_version mid-turn
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
@@ -1469,9 +1464,9 @@ def _skills_install(rid, params, query):
             self.lines.append(" ".join(str(a) for a in args))
 
     captured = _Capture()
-    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
-        query, skip_confirm=True, console=captured)
-    installed = verdict is True
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=captured)
+    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    installed = verdict is True or (verdict is None and bool(bundled(query)))  # an active built-in is no failure
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
         # the "Multiple skills named" candidate table, or the fetch failure.
@@ -1613,8 +1608,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
@@ -1947,7 +1941,7 @@ def _plugins_settings(rid, params):
     if not key or not isinstance(values, dict):
         return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
     pc = _tools_mod("hermes_cli.plugins_cmd")
-    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    found = pc._find_plugin_entry(key)
     if found is None:
         return _err(rid, 4020, f"plugin '{key}' not found")
     _name, _version, _desc, _source, plugin_dir, canonical = found

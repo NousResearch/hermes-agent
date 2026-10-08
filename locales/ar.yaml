@@ -780,6 +780,8 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
+  initiate_setup:
+    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -848,6 +850,9 @@ gateway:
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
     db_then_restart: "{action} ثم `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ قاعدة بيانات الجلسات غير متاحة — قد لا تُحفظ الرسائل وسيكون /resume فارغًا. السبب: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ مخزن cron ‏{store} غير قابل للكتابة ({error}) منذ {since}. يتم تخطي المهام المجدولة حتى يقبل الكتابة مجددًا. الحل: {fix}."
+    recovered: "✅ مخزن cron ‏{store} قابل للكتابة مجددًا؛ {skipped} تشغيل/تشغيلات متخطاة، وستُعوَّض كل مهمة مرة واحدة."
   whoami:
     scope_dm: "رسالة خاصة"
     scope_group: "مجموعة/قناة"
@@ -1449,8 +1454,6 @@ platform:
   irc:
     quit_message: "جارٍ إيقاف تشغيل Hermes Agent"
     standalone_quit: "تم التسليم"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "الموافقة مرة"
     confirm_always_approve: "الموافقة دائمًا"
@@ -1556,6 +1559,8 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
+  initiate-setup:
+    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -2356,6 +2361,7 @@ cli:
     removed: "أُزيل العنصر {index} من قائمة الانتظار: {preview}"
     item_not_found: "العنصر {index} غير موجود في قائمة الانتظار. الحجم الحالي: {size}"
     usage_edit: "الاستخدام: /queue edit <number> <new prompt>"
+    usage_remove: "الاستخدام: /queue rm <number>"
     updated: "حُدّث العنصر {index} في قائمة الانتظار: {preview}"
     usage_move: "الاستخدام: /queue move <from> <to>"
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
@@ -2394,6 +2400,7 @@ cli:
     session_not_found: "الجلسة غير موجودة: {session_id}"
     compressed_into: "ضُغطت الجلسة {session_id} في {descendant}؛ جارٍ استئناف الجلسة المتفرّعة مع نصّ محادثتك."
     cannot_resume: "تعذّر استئناف الجلسة: {error}"
+    kanban_owned: "⛔ الجلسة {session_id} هي نص جلسة عامل Kanban. استئنافها هنا سينشئ كاتبًا لا يستطيع لوح Kanban مراقبته أو الإشراف عليه — بدلًا من ذلك أعد المحاولة أو ارفع الحظر عن البطاقة على اللوحة ليمتلك المُرسِل التشغيل التالي."
     cannot_resume_prefix: "تعذّر استئناف الجلسة:"
     resumed_session: "↻ استُؤنفت الجلسة"
     counts_one: "({count} رسالة من المستخدم، {total} رسائل إجمالًا)"
@@ -2428,7 +2435,6 @@ cli:
     run_model_to_retry: "شغّل 'hermes model' لإعادة المحاولة."
     provider_configured: "✓ تم ضبط المزوّد — أنت جاهز للدردشة."
     provider_setup_incomplete: "لم يكتمل إعداد المزوّد. شغّل 'hermes model' لإعادة المحاولة."
-    tirith_unavailable: "⚠ ماسح الأمان tirith مفعّل لكنه غير متاح — سيعتمد فحص الأوامر على مطابقة الأنماط فقط"
     unknown_toolsets: "تحذير: مجموعات أدوات غير معروفة: {names}"
     stdin_unusable: "\nخطأ: stdin غير قابل للاستخدام ({error}).\nقد يحدث هذا مع بعض تثبيتات Python (مثل cPython المُدار عبر uv على macOS)\nحيث يتعذّر على kqueue تسجيل fd 0.\nجرّب إعادة تثبيت Python عبر pyenv أو Homebrew، ثم أعد التشغيل: hermes setup"
     warning: "تحذير: {warning}"
@@ -2721,6 +2727,7 @@ cli:
       restored: "تمت استعادة الحالة من: {snapshot_id}"
       restart_recommended: "يُنصح بإعادة تشغيل عمليات البوّابة/لوحة التحكم لاعتماد تغييرات state.db."
       not_found: "اللقطة غير موجودة: {snapshot_id}"
+      restore_incomplete: "لم تتم استعادة اللقطة {snapshot_id} بالكامل؛ تم رفض بعض الملفات (راجع السجلات)"
       usage_prune: "الاستخدام: /snapshot prune [keep-count]"
       pruned: "تم حذف {deleted} لقطة قديمة (مع الاحتفاظ بـ {keep})."
     export:
@@ -2912,6 +2919,8 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
+    initiate_setup:
+      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."
@@ -3645,7 +3654,7 @@ tips:
   t167: "للموافقة على الأوامر الخطيرة 4 مستويات: مرة، الجلسة، دائمًا (قائمة سماح دائمة)، رفض."
   t168: "يستخدم وضع الموافقة الذكية نموذجًا لغويًا للموافقة تلقائيًا على الأوامر الآمنة وتمييز الخطيرة منها."
   t169: "تحظر حماية SSRF الشبكات الخاصة وعناوين loopback وlink-local وبيانات التعريف السحابية."
-  t170: "يكشف فحص Tirith قبل التنفيذ تزييف عناوين URL بالحروف المتشابهة وأنماط التمرير إلى مفسّر."
+  t170: "معرّفات الجلسات تبدأ بطابع زمني (20250305_091523_abcd) كي يعمل الترتيب طبيعيًا في ls و jq."
   t171: "تتلقى عمليات MCP الفرعية بيئة مصفّاة — تمرّ متغيرات النظام الآمنة فقط."
   t172: "تُفحص ملفات السياق (.hermes.md وAGENTS.md) أمنيًا بحثًا عن حقن المطالبات قبل تحميلها."
   t173: "يوافق command_allowlist في config.yaml نهائيًا على أنماط محددة من أوامر shell."
@@ -3675,7 +3684,7 @@ tips:
   t197: "يسجّل حفظ المسارات (--save-trajectories) آثار استخدام الأدوات كاملةً لتدريب النماذج."
   t198: "ثلاثة أنواع من الإضافات: عامة (أدوات/خطافات)، ومزوّدو الذاكرة، ومحرّكات السياق."
   t199: "يثبّت hermes plugins install owner/repo الإضافات مباشرة من GitHub."
-  t200: "مزوّدو الذاكرة الخارجيون: OpenViking وMem0 مضمّنون؛ وHoncho وHindsight وغيرهما عبر hermes plugins install."
+  t200: "مزوّدو الذاكرة الخارجيون: Honcho وHindsight وMem0 وOpenViking وغيرهم عبر hermes plugins install."
   t201: "تشمل خطافات الإضافات pre/post_tool_call وpre/post_llm_call وtransform_terminal_output لتوحيد شكل المخرجات."
   t202: "يقلّل تخزين المطالبات مؤقتًا (Anthropic) التكاليف بإعادة استخدام بادئات موجّه النظام المخزّنة."
   t203: "يولّد الوكيل عناوين الجلسات تلقائيًا في خيط خلفي — دون أي تأثير على زمن الاستجابة."
@@ -3850,12 +3859,9 @@ tips:
   t372: "image_gen.model في config.yaml يختار نموذج FAL: flux-2/klein أو gpt-image-2 أو nano-banana-pro وغيرها."
   t373: "image_gen.provider يوجّه توليد الصور عبر إضافة (OpenAI Images أو Codex أو FAL) بدلًا من الافتراضي."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY يوجّهان تحليل الرؤية إلى أي نقطة نهاية متوافقة مع OpenAI."
-  t375: "security.tirith_fail_open: false يجعل Hermes يحظر الأوامر عندما يتعطل فاحص tirith نفسه."
-  t376: "متغير البيئة TIRITH_FAIL_OPEN يتجاوز إعداد tirith_fail_open — تبديل سريع دون تحرير config.yaml."
+  t375: "API_SERVER_MODEL_NAME يخصص اسم النموذج في /v1/models — ضروري لإعدادات Open WebUI متعددة الملفات التعريفية."
+  t376: "تُقدَّم إضافات لوحة التحكم من /dashboard-plugins/<name>/ — ضع الملفات في ~/.hermes/dashboard-plugins/."
   t377: "المحادثات ذات --source tool مستثناة من hermes sessions list افتراضيًا — حدد --source صراحةً لعرضها."
-  t378: "معرّفات الجلسات تبدأ بطابع زمني (20250305_091523_abcd) كي يعمل الترتيب طبيعيًا في ls و jq."
-  t379: "API_SERVER_MODEL_NAME يخصص اسم النموذج في /v1/models — ضروري لإعدادات Open WebUI متعددة الملفات التعريفية."
-  t380: "تُقدَّم إضافات لوحة التحكم من /dashboard-plugins/<name>/ — ضع الملفات في ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "اسأل أي شيء، أو اكتب / للأوامر…"
     p02: "لخّص محتوى هذا المجلد"

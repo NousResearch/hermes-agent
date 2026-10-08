@@ -13,7 +13,7 @@ files on `main`.
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and
    `abandoned-rc.*`). Derive the next SemVer from the published release family
-   seeded at `0.21.4` alone: the newer of the protected R2 stable head and the
+   seeded at `0.21.5` (the last legacy CalVer release, v2026.9.24) alone: the newer of the protected R2 stable head and the
    newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
    release that skipped bundles moves only the second. Attempts do not move the
    version line. A cut whose next version already has a final `vX.Y.Z` tag is
@@ -305,8 +305,7 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkout channels are separate: `hermes update --set-channel`
-remains available there and selects the published release's source commit.
+build. Source checkouts are separate: `main` is their only valid channel.
 
 `--build-commit` prints its deterministic downloads-page URL before dispatch,
 including in dry runs:

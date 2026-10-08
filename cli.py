@@ -409,6 +409,7 @@ _cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_c
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
+_session_end_messages: list[str] = []  # plugin on_session_finalize text awaiting the exit summary
 _cli_wake_owner = None
 # One-shot finalization runs before process cleanup (plugins see the boundary while the
 # agent is attached); atexit cleanup must not finalize those sessions again.
@@ -520,7 +521,9 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         if notify_session_finalize:
             cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown")
+                # Printed by _print_exit_summary, which clears the screen first.
+                _session_end_messages.extend(
+                    _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown"))
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -736,12 +739,10 @@ def _slash_args(cmd: str) -> str:
 
 
 def _ensure_skill_commands() -> dict:
-    global _skill_commands
-    if _skill_commands is None:
-        from agent.skill_commands import scan_skill_commands
-
-        _skill_commands = scan_skill_commands()
-    return _skill_commands
+    if _skill_commands is not None:
+        return _skill_commands
+    from agent.skill_commands import get_interactive_skill_commands
+    return get_interactive_skill_commands()
 
 
 def get_skill_commands() -> dict:
@@ -974,27 +975,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         set_code_prompt_callback(self._vault_code_callback)
         self._tool_callbacks_installed = True
 
-    def _ensure_tirith_security(self) -> None:
-        """Check tirith availability once before tools can run terminal commands."""
-        if self._tirith_security_checked:
-            return
-        self._tirith_security_checked = True
-        try:
-            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
-
-            if (
-                ensure_installed(log_failures=False) is None and is_platform_supported()
-                and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
-            ):
-                # First launch after install downloads tirith in the background;
-                # warning then would report a fault that resolves itself.
-                if missing_is_expected():
-                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
-                else:
-                    _cprint(f"  {_DIM}{_t('cli.startup.tirith_unavailable')}{_RST}")
-        except Exception as exc:
-            logger.debug("tirith availability check failed: %s", exc)
-
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
         try:
@@ -1044,18 +1024,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
+            from agent.skill_commands import format_missing_skills
             # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if loaded_skills:
-                logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
-                    "List available skills with `hermes skills list`.",
-                    missing_display,
-                    ", ".join(loaded_skills),
-                )
-            else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
+            if not loaded_skills:
+                raise ValueError(format_missing_skills(missing_skills))
+            logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                           format_missing_skills(missing_skills), ", ".join(loaded_skills))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
@@ -1334,7 +1308,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """``/<skill> ...``; stacked ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5)."""
         from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
-        extra_keys, user_instruction = split_stacked_skill_commands(rest)
+        # Interactive surface: stacked tokens resolve against the interactive
+        # map so plugin skills stack in the CLI like native skills.
+        extra_keys, user_instruction = split_stacked_skill_commands(rest, interactive=True)
         if extra_keys:
             stacked_result = build_stacked_skill_invocation_message(
                 [base_cmd, *extra_keys], user_instruction, task_id=self.session_id,

@@ -32,6 +32,33 @@ def native_objective(state):
     return text
 
 
+def adopt_native_goal(session_id, native, *, thread_id, previous):
+    """Mirror an already authorized native Goal; never set/reset its budget or steal a user control."""
+    from hermes_cli.goals import GoalState
+    if native.get("threadId") != thread_id or not native.get("objective"):
+        raise RuntimeError("Cannot adopt a Goal from a different thread")
+    with goal_lock(session_id):
+        current = load_goal(session_id)
+        # A pause/clear/replacement during the ordinary turn takes precedence.
+        if (current.to_json() if current else None) != (previous.to_json() if previous else None):
+            raise RuntimeError("Goal changed while discovering a model-created native Goal")
+        if current is not None:
+            old_native = current.native_goal or {}
+            if current.runtime != "codex":
+                raise RuntimeError("A Hermes-owned Goal cannot be replaced by native discovery")
+            same_goal = (old_native.get("threadId") == thread_id
+                         and old_native.get("objective") == native.get("objective"))
+            if same_goal or current.status in {"active", "cleared"}:
+                raise RuntimeError("Native discovery cannot undo a paused/cleared or active Goal")
+        state = GoalState(goal=native["objective"], runtime="codex", goal_id=str(uuid.uuid4()),
+                          token_budget=native.get("tokenBudget"), native_goal=native)
+        save_goal(session_id, state)
+        persisted = load_goal(session_id)
+        if persisted is None or persisted.goal_id != state.goal_id:
+            raise RuntimeError("Discovered native Goal was not durably mirrored")
+        return persisted
+
+
 class CodexGoalManager(GoalManager):
     """Mirror lifecycle for UI/controls only; never run Hermes' aux judge or FIFO loop."""
     runtime_name = "codex"

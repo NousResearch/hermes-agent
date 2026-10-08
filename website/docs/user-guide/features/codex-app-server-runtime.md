@@ -567,3 +567,11 @@ than replaying actions. Resume stays on the original native thread; failure to
 recover that thread cannot silently reset its Goal progress/budget. This bridge
 does not automatically restart unfinished Goals after a gateway restart: inspect
 status and explicitly resume. Other Hermes runtimes and CLI Goals are unchanged.
+
+Goals created by Codex's native `create_goal` tool inside an ordinary gateway turn
+are also adopted in this opt-in mode. Hermes mirrors the returned objective,
+thread, budget and cumulative usage, then consumes automatic turns without sending
+another kickoff or resetting the budget. Adoption is generation-fenced: a newer
+user pause, clear, replacement, or Hermes-owned Goal is not silently overridden.
+Cache TTL, LRU and memory-pressure cleanup respect the live native event-consumer
+lease; a persisted `active` flag alone does not keep an abandoned cache entry alive.

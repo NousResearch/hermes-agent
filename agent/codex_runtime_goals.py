@@ -16,8 +16,29 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
     wire_options.update(turn_timeout=total, idle_timeout=idle)
     sid = getattr(agent, "session_id", None)
     state = load_goal(sid) if sid else None
+    initial_turn = None
     if state is None or state.runtime != "codex" or state.status != "active":
-        return agent._codex_session.run_turn(user_input=user_message, **wire_options)
+        initial_turn = agent._codex_session.run_turn(user_input=user_message, **wire_options)
+        if (not sid or (cfg.get("goals") or {}).get("runtime") != "codex"
+                or initial_turn.error or initial_turn.interrupted):
+            return initial_turn
+        from agent.transports.codex_app_server_goals import _native_request
+        from hermes_cli.codex_goals import adopt_native_goal
+        try:
+            native = _native_request(agent._codex_session, "thread/goal/get")
+            if native is None:
+                return initial_turn
+            previous_native = state.native_goal if state is not None else None
+            if (native.get("status") != "active" and previous_native
+                    and previous_native.get("threadId") == native.get("threadId")
+                    and previous_native.get("objective") == native.get("objective")):
+                return initial_turn  # Ordinary questions do not revive a terminal Goal.
+            state = adopt_native_goal(sid, native, thread_id=initial_turn.thread_id, previous=state)
+        except Exception:
+            # A native scheduler may already be running. Fail closed rather than
+            # returning an ordinary success and leaving invisible background work.
+            agent._codex_session.close()
+            raise
     from agent.transports.codex_app_server_goals import run_native_goal
 
     def commit_turn(turn, continuing):
@@ -32,11 +53,13 @@ def run_app_server_work(agent, user_message, *, messages, **wire_options):
     try:
         return run_native_goal(
             agent._codex_session, user_message, session_id=sid, state=state, on_turn=commit_turn,
+            initial_turn=initial_turn,
             interrupt_requested=lambda: bool(getattr(agent, "_interrupt_requested", False)), **wire_options,
         )
     except Exception:
         from hermes_cli.codex_goals import pause_native_goal
         pause_native_goal(sid, state.goal_id, "Native Goal setup/transport failed; no automatic replay")
+        agent._codex_session.close()
         raise
 
 

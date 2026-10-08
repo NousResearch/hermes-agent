@@ -60,7 +60,8 @@ def _next_turn(session, result, *, idle_timeout, control):
     return None
 
 
-def run_native_goal(session, user_input, *, session_id, state, on_turn=None, interrupt_requested=None, **options):
+def run_native_goal(session, user_input, *, session_id, state, on_turn=None, interrupt_requested=None,
+                    initial_turn=None, **options):
     from agent.transports.codex_app_server_session import TurnResult
     aggregate = TurnResult(thread_id=session.ensure_started())
     goal_id = state.goal_id
@@ -80,7 +81,11 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
         # silently inherit a completed/budget-limited goal and report it as new work.
         _native_request(session, "thread/goal/clear")
         params.update(objective=objective, tokenBudget=state.token_budget)
-    native = _native_request(session, "thread/goal/set", **params)
+    # A model-created Goal has already started its first turn. Do not send a second
+    # kickoff, clear the Goal, or replenish its cumulative usage when adopting it.
+    native = existing if initial_turn is not None else _native_request(session, "thread/goal/set", **params)
+    if native is None or native.get("objective") != objective:
+        raise RuntimeError("Native Goal changed before its continuation was attached")
     record_native_goal(session_id, goal_id, native)
 
     def control():
@@ -94,8 +99,9 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
         return False
 
     session._native_goal_control = control
+    session._native_goal_running = True
     try:
-        turn = session.run_turn(user_input, **options)
+        turn = initial_turn if initial_turn is not None else session.run_turn(user_input, **options)
         aggregate.submitted_user_text = turn.submitted_user_text
         while True:
             native = _native_request(session, "thread/goal/get")
@@ -133,4 +139,5 @@ def run_native_goal(session, user_input, *, session_id, state, on_turn=None, int
         raise
     finally:
         session._native_goal_control = None
+        session._native_goal_running = False
         session._interrupt_event.clear()

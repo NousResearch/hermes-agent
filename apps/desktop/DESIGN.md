@@ -391,6 +391,9 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   including the git row, with a short downward/upward drawer slide. Its choice
   persists per conversation and owner, not globally. Hidden sections stay
   mounted but inert so their disclosure choices survive; reduced motion is instant.
+- The composer's primary button stays Send or Stop across turn completion.
+  Starting voice has a separate waveform button, folded into the voice menu in
+  compact layouts, so a second click on Stop cannot start microphone capture.
 - Popping out a composer makes it the window's only visible composer. It keeps
   its viewport placement while hover or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and

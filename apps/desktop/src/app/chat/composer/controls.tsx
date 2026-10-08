@@ -78,7 +78,6 @@ export function ComposerControls({
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
   // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
   // only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
@@ -124,6 +123,13 @@ export function ComposerControls({
             </>
           )}
           {voiceControls}
+          {foldedVoice ? null : (
+            <StartVoiceButton
+              disabled={disabled || busy || hasComposerPayload}
+              label={c.startVoice}
+              onStart={conversation.onStart}
+            />
+          )}
         </>
       )}
       {showQueueButton ? (
@@ -141,34 +147,30 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : null}
-      {showVoicePrimary ? (
-        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
-      ) : (
-        <Tip
-          label={
-            showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
-            ) : (
-              <TipKeybindLabel actionId="composer.send" text={c.send} />
-            )
-          }
-          placement="control"
+      <Tip
+        label={
+          showStop ? (
+            <TipKeybindLabel actionId="composer.send" text={c.stop} />
+          ) : (
+            <TipKeybindLabel actionId="composer.send" text={c.send} />
+          )
+        }
+        placement="control"
+      >
+        <Button
+          aria-label={showStop ? c.stop : c.send}
+          className={PRIMARY_ICON_BTN}
+          disabled={disabled || !canSubmit}
+          onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+          type="submit"
         >
-          <Button
-            aria-label={showStop ? c.stop : c.send}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled || !canSubmit}
-            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
-            type="submit"
-          >
-            {showStop ? (
-              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-            ) : (
-              <Codicon name="arrow-up" size="0.875rem" />
-            )}
-          </Button>
-        </Tip>
-      )}
+          {showStop ? (
+            <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+          ) : (
+            <Codicon name="arrow-up" size="0.875rem" />
+          )}
+        </Button>
+      </Tip>
       {/* The way out of HUD mode, riding the controls row rather than floating
           above the bar. The old chip lived in a 26px transparent strip reserved
           over the composer (--hud-chip-strip), which under glass is bare

@@ -235,6 +235,30 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _quiet_terminal_logging() -> list[tuple[logging.Handler, int]]:
+    """Raise every terminal-bound handler on the root logger past CRITICAL; returns the restore list.
+
+    Replaces ``logging.disable(CRITICAL)``, which sets a manager-wide threshold checked
+    before any handler and therefore also silenced the file pipeline — a one-shot run
+    never wrote agent.log, including the per-call ``API call #N: ... upstream=<provider>``
+    line the gateway path always logs (#134971). Handler-level quieting leaves that
+    pipeline live: ``setup_logging()`` attaches its RotatingFileHandlers through a queue
+    handler marked ``_hermes_queue`` (skipped here), and handlers that resolve
+    ``sys.stderr`` dynamically (``logging.lastResort``) are already covered by the stderr
+    redirect around the agent call. Only handlers holding a pre-bound terminal stream
+    (e.g. the ``--verbose`` console handler) need this.
+    """
+    silenced: list[tuple[logging.Handler, int]] = []
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, "_hermes_queue", False) or isinstance(
+            handler, logging.FileHandler
+        ):
+            continue  # the file pipeline: must keep receiving records
+        silenced.append((handler, handler.level))
+        handler.setLevel(logging.CRITICAL + 1)
+    return silenced
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -252,10 +276,6 @@ def run_oneshot(
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
     """
-    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
-    # root logger. File handlers from setup_logging() keep working (level-independent).
-    logging.disable(logging.CRITICAL)
-
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
@@ -293,6 +313,11 @@ def run_oneshot(
     result: dict = {}
     failure: BaseException | None = None
     with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+        # AIAgent, tools and provider adapters log to the terminal through the root logger,
+        # and a handler bound to the real stderr at creation time keeps that stream across
+        # the redirect above — so quiet per-handler instead of manager-wide
+        # (see _quiet_terminal_logging).
+        silenced = _quiet_terminal_logging()
         try:
             response, result = _run_agent(
                 prompt,
@@ -310,6 +335,9 @@ def run_oneshot(
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
             # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
             failure = exc
+        finally:
+            for handler, level in silenced:
+                handler.setLevel(level)
 
     if failure is not None:
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.

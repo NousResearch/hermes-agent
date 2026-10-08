@@ -591,16 +591,28 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     fresh session's mount from it would leak the previous session's directory.
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
-    A Windows drive path is not a mount source while the cwd-to-/workspace flag
-    is off. A raw host override must stay out of ``docker run -w`` and fall
-    back to the sanitized config cwd. The Windows bind, including when
-    ``/workspace`` is already claimed, is the volume mount, not this override.
+    A raw host override must stay out of ``docker run -w`` and fall back to
+    the sanitized config cwd. The one config-side exception is the Windows
+    bind: a drive path cannot exist inside the Linux container, so
+    ``_resolve_config_cwd`` keeps it bound even while the cwd-to-/workspace
+    flag is off (DockerEnvironment binds it regardless of the flag), and
+    that bind stays the task mount so the planned cwd remaps onto it. The
+    Windows bind, including when ``/workspace`` is already claimed, is the
+    volume mount, not this override.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+    host_cwd = config.get("host_cwd")
+    windows_bind = bool(host_cwd) and _is_windows_drive_path(host_cwd)
+    if config.get("env_type") != "docker":
+        return None
+    if not config.get("docker_mount_cwd_to_workspace") and not windows_bind:
         return None
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
+        return host_cwd
+    if not config.get("docker_mount_cwd_to_workspace"):
+        # Flag off: session overrides stay unmounted (the user opted out of
+        # cwd mounts); only the legacy Windows config bind crosses the gate.
+        return None
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
@@ -1125,6 +1137,13 @@ def _plan_execution(
     # the unusable check so /mnt and /srv are not left as the container cwd.
     if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
         remapped = "/workspace" if host_cwd else config["cwd"]
+        if _is_unusable_container_cwd(remapped):
+            # config["cwd"] is not always sanitized: a Windows workspace with
+            # the cwd-to-/workspace flag off keeps the raw drive path there,
+            # and with no task mount nothing retargets it. Give the backend
+            # default to `docker run -w` instead of a path that cannot exist
+            # in the container (exit 125).
+            remapped = _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
         if cwd != remapped:
             logger.info(
                 "Remapping host/relative cwd override %r for %s backend "

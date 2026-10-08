@@ -1,5 +1,6 @@
 """Authority-local subscription ordering over the existing bounded transports/replay."""
 from copy import deepcopy
+import logging
 import threading
 import uuid
 
@@ -61,10 +62,16 @@ class SessionEvents:
                     'payload': {'replay_epoch': self.epoch, 'latest_seq': self.sequence}}}
             delivered = self.fanout.write(frame, overflow=overflow)
             for observer in tuple(self.observers):
-                observer(frame)
+                try:
+                    observer(frame)
+                    delivered = True
+                except Exception:
+                    # A request-owned projection cannot undo committed publication or starve peers.
+                    logging.getLogger(__name__).warning('Session event observer failed for %s', session_id,
+                                                        exc_info=True)
             # True when a live viewer or observer took the frame; the replay ring alone is not
             # delivery (a detached finite viewer reads nothing until it reattaches).
-            return delivered or bool(self.observers)
+            return delivered
 
     def since(self, epoch, sequence):
         with self.lock:

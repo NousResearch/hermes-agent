@@ -169,8 +169,8 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
-# Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
-_last_resolved_tool_names: List[str] = []
+# Tool names resolved for the current request context (execute_code legacy fallback).
+_resolved_tool_names: ContextVar[Optional[Tuple[str, ...]]] = ContextVar("resolved_tool_names", default=None)
 
 
 # Legacy toolset names (old _tools-suffixed names -> tool name lists)
@@ -246,8 +246,7 @@ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_
                     _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
                 _tool_defs_cache[cache_key] = cached = result
     else:
-        global _last_resolved_tool_names
-        _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+        _resolved_tool_names.set(tuple(t["function"]["name"] for t in cached))
     # Always a shallow copy: run_agent appends memory/LCM schemas to its list; a
     # shared list would accumulate duplicate names (HTTP 400 from DeepSeek/Kimi/MiMo).
     return list(cached)
@@ -508,11 +507,11 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
-    global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    resolved_tool_names = tuple(t["function"]["name"] for t in filtered_tools)
+    _resolved_tool_names.set(resolved_tool_names)
 
     if not quiet_mode:
-        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(_last_resolved_tool_names)}"
+        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(resolved_tool_names)}"
               if filtered_tools else "🛠️  No tools selected (all filtered out or unavailable)")
     # Normalize schema shapes llama.cpp's grammar converter rejects (bare
     # "type": "object", string-valued nodes from malformed MCP servers).
@@ -825,9 +824,10 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
     with the approval observability context bound for the duration."""
     dispatch_kwargs: Dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
     if function_name == "execute_code":
-        # Prefer the caller's list so subagents can't overwrite the parent's
-        # tool set via the process-global.
-        dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+        resolved_tools = enabled_tools if enabled_tools is not None else _resolved_tool_names.get()
+        if resolved_tools is None:
+            return tool_error("execute_code requires an explicit enabled_tools list or resolved tool context")
+        dispatch_kwargs["enabled_tools"] = resolved_tools
     else:
         dispatch_kwargs["user_task"] = user_task
 

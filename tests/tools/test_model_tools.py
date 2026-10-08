@@ -1,5 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
+import asyncio
+import contextvars
 import json
 from unittest.mock import patch
 
@@ -195,6 +197,92 @@ class TestHandleFunctionCall:
         [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
         assert post_call[1]["status"] == "blocked"
         assert post_call[1]["error_type"] == "edit_approval_denied"
+
+
+class TestExecuteCodeResolvedToolContext:
+    """Legacy dispatch may use only the tool resolution bound to its context."""
+
+    def test_interleaved_async_resolutions_keep_legacy_dispatch_scoped(self, monkeypatch):
+        import model_tools
+
+        seen = {}
+
+        def fake_dispatch(tool_name, _args, **kwargs):
+            assert tool_name == "execute_code"
+            seen[kwargs["task_id"]] = tuple(sorted(kwargs["enabled_tools"]))
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools.registry, "dispatch", fake_dispatch)
+
+        async def request(task_id, toolset, ready, release):
+            definitions = model_tools.get_tool_definitions(
+                enabled_toolsets=[toolset],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            expected = tuple(sorted(item["function"]["name"] for item in definitions))
+            ready.set()
+            await release.wait()
+            result = json.loads(model_tools.handle_function_call(
+                "execute_code",
+                {"code": "pass"},
+                task_id=task_id,
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            ))
+            assert result == {"ok": True}
+            return expected
+
+        async def interleave():
+            first_ready = asyncio.Event()
+            second_ready = asyncio.Event()
+            release = asyncio.Event()
+            first = asyncio.create_task(request("file-request", "file", first_ready, release))
+            second = asyncio.create_task(request("terminal-request", "terminal", second_ready, release))
+            await first_ready.wait()
+            await second_ready.wait()
+            release.set()
+            return await asyncio.gather(first, second)
+
+        file_tools, terminal_tools = asyncio.run(interleave())
+
+        assert file_tools != terminal_tools
+        assert seen == {
+            "file-request": file_tools,
+            "terminal-request": terminal_tools,
+        }
+
+    def test_legacy_dispatch_without_resolution_context_fails_closed(self, monkeypatch):
+        import model_tools
+
+        # Seed the old process-global fallback outside the fresh request context.
+        model_tools.get_tool_definitions(
+            enabled_toolsets=["terminal"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        dispatched = []
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch",
+            lambda *args, **kwargs: dispatched.append((args, kwargs)) or json.dumps({"ok": True}),
+        )
+
+        result = contextvars.Context().run(
+            lambda: json.loads(model_tools.handle_function_call(
+                "execute_code",
+                {"code": "pass"},
+                task_id="unresolved-request",
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            ))
+        )
+
+        assert "error" in result
+        assert "resolved tool context" in result["error"]
+        assert dispatched == []
 
 
 # =========================================================================

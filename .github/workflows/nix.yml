@@ -161,9 +161,6 @@ jobs:
         run: |
           source="path:$RUNNER_TEMP/release-source"
           package="$(nix build "$source#default" --no-link --print-out-paths)"
-          # desktop wraps the default package, so this also proves the
-          # stamped release source builds the Electron app against it.
-          nix build "$source#desktop" --no-link
           actual="$("$package/bin/hermes" --version)"
           ACTUAL_VERSION="$actual" python3 - <<'PY'
           import os

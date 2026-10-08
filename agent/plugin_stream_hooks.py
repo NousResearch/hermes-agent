@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from agent.memory_provider import spawn_context_thread
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,8 @@ def _active_plugin_manager():
         from hermes_cli import plugins
 
         return plugins.get_plugin_manager()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- observer lookup must fail open without blocking the token path
+        logger.debug("plugin stream hook manager lookup failed", exc_info=True)
         return None
 
 
@@ -168,7 +170,7 @@ def _registered_dispatch_scope(hook_name: str):
         from hermes_cli.plugins import PluginManager
 
         is_plugin_manager = isinstance(manager, PluginManager)
-    except Exception:
+    except ImportError:
         is_plugin_manager = False
     callbacks = _registered_callbacks(hook_name)
     manager_lock = getattr(manager, "_discovery_lock", None)
@@ -239,8 +241,8 @@ def _dispatchers_for_scope(
                     callback=callback,
                     events=events,
                 )
-                dispatcher.thread = threading.Thread(
-                    target=_worker,
+                dispatcher.thread = spawn_context_thread(
+                    _worker,
                     args=(dispatcher,),
                     daemon=True,
                     name=f"plugin-stream-hook:{hook_name}",

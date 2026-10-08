@@ -188,7 +188,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False, arg
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    from hermes_cli.profiles import get_active_profile, normalize_profile_name
+    from hermes_cli.profile_env import profile_root_for_env_home
     argv = argv_reader(pid)
     if require_launch_identity and argv is None:
         # The dashboard argv reader has no Windows implementation; psutil does.

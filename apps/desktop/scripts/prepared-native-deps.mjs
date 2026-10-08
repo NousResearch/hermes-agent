@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileDigest, treeDigest, preparationRequired } from './prepared-packaging.mjs'
+import { hudModifierBinaryRelativePath, warnWindowsHudUnavailable } from './build-hud-modifier-monitor.mjs'
 
 /** @typedef {{ source: string, nativeDeps: string, platform?: string, arch?: string, nativeToolchain?: string }} NativeSelection */
 /** @param {string} source @returns {string} */
@@ -28,6 +29,9 @@ export function recordNativeInputs({ source, out, platform, arch, nativeToolchai
   fs.writeFileSync(`${out}.prepared.json`, JSON.stringify({
     schema: 1, source: fs.realpathSync(source), out: fs.realpathSync(out),
     platform, arch, nativeToolchain, identity: nativeIdentity(source), digest: treeDigest(out),
+    // Only this optional executable may disappear. All other files, modes and
+    // symlinks retain their integrity checks, including other native helpers.
+    ...(platform === 'win32' ? { withoutHudDigest: treeDigest(out, [hudModifierBinaryRelativePath(platform, arch)]) } : {}),
   }) + '\n')
 }
 
@@ -38,8 +42,16 @@ export function readNativeInputs({ source, nativeDeps, platform = process.platfo
     if (record.schema !== 1 || record.source !== fs.realpathSync(source) || record.out !== fs.realpathSync(nativeDeps) ||
         record.platform !== platform || record.arch !== arch ||
         (nativeToolchain !== undefined && record.nativeToolchain !== nativeToolchain) ||
-        record.identity !== nativeIdentity(source) || record.digest !== treeDigest(nativeDeps)) {
+        record.identity !== nativeIdentity(source)) {
       throw preparationRequired('Stale or foreign native inputs')
+    }
+    if (record.digest !== treeDigest(nativeDeps)) {
+      const optional = hudModifierBinaryRelativePath(platform, arch)
+      const missingHudOnly = platform === 'win32' &&
+        !fs.lstatSync(path.join(nativeDeps, optional), { throwIfNoEntry: false }) &&
+        typeof record.withoutHudDigest === 'string' &&
+        record.withoutHudDigest === treeDigest(nativeDeps, [optional])
+      if (!missingHudOnly) throw preparationRequired('Stale or foreign native inputs')
     }
     if (!fs.statSync(path.join(nativeDeps, 'node-pty/package.json')).isFile()) throw preparationRequired('Missing prepared node-pty')
     return record.out
@@ -48,16 +60,16 @@ export function readNativeInputs({ source, nativeDeps, platform = process.platfo
   }
 }
 
-/** @param {NativeSelection & { out: string }} inputs @returns {void} */
+/** @param {NativeSelection & { out: string, omitWindowsHud?: boolean }} inputs @returns {void} */
 export function copyNativeInputs({ out, ...inputs }) {
-  copyNativeTree({ nativeDeps: readNativeInputs(inputs), out })
+  copyNativeTree({ ...inputs, nativeDeps: readNativeInputs(inputs), out })
 }
 
 /** Copy admitted modules and executable resources without rebuilding either.
- * @param {{ nativeDeps: string, out: string }} inputs out is the product's node_modules.
+ * @param {{ nativeDeps: string, out: string, platform?: string, arch?: string, omitWindowsHud?: boolean }} inputs out is the product's node_modules.
  * @returns {void}
  */
-export function copyNativeTree({ nativeDeps, out }) {
+export function copyNativeTree({ nativeDeps, out, platform = process.platform, arch = process.arch, omitWindowsHud = false }) {
   nativeDeps = fs.realpathSync(nativeDeps)
   const destination = path.resolve(out)
   const helpers = path.join(path.dirname(destination), 'native')
@@ -71,5 +83,21 @@ export function copyNativeTree({ nativeDeps, out }) {
   const preparedHelpers = path.join(nativeDeps, 'native')
   fs.cpSync(nativeDeps, destination, { recursive: true, dereference: true,
     filter: file => file !== preparedHelpers })
-  if (fs.existsSync(preparedHelpers)) fs.cpSync(preparedHelpers, helpers, { recursive: true, dereference: true })
+  const hudRelative = hudModifierBinaryRelativePath(platform, arch)
+  const skipHud = platform === 'win32' && omitWindowsHud
+  const sourceHud = path.join(nativeDeps, hudRelative)
+  const copyHelpers = omit => fs.cpSync(preparedHelpers, helpers, { recursive: true, dereference: true,
+    filter: file => !omit || file !== sourceHud })
+  if (fs.existsSync(preparedHelpers)) {
+    try {
+      copyHelpers(skipHud)
+    } catch (error) {
+      // A quarantine may race cpSync too. Never swallow another file's error.
+      if (platform !== 'win32' || error.code !== 'ENOENT' || error.path !== sourceHud || fs.existsSync(sourceHud)) throw error
+      fs.rmSync(path.join(helpers, path.relative(preparedHelpers, sourceHud)), { force: true })
+      copyHelpers(true)
+    }
+  }
+  const stagedHud = path.join(path.dirname(destination), hudRelative)
+  if (platform === 'win32' && !fs.existsSync(stagedHud)) warnWindowsHudUnavailable(stagedHud)
 }

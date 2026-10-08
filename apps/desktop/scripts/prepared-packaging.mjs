@@ -20,13 +20,24 @@ export function fileDigest(file) {
  * Include symlink destinations and modes, not timestamps. A copied supplier
  * may use internal symlinks; external links would make its receipt incomplete.
  * @param {string} root
+ * @param {string[]} [excludedFiles] Exact optional files; empty ancestors are omitted too.
  * @returns {string}
  */
-export function treeDigest(root) {
+export function treeDigest(root, excludedFiles = []) {
   const hash = createHash('sha256')
   const canonicalRoot = fs.realpathSync(root)
+  const excluded = new Set(excludedFiles.map(file => path.resolve(root, file)))
+  function included(entry) {
+    const absolute = path.resolve(entry)
+    if (excluded.has(absolute)) return false
+    if ([...excluded].some(file => file.startsWith(absolute + path.sep)) && fs.lstatSync(entry).isDirectory()) {
+      return fs.readdirSync(entry).some(name => included(path.join(entry, name)))
+    }
+    return true
+  }
   /** @param {string} entry @returns {void} */
   function visit(entry) {
+    if (!included(entry)) return
     const relative = path.relative(root, entry)
     const stat = fs.lstatSync(entry)
     hash.update(JSON.stringify([relative, stat.mode & 0o777]))

@@ -189,6 +189,38 @@ def _load_synthetic_plugin(tmp_path):
     spec.loader.exec_module(module)
     return module
 
+# ── Route identity: base_url reaches the hook ──────────────────────────
+
+
+def test_base_url_reaches_the_hook(monkeypatch):
+    """Providers declared in ``custom_providers`` all report ``provider="custom"``,
+    so a plugin that must own one endpoint's quirks has only the route to scope on."""
+    seen = {}
+
+    def _capture(name, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(plugins_mod, "invoke_hook", _capture)
+    _classify_unclaimed_error(base_url="https://api.example-vendor.test/v1")
+
+    assert seen["base_url"] == "https://api.example-vendor.test/v1"
+
+
+def test_base_url_is_empty_when_the_caller_omits_it(monkeypatch):
+    """Status-less/route-less classifiers (and older call sites) must not blow up."""
+    seen = {}
+
+    def _capture(name, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(plugins_mod, "invoke_hook", _capture)
+    _classify_unclaimed_error()
+
+    assert seen["base_url"] == ""
+
+
 def test_synthetic_plugin_end_to_end(tmp_path, monkeypatch):
     """register() + real invoke_hook + classify_api_error, no mocks."""
     demo = _load_synthetic_plugin(tmp_path)

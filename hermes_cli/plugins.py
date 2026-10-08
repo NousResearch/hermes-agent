@@ -2116,12 +2116,15 @@ def get_plugin_error_classification(
     *, provider: str = "", model: str = "", status_code: Optional[int] = None, error_type: str = "",
     error_code: str = "", error_message: str = "", error_body: Optional[Dict[str, Any]] = None,
     error: Optional[BaseException] = None, approx_tokens: int = 0, context_length: int = 0,
-    num_messages: int = 0,
+    num_messages: int = 0, base_url: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Consult ``transform_api_error_classification`` hooks BEFORE the built-in classifier.
     Run-all-then-pick-first: the first valid result in registration order wins, losing valid results
     warn (conflicts visible, not shadowed). Returns a sanitized dict (``reason`` -> ``FailoverReason``,
     hint flags -> bool, ``message`` capped at 500) or ``None``. Privacy: inputs may be unredacted.
+
+    ``base_url`` is the route the call went to — the only way a hook can tell two
+    ``custom_providers`` endpoints apart, since both report ``provider="custom"``.
 
     A callback returns ``None`` to decline, or a dict with a required ``"reason"`` (a
     :class:`agent.error_classifier.FailoverReason` member or its string name) plus optional recovery-hint
@@ -2134,7 +2137,7 @@ def get_plugin_error_classification(
     """
     from agent.error_classifier import FailoverReason
     hook_results = invoke_hook(
-        "transform_api_error_classification", provider=provider, model=model,
+        "transform_api_error_classification", provider=provider, model=model, base_url=base_url,
         status_code=status_code, error_type=error_type, error_code=error_code,
         error_message=error_message, error_body=error_body if isinstance(error_body, dict) else {},
         error=error, approx_tokens=approx_tokens, context_length=context_length,

@@ -1275,6 +1275,7 @@ def _run_review_in_thread(
             _publish_review_summary(agent, actions)
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
+        logger.debug("Background memory/skill review traceback", exc_info=True)
         if st.review_usage:
             _log_review_completion(st.review_usage, "error")
         agent._emit_auxiliary_failure(t("display.review.aux_failure_label"), e)

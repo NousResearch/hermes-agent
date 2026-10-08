@@ -314,6 +314,31 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
     assert _stored_prompt_matches_runtime(agent, legacy)
 
 
+@pytest.mark.platforms("not windows")  # a process cwd cannot be removed on Windows
+def test_prompt_builds_and_restores_with_deleted_workspace(monkeypatch, tmp_path):
+    """Regression (routed background review ENOENT): kanban_complete deletes the scratch
+    workspace — process cwd AND TERMINAL_CWD — before the post-turn review fork runs. A routed
+    fork rebuilds its system prompt, and neither the rebuild nor the stored-prompt identity check
+    may raise on the missing directory."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    ws = tmp_path / "t_workspace"
+    ws.mkdir()
+    (ws / "AGENTS.md").write_text("Workspace rules.")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(ws))
+    monkeypatch.chdir(ws)
+    agent = _make_agent(platform="cli", model="m", provider="p")
+    before = "\n\n".join(build_system_prompt_parts(agent).values())
+    assert "Workspace rules." in before
+    (ws / "AGENTS.md").unlink()
+    ws.rmdir()
+    after = "\n\n".join(build_system_prompt_parts(agent).values())
+    assert "Workspace rules." not in after
+    assert "Current working directory:" not in after
+    assert _stored_prompt_matches_runtime(agent, before)
+
+
 def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
     """With the Session ID trailer on, a prompt persisted for another session (a /branch child
     copies its parent's bytes) must rebuild instead of telling the model the parent's id."""

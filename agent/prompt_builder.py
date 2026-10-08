@@ -1849,6 +1849,16 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                              read_path=str(cwd_path / ".cursorrules"))
 
 
+def _context_cwd_path(cwd: Optional[str]) -> Optional[Path]:
+    """Resolved discovery root: *cwd* when given, else the launch dir; None when the launch dir no
+    longer exists (``os.getcwd()`` raises on a deleted cwd)."""
+    try:
+        return Path(cwd if cwd is not None else os.getcwd()).resolve()
+    except OSError as exc:
+        logger.warning("skipping project-context discovery: working directory is unavailable (%s)", exc)
+        return None
+
+
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1859,8 +1869,13 @@ def build_context_files_prompt(
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    cwd_path = _context_cwd_path(cwd)
+    if cwd_path is None:
+        # Launch dir is gone (e.g. a kanban worker's scratch workspace removed by
+        # kanban_complete before the post-turn review fork rebuilds its prompt): there is no
+        # project to discover, but SOUL.md still loads.
+        sections = []
+    elif _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

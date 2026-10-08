@@ -58,6 +58,11 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
+def _confirm_patterns(server_name: str, config: dict) -> set:
+    return _normalize_name_filter(((config or {}).get("tools") or {}).get("confirm"),
+                                  f"mcp_servers.{server_name}.tools.confirm")
+
+
 def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any], key=None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
@@ -67,16 +72,19 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any]
         if key is None:
             key = _server_key(server_name)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_confirm_tools[key] = _confirm_patterns(server_name, config)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
 def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
-    """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
-    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
+    """``trust`` and ``tools.confirm`` are the CONSUMING profile's policy, never the connection's: an
+    ``untrusted`` profile that adopts a ``full`` profile's live connection must still be asked before
+    every write-capable call."""
     with _core._lock:
-        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
-            (config or {}).get("trust"))
+        key = _server_key(server_name, scope, current=False)
+        _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
+        _core._server_confirm_tools[key] = _confirm_patterns(server_name, config)
 
 
 def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
@@ -150,6 +158,7 @@ def _remove_server_scope(key, scope: str) -> None:
         else:
             _core._server_tool_scopes.pop(key, None)
         _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
+        _core._server_confirm_tools.pop(_server_key(server_name, scope, current=False), None)
     _restore_server_toolset_alias(key)
 
 

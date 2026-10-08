@@ -75,7 +75,8 @@ def fake_session():
 def _clean_trust_state():
     """Isolate the module-level trust metadata between tests."""
     with patch.dict(mcp_tool._server_trust_levels, {}, clear=True), \
-         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True):
+         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
+         patch.dict(mcp_tool._server_confirm_tools, {}, clear=True):
         yield
 
 
@@ -179,6 +180,44 @@ class TestTrustGateAtCallTime:
             raw = handler({"repo": "x"})
         fake_session.call_tool.assert_not_awaited()
         assert "error" in json.loads(raw)
+
+
+class TestConfirmToolsGate:
+    """``tools.confirm`` (#14669): listed tools ask before every call, on any trust tier."""
+
+    def _register(self, config):
+        from tools.registry import ToolRegistry
+
+        server = mcp_tool.MCPServerTask("srv")
+        server.session = MagicMock()
+        server._tools = [
+            SimpleNamespace(name=n, description="", inputSchema=None,
+                            annotations=SimpleNamespace(readOnlyHint=True))
+            for n in ("send_message", "send_email", "list_chats")]
+        with patch("tools.registry.registry", ToolRegistry()), \
+             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+            _mcp_registration._register_server_tools(
+                "srv", server, {"tools": {"resources": False, "prompts": False, **config}})
+
+    @pytest.mark.parametrize("answer, runs", [("accept", True), ("decline", False)])
+    def test_confirmed_tool_on_full_trust_server_asks_first(self, fake_session, answer, runs):
+        """A configured name/glob gates even a readOnlyHint tool on a full-trust server."""
+        self._register({"confirm": ["send_*"]})
+        handler = _mcp_handlers._make_tool_handler("srv", "send_email", 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent",
+                   return_value=answer) as consent:
+            raw = handler({})
+        consent.assert_called_once()
+        assert (fake_session.call_tool.await_count == 1) is runs
+        assert ("error" in json.loads(raw)) is not runs
+
+    def test_unlisted_tool_runs_without_asking(self, fake_session):
+        self._register({"confirm": "send_message"})
+        handler = _mcp_handlers._make_tool_handler("srv", "list_chats", 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent") as consent:
+            raw = handler({})
+        consent.assert_not_called()
+        assert json.loads(raw) == {"result": "ok"}
 
 
 class TestTrustGateApprovalRouting:

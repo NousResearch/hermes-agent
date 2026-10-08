@@ -27,33 +27,37 @@ SCHEMA_VERSION = "1"
 COMPACTION_MARK = "compaction"
 ATTEMPT_MARK = "compaction.attempt"
 
-_KINDS = frozenset({
-    "summarize", "micro_summarize", "prune_tool_results", "provider_native", "request_truncation", "window_reduction",
-})
-_SCOPES = frozenset({"history", "provider", "request"})
+# The v1 sets list only values this module emits. Later versions may add request-scope truncation kinds.
+_KINDS = frozenset({"summarize", "micro_summarize", "prune_tool_results", "provider_native"})
+_SCOPES = frozenset({"history", "provider"})
 _METHODS = frozenset({
     "llm_summary", "aux_fallback_main", "deterministic_fallback", "deterministic_prune", "provider", "none",
 })
 _TRIGGERS = frozenset({
     "manual", "turn_start_threshold", "pre_api", "post_tool", "idle", "engine_preflight", "overflow",
-    "gateway_hygiene", "between_turns", "proactive_prune", "provider", "recovery", "unknown",
+    "gateway_hygiene", "between_turns", "proactive_prune", "provider", "unknown",
 })
-_TRIGGER_CLASSES = {"manual": "manual", "overflow": "overflow", "provider": "provider"}
-_OUTCOMES = frozenset({"committed", "aborted", "failed", "skipped", "blocked", "noop"})
+# Every other known trigger is automatic; an unknown or unlisted one asserts nothing.
+_TRIGGER_CLASSES = {
+    "manual": "manual", "overflow": "overflow", "provider": "provider", "unknown": "unknown", "other": "unknown",
+}
+_TRIGGER_CLASS_VALUES = frozenset({"auto", "manual", "overflow", "provider", "unknown"})
+_OUTCOMES = frozenset({"committed", "aborted", "failed", "skipped", "blocked"})
 _SPLIT_STATUSES = frozenset({
-    "not_applicable", "in_place_committed", "rotated_committed", "failed_not_indexed", "aborted", "pending", "unknown",
+    "not_applicable", "in_place_committed", "rotated_committed", "failed_not_indexed", "aborted",
 })
-_TOKEN_COUNT_METHODS = frozenset({"estimate_rough", "provider_usage"})
+_TOKEN_COUNT_METHODS = frozenset({"estimate_rough"})
 # Attempt classes beyond the shared-metrics closed set: guards, Codex route exits, lease races, and the
 # micro-compaction pass outcomes.
 _EXTRA_FAILURE_CLASSES = frozenset({
     "blocked:cooldown", "blocked:structural_backoff", "blocked:ineffective", "blocked:unknown",
     "codex_auto_native", "codex_auto_off", "codex_no_thread", "codex_compaction_failed",
-    "session_ownership_lost", "cooldown_state_unreadable", "summary_model_benched",
+    "session_ownership_lost", "session_ownership_unreadable", "cooldown_state_unreadable", "summary_model_benched",
     "summarize_failed", "exchange_skipped", "defrag_failed", "stale_generation", "watermark_unavailable",
 })
 # An aborted attempt the compressor ran but deliberately did not commit; other aborts are failures.
 _ABORTED_CLASSES = frozenset({"would_grow", "no_progress", "commit_fence_cancelled"})
+_COMMIT_MODES = frozenset({"in_place_committed", "rotated_committed"})
 _MICRO_OUTCOMES = {
     "absorbed": "committed", "defrag": "committed", "stale_generation": "skipped", "watermark_unavailable": "skipped",
 }
@@ -131,7 +135,9 @@ def _payload(**values: Any) -> dict[str, Any]:
     payload["scope"] = _closed(payload["scope"], _SCOPES)
     payload["method"] = _closed(payload["method"], _METHODS) or "none"
     payload["trigger"] = _closed(payload["trigger"], _TRIGGERS) or "unknown"
-    payload["trigger_class"] = _TRIGGER_CLASSES.get(payload["trigger"], "auto")
+    payload["trigger_class"] = (
+        _closed(payload["trigger_class"], _TRIGGER_CLASS_VALUES, None) or _TRIGGER_CLASSES.get(payload["trigger"], "auto")
+    )
     payload["outcome"] = _closed(payload["outcome"], _OUTCOMES) or "other"
     payload["token_count_method"] = _closed(payload["token_count_method"], _TOKEN_COUNT_METHODS)
     payload["attempt_id"] = payload["attempt_id"] or uuid.uuid4().hex
@@ -141,7 +147,11 @@ def _payload(**values: Any) -> dict[str, Any]:
     return payload
 
 
-def _attempt_outcome(commit_status: Any, failure: str) -> str:
+def _attempt_outcome(commit_status: Any, failure: str, history_rewritten: Any) -> str:
+    # A split that failed after publishing the compacted history still rewrote what the model sees next: it is
+    # a committed compaction whose failure_class records the failure.
+    if history_rewritten is True:
+        return "committed"
     if commit_status != "aborted":
         return commit_status if commit_status in _OUTCOMES else "other"
     if failure in _skip_classes():
@@ -149,11 +159,12 @@ def _attempt_outcome(commit_status: Any, failure: str) -> str:
     return "aborted" if failure in _ABORTED_CLASSES else "failed"
 
 
-def _attempt_trigger(trigger_source: Any) -> str:
-    # ``auto`` is what an unlabelled automatic caller records: the reason is unknown, not "other".
-    if trigger_source == "auto" or not trigger_source:
-        return "unknown"
-    return trigger_source
+def _attempt_trigger(trigger_source: Any) -> tuple[Any, str | None]:
+    """``(trigger, trigger_class)``. ``auto`` is what an unlabelled automatic caller records: the reason is
+    unknown, but the attempt is still known to be automatic."""
+    if trigger_source == "auto":
+        return "unknown", "auto"
+    return trigger_source or "unknown", None
 
 
 def attempt_payload(record: dict[str, Any], *, compression_count: Any = None) -> dict[str, Any]:
@@ -161,19 +172,20 @@ def attempt_payload(record: dict[str, Any], *, compression_count: Any = None) ->
     codex = record.get("route") == "codex_app_server"
     failure = failure_class(record.get("failure_class"))
     split_status = _closed(record.get("split_status"), _SPLIT_STATUSES)
-    outcome = _attempt_outcome(record.get("commit_status"), failure)
-    committed = outcome == "committed"
+    outcome = _attempt_outcome(record.get("commit_status"), failure, record.get("history_rewritten"))
+    trigger, trigger_class = _attempt_trigger(record.get("trigger_source"))
     values: dict[str, Any] = {key: _int(record.get(src)) for src, key in _ATTEMPT_INTS.items()}
     values.update(
         kind="provider_native" if codex else "summarize", scope="provider" if codex else "history", official=True,
-        method=record.get("method"), trigger=_attempt_trigger(record.get("trigger_source")),
-        outcome=outcome, failure_class=failure,
+        method=record.get("method"), trigger=trigger, trigger_class=trigger_class, outcome=outcome,
+        failure_class=failure,
         attempt_id=record.get("attempt_id"), session_id=record.get("session_id"),
         token_count_method=record.get("token_count_method"),
         summarizer_provider=record.get("aux_provider") or None, summarizer_model=record.get("aux_model") or None,
         compression_count=_int(compression_count), split_status=split_status,
-        in_place=split_status == "in_place_committed" if committed else None,
-        session_rotated=split_status == "rotated_committed" if committed else None,
+        # Commit mode is known only for a fully committed split; anything else leaves both null.
+        in_place=split_status == "in_place_committed" if split_status in _COMMIT_MODES else None,
+        session_rotated=split_status == "rotated_committed" if split_status in _COMMIT_MODES else None,
         has_focus_topic=record.get("has_focus_topic") if isinstance(record.get("has_focus_topic"), bool) else None,
     )
     if codex:

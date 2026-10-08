@@ -1,6 +1,7 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import json
+import os
 
 import pytest
 
@@ -290,8 +291,11 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "copilot"
         assert result["api_mode"] == "codex_responses"
 
-    def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+    def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch, tmp_path):
+        cli = tmp_path / ("copilot.exe" if os.name == "nt" else "copilot")
+        cli.write_text("", encoding="utf-8")
+        cli.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
 
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -302,7 +306,7 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "copilot-acp"
         assert result["base_url"] == "acp://copilot"
-        assert result["command"] == "/usr/local/bin/copilot"
+        assert os.path.samefile(result["command"], cli)
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
 

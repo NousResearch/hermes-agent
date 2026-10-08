@@ -253,7 +253,8 @@ class AIAgent(
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
+        connection_callback: callable = None, tour_callback: callable = None,
+        setup_choose_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -304,20 +305,10 @@ class AIAgent(
             return None
 
     def _session_row_model_config(self) -> Any:
-        """``model_config`` for the session row: the init config plus the live YOLO bypass.
-
-        The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
-        /yolo toggle for ``hermes --resume``.
-        """
-        model_config = self._session_init_model_config
-        try:
-            from tools.approval import is_session_yolo_enabled
-            if is_session_yolo_enabled(self.session_id):
-                model_config = dict(model_config or {})
-                model_config["yolo_mode"] = True
-        except Exception:
-            pass
-        return model_config
+        """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
+        before the first turn (``hermes --resume`` restores it)."""
+        from tools.approval_yolo import with_session_yolo
+        return with_session_yolo(self._session_init_model_config, self.session_id)
 
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""

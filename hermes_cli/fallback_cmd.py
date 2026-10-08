@@ -1,13 +1,13 @@
 """hermes fallback — manage the fallback provider chain (tried in order when the primary fails).
 
-Subcommands: ``list`` (default), ``add`` (same picker as `hermes model`), ``remove``, ``clear``.
+Subcommands: ``list`` (default), ``add``, ``remove``, ``clear``, ``auto on|off``.
 """
 from __future__ import annotations
 
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
 
 # Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
 _read_chain = get_fallback_chain
@@ -124,17 +124,44 @@ def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
     return model_cfg.strip() or None if isinstance(model_cfg, str) else None
 
 
+def _print_mode(config: Dict[str, Any]) -> None:
+    if not _read_chain(config):
+        print("  Mode: disabled (no fallback providers configured).")
+    elif get_fallback_auto_activate(config):
+        print("  Mode: automatic (try the chain in order when the primary fails).")
+    else:
+        print("  Mode: manual (choose a fallback for each failing turn).")
+
+
+def _set_auto_activate(config: Dict[str, Any], enabled: bool) -> None:
+    settings = config.get("fallback")
+    config["fallback"] = {**(settings if isinstance(settings, dict) else {}), "auto_activate": enabled}
+
+
+def cmd_fallback_auto(args) -> None:
+    """Persist an explicit activation policy without changing the chain or reset threshold."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    _set_auto_activate(config, args.fallback_auto == "on")
+    save_config(config, preserve_keys={("fallback", "auto_activate")})
+    print(f"\n  Automatic fallback {'enabled' if args.fallback_auto == 'on' else 'disabled'}.")
+    _print_mode(config)
+    print()
+
+
 def cmd_fallback_list(args) -> None:  # noqa: ARG001
     """Print the current fallback chain."""
     config, chain = _load_chain("  No fallback providers configured.")
     if chain is None:
+        _print_mode(config)
         print("  Add one with:  hermes fallback add\n")
         return
     print()
     if primary := _describe_primary(config):
         print(f"  Primary:   {primary}\n")
     _print_chain("Fallback chain", chain)
-    print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
+    _print_mode(config)
+    print("  Change mode with: hermes fallback auto on|off")
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers\n")
 
 
@@ -144,6 +171,12 @@ def cmd_fallback_add(args) -> None:
     from hermes_cli.config import load_config, save_config
     _require_tty("fallback add")
 
+    # Read presence before the picker writes merged config; defaults are not an explicit choice.
+    from hermes_cli.config_effective import load_user_config_effective
+    before_cfg = load_user_config_effective(fail_closed=True)
+    settings = before_cfg.get("fallback")
+    new_chain_manual = not _read_chain(before_cfg) and not (
+        isinstance(settings, dict) and "auto_activate" in settings)
     # Snapshot BEFORE the picker runs; both route stores must be restored on every exit path.
     model_before = copy.deepcopy(load_config().get("model"))
     active_provider_before = _snapshot_auth_active_provider()
@@ -186,11 +219,14 @@ def cmd_fallback_add(args) -> None:
     if any(same_deployment(_identity(existing), new_ident) for existing in chain):
         print(f"\n  {_format_entry(new_entry)} is already in the fallback chain — skipped.")
         return
+    if not chain and new_chain_manual:
+        _set_auto_activate(final_cfg, False)
     chain.append(new_entry)
     _write_chain(final_cfg, chain)
     save_config(final_cfg)
     print(f"\n  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {_entries(len(chain))} long.\n")
+    _print_mode(final_cfg)
     print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
 
 
@@ -241,7 +277,7 @@ def cmd_fallback(args) -> None:
     handler = _SUBCOMMANDS.get(sub)
     if handler is None:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, auto")
         raise SystemExit(2)
     handler(args)
 
@@ -249,4 +285,5 @@ def cmd_fallback(args) -> None:
 _SUBCOMMANDS = {
     **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list), "add": cmd_fallback_add,
     **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
+    "auto": cmd_fallback_auto,
 }

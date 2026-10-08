@@ -95,6 +95,7 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         cli.model = r.new_model
         cli.provider = r.target_provider
         cli.requested_provider = r.target_provider
+        cli._fallback_bootstrap_primary = None
         cli._explicit_api_key = r.api_key
         cli._explicit_base_url = r.base_url
         if r.api_key:

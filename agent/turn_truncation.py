@@ -9,6 +9,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 
 from __future__ import annotations
 
+from agent.manual_fallback import fallback_attempt_status
 import logging
 import re
 from dataclasses import dataclass
@@ -269,14 +270,14 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     agent = st.agent
     if not (
         getattr(st.response, "_content_filter_terminated", False)
-        and agent._fallback_index < len(agent._fallback_chain)
+        and agent._has_pending_fallback()
     ):
         return None
     agent._vprint(
-        f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider...",
+        fallback_attempt_status(agent, f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider..."),
         force=True, diagnostic=True,
     )
-    agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
+    agent._emit_diagnostic_status(fallback_attempt_status(agent, "Content filter terminated stream; switching to fallback..."))
     if agent._try_activate_fallback():
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
@@ -295,8 +296,8 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         _retry.restart_with_rebuilt_messages = True
         return st.done("break")
     agent._vprint(
-        f"{agent.log_prefix}⚠️  No fallback provider configured — retrying with same provider "
-        f"(may re-hit filter)...",
+        fallback_attempt_status(agent, f"{agent.log_prefix}⚠️  No fallback provider configured — retrying with same provider "
+        f"(may re-hit filter)..."),
         force=True, diagnostic=True,
     )
     return None
@@ -637,8 +638,8 @@ def continue_codex_incomplete(
             agent._codex_reasoning_only_streak = 0
             if not agent.quiet_mode:
                 agent._vprint(
-                    f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
-                    f"switching to fallback {agent.model} ({agent.provider})", diagnostic=True,
+                    fallback_attempt_status(agent, f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
+                    f"switching to fallback {agent.model} ({agent.provider})"), diagnostic=True,
                 )
             agent._emit_diagnostic_wait("↻ model stuck on internal reasoning — switching to fallback provider")
             agent._session_messages = messages
@@ -741,7 +742,7 @@ def handle_content_policy_refusal(
     stop_thinking_spinner(agent, thinking_spinner)
 
     if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+        agent._buffer_diagnostic_status(fallback_attempt_status(agent, "⚠️ Model declined to respond (safety refusal) — trying fallback..."))
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
         return RefusalVerdict("break", None, active_system_prompt)

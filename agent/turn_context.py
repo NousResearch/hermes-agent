@@ -517,10 +517,10 @@ def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: A
             agent._pending_cli_user_message = None
 
 
-def _publish_runtime_main(agent: Any) -> None:
+def _publish_runtime_main(agent: Any, *, strict: bool = False) -> None:
     """Tell auxiliary_client the live main provider/model for this turn (after primary
-    restoration settled the runtime). Never raises: failure loses only the scope."""
-    with suppress(Exception):
+    restoration settled the runtime). Required manual restoration fails closed."""
+    try:
         from agent.auxiliary_client import set_runtime_main
         from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
         # Rotation-stable prompt-cache scope (lineage root), memoized per segment; a new
@@ -539,6 +539,12 @@ def _publish_runtime_main(agent: Any) -> None:
             )},
             cache_scope=_cache_scope,
         )
+    except Exception:
+        if strict:
+            from agent.auxiliary_client import clear_runtime_main
+            clear_runtime_main()
+            raise
+        logger.debug("Auxiliary main runtime publication skipped", exc_info=True)
 
 
 def _refresh_mcp_tools_between_turns(agent: Any) -> None:
@@ -1062,8 +1068,8 @@ def build_turn_context(
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
-    agent._restore_primary_runtime()
-    _publish_runtime_main(agent)
+    from agent.manual_fallback import prepare_turn_runtime
+    prepare_turn_runtime(agent, _publish_runtime_main)
     _refresh_mcp_tools_between_turns(agent)
 
     if isinstance(user_message, str):

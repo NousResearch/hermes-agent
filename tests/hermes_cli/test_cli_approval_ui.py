@@ -224,10 +224,14 @@ class TestCliApprovalUi:
         prompt_toolkit.
         """
         cli = _make_background_cli_stub()
+        from hermes_cli.config import get_config_path
+        get_config_path().parent.mkdir(parents=True, exist_ok=True)
+        get_config_path().write_text("fallback: {auto_activate: false}\nfallback_providers: [{provider: zai, model: backup}]\n")
         seen = {}
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                seen["kwargs"] = kwargs
                 self._print_fn = None
                 self.thinking_callback = None
 
@@ -263,6 +267,9 @@ class TestCliApprovalUi:
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
         assert not cli._background_tasks
+        assert seen["kwargs"]["fallback_auto_activate"] is False
+        assert seen["kwargs"]["fallback_selection_interactive"] is False
+        assert seen["kwargs"]["fallback_model"] == [{"provider": "zai", "model": "backup"}]
 
 
 def _make_real_paint_cli_stub():

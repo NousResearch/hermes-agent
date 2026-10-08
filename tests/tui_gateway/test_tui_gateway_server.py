@@ -4619,6 +4619,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
             "credential_pool": None,
         },
     )
+    monkeypatch.setattr(server, "_load_fallback_settings", lambda: (fallback_chain, True))
     monkeypatch.setattr("run_agent.AIAgent", fake_agent)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
@@ -9700,8 +9701,8 @@ def test_setup_runtime_check_agrees_with_session_fallback_chain(monkeypatch):
     from hermes_cli.auth import AuthError
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("claude-sonnet-4-5", None))
-    monkeypatch.setattr(server, "_load_fallback_model",
-                        lambda: [{"provider": "openrouter", "model": "openai/gpt-4.1-mini", "api_key": "sk-or-fb"}])
+    monkeypatch.setattr(server, "_load_fallback_settings",
+                        lambda: ([{"provider": "openrouter", "model": "openai/gpt-4.1-mini", "api_key": "sk-or-fb"}], True))
 
     def fake_resolve(*, requested=None, target_model=None, explicit_api_key=None, **_kw):
         if requested == "openrouter":
@@ -20912,8 +20913,8 @@ class TestResolveRuntimeWithFallback:
         )
         monkeypatch.setattr(
             server,
-            "_load_fallback_model",
-            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+            "_load_fallback_settings",
+            lambda: ([{"provider": "deepseek", "model": "deepseek-v4-pro"}], True),
         )
         resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
@@ -20942,11 +20943,11 @@ class TestResolveRuntimeWithFallback:
         )
         monkeypatch.setattr(
             server,
-            "_load_fallback_model",
-            lambda: [
+            "_load_fallback_settings",
+            lambda: ([
                 {"provider": "anthropic"},
                 {"provider": "openrouter", "model": "z-ai/glm-5.2"},
-            ],
+            ], True),
         )
 
         resolution = server._resolve_runtime_with_fallback(
@@ -20979,14 +20980,14 @@ class TestResolveRuntimeWithFallback:
         )
         monkeypatch.setattr(
             server,
-            "_load_fallback_model",
-            lambda: [
+            "_load_fallback_settings",
+            lambda: ([
                 {
                     "provider": "openrouter",
                     "model": "z-ai/glm-5.2",
                     "key_env": "FB_TEST_KEY",
                 }
-            ],
+            ], True),
         )
         resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"}
@@ -21007,8 +21008,8 @@ class TestResolveRuntimeWithFallback:
         )
         monkeypatch.setattr(
             server,
-            "_load_fallback_model",
-            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+            "_load_fallback_settings",
+            lambda: ([{"provider": "deepseek", "model": "deepseek-v4-pro"}], True),
         )
         import pytest
 
@@ -21034,11 +21035,11 @@ class TestResolveRuntimeWithFallback:
         )
         monkeypatch.setattr(
             server,
-            "_load_fallback_model",
-            lambda: [
+            "_load_fallback_settings",
+            lambda: ([
                 "invalid-string-entry",
                 {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-            ],
+            ], True),
         )
         resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
@@ -21050,8 +21051,6 @@ class TestResolveRuntimeWithFallback:
     def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
         """Integration: _make_agent falls back to configured fallback
         provider when the primary provider raises AuthError."""
-        import types
-
         from hermes_cli.auth import AuthError
 
         captured = {}
@@ -21087,6 +21086,7 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve,
         )
+        monkeypatch.setattr(server, "_load_fallback_settings", lambda: (server._load_cfg()["fallback_providers"], True))
         monkeypatch.setattr("run_agent.AIAgent", fake_agent)
         monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)

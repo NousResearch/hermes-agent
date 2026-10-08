@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
 
@@ -588,6 +588,7 @@ def _run_agent(
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
+            fallback_auto_activate=get_fallback_auto_activate(cfg), fallback_selection_interactive=False,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
             request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,

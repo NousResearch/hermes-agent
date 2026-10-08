@@ -8,6 +8,7 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
+from agent.manual_fallback import ManualFallbackStopped, fallback_attempt_status
 from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
@@ -259,7 +260,7 @@ def nous_rate_limit_guard(
                         reset=anon_auth.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
-                agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
+                agent._buffer_vprint(fallback_attempt_status(agent, f"⏳ {_nous_msg} Trying fallback..."))
                 agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(
@@ -284,6 +285,8 @@ def nous_rate_limit_guard(
                     **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
                         reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
                 }, FailoverReason.rate_limit.value, True))
+        except ManualFallbackStopped:
+            raise
         except Exception:
             pass  # Never let rate guard break the agent loop
     return _verdict("fallthrough")

@@ -10,6 +10,19 @@
 _config_version: 50
 
 # =============================================================================
+# Primary Provider Fallback
+# =============================================================================
+# No chain means no fallback. `hermes fallback add` creates new chains in manual
+# mode; existing chains with no auto_activate setting keep automatic behavior.
+# `hermes fallback auto on|off` changes the policy without changing the chain.
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+# fallback:
+#   auto_activate: false        # Ask once per failing interactive turn; unattended runs fail closed.
+#   min_switch_reset_seconds: 0 # Optional wait for short primary rate-limit resets; 0 disables it.
+
+# =============================================================================
 # Database Configuration
 # =============================================================================
 # WAL is the normal default. Hermes automatically falls back to DELETE when

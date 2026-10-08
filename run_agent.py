@@ -269,7 +269,8 @@ class AIAgent(
         skip_memory: bool = False, skip_background_review: bool = False,
         session_db=None, parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-        fallback_model: Dict[str, Any] = None, credential_pool=None,
+        fallback_model: Dict[str, Any] = None, fallback_auto_activate: bool = True,
+        fallback_selection_interactive: Optional[bool] = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
@@ -1231,13 +1232,8 @@ class AIAgent(
     _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")
     _try_activate_fallback = _forward("agent.chat_completion_helpers", "try_activate_fallback")
 
-    def _has_pending_fallback(self) -> bool:
-        """Whether a fallback provider remains (mirrors ``try_activate_fallback``'s guard) — gates the
-        "trying fallback..." status so we never announce one that won't be attempted.
-
-        See #17446.
-        """
-        return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
+    _has_pending_fallback = _forward("agent.manual_fallback", "has_pending_fallback")
+    _fallback_attempt_status = _forward("agent.manual_fallback", "fallback_attempt_status")
 
     _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")

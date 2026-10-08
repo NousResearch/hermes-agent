@@ -43,7 +43,7 @@ def _runner_with_real_runtime_resolution():
     runner._resolve_session_service_tier.return_value = None
     runner._agent_config_signature.return_value = ("sig",)
     runner._extract_cache_busting_config.return_value = {}
-    runner._refresh_fallback_model.return_value = None
+    runner._refresh_fallback_settings.return_value = (None, True)
     runner._consume_pending_native_image_paths.return_value = []
     runner._consume_pending_turn_sidecar_notes.return_value = []
     for lane in ("_is_telegram_topic_lane", "_is_discord_auto_thread_lane", "_is_relay_discord_channel_lane"):

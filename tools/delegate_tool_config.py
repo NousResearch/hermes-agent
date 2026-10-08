@@ -585,8 +585,10 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
-        # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
-        # model never borrows the parent's chain; an explicitly declared child chain still remains available.
+        # Children inherit activation policy but cannot ask for consent. Their route owner still owns the chain:
+        # a pin never borrows the parent's chain; an explicitly declared child chain remains available.
+        "fallback_auto_activate": getattr(parent_agent, "_fallback_auto_activate", True),
+        "fallback_selection_interactive": False,
         "fallback_model": _resolve_child_fallback_chain(
             parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
             pinned=bool(override_provider or override_base_url or model)),

@@ -80,8 +80,8 @@ Before constructing any agent machinery for a scheduled run, the scheduler
 validates that the job's configuration can actually produce a successful run:
 
 - the provider API key resolves (skipped for an unpinned job when a
-  `fallback_providers` chain is configured, since the fallback path may rescue a
-  missing primary key; a pinned job does not use that chain, so it is always
+  `fallback_providers` chain is configured and `fallback.auto_activate` is enabled,
+  since automatic fallback may rescue a missing primary key; a pinned job does not use that chain, so it is always
   checked),
 - attached skills are ready (no missing required environment variables,
   commands, or credential files),
@@ -1035,13 +1035,15 @@ From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and 
 If the primary API key is rate-limited or the provider returns an error, the cron agent can:
 
 - **Rotate to the next credential** in your [credential pool](../configuration.md#credential-pool-strategies) for the same provider. This applies to every job, pinned or not.
-- **Fall back to an alternate provider** from `fallback_providers` (or the legacy `fallback_model`) in `config.yaml` — **unpinned jobs only**. That covers a failure while resolving credentials before the run starts and a provider error mid-run.
+- **Fall back to an alternate provider** from `fallback_providers` (or the legacy `fallback_model`) in `config.yaml` — **unpinned jobs with automatic activation enabled only**. That covers a failure while resolving credentials before the run starts and a provider error mid-run.
 
-A job with its own `provider`, `model` or `base_url` (set with `--provider` / `--model`, `--pin`, the dashboard, or `jobs.json`) never falls back to the global chain. The pin says which route the job runs on, and a fallback entry is a different provider and usually a different model, so when the pinned route fails the run fails and the failure alert says so. This is the same rule [subagent delegation](./delegation.md) applies to a pinned child. To keep fallback for a job, leave it unpinned: it follows `cron.model` / `cron.model_provider` (or the main model) and walks the chain like any other unpinned job.
+`fallback.auto_activate: false` requires a per-turn interactive choice. Cron is unattended, so it never prompts or substitutes a provider in manual mode, either during credential resolution or after a request fails. The run reports the original failure. Same-provider credential rotation remains available. Missing `fallback.auto_activate` keeps historical automatic behavior; use `hermes fallback auto on` to explicitly enable it.
+
+A job with its own `provider`, `model` or `base_url` (set with `--provider` / `--model`, `--pin`, the dashboard, or `jobs.json`) never falls back to the global chain. The pin says which route the job runs on, and a fallback entry is a different provider and usually a different model, so when the pinned route fails the run fails and the failure alert says so. This is the same rule [subagent delegation](./delegation.md) applies to a pinned child. To keep fallback for a job, leave it unpinned: it follows `cron.model` / `cron.model_provider` (or the main model) and walks the chain when automatic activation is enabled. An explicitly owner-declared chain remains scoped to that job; `[]` disables fallback.
 
 Before this rule, a pinned job whose provider failed could run on the first working `fallback_providers` entry instead, with a one-line notice in its output. If you relied on that, unpin the job (`hermes cron edit <job_id> --unpin`) and set the model through `cron.model` instead.
 
-A single rate-limited key therefore does not fail a run that has another credential for the same provider, and unpinned jobs still survive a provider outage when a chain is configured.
+A single rate-limited key therefore does not fail a run that has another credential for the same provider, and unpinned jobs can still survive a provider outage when a chain is configured and automatic activation is enabled.
 
 ## Run failures (`last_error`)
 

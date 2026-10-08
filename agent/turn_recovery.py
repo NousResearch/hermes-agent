@@ -9,6 +9,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 
 from __future__ import annotations
 
+from agent.manual_fallback import fallback_attempt_status
 import logging
 import locale
 import math
@@ -1766,7 +1767,7 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
     if classified.reason not in _RATE_LIMIT_REASONS:
         return False
     agent._buffer_diagnostic_status(
-        _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
+        fallback_attempt_status(agent, _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False)))
     return bool(agent._try_activate_fallback(reason=classified.reason))
 
 
@@ -1935,7 +1936,7 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
-    if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+    if _should_fallback and agent._has_pending_fallback():
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
@@ -1944,7 +1945,7 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
+            agent._buffer_diagnostic_status(fallback_attempt_status(agent, _eager_fallback_status(classified, _is_upstream, _is_transport_failure)))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
@@ -1954,12 +1955,12 @@ def route_classified_error(
     if (
         classified.is_auth
         and not _retry.auth_failover_attempted
-        and agent._fallback_index < len(agent._fallback_chain)
+        and agent._has_pending_fallback()
     ):
         _retry.auth_failover_attempted = True
         agent._buffer_diagnostic_status(
-            "🔐 Authentication failed and could not be refreshed — "
-            "switching to fallback provider..."
+            fallback_attempt_status(agent, "🔐 Authentication failed and could not be refreshed — "
+            "switching to fallback provider...")
         )
         if agent._try_activate_fallback(reason=classified.reason):
             return _fallback_break()

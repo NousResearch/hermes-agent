@@ -10,7 +10,7 @@ import os
 import queue
 import threading
 from datetime import datetime
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
 from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
@@ -293,6 +293,8 @@ class CLIInitMixin:
                 pass
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
+        self._fallback_auto_activate = get_fallback_auto_activate(CLI_CONFIG)
+        self._fallback_bootstrap_primary = None
 
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""

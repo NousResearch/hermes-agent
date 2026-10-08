@@ -31,6 +31,8 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    from agent.manual_fallback import reset_turn_selection
+    reset_turn_selection(agent)
     chain = agent._fallback_chain
     if chain and not agent.quiet_mode:
         labels = [f"{f['model']} ({f['provider']})" for f in chain]
@@ -59,3 +61,13 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
         return
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
+
+
+def init_fallback_runtime(agent, api_key, base_url, chain, automatic, interactive) -> None:
+    """Install consent policy before credential resolution, then initialize the configured chain."""
+    from agent.agent_init import _build_client
+    agent._fallback_auto_activate = automatic
+    agent._fallback_selection_interactive = interactive
+    _build_client(agent, api_key, base_url, chain if automatic else None)
+    agent._fallback_bootstrap_active = getattr(agent, "_fallback_activated", False) is True
+    _init_fallback_chain(agent, chain)

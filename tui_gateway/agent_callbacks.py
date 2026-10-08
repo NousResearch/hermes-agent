@@ -351,11 +351,24 @@ def _parse_tui_skills_env() -> list[str]:
     return list(dict.fromkeys(p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()))
 
 
+_fallback_settings_by_home = {}
+
+
+def _load_fallback_settings():
+    from gateway.fallback_settings import read_fallback_settings
+    return read_fallback_settings(_active_config_path(), _fallback_settings_by_home)
+
+
 def _load_fallback_model():
-    """Configured fallback chain via the shared ``get_fallback_chain`` (parity with
-    HermesCLI/gateway: ``fallback_providers`` first, legacy ``fallback_model`` merged after)."""
+    """Legacy chain-only reader; agent creation uses one coherent settings snapshot."""
     from hermes_cli.fallback_config import get_fallback_chain
     return get_fallback_chain(_load_cfg())
+
+
+def _interactive_fallback_kwargs():
+    chain, auto_activate = _load_fallback_settings()
+    return {"fallback_model": chain, "fallback_auto_activate": auto_activate,
+            "fallback_selection_interactive": True}
 
 
 def _load_prefill_messages() -> list:
@@ -380,15 +393,51 @@ def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is None:
         return
+    from gateway.run import GatewayRunner
+    from hermes_constants import hermes_home_key
+    # A retained agent predates the cache on some embedding hosts. Seed only its own home so
+    # a first torn read preserves the agent's pair without borrowing another profile's policy.
+    _fallback_settings_by_home.setdefault(hermes_home_key(_active_config_path().parent), (
+        getattr(agent, "_fallback_chain", None), getattr(agent, "_fallback_auto_activate", True)))
+    GatewayRunner._apply_fallback_chain_to_agent(agent, *_load_fallback_settings())
+    agent._fallback_selection_interactive = True
+
+
+def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
+    """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
+    are skipped so the unavailable primary model can never leak into a different runtime."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        from gateway.run import GatewayRunner
-        from hermes_cli.config_effective import load_user_config_effective
-        from hermes_cli.fallback_config import get_fallback_chain
-        chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
-    except Exception as e:
-        logger.warning("fallback chain sync skipped for %s (keeping current chain): %s", sid, e)
-        return
-    GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
+        return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
+    except AuthError as primary_exc:
+        chain, auto_activate = _load_fallback_settings()
+        if not auto_activate:
+            raise
+        for entry in chain or []:
+            fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
+            fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
+            if not fb_provider or not fb_model:
+                continue
+            try:
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+                fb_kwargs: dict = {"requested": fb_provider, "target_model": fb_model,
+                                   **({"explicit_base_url": entry["base_url"]} if entry.get("base_url") else {})}
+                if fb_api_key := resolve_entry_api_key(entry):
+                    fb_kwargs["explicit_api_key"] = fb_api_key
+                runtime = resolve_runtime_provider(**fb_kwargs)
+                # Named custom entries resolve to the bare "custom" billing class; keep the configured
+                # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
+                from hermes_cli.auth import primary_failure_wording
+                logging.getLogger(__name__).warning(
+                    "Primary %s (%s), falling back to %s model %s",
+                    primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
+                return _RuntimeFallbackResolution(runtime, fb_model, True)
+            except Exception:
+                logger.debug("Automatic bootstrap fallback resolution failed", exc_info=True)
+                continue
+        raise
 
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
@@ -421,7 +470,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
         # belong to that profile's state.db, not the launch handle.
         "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback,
-        "side_agent": True}
+        "fallback_auto_activate": g("_fallback_auto_activate", True),
+        "fallback_selection_interactive": False, "side_agent": True}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

@@ -43,6 +43,19 @@ def _current_runtime(cli) -> dict:
         "credential_pool": getattr(cli, "_credential_pool", None)}
 
 
+def background_provider_kwargs(cli) -> dict:
+    """Snapshot background routing before its thread starts; it cannot collect manual consent."""
+    fields = {
+        "providers_allowed": "_providers_only", "providers_ignored": "_providers_ignore",
+        "providers_order": "_providers_order", "provider_sort": "_provider_sort",
+        "provider_require_parameters": "_provider_require_params",
+        "provider_data_collection": "_provider_data_collection",
+        "openrouter_min_coding_score": "_openrouter_min_coding_score", "fallback_model": "_fallback_model"}
+    return {**{kw: getattr(cli, attr) for kw, attr in fields.items()},
+            "fallback_auto_activate": getattr(cli, "_fallback_auto_activate", True),
+            "fallback_selection_interactive": False}
+
+
 def _route_signature(model, runtime: dict) -> tuple:
     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
     return (
@@ -226,6 +239,18 @@ def _retire_agent(cli) -> None:
     cli.agent = None
 
 
+def _expire_bootstrap_fallback(cli) -> None:
+    """A pre-agent automatic switch must not become the primary when policy changes to manual."""
+    primary = getattr(cli, "_fallback_bootstrap_primary", None)
+    if getattr(cli, "_fallback_auto_activate", True) or primary is None:
+        return
+    _retire_agent(cli)
+    for key, value in primary.items():
+        setattr(cli, key, value)
+    cli._fallback_bootstrap_primary = None
+    cli._active_agent_route_signature = None
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -234,6 +259,7 @@ class CLIAgentSetupMixin:
         refresh are picked up without restarting the CLI. False on auth failure."""
         from cli import ChatConsole, logger
         from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+        _expire_bootstrap_fallback(self)
         _primary_exc = None
         runtime = None
         _model_at_entry = self.model
@@ -368,7 +394,7 @@ class CLIAgentSetupMixin:
         from cli import _cprint, logger
         from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        if not isinstance(primary_exc, AuthError):
+        if not isinstance(primary_exc, AuthError) or not getattr(self, "_fallback_auto_activate", True):
             return None
         _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
         for _fb in _fb_chain:
@@ -395,6 +421,9 @@ class CLIAgentSetupMixin:
                 render_notification(
                     lambda: _cprint(t("cli.startup.switching_to_fallback", reason=_why, provider=_fb_provider, model=_fb_model)),
                     platform="cli")
+                if getattr(self, "_fallback_bootstrap_primary", None) is None:
+                    from hermes_cli.cli_model_switch_mixin import _runtime_fields
+                    self._fallback_bootstrap_primary = _runtime_fields(self)
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
                 # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
@@ -686,6 +715,8 @@ class CLIAgentSetupMixin:
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
+                fallback_auto_activate=self._fallback_auto_activate,
+                fallback_selection_interactive=not single_query_mode,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,

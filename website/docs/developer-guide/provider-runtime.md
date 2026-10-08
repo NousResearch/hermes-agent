@@ -194,26 +194,34 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
    - After max retries on transient errors (HTTP 429, 500, 502, 503)
 
 3. **Activation flow** (`_try_activate_fallback`):
-   - Returns `False` immediately if already activated or not configured
+   - Honors the configured short-reset wait before considering a provider switch
+   - Automatic mode walks the ordered chain; manual mode uses `agent/manual_fallback.py` to ask once with the shared structured clarification callback
+   - Manual mode resolves only the submitted route; cancellation or failed binding stops the turn without cascading
    - Calls `resolve_provider_client()` from `auxiliary_client.py` to build a new client with proper auth
    - Determines `api_mode`: `codex_responses` for openai-codex, `anthropic_messages` for anthropic, `chat_completions` for everything else
    - Swaps in-place: `self.model`, `self.provider`, `self.base_url`, `self.api_mode`, `self.client`, `self._client_kwargs`
    - For anthropic fallback: builds a native Anthropic client instead of OpenAI-compatible
    - Re-evaluates prompt caching (enabled for Claude models on OpenRouter)
-   - Sets `_fallback_activated = True` — prevents firing again
+   - Uses `agent/route_binding.py` for runtime changes and sets `_fallback_activated = True` for restoration; manual selection has separate one-turn provenance
    - Resets retry count to 0 and continues the loop
 
 4. **Config flow**:
-   - CLI: reads the fallback chain via `hermes_cli/fallback_config.get_fallback_chain()` → passes to `AIAgent(fallback_model=...)`
-   - Gateway: `gateway/run_config_loaders.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
+   - CLI: reads chain and `fallback.auto_activate` before bootstrap and refreshes both between turns
+   - Gateway: `GatewayConfigLoadersMixin._refresh_fallback_settings()` returns a coherent profile-scoped chain/policy pair, retaining last-known-good settings after a failed read
+   - TUI/Desktop/dashboard: refresh chain and policy together under the session's profile scope
+   - Agent constructors receive `fallback_model`, `fallback_auto_activate`, and explicit `fallback_selection_interactive` capability
    - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
+   - Missing activation policy preserves automatic behavior; an explicitly invalid value fails closed
 
-### What does NOT support fallback
+### Unattended and auxiliary routing
 
-- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
+- **Subagent delegation** (`tools/delegate_tool_config.py`): unpinned children inherit the parent chain and activation policy. Explicit provider/model/endpoint pins do not borrow the parent chain; an owner-declared chain or explicit empty list retains its scoped meaning. Children never prompt in manual mode.
+- **API, oneshot and background agents**: automatic fallback remains available where a chain is allowed; manual mode is noninteractive and fails closed, including credential bootstrap.
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
 
-Unpinned cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. A job with its own `provider` / `model` / `base_url` gets no chain, the same rule as a pinned delegation child. See [Cron Internals](./cron-internals.md).
+Unpinned cron jobs support automatic fallback: `run_job()` reads the chain and activation policy from configuration. Manual mode never prompts or substitutes another provider, including bootstrap auth/network recovery. A job with its own `provider` / `model` / `base_url` gets no inherited chain. See [Cron Internals](./cron-internals.md).
+
+Manual consent expires before the next turn even if automatic cooldown/reset/entitlement gates would retain a fallback. Primary restoration and auxiliary publication must succeed before that turn starts. Voice and `/model --once` routes keep their own restoration bookkeeping; a failed manual bind rolls back the route active immediately before selection.
 
 ### Test coverage
 
@@ -221,6 +229,9 @@ Fallback behavior is exercised across several suites:
 
 - `tests/agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
 - `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
+- `tests/agent/test_manual_provider_fallback.py` — structured consent, cancellation, rollback, voice composition and real two-turn restoration
+- `tests/gateway/test_manual_fallback_policy.py` and `tests/tui_gateway/test_manual_fallback_policy.py` — profile-scoped refresh and surface capability
+- `tests/cron/test_cron_manual_fallback.py` and `tests/tools/test_delegate_manual_fallback.py` — unattended policy and route ownership
 
 ## Related docs
 

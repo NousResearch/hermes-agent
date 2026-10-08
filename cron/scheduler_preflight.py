@@ -15,6 +15,7 @@ import os
 from typing import Optional
 
 from cron.env_settings import cron_env_setting
+from hermes_cli.fallback_config import get_fallback_auto_activate
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -85,11 +86,10 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
 
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
-    requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
-    legitimately rescue a missing primary key. A pinned job has none (``_job_fallback_chain``), so
-    its missing key blocks even when the global chain is configured."""
+    requested-provider computation. Only an automatic chain can rescue a missing primary key:
+    pinned jobs cannot inherit a chain, and manual jobs have no selection UI."""
     try:
-        if _sched._job_fallback_chain(job, cfg):
+        if get_fallback_auto_activate(cfg) and _sched._job_fallback_chain(job, cfg):
             return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error

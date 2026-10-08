@@ -19,6 +19,7 @@ def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
+            "fallback_bootstrap_active": getattr(agent, "_fallback_bootstrap_active", False) is True,
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
 
@@ -26,6 +27,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
+    bootstrap = snapshot.get("fallback_bootstrap_active", False) is True
+    agent._fallback_bootstrap_active = bootstrap
     # `/model X --reasoning high --once`: the effort leaves with the model. Set before the
     # runtime restore paths below (primary_runtime may predate a session /reasoning change).
     if "reasoning_config" in snapshot:
@@ -44,9 +47,12 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
     if hasattr(agent, "switch_model"):
         model, provider, api_key, base_url, api_mode = (snapshot.get(k, "") for k in _RUNTIME_KEYS)
-        agent.switch_model(
-            new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
-            api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        try:
+            agent.switch_model(
+                new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
+                api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        finally:
+            agent._fallback_bootstrap_active = bootstrap
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 

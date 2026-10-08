@@ -1285,33 +1285,6 @@ def drop_thinking_only_and_merge_users(
     return merged
 
 
-def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base_url, matches_primary, load_primary_pool):
-    """Reset-aware gate: skip a guaranteed-to-fail restore while the primary pool reports a
-    future reset; fails open on any error/None. Returns ``(blocked, prefetched_pool, prefetched)``
-    so the rebind step reuses the loaded pool (one auth.json read at most)."""
-    prefetched_pool, prefetched = None, False
-    try:
-        pool = getattr(agent, "_credential_pool", None)
-        if not matches_primary(pool):
-            prefetched_pool = pool = load_primary_pool()
-            prefetched = True
-        primary_model = str(rt.get("model") or "").strip()
-        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
-        if next_at is not None and next_at > time.time():
-            if not getattr(agent, "_restore_wait_logged", False):
-                agent._restore_wait_logged = True
-                logger.info(
-                    "Primary %s rate-limited until %s; staying on fallback "
-                    "%s/%s until the reset elapses", primary_provider or "?",
-                    datetime.fromtimestamp(next_at).isoformat(timespec="seconds"), agent.provider,
-                    agent.model,
-                )
-            return True, prefetched_pool, prefetched
-    except Exception:
-        logger.debug("Reset-aware restore gate failed; falling back to per-turn retry", exc_info=True)
-    return False, prefetched_pool, prefetched
-
-
 def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
     # ``capabilities`` is the legacy key from the initial capability propagation patch.
     raw = rt["runtime_capabilities"] if "runtime_capabilities" in rt else rt.get("capabilities")
@@ -1433,12 +1406,14 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
         return False
+    from agent.manual_fallback import manual_restore_required
+    required = manual_restore_required(agent)
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
     from hermes_cli.chat_catalog import is_known_non_chat_model
-    if primary_model and (
+    if not required and primary_model and (
         _is_entitlement_rejected(agent, primary_provider, primary_model)
         or is_known_non_chat_model(primary_model)
     ):
@@ -1458,12 +1433,13 @@ def restore_primary_runtime(agent) -> bool:
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    if not required and getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
-    blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
+    from agent.fallback_cooldown import primary_reset_gate_blocks
+    blocked, prefetched_pool, prefetched = primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
     )
-    if blocked:
+    if blocked and not required:
         return False
     agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
@@ -2423,6 +2399,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
 
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
+    agent._fallback_bootstrap_active = False
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None

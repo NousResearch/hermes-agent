@@ -25,7 +25,7 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_fallback_bootstrap_primary")
 
 
 def _runtime_fields(cli) -> dict:
@@ -463,6 +463,7 @@ class CLIModelSwitchMixin:
         from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
         managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
+        self._fallback_bootstrap_primary = None
         if stored_provider:
             self.provider = stored_provider
             self.requested_provider = stored_provider
@@ -593,6 +594,7 @@ class CLIModelSwitchMixin:
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
+            "agent_fallback_bootstrap_active": getattr(agent, "_fallback_bootstrap_active", False) is True,
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None}
@@ -609,6 +611,8 @@ class CLIModelSwitchMixin:
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+        bootstrap = snapshot.get("agent_fallback_bootstrap_active", False) is True
+        agent._fallback_bootstrap_active = bootstrap
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
         primary = snapshot.get("agent_primary_runtime")
@@ -632,6 +636,8 @@ class CLIModelSwitchMixin:
                     agent.reasoning_config = snapshot["reasoning_config"]
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
+            finally:
+                agent._fallback_bootstrap_active = bootstrap
 
     @staticmethod
     def _filter_model_picker_entries(entries: list, query: str) -> list:
@@ -706,6 +712,7 @@ class CLIModelSwitchMixin:
                     setattr(self, _k, _v)
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
                 return False
+        self._fallback_bootstrap_primary = None
         return True
 
     def _apply_model_switch_result(
@@ -944,7 +951,9 @@ class CLIModelSwitchMixin:
         self._pending_moa_restore_model = {
             key: getattr(self, key, None)
             for key in (
-                "requested_provider", "provider", "model", "api_key", "base_url", "api_mode")}
+                "requested_provider", "provider", "model", "api_key", "base_url", "api_mode",
+                "_fallback_bootstrap_primary")}
+        self._fallback_bootstrap_primary = None
         self.requested_provider = "moa"
         self.provider = "moa"
         self.model = preset

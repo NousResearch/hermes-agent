@@ -506,51 +506,25 @@ class GatewayConfigLoadersMixin:
         except Exception:
             return None
 
-    def _refresh_fallback_model(self) -> list | None:
-        """Re-read fallback_providers from disk for the next agent create/reuse.
-
-        Lets a chain edited after startup reach messaging sessions (cron already re-reads per job).
-        A TRANSIENT read/parse failure (user mid-edit, non-atomic write) keeps the last known-good
-        chain; only a successful read that genuinely lacks the key clears it.
-
-        Cron already does this per job via ``get_fallback_chain``; the gateway previously froze
-        ``self._fallback_model`` at process start, so a chain configured (or changed) after ``hermes
-        gateway`` was running never reached messaging sessions even though the same process's cron jobs fell
-        back correctly. Fixes #60955.
-
-        Reads the ACTIVE gateway home (the routed profile under multiplexing, else the launch home)
-        and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
-        home handed every secondary profile the default profile's fallback chain.
-        """
+    def _refresh_fallback_settings(self) -> tuple[list | None, bool]:
+        """Reload the active profile's chain and activation policy as one last-known-good pair."""
         from gateway.run import _gateway_config_home
-        from hermes_constants import hermes_home_key
-        home = _gateway_config_home()
-        by_home = getattr(self, "_fallback_model_by_home", None)
-        if by_home is None:
-            by_home = self._fallback_model_by_home = {}
-        home_key = hermes_home_key(home)
-        try:
-            from hermes_cli.config_effective import load_user_config_effective
-            cfg_path = home / "config.yaml"
-            if not cfg_path.exists():
-                by_home[home_key] = self._fallback_model = None
-                return self._fallback_model
-            # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain
-            # below survives, instead of being WIPED by an empty fail-open result.
-            cfg = load_user_config_effective(cfg_path, fail_closed=True)
-        except Exception:
-            logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
-            self._fallback_model = by_home.get(home_key, self._fallback_model)
-            return self._fallback_model
-        by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+        from gateway.fallback_settings import read_fallback_settings
+        cache = vars(self).setdefault("_fallback_settings_by_home", {})
+        settings = read_fallback_settings(_gateway_config_home() / "config.yaml", cache)
+        self._fallback_model, self._fallback_auto_activate = settings
+        return settings
+
+    def _refresh_fallback_model(self) -> list | None:
+        """Compatibility reader; turn constructors use the coherent settings pair directly."""
+        return GatewayConfigLoadersMixin._refresh_fallback_settings(self)[0]
 
     @staticmethod
-    def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
+    def _apply_fallback_chain_to_agent(agent: Any, chain: list | None, auto_activate: bool = True) -> None:
         """Keep a cached agent's fallback chain aligned with current config.
 
-        Skips the rewrite while a cooldown holds the agent on an activated fallback provider
-        (``restore_primary_runtime`` owns that lifecycle); otherwise replaces the chain so
+        Automatic mode retains a cooling-down route; manual mode always adopts the new pair
+        so ``restore_primary_runtime`` can expire the previous authorization. Replaces the chain so
         mid-uptime ``fallback_providers`` edits apply without a restart.
 
         When primary is active (or cooldown expired), replace the chain so mid-uptime ``fallback_providers``
@@ -558,9 +532,12 @@ class GatewayConfigLoadersMixin:
         """
         if agent is None:
             return
+        policy_changed = getattr(agent, "_fallback_auto_activate", True) != auto_activate
+        agent._fallback_auto_activate = auto_activate
         new_chain = list(chain or [])
         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
-        if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
+        if (auto_activate and not policy_changed and getattr(agent, "_fallback_activated", False)
+                and rate_limited_until > time.monotonic()):
             return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
         agent._fallback_chain = new_chain
@@ -571,7 +548,7 @@ class GatewayConfigLoadersMixin:
         # memo so re-configured entries (e.g. credentials added mid-uptime) get retried. Only on real
         # content change, so the per-message no-op refresh keeps the memo's rate-limiting benefit.
         # See #60955.
-        if new_chain != old_chain:
+        if new_chain != old_chain or policy_changed:
             unavailable = getattr(agent, "_unavailable_fallback_keys", None)
             if unavailable:
                 unavailable.clear()

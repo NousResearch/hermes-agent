@@ -54,3 +54,35 @@ def test_chat_turn_adopts_chain_added_after_the_cli_opened_and_keeps_it_on_torn_
     # Torn mid-edit write: keep the last known-good chain rather than wiping it.
     _chat_turn(monkeypatch, shell, "fallback_providers: [\n  - provider: {{{\n")
     assert shell.agent._fallback_chain == FALLBACK
+
+
+def test_chat_refreshes_policy_before_bootstrap_and_keeps_pair_on_torn_edit(monkeypatch):
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+    shell.agent = SimpleNamespace(
+        _fallback_chain=[], _fallback_model=None, _fallback_index=0,
+        _fallback_activated=False, _fallback_auto_activate=True, _rate_limited_until=0,
+        _unavailable_fallback_keys=set(),
+    )
+    path = get_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("fallback_providers:\n  - provider: xai-oauth\n    model: grok-4.6\nfallback:\n  auto_activate: false\n")
+    seen = []
+
+    def ensure():
+        seen.append((shell._fallback_model, shell._fallback_auto_activate))
+        return False
+
+    monkeypatch.setattr(shell, "_ensure_runtime_credentials", ensure)
+    assert shell.chat("hello") is None
+    assert seen == [(FALLBACK, False)]
+    assert shell.agent._fallback_auto_activate is False
+    path.write_text("fallback: [\n")
+    assert shell.chat("hello again") is None
+    assert seen[-1] == (FALLBACK, False)
+    assert shell.agent._fallback_chain == FALLBACK
+    assert shell.agent._fallback_auto_activate is False
+
+    # An absent file is a deliberate empty config, not an unreadable edit.
+    path.unlink()
+    assert shell.chat("again") is None
+    assert seen[-1] == ([], True)

@@ -39,12 +39,15 @@ class CLIChatTurnMixin:
         try:
             from gateway.run import GatewayRunner
             from hermes_cli.config_effective import load_user_config_effective
-            from hermes_cli.fallback_config import get_fallback_chain
-            self._fallback_model = get_fallback_chain(load_user_config_effective(fail_closed=True))
+            from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
+            config = load_user_config_effective(fail_closed=True)
+            chain, auto_activate = get_fallback_chain(config), get_fallback_auto_activate(config)
         except Exception as e:
             logger.debug("fallback chain sync skipped (keeping current chain): %s", e)
             return
-        GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
+        self._fallback_model, self._fallback_auto_activate = chain, auto_activate
+        if agent is not None:
+            GatewayRunner._apply_fallback_chain_to_agent(agent, chain, auto_activate)
 
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
@@ -65,6 +68,7 @@ class CLIChatTurnMixin:
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
 
+        self._sync_fallback_chain_with_config(self.agent)
         if not self._ensure_runtime_credentials():
             return None
 
@@ -79,7 +83,6 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
-        self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):

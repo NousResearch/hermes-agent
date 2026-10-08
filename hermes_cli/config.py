@@ -1003,12 +1003,6 @@ def _require_fields(
 _CP_REQUIRED_FIELDS = (
     ("name", "Add a name, e.g.: name: my-provider"),
     ("base_url", "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1"))
-_FB_REQUIRED_FIELDS = (
-    ("provider", "Add: provider: openrouter (or another provider)"),
-    ("model", "Add: model: <model-name>"))
-_FB_SINGLE_REQUIRED_FIELDS = (
-    ("provider", "Add: provider: openrouter (or another provider)"),
-    ("model", "Add: model: anthropic/claude-sonnet-4 (or another model)"))
 
 
 def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
@@ -1093,19 +1087,6 @@ def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
                "legacy custom_providers entries are ignored until it is", _CP_LIST_HINT)
 
 
-def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
-    """fallback_model: single dict OR list of dicts (chain)."""
-    if isinstance(fb, list):
-        _validate_entry_list(fb, "fallback_model", issues, _FB_REQUIRED_FIELDS, non_dict=(
-            "error", "fallback_model[{i}] should be a dict, got {type}", "Each entry needs provider + model"))
-    elif not isinstance(fb, dict):
-        _issue(issues, "error",
-               f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
-               "Change to:\n  fallback_model:\n    provider: openrouter\n    model: anthropic/claude-sonnet-4")
-    elif fb:
-        _require_fields(issues, fb, "fallback_model", _FB_SINGLE_REQUIRED_FIELDS,
-                        suffix=" — fallback will be disabled")
-
 
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
@@ -1187,11 +1168,11 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
+    from hermes_cli.fallback_config import validate_fallback_settings
+    validate_fallback_settings(config, issues)
     cp = config.get("custom_providers")
-    fb = config.get("fallback_model")
-    for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
-        if value is not None:
-            validator(value, issues)
+    if cp is not None:
+        _validate_custom_providers(cp, issues)
 
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         _issue(issues, "error", "fallback_model appears inside custom_providers instead of at root level",

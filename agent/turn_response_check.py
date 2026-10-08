@@ -8,6 +8,7 @@ loop-internal helpers resolve lazily so ``patch("agent.conversation_loop.X")`` k
 
 from __future__ import annotations
 
+from agent.manual_fallback import fallback_attempt_status
 from dataclasses import dataclass
 import logging
 import time
@@ -283,8 +284,8 @@ def retry_invalid_response(
     retry_count += 1
 
     # Eager fallback: empty/malformed responses often mean rate limiting.
-    if agent._fallback_index < len(agent._fallback_chain):
-        agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
+    if agent._has_pending_fallback():
+        agent._buffer_diagnostic_status(fallback_attempt_status(agent, "⚠️ Empty/malformed response — switching to fallback..."))
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
@@ -302,7 +303,7 @@ def retry_invalid_response(
 
     if retry_count >= max_retries:
         if agent._has_pending_fallback():
-            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+            agent._buffer_diagnostic_status(fallback_attempt_status(agent, f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback..."))
         if agent._try_activate_fallback():
             active_system_prompt = _arm_fallback_restart(
                 agent, api_messages, active_system_prompt, _retry)

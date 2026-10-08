@@ -1,6 +1,6 @@
 ---
 title: Fallback Providers
-description: Configure automatic failover to backup LLM providers when your primary model is unavailable.
+description: Choose manual or automatic fallback to backup LLM providers when your primary model is unavailable.
 sidebar_label: Fallback Providers
 sidebar_position: 8
 ---
@@ -10,14 +10,14 @@ sidebar_position: 8
 Hermes Agent has three layers of resilience that keep your sessions running when providers hit issues:
 
 1. **[Credential pools](./credential-pools.md)** — rotate across multiple API keys for the *same* provider (tried first)
-2. **Primary model fallback** — automatically switches to a *different* provider:model when your main model fails
+2. **Primary model fallback** — asks before switching, or automatically switches to a *different* provider:model when your main model fails
 3. **Auxiliary task fallback** — independent provider resolution for side tasks like vision and compression
 
 Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys). This page covers cross-provider fallback. Both are optional and work independently.
 
 ## Primary Model Fallback
 
-When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can automatically switch to a backup provider:model pair mid-session without losing your conversation.
+When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can ask you to select a backup provider:model pair or switch automatically, without losing your conversation.
 
 ### Configuration
 
@@ -27,7 +27,7 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`. `list` shows the effective mode. Set it with `hermes fallback auto on` or `hermes fallback auto off`; these commands preserve the chain and reset-wait settings.
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
@@ -39,15 +39,31 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
-When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
+There are three states:
+
+- **Disabled:** no valid fallback entries, so there is no fallback or choice prompt.
+- **Manual:** `fallback.auto_activate: false` asks you to choose a replacement for the failing turn.
+- **Automatic:** `fallback.auto_activate: true` tries the configured chain in order.
+
+For backward compatibility, an omitted activation setting keeps automatic behavior. The first chain created with `hermes fallback add` defaults to manual, unless you already selected an activation mode. Adding to an existing chain keeps its mode. Invalid activation values fail closed; use a YAML boolean, not a quoted string.
 
 ```yaml
 fallback:
-  min_switch_reset_seconds: 120   # 0 (default) = always switch
+  auto_activate: false
+```
+
+Manual mode uses the existing clarification interface. Choices identify the provider and model, with a safe endpoint origin where needed; credentials and URL paths or queries are never displayed. You can choose only one route for a turn. Cancelling, skipping, timing out, an undelivered prompt, an invalid answer, or failure of the selected route does not authorize another provider. Manual selection supports up to four eligible routes; longer chains are refused rather than silently truncated. Reduce the chain or explicitly enable automatic mode.
+
+In automatic mode, when a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
+
+```yaml
+fallback:
+  min_switch_reset_seconds: 120   # 0 (default) = no short-reset deferral
 ```
 
 | Key | Default | Effect |
 |-----|---------|--------|
+| `fallback.auto_activate` | `true` when omitted | Permit automatic switching; `false` requires an interactive choice for each failing turn. |
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
@@ -122,7 +138,7 @@ fallback_providers:
 
 ### When Fallback Triggers
 
-The fallback activates automatically when the primary model fails with:
+Fallback handling starts when the primary model fails with:
 
 - **Rate limits** (HTTP 429) — after exhausting retry attempts
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
@@ -130,7 +146,7 @@ The fallback activates automatically when the primary model fails with:
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly. An HTTP-200 body whose only assistant text is a router's `Connect timeout, please try again later.` with zero completion tokens counts as invalid too (streamed or not, in the main loop, the iteration-limit summary and auxiliary calls), so it is retried instead of shown as the answer. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried. On the native Anthropic wire a `stop_reason: refusal` arrives with an empty body; Hermes reports the reason from the response's `stop_details` (category and, when present, explanation) in the refusal message and in the log line (`native_stop_reason=… stop_details=…`).
 
-When triggered, Hermes:
+With automatic activation enabled Hermes walks the chain. In manual mode Hermes asks once and attempts only the selected route. When a route is activated, Hermes:
 
 1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
 2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
@@ -140,16 +156,16 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-The same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `hermes chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
+In automatic mode, the same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `hermes chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
 
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
-:::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+:::info Turn scope
+Manual fallback is **strictly turn-scoped**: consent expires before the next user message, even if a cooldown, provider reset time, entitlement failure or unsupported primary route would otherwise retain the fallback. Hermes restores the primary or stops before another provider request; a failed restoration does not silently extend consent. There is at most one manual choice per turn, and a selected route never cascades to another fallback.
 
-The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
+Automatic mode retains its ordered chain and recovery rules. Its per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
 
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
@@ -196,14 +212,24 @@ fallback_providers:
 
 ### Where Fallback Works
 
-| Context | Fallback Supported |
-|---------|-------------------|
-| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
-| Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
-| Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
-| Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
-| Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
+| Context | Automatic mode | Manual selection |
+|---------|----------------|------------------|
+| Interactive CLI sessions | ✔ | ✔ |
+| Messaging gateway (Telegram, Slack, etc.) | ✔ | ✔ through the shared clarification interface |
+| Desktop app / TUI / dashboard chats | ✔ | ✔ when an interactive client can receive the prompt |
+| `hermes chat -q`, `hermes -z`, background work | ✔ | Fails closed |
+| API server | ✔ unless a confirmed runtime lock disables fallback | Fails closed |
+| Subagent delegation and review agents | ✔ with scoped ownership and pins preserved | Fails closed; inherits the parent activation policy |
+| Cron jobs | ✔ with scoped ownership and pins preserved | Fails closed |
+| Auxiliary tasks on `provider: auto` | Independent provider-resolution policy | Unchanged by primary-agent activation mode |
+
+CLI, messaging gateway and TUI chats refresh the chain and activation mode together before each turn. A torn configuration write retains the last known-good settings. Switching from automatic to manual expires a previously active automatic route before more fallback requests.
+
+Manual selection requires an interactive agent surface. Primary authentication or quota failures during CLI/Gateway/TUI bootstrap fail closed before another route is resolved; no bootstrap prompt is shown. A failed session-specific model selection is not silently replaced by a default provider in manual mode.
+
+If automatic startup recovery had already substituted another provider before you enable manual mode, Hermes must recover the original primary or stop. It will not treat that automatic replacement as newly approved. Select a working primary with `/model` if the session cannot restore it safely.
+
+A pinned cron job or delegated child does not inherit the global fallback chain. Owner-declared chains remain scoped to that owner; explicit `[]` disables fallback. `fallback.auto_activate` controls the **primary agent** fallback path, not same-provider credential rotation or the independent routing policies for auxiliary tasks such as vision and compression.
 
 :::tip
 There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
@@ -413,7 +439,7 @@ If no provider is available for compression, Hermes drops middle conversation tu
 
 ## Delegation Provider Override
 
-Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can still route subagents to a different primary provider:model pair for cost optimization:
+Unpinned subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain and activation policy. An explicit child or review chain stays scoped to its owner; a pinned child does not borrow the parent chain. Delegated work cannot request manual consent, so automatic activation must be enabled for it to switch providers. You can still route subagents to a different primary provider:model pair for cost optimization:
 
 ```yaml
 delegation:
@@ -429,7 +455,7 @@ See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ## Cron Job Providers
 
-Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not**: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
+With automatic activation enabled, unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not**: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
 
 ```python
 cronjob(
@@ -441,7 +467,7 @@ cronjob(
 )
 ```
 
-To keep fallback for a job, leave it unpinned and choose its model with `cron.model` / `cron.model_provider` instead. See [Scheduled Tasks (Cron)](./cron.md#provider-recovery) for details.
+To keep fallback for a job, enable automatic activation, leave it unpinned and choose its model with `cron.model` / `cron.model_provider` instead. See [Scheduled Tasks (Cron)](./cron.md#provider-recovery) for details.
 
 ---
 
@@ -449,7 +475,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
+| Main agent model | Manual per-turn choice or automatic ordered failover and reset-aware recovery | `fallback_providers:` (top-level list), `fallback.auto_activate` |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
@@ -459,5 +485,5 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
-| Cron jobs | Unpinned jobs inherit the configured `fallback_providers` chain; a job with its own `provider` / `model` / `base_url` never falls back to it | Per-job `provider` / `model`, or `cron.model` / `cron.model_provider` |
+| Delegation | Automatic mode only; uses `delegation.fallback_providers` when declared, otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
+| Cron jobs | Automatic mode only; unpinned jobs inherit the configured `fallback_providers` chain; a job with its own `provider` / `model` / `base_url` never falls back to it | Per-job `provider` / `model`, or `cron.model` / `cron.model_provider` |

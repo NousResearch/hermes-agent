@@ -2353,6 +2353,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
+        from gateway.fallback_settings import api_fallback_kwargs, stamp_api_runtime
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
         # run_conversation() errors distinct.
         try:
@@ -2362,7 +2363,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
         # must not collide with the ``**runtime_kwargs`` spread).
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
-        runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
+        fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
         request_reasoning_config = _request_reasoning_config(model_options)
         request_service_tier = _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
@@ -2400,8 +2401,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
             "session_db": self._ensure_session_db(),
-            # Same fallback provider chain as Telegram/Discord/Slack.
-            "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
+            **api_fallback_kwargs(user_config, confirmed_runtime_lock),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key,
             # The session's provider from the previous request, so its queued recall reaches this turn
@@ -2410,14 +2410,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
-        route_source = (
-            "session_model_lock" if confirmed_runtime_lock
-            else "session_model_override" if session_override
-            else "raw_request" if route or request_model or request_provider else "global")
-        agent._hermes_api_runtime = {
-            "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
-            "model": getattr(agent, "model", None) or model,
-            "route_source": route_source}
+        stamp_api_runtime(agent, runtime_kwargs, model, confirmed_runtime_lock, session_override,
+                          route or request_model or request_provider, fallback_notice)
         return agent
 
     # -- HTTP handlers ----------------------------------------------------------------

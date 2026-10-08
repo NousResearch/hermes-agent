@@ -181,9 +181,7 @@ class GatewayTurnMixin:
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
-        # Every exit path starts clean: the /model-override fast path returns before the pop below,
-        # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
-        # notice must never attach to another session's next turn (#74349).
+        # Clear stale notices even on the override fast path or detached resolution (#74349).
         self._pre_agent_fallback_notice = None
 
         model = _resolve_gateway_model(user_config)
@@ -231,9 +229,10 @@ class GatewayTurnMixin:
                 runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
                     override["provider"], target_model=override.get("model") or None)
             except Exception as exc:
+                from gateway.fallback_settings import require_automatic_override_fallback
+                require_automatic_override_fallback(self, user_config, exc)
                 # Layering the override on the default runtime sent its model to the default provider's
-                # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
-                # so; the persisted override is kept, so the next turn retries it.
+                # endpoint. Automatic mode retries the default route and preserves the override for next turn.
                 logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc)
                 unavailable_override, override = override, None
         if runtime_kwargs is None:
@@ -1269,7 +1268,7 @@ class GatewayTurnMixin:
         _hyg_agent = AIAgent(
             **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
-            session_id=session_entry.session_id, session_db=_hyg_session_db,
+            session_id=session_entry.session_id, session_db=_hyg_session_db, fallback_selection_interactive=False,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
@@ -2457,6 +2456,7 @@ class GatewayTurnMixin:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                chain, auto_activate = self._refresh_fallback_settings()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -2481,9 +2481,7 @@ class GatewayTurnMixin:
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot.
-                    # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=chain, fallback_auto_activate=auto_activate, fallback_selection_interactive=False,
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

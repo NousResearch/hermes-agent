@@ -43,7 +43,7 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -107,15 +107,12 @@ def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
-    """Backup-provider clause for a provider-failure notice: "pinned, no fallback" vs "the backups
-    failed too" vs "none configured" (most installs). Fails open to "the backups failed too" if
-    config can't be read — never crash delivery.
-    """
+    """Describe whether cron could use backups, without promising an unattended choice UI."""
     if job is not None and _job_route_pinned(job):
         return (
             "This job is pinned to its own provider/model, so it does not fall back to "
             f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
-            "main model and its fallback chain."
+            "main model and its configured fallback activation policy."
         )
     try:
         cfg = load_config() or {}
@@ -123,10 +120,13 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     except Exception:
         return "No backup provider succeeded either."
     if chain:
+        if not get_fallback_auto_activate(cfg):
+            return ("Fallback is manual, so cron cannot ask you to select a backup. "
+                    "Pin a working provider/model for this job, or explicitly enable `hermes fallback auto on`.")
         return "No backup provider succeeded either."
     return (
-        "No backup provider is configured — add one with `hermes fallback add`, "
-        "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
+        "No backup provider is configured. Add one with `hermes fallback add` and explicitly enable "
+        "`hermes fallback auto on`, or set `cron.model` + `cron.model_provider` in config.yaml."
     )
 
 
@@ -1753,11 +1753,8 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
 
 
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
-    """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
-    ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
-    a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
-    global config (None lets resolve_runtime_provider read it). A pinned job has no chain here
-    (``_job_fallback_chain``): its resolve failure is the job's failure."""
+    """Resolve ``(runtime, model)``; automatic auth/network fallback swaps the pair atomically.
+    Per-job pin > cron.model_provider > global config; pinned and manual jobs never walk the chain."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
@@ -1783,12 +1780,12 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         if not (is_auth or is_transient_net):
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
-        chain = _job_fallback_chain(job, jc.cfg) or []
+        auto_activate = get_fallback_auto_activate(jc.cfg)
+        chain = (_job_fallback_chain(job, jc.cfg) or []) if auto_activate else []
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), %s",
             job_id, "auth" if is_auth else "transient network", resolve_exc,
-            "trying fallback" if chain else (
-                "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
+            "trying fallback" if chain else "no automatic fallback available (pinned, manual, or unconfigured)")
         for entry in chain:
             if not isinstance(entry, dict):
                 continue
@@ -2479,6 +2476,8 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,
+        fallback_auto_activate=get_fallback_auto_activate(_cfg),
+        fallback_selection_interactive=False,
         credential_pool=setup.credential_pool,
         providers_allowed=pr.get("only"),
         providers_ignored=pr.get("ignore"),

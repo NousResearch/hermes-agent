@@ -111,14 +111,6 @@ _REASONING_TOGGLES = {
     **dict.fromkeys(("clamp", "collapse", "short"), ("reasoning_full", False, "headline_clamped", None)),
 }
 
-# /bg AIAgent provider-routing kwargs -> HermesCLI attribute carrying the value.
-_BG_PROVIDER_KWARGS = {
-    "providers_allowed": "_providers_only", "providers_ignored": "_providers_ignore",
-    "providers_order": "_providers_order", "provider_sort": "_provider_sort",
-    "provider_require_parameters": "_provider_require_params",
-    "provider_data_collection": "_provider_data_collection",
-    "openrouter_min_coding_score": "_openrouter_min_coding_score", "fallback_model": "_fallback_model"}
-
 # /worktree subcommand -> CLICommandsMixin method name (all need a repo root).
 _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("prune", "gc", "clean"), "_worktree_prune"),
@@ -1651,6 +1643,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         self._background_task_counter += 1
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self._sync_fallback_chain_with_config(None)
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('background.no_credentials')}")
         preview = _ellipsize(prompt, 60)
@@ -1658,6 +1651,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
         turn_route = self._resolve_turn_agent_config(prompt)
         runtime = turn_route["runtime"]
+        from hermes_cli.cli_agent_setup_mixin import background_provider_kwargs
+        provider_kwargs = background_provider_kwargs(self)
 
         def produce():
             from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
@@ -1679,7 +1674,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
-                    **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
+                    **provider_kwargs)
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 

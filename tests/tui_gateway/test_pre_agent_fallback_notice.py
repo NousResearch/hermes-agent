@@ -19,8 +19,8 @@ def _build(monkeypatch, tmp_path, *, primary_fails: bool):
     (tmp_path / "config.yaml").write_text("model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n")
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_load_fallback_model",
-                        lambda: [{"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "fb"}])
+    monkeypatch.setattr(server, "_load_fallback_settings",
+                        lambda: ([{"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "fb"}], True))
 
     def _resolve(**kwargs):
         if primary_fails and kwargs.get("requested") != "anthropic":
@@ -57,8 +57,8 @@ def test_fallback_build_survives_model_string_shorthand(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text("model: gpt-5.6-sol\n", encoding="utf-8")
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_load_fallback_model",
-                        lambda: [{"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "fb"}])
+    monkeypatch.setattr(server, "_load_fallback_settings",
+                        lambda: ([{"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "fb"}], True))
 
     def _resolve(**kwargs):
         if kwargs.get("requested") != "anthropic":

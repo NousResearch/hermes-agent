@@ -59,6 +59,8 @@ def ladder_wait_seconds(cycle: int, api_error: Any) -> float:
 def ladder_eligible(agent: Any, classified: Any) -> bool:
     """True when the ladder may engage: cycles configured, a transient transport verdict, and no
     answer text streamed to the user yet (delivered text is never replayed by this path)."""
+    if getattr(agent, "_fallback_manual_declined", False) is True:
+        return False
     if auto_recovery_cycles(agent) <= 0 or classified.reason not in _LADDER_REASONS:
         return False
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""

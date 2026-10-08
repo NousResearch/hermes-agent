@@ -3,6 +3,7 @@ fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runti
 import logging
 import math
 import time
+from datetime import datetime
 
 from agent.error_classifier import FailoverReason
 
@@ -127,3 +128,30 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+def primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base_url, matches_primary, load_primary_pool):
+    """Reset-aware gate: skip a guaranteed-to-fail restore while the primary pool reports a
+    future reset; fails open on any error/None. Returns ``(blocked, prefetched_pool, prefetched)``
+    so the rebind step reuses the loaded pool (one auth.json read at most)."""
+    prefetched_pool, prefetched = None, False
+    try:
+        pool = getattr(agent, "_credential_pool", None)
+        if not matches_primary(pool):
+            prefetched_pool = pool = load_primary_pool()
+            prefetched = True
+        primary_model = str(rt.get("model") or "").strip()
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(model=primary_model or None)
+        if next_at is not None and next_at > time.time():
+            if not getattr(agent, "_restore_wait_logged", False):
+                agent._restore_wait_logged = True
+                logger.info(
+                    "Primary %s rate-limited until %s; staying on fallback "
+                    "%s/%s until the reset elapses", primary_provider or "?",
+                    datetime.fromtimestamp(next_at).isoformat(timespec="seconds"), agent.provider,
+                    agent.model,
+                )
+            return True, prefetched_pool, prefetched
+    except Exception:
+        logger.debug("Reset-aware restore gate failed; falling back to per-turn retry", exc_info=True)
+    return False, prefetched_pool, prefetched

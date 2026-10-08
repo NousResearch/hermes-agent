@@ -143,6 +143,59 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     return chain
 
 
+_FB_REQUIRED_FIELDS = (
+    ("provider", "Add: provider: openrouter (or another provider)"),
+    ("model", "Add: model: <model-name>"))
+_FB_SINGLE_REQUIRED_FIELDS = (
+    ("provider", "Add: provider: openrouter (or another provider)"),
+    ("model", "Add: model: anthropic/claude-sonnet-4 (or another model)"))
+
+
+def _validate_fallback_model(fb: Any, issues: list) -> None:
+    """fallback_model: single dict OR list of dicts (chain)."""
+    from hermes_cli.config import _issue, _require_fields, _validate_entry_list
+    if isinstance(fb, list):
+        _validate_entry_list(fb, "fallback_model", issues, _FB_REQUIRED_FIELDS, non_dict=(
+            "error", "fallback_model[{i}] should be a dict, got {type}", "Each entry needs provider + model"))
+    elif not isinstance(fb, dict):
+        _issue(issues, "error",
+               f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
+               "Change to:\n  fallback_model:\n    provider: openrouter\n    model: anthropic/claude-sonnet-4")
+    elif fb:
+        _require_fields(issues, fb, "fallback_model", _FB_SINGLE_REQUIRED_FIELDS,
+                        suffix=" — fallback will be disabled")
+
+
+def validate_fallback_settings(config: dict[str, Any], issues: list) -> None:
+    """Report policy typos instead of silently granting automatic fallback."""
+    from hermes_cli.config import _issue
+    if (legacy := config.get("fallback_model")) is not None:
+        _validate_fallback_model(legacy, issues)
+    if "fallback" not in config:
+        return
+    settings = config["fallback"]
+    if not isinstance(settings, dict):
+        _issue(issues, "error", "fallback must be a mapping",
+               "Use fallback: {auto_activate: false}")
+    elif "auto_activate" in settings and not isinstance(settings["auto_activate"], bool):
+        _issue(issues, "error", "fallback.auto_activate must be a boolean",
+               "Use true for automatic fallback or false for manual selection")
+
+
+def get_fallback_auto_activate(config: dict[str, Any] | None) -> bool:
+    """Missing policy keeps legacy automatic fallback; malformed explicit policy fails closed.
+
+    Only a YAML boolean true permits automatic cross-provider activation. In particular, strings
+    and integers must not acquire permission through Python truthiness.
+    """
+    if config is None or "fallback" not in config:
+        return True
+    settings = config["fallback"]
+    if not isinstance(settings, dict):
+        return False
+    return settings.get("auto_activate", True) is True
+
+
 def scoped_fallback_chain(
     inherited: list[dict[str, Any]] | None, declared: Any, *, pinned: bool, owner: str,
 ) -> list[dict[str, Any]] | None:

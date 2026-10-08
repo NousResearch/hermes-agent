@@ -104,6 +104,8 @@ def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypa
     assert text == "pong"
     assert (captured["provider"], captured["model"]) == ("anthropic", "claude-x")
     assert captured["api_key"] == "fb"
+    assert captured["fallback_auto_activate"] is True
+    assert captured["fallback_selection_interactive"] is False
 
 
 def test_run_agent_forwards_resolved_request_overrides(monkeypatch):

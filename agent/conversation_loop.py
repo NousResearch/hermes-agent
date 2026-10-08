@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
+from agent.manual_fallback import ManualFallbackStopped, stopped_turn_result
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
@@ -1481,7 +1482,16 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     params = _PHASE_PARAMS.get(fn)
     if params is None:
         params = _PHASE_PARAMS[fn] = tuple(p for p in inspect.signature(fn).parameters if p != "agent")
-    verdict = fn(agent, **{n: extra[n] if n in extra else getattr(state, n) for n in params})
+    try:
+        verdict = fn(agent, **{n: extra[n] if n in extra else getattr(state, n) for n in params})
+    except ManualFallbackStopped as error:
+        from types import SimpleNamespace
+        if error.preserve_redirect and agent.clear_interrupt(preserve_redirect=True):
+            if state._retry is not None:
+                state._retry.restart_with_redirected_messages = True
+            retry_phases = (nous_rate_limit_guard, check_api_response, handle_api_error)
+            return SimpleNamespace(action="break" if fn in retry_phases else "continue", result=None)
+        return SimpleNamespace(action="return", result=stopped_turn_result(agent, state, error))
     latched = _LATCHED_VERDICT_FIELDS.get(getattr(fn, "__name__", ""), ())
     for f in fields(verdict):
         if f.name in ("action", "result"):
@@ -1535,8 +1545,12 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
         should_review_memory=s._should_review_memory,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
-    if not activate_codex_app_server_fallback(agent, codex_result):
-        return codex_result
+    try:
+        if not activate_codex_app_server_fallback(agent, codex_result):
+            return codex_result
+    except ManualFallbackStopped as error:
+        s.api_call_count = int(codex_result.get("api_calls") or 0)
+        return stopped_turn_result(agent, s, error)
     # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
     # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
     s.api_call_count = int(codex_result.get("api_calls") or 0)

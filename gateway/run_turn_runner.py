@@ -1112,6 +1112,7 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        chain, auto_activate = runner._refresh_fallback_settings()
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
@@ -1128,9 +1129,7 @@ class TurnRunner:
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
             gateway_session_key=ctx.session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
-            # Reload from disk — do not reuse the startup snapshot.
-            # See #60955.
-            fallback_model=self._runner._refresh_fallback_model(),
+            fallback_model=chain, fallback_auto_activate=auto_activate, fallback_selection_interactive=True,
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
@@ -1159,7 +1158,8 @@ class TurnRunner:
         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
         # configured after caching must reach the next turn; per-session serialization keeps it safe.
         if found.reused and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            runner._apply_fallback_chain_to_agent(agent, *runner._refresh_fallback_settings())
+            agent._fallback_selection_interactive = True
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
@@ -1294,8 +1294,6 @@ class TurnRunner:
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
-        # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
-        # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
         if ctx.mute_notification_reply:
             # Controls and operational event/step callbacks remain wired. These
@@ -1943,6 +1941,7 @@ class TurnRunner:
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
+            agent._fallback_bootstrap_active = True
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

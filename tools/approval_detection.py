@@ -686,13 +686,16 @@ def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
 # working directory, not the device (``build/../../dev/sda`` climbs above it and is). What no spelling
 # rule can see -- ``D=/dev; wipefs -a $D/sda``, ``cd /dev && wipefs -a sda`` -- is the execution
 # boundary's to resolve.
-# The head is what the path starts from: a variable, ``~``, ``.``/``..``, a plain relative segment
-# (``build``), or nothing for an absolute path. A plain segment sits on the stack like any other, so
-# ``build/../dev/sda`` pops it and stays under the working directory while ``build/../../dev/sda``
-# pops it and then climbs, which is the device (review F5 on #122771).
+# The head is what the path starts from: a variable, a tilde (``~``, ``~root``, ``~+``: the shell
+# expands all three to a directory before the kernel sees the path, review F8 on #122771),
+# ``.``/``..``, a plain relative segment (``build``), or nothing for an absolute path. A plain
+# segment sits on the stack like any other, so ``build/../dev/sda`` pops it and stays under the
+# working directory while ``build/../../dev/sda`` pops it and then climbs, which is the device
+# (review F5 on #122771). A tilde or a variable is an unknown directory, so the first ``..`` past
+# it climbs: ``~root/../../dev/sda`` is ``/dev/sda``, ``~root/dev/sda`` is a file under /root.
 _DEVICE_PATH_TOKEN_RE = re.compile(
     r'(?<![\w.~$/:-])'
-    r'(\$\{?\w+\}?|~|\.\.?(?=/)|\.?[^\s;&|<>()"\'`=:/$~.][^\s;&|<>()"\'`=:/]*|)'
+    r'(\$\{?\w+\}?|~(?:[+-]|[\w.-]*)|\.\.?(?=/)|\.?[^\s;&|<>()"\'`=:/$~.][^\s;&|<>()"\'`=:/]*|)'
     r'(/[^\s;&|<>()"\'`]*)'
 )
 
@@ -703,7 +706,7 @@ def _collapse_device_paths(command: str) -> str:
         if "dev" not in rest.lower():
             return token
         rooted = head in ("", "..")
-        plain = head not in ("", ".", "..", "~") and not head.startswith("$")
+        plain = head not in ("", ".", "..") and not head.startswith(("$", "~"))
         stack: list[str] = [head] if plain else []
         for segment in rest.split("/"):
             if segment in ("", "."):

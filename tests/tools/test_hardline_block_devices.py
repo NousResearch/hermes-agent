@@ -209,6 +209,12 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "wipefs -a build/../../dev/sda",
     "blkdiscard a/b/../../../dev/nvme0n1",
     "shred -n 1 -z .git/../../dev/sda",
+    # a tilde-user or tilde-op prefix expands to a directory first (review F8 on #122771)
+    "wipefs -a ~root/../../dev/sda",
+    "cat x > ~root/../../dev/sda",
+    "dd if=/dev/zero of=~root/../../dev/sda",
+    "shred -n 1 -z ~alice/../../dev/sda",
+    "blkdiscard ~+/../../dev/nvme0n1",
     # an escaped BACKSLASH in front of `>` is a literal backslash and then a real redirect
     'echo foo\\\\> "/dev/sda"',
     "echo foo\\\\> /dev/sda",
@@ -402,6 +408,9 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     # a plain relative prefix that is only popped stays under the working directory
     "shred -u src/dev/sda",
     "wipefs -a build/../dev/sda-notes",
+    # a file under a home directory is a file
+    "shred -u ~root/dev/sda",
+    "shred -u ~alice/dev/sdk/token.json",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -528,6 +537,7 @@ def clean_session(monkeypatch):
     "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
     "wipefs -a build/../../dev/sda",
     "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
+    "wipefs -a ~root/../../dev/sda",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -556,6 +566,8 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     ("//dev/sda", "/dev/sda"),
     ("/./dev/sda", "/dev/sda"),
     ("~/../dev/sda", "/dev/sda"),
+    ("~root/../../dev/sda", "/dev/sda"),
+    ("~+/../../dev/sda", "/dev/sda"),
     ("$HOME/../dev/sda", "/dev/sda"),
     ("of=../dev/sda", "of=/dev/sda"),
     ('"../dev/disk0"', '"/dev/disk0"'),
@@ -568,6 +580,7 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     ("build/../dev/sda", "build/../dev/sda"),
     ("src/dev/sda", "src/dev/sda"),
     ("~/dev/sdk/token.json", "~/dev/sdk/token.json"),
+    ("~root/dev/sda", "~root/dev/sda"),
     ("/home/alice/dev/sda", "/home/alice/dev/sda"),
     ("$D/sda", "$D/sda"),
     ("https://host/../dev/sda", "https://host/../dev/sda"),

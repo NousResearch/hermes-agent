@@ -17,6 +17,7 @@ from typing import List, Optional
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.terminal_env_provider import TerminalEnvironmentProvider
+from tools.environments.apple_container_provider import AppleContainerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 #: registrable by plugins. Includes internal-mode aliases (managed_modal).
 BUILTIN_BACKEND_NAMES = frozenset({
     "local", "docker", "singularity", "modal", "managed_modal",
-    "daytona", "vercel_sandbox", "ssh",
+    "daytona", "vercel_sandbox", "ssh", "apple_container",
 })
 
 
@@ -45,9 +46,23 @@ _registry: ProviderRegistry[TerminalEnvironmentProvider] = ProviderRegistry(
 _registry.export(globals())
 
 
+_BUILTIN_PROVIDERS = {"apple_container": AppleContainerProvider()}
+
+
+def get_provider(name: str, *, scope: Optional[str] = None):
+    """Resolve registered plugins or an in-tree registry-backed environment."""
+    if not isinstance(name, str):
+        return None
+    return _BUILTIN_PROVIDERS.get(name.strip().lower()) or _registry.get_provider(name, scope=scope)
+
+
+def list_providers(*, scope: Optional[str] = None):
+    return sorted([*_BUILTIN_PROVIDERS.values(), *_registry.list_providers(scope=scope)], key=lambda p: p.name)
+
+
 def plugin_backend_names(*, scope: Optional[str] = None) -> List[str]:
-    """Names of all registered plugin backends (sorted)."""
-    return [p.name.strip().lower() for p in _registry.list_providers(scope=scope)]
+    """Names of all registry-dispatched backends, including in-tree providers (sorted)."""
+    return [p.name.strip().lower() for p in list_providers(scope=scope)]
 
 
 def provider_flag(name: str, attr: str, default=False):
@@ -56,7 +71,7 @@ def provider_flag(name: str, attr: str, default=False):
     Fail-soft: unknown backend or a raising property returns *default* so a misbehaving
     plugin degrades to built-in-equivalent behavior instead of taking the terminal tool down.
     """
-    provider = _registry.get_provider(name)
+    provider = get_provider(name)
     if provider is None:
         return default
     try:

@@ -72,6 +72,25 @@ afterEach(() => {
 })
 
 describe('TerminalBackendPanel', () => {
+  it('selects Apple Container supplied by the backend registry', async () => {
+    const response = backends()
+    response.backends.push({
+      name: 'apple_container',
+      label: 'Apple Container',
+      description: 'Linux VM',
+      active: false,
+      status: 'ready',
+      detail: ''
+    })
+    getTerminalBackends.mockResolvedValue(response)
+    selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'apple_container' })
+    const changed = vi.fn()
+    render(<TerminalBackendPanel onConfiguredChange={changed} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Apple Container/ }))
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('apple_container', undefined))
+    await waitFor(() => expect(changed).toHaveBeenCalled())
+  })
+
   it('reads and writes the profile currently selected by Capabilities', async () => {
     const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     const { rerender } = render(<TerminalBackendPanel profile="research" />)

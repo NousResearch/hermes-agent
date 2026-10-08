@@ -19,7 +19,8 @@ export const CONTAINER_TERMINAL_BACKENDS = new Set([
   'singularity',
   'modal',
   'daytona',
-  'vercel_sandbox'
+  'vercel_sandbox',
+  'apple_container'
 ])
 
 // `mode: local` means the gateway was launched locally, not necessarily that

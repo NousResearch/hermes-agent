@@ -473,7 +473,7 @@ def test_busy_steer_mode_rejection_queues_with_source_identity(monkeypatch):
     assert resp["result"]["status"] == "queued"
     # #86134: steer fall-through must not hard-interrupt (kills buffered steers).
     assert calls == {"interrupt": 0, "steer": ["nudge"]}
-    assert session["queued_prompt"] == {
+    assert _visible(session["queued_prompt"]) == {
         "text": "nudge",
         "transport": "ws-1",
         "submitted_at": 101.25,
@@ -502,7 +502,7 @@ def test_busy_steer_mode_unavailable_queues_with_source_identity(monkeypatch):
     assert resp["result"]["status"] == "queued"
     # #86134: unavailable steer queues without a hard interrupt.
     assert calls["interrupt"] == 0
-    assert session["queued_prompt"] == {
+    assert _visible(session["queued_prompt"]) == {
         "text": "nudge",
         "transport": "ws-1",
         "submitted_at": 101.25,
@@ -1387,6 +1387,10 @@ def test_busy_steer_rejection_dedupes_and_persists_one_canonical_turn(
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *_a, **_k: None)
 
     session = _session(agent=agent, session_key=session_key, running=True)
+    # The agent's store IS the server's store in production; without this the accept-time
+    # durable write lands beside the agent's flush target and the drain adopts a row the
+    # test's db never saw.
+    monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
     server._sessions["ui-session"] = session
     monkeypatch.setattr(server, "current_transport", lambda: "ws-steer")

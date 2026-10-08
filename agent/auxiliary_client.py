@@ -7631,7 +7631,7 @@ def _ladder_credential_rungs(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
-        refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
+        refresh_kwargs = ({"failed_api_key": _client_credential_key(client)}
                           if auth_refresh_provider == "anthropic" else {})
         if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):

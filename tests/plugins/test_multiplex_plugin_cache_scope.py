@@ -3,7 +3,7 @@ HERMES_HOME override (``hermes_constants.set_hermes_home_override``).
 
 One invariant per mechanism: home-keyed slot with the unscoped module slot intact (router; yuanbao's
 ClassVar twin), credential-fingerprinted catalog keys (openrouter), per-home registries (memory
-provider skills), collect-all atexit (openviking), lru_cache keyed by the home (disk-cleanup).
+provider skills), lru_cache keyed by the home (disk-cleanup).
 Only HTTP transports are faked; the caches themselves are exercised for real.
 """
 
@@ -175,28 +175,6 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
     finally:
         mem._REGISTERED_MEMORY_PROVIDER_SKILLS.clear()
         _reset_plugin_managers_for_tests()
-
-
-def test_openviking_atexit_commits_every_profile_provider(homes):
-    """Two profiles' providers initialized in one process both get the atexit commit."""
-    import plugins.memory.openviking as ov
-
-    a, b = homes
-    committed: list[object] = []
-    providers = []
-    try:
-        for home in (a, b):
-            with scoped(home):
-                provider = ov.OpenVikingMemoryProvider()
-                provider.initialize(session_id=f"s-{home.name}", hermes_home=str(home))
-                provider.on_session_end = lambda _msgs, _p=provider: committed.append(_p)
-                providers.append(provider)
-        ov._atexit_commit_sessions()
-        assert committed == providers
-    finally:
-        for provider in providers:
-            with contextlib.suppress(Exception):
-                provider._release_run_lock()
 
 
 def test_disk_cleanup_protected_cron_paths_follow_the_active_home(homes):

@@ -94,6 +94,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
+| `hermes connectors` | List, connect, rename and disconnect hosted connector accounts. |
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
@@ -1629,6 +1630,24 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
 
 See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
+
+## `hermes connectors`
+
+```bash
+hermes connectors <subcommand>
+```
+
+Manage hosted connector accounts (apps such as Gmail reached through the Nous tool gateway). Needs a Nous Portal sign-in. One app can have several named accounts; see [Multiple connector accounts](../user-guide/features/tool-gateway.md#multiple-connector-accounts).
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List connectors and whether each is connected. |
+| `accounts [app] [--all]` | List accounts, for one app or all of them. `--all` includes retired accounts. |
+| `connect <app> [--alias NAME] [--reconnect]` | Print the link to connect an account, then wait until it is connected or the deadline passes. Ctrl-C stops waiting. `--alias` names the account; a new name adds another account. `--reconnect` repairs the named account and deletes nothing. |
+| `rename <app> <name-or-label> --to <new>` | Rename an account. An unnamed account is matched by its app label. |
+| `disconnect <app> [--alias NAME] [--yes]` | Remove an account. Asks to confirm unless you pass `--yes`. |
+
+Rename needs a Nous Portal version that supports it. Until then it reports "This Nous Portal cannot rename connector accounts yet."
 
 ## `hermes plugins`
 

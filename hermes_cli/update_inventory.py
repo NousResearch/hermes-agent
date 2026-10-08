@@ -256,6 +256,33 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple
     return None
 
 
+def _systemd_owner_for_serve_pid(pid: int) -> dict | None:
+    """Verified systemd identity for a serve/dashboard MainPID, or None.
+
+    A cgroup leaf alone is not ownership: a manual backend launched from a shell inside an
+    unrelated service inherits that service's cgroup. ``main_dashboard`` checks the live
+    MainPID; retain the cgroup and its manager scope for the update and restart phases.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    with suppress(Exception):
+        from hermes_cli.gateway import _ensure_user_systemd_env, supports_systemd_services
+        if not supports_systemd_services():
+            return None
+        _ensure_user_systemd_env()
+        from hermes_cli import main_dashboard as dashboard
+        unit = dashboard._get_systemd_service_for_pid(pid)
+        cgroup = dashboard._get_pid_cgroup_path(pid)
+        if (not unit or not cgroup or cgroup.rsplit("/", 1)[-1] != unit
+                or not dashboard._unit_main_pid_is(unit, cgroup, pid)):
+            return None
+        scope = dashboard._extract_scope_from_cgroup(cgroup)
+        if scope not in {"system", "user"}:
+            return None
+        return {"systemd_scope": scope, "systemd_unit": unit, "systemd_cgroup": cgroup}
+    return None
+
+
 def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
     """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
     predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
@@ -297,8 +324,17 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 # No local spawner, so the probe below would read manual-serve and file a reminder
                 # nobody here can discharge; its token file and owner nonce belong to the client.
                 supervisor = "desktop-ssh"
+            elif spawner_is_dead(entry) is False:
+                # A live Desktop process owns this backend and is the authority that recycles it.
+                # Keep this ahead of systemd so an app-managed child keeps its existing lifecycle.
+                supervisor = "desktop"
             else:
-                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
+                systemd = _systemd_owner_for_serve_pid(pid)
+                if systemd:
+                    supervisor = "systemd"
+                    detail.update(systemd)
+                else:
+                    supervisor = "manual-serve"
             plan.runtimes.append(_runtime(
                 str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
@@ -347,7 +383,13 @@ def print_update_plan(plan: UpdatePlan) -> None:
     for runtime in plan.runtimes:
         sha = f" @ {runtime.code_sha[:8]}" if runtime.code_sha else ""
         print(f"    • {runtime.kind} [{runtime.profile}] pid {runtime.pid} — {runtime.supervisor}{sha}")
-        print(f"      restart: {describe_restart_mechanism(runtime.restart_via, runtime.profile)}")
+        mechanism = describe_restart_mechanism(runtime.restart_via, runtime.profile)
+        if runtime.supervisor == "systemd":
+            scope, unit = runtime.detail.get("systemd_scope"), runtime.detail.get("systemd_unit")
+            if scope in {"system", "user"} and isinstance(unit, str):
+                systemctl = "systemctl --user" if scope == "user" else "systemctl"
+                mechanism = f"{systemctl} --no-ask-password restart {unit}"
+        print(f"      restart: {mechanism}")
 
 
 def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
@@ -361,6 +403,24 @@ def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
     name = str(unit).removesuffix(".service").rsplit("/", 1)[-1]
     suffix = "" if profile == "default" else f"-{profile}"
     return name in {f"hermes-serve{suffix}", f"hermes-dashboard{suffix}"}
+
+
+def systemd_serve_targets(plan: UpdatePlan | None) -> list[dict]:
+    """Plan-captured, MainPID-verified systemd serve/dashboard restart targets, deduplicated."""
+    targets: dict[tuple[str, str], dict] = {}
+    for runtime in getattr(plan, "runtimes", ()) or ():
+        if getattr(runtime, "kind", None) not in _SERVE_KINDS or getattr(runtime, "supervisor", None) != "systemd":
+            continue
+        detail = getattr(runtime, "detail", None) or {}
+        scope, unit, cgroup, pid = (
+            detail.get("systemd_scope"), detail.get("systemd_unit"), detail.get("systemd_cgroup"),
+            getattr(runtime, "pid", None),
+        )
+        if (scope not in {"user", "system"} or not isinstance(unit, str) or not unit.endswith(".service")
+                or not isinstance(cgroup, str) or not cgroup or not isinstance(pid, int) or pid <= 0):
+            continue
+        targets.setdefault((scope, unit), {"scope": scope, "unit": unit, "pid": pid, "cgroup": cgroup})
+    return list(targets.values())
 
 
 def _gateway_service_matches_profile(profile: str, service: object) -> bool:
@@ -388,6 +448,7 @@ def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
     stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
+    restarted_serve_pids: "set | None" = None, failed_serve_pids: "set | None" = None,
     external_gateway_pids: "set | None" = None,
     live_gateway_pids: "dict[str, set[int]] | None" = None,
 ) -> list[dict[str, Any]]:
@@ -449,6 +510,8 @@ def match_runtime_outcomes(
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
         failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
+        restarted_serves = {int(p) for p in (restarted_serve_pids or set())}
+        failed_serves = {int(p) for p in (failed_serve_pids or set())}
         external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
         successors = (
             {str(profile): {p for p in pids if isinstance(p, int)} for profile, pids in live_gateway_pids.items()}
@@ -479,8 +542,12 @@ def match_runtime_outcomes(
             if r.kind in _SERVE_KINDS:
                 if killed_here:
                     return "stopped"
+                if r.pid in failed_serves:
+                    return "failed"
                 if r.pid in failed_respawns or any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
+                if r.pid in restarted_serves:
+                    return "restarted"
                 if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
                     # dashboard cleanup respawn / the Desktop app).

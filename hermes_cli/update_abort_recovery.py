@@ -90,7 +90,7 @@ def _qualified_serve_skips(skip_units) -> list[dict]:
 
 
 def _run_fresh_recovery_process(
-    profiles, candidates, *, gateway_mode: bool, recover_serve: bool, skip_units
+    profiles, candidates, *, gateway_mode: bool, recover_serve: bool, skip_units, serve_targets
 ) -> "subprocess.CompletedProcess | None":
     """Spawn ``hermes_cli.update_restart_recovery --stdin`` detached from this process; None when it
     could not run (no systemd-run in gateway mode, OSError, timeout) — the caller fails closed."""
@@ -113,7 +113,8 @@ def _run_fresh_recovery_process(
     kwargs = {
         "input": json.dumps({
             "profiles": profiles, "supervisors": candidates,
-            "serve_units": {"recover": recover_serve, "skip": _qualified_serve_skips(skip_units)}}),
+            "serve_units": {"recover": recover_serve, "skip": _qualified_serve_skips(skip_units),
+                            "targets": serve_targets}}),
         "capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace",
         "check": False, "env": env,
         # Gateway profiles run sequentially at up to 90s each, plus the serve pass's own
@@ -157,9 +158,11 @@ def _recover_gateway_restart_after_abort(
     of a stale one (review on #96235).
     """
     from hermes_cli.update_cmd import _gateway_recovery_partition
+    from hermes_cli.update_inventory import systemd_serve_targets
     candidates, skipped = _gateway_recovery_partition(plan, skip_profiles=skip_profiles)
     profiles = sorted(candidates)
-    recover_serve = _serve_unit_recovery_available()
+    serve_targets = systemd_serve_targets(plan)
+    recover_serve = _serve_unit_recovery_available() or bool(serve_targets)
 
     def _result(requested, verified, relaunch_attempted, failed, serve_units=None) -> dict[str, list]:
         return {
@@ -171,10 +174,15 @@ def _recover_gateway_restart_after_abort(
         return _result([], [], [], [])
 
     def _all_failed() -> dict[str, list]:
-        return _result(profiles, [], [], profiles)
+        failed_serve = [
+            f"{target['scope']}/{target['unit'].removesuffix('.service')}"
+            for target in serve_targets
+        ]
+        return _result(profiles, [], [], profiles, {"verified": [], "failed": failed_serve})
 
     result = _run_fresh_recovery_process(
-        profiles, candidates, gateway_mode=gateway_mode, recover_serve=recover_serve, skip_units=skip_units)
+        profiles, candidates, gateway_mode=gateway_mode, recover_serve=recover_serve, skip_units=skip_units,
+        serve_targets=serve_targets)
     if result is None:
         return _all_failed()
     if result.returncode != 0:

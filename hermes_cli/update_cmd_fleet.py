@@ -1417,6 +1417,41 @@ def _restart_systemd_gateway_units(
             restarted_scoped_units.update(f"{scope}/{name}" for name in restarted_services[_scope_mark:])
 
 
+def _restart_planned_systemd_serve_units(plan, out, restarted_scoped_units: set) -> None:
+    """Restart plan-verified custom serve/dashboard services once, by recorded scope and unit."""
+    from hermes_cli.update_inventory import systemd_serve_targets
+    targets = systemd_serve_targets(plan)
+    if not targets:
+        return
+    already = set(restarted_scoped_units)
+    for target in targets:
+        key = f"{target['scope']}/{target['unit'].removesuffix('.service')}"
+        if key in already:
+            out.restarted_serve_pids.add(target["pid"])
+    pending = [target for target in targets
+               if f"{target['scope']}/{target['unit'].removesuffix('.service')}" not in already]
+    if not pending:
+        return
+    from hermes_cli.update_restart_recovery import restart_serve_units
+    result = restart_serve_units(
+        skip_units=already, targets=pending, include_discovered=False,
+    )
+    verified, failed = set(result["verified"]), set(result["failed"])
+    for target in pending:
+        scope, unit = target["scope"], target["unit"]
+        key = f"{scope}/{unit.removesuffix('.service')}"
+        if key in verified:
+            restarted_scoped_units.add(key)
+            out.restarted_serve_pids.add(target["pid"])
+            if unit.removesuffix(".service") not in out.restarted_services:
+                out.restarted_services.append(unit.removesuffix(".service"))
+        elif key in failed:
+            out.failed_serve_pids.add(target["pid"])
+            out.failed_or_stale_units.append(key)
+            out.incomplete = True
+            print(f"  ⚠ Could not verify restart of externally managed serve unit {key}.")
+
+
 def _unit_main_pid(scope_cmd: list, svc_name: str) -> int:
     """Live ``MainPID`` of a unit; ``0`` when inactive, unprivileged or unreadable.
 
@@ -1459,6 +1494,9 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: Verified or failed plan-captured systemd serve/dashboard MainPIDs.
+    restarted_serve_pids: set = field(default_factory=set)
+    failed_serve_pids: set = field(default_factory=set)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1726,6 +1764,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
             out.restarted_services, out.failed_or_stale_units, restarted_scoped_units, _drain_budget,
             out.self_restart_pending_pids,
         )
+        _restart_planned_systemd_serve_units(_pre_update_plan, out, restarted_scoped_units)
 
         # macOS: EVERY ai.hermes.gateway* LaunchAgent (systemd parity).
         if is_macos():

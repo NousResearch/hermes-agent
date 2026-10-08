@@ -62,8 +62,7 @@ def pin(server, name, version="1", *, bad_hash=False, payload=None, signature=No
         RangeHandler.payloads[checksum_path] = checksum
         artifacts.append({"url": url(server, checksum_path), "sha256": hashlib.sha256(checksum).hexdigest()})
         if signature is not None:
-            files = ({"checksums.txt.sig": signature, "checksums.txt.pem": b"certificate"}
-                     if name == "tirith" else {"checksums.txt.asc": signature, "public-key.asc": b"public-key"})
+            files = {"checksums.txt.asc": signature, "public-key.asc": b"public-key"}
             for filename, raw in files.items():
                 path = f"/{name}/{version}/{filename}"
                 RangeHandler.payloads[path] = raw
@@ -77,31 +76,25 @@ def consumer(name):
     if name == "bws":
         from agent.secret_sources.bitwarden import find_bws, install_bws
         return find_bws, install_bws
-    if name == "iron-proxy":
-        from agent.proxy_sources.iron_proxy import find_iron_proxy, install_iron_proxy
-        return find_iron_proxy, install_iron_proxy
-    from tools.tirith_security import ensure_installed
-    return (lambda **kw: ensure_installed(),
-            lambda **kw: ensure_installed(explicit=True))
+    from agent.proxy_sources.iron_proxy import find_iron_proxy, install_iron_proxy
+    return find_iron_proxy, install_iron_proxy
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("name", ["bws", "iron-proxy", "tirith"])
+@pytest.mark.parametrize("name", ["bws", "iron-proxy"])
 def test_consumer_lifecycle(consumer_store, monkeypatch, tmp_path, name):
     find, install = consumer(name)
 
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
     pin(consumer_store, name)
-    if name != "tirith":
-        external = tmp_path / name
-        external.write_text(f"#!{sys.executable}\nprint('external')\n")
-        external.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path))
-        assert find(install_if_missing=True) == external
-        assert subprocess.check_output([external], text=True).strip() == "external"
-        assert pm.installed_package(name) is None
-        monkeypatch.setenv("PATH", "")
+    external = tmp_path / name
+    external.write_text(f"#!{sys.executable}\nprint('external')\n")
+    external.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert find(install_if_missing=True) == external
+    assert subprocess.check_output([external], text=True).strip() == "external"
+    assert pm.installed_package(name) is None
+    monkeypatch.setenv("PATH", "")
     assert find(install_if_missing=True) is None  # lazy refusal, no HTTP
     assert not RangeHandler.ranges_seen
     binary = Path(install())
@@ -124,7 +117,7 @@ def test_consumer_lifecycle(consumer_store, monkeypatch, tmp_path, name):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("name,verifier", [("tirith", "cosign"), ("iron-proxy", "gpg")])
+@pytest.mark.parametrize("name,verifier", [("iron-proxy", "gpg")])
 def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_path, monkeypatch, name, verifier):
     """A real child verifier rejects after PM hashes pass; publication must not happen."""
     commands = tmp_path / "commands"
@@ -142,83 +135,25 @@ def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_pa
     )
     executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(commands))
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
     _, install = consumer(name)
     pin(consumer_store, name, signature=b"accept")
     old = Path(install())
     pin(consumer_store, name, "2", signature=b"reject")
-    with pytest.raises(RuntimeError, match="cosign_verification_failed|GPG signature verification"):
+    with pytest.raises(RuntimeError, match="GPG signature verification"):
         install(force=True)
     assert pm.installed_package(name, allow_outdated=True).binary == old
     assert subprocess.check_output([old], text=True).strip() == f"{name} fixture 1"
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    if verifier == "cosign":
-        args = calls[0]
-        assert args[args.index("--certificate-identity-regexp") + 1] == (
-            r"^https://github.com/sheeki03/tirith/\.github/workflows/release\.yml@refs/tags/v"
-        )
-        assert args[args.index("--certificate-oidc-issuer") + 1] == "https://token.actions.githubusercontent.com"
-    else:
-        assert "--import" in calls[0] and "--verify" in calls[1]
-        assert not Path(calls[0][calls[0].index("--homedir") + 1]).exists()
-
-
-@pytest.mark.platforms("posix")
-def test_tirith_opt_in_background_and_explicit_override(consumer_store, tmp_path, monkeypatch):
-    from tools import tirith_security as tirith
-    import threading
-
-    monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "false")
-    pin(consumer_store, "tirith")
-    assert tirith.ensure_installed(explicit=True) is None
-    assert not RangeHandler.ranges_seen
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
-    monkeypatch.setenv("TIRITH_BIN", str(tmp_path / "missing"))
-    assert tirith.ensure_installed(explicit=True) is None
-    assert not RangeHandler.ranges_seen
-    assert not tirith.missing_is_expected(), "a missing explicit binary must be reported"
-    external = tmp_path / "external-tirith"
-    external.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps({{'summary':'external'}}))\nsys.exit(1)\n")
-    external.chmod(0o755)
-    monkeypatch.setenv("TIRITH_BIN", str(external))
-    assert tirith.check_command_security("echo hello")["summary"] == "external"
-    assert not RangeHandler.ranges_seen
-    monkeypatch.delenv("TIRITH_BIN")
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS")
-    home = Path(os.environ["HERMES_HOME"])
-    home.mkdir(exist_ok=True)
-    (home / "config.yaml").write_text("security:\n  allow_lazy_installs: true\n")
-    # Hold the real worker's HTTP request so returning before completion is
-    # event-proven, not an assertion against a replaced Thread constructor.
-    entered, release = threading.Event(), threading.Event()
-    real_get = RangeHandler.do_GET
-    def blocked_get(handler):
-        entered.set()
-        assert release.wait(10)
-        real_get(handler)
-    monkeypatch.setattr(RangeHandler, "do_GET", blocked_get)
-    try:
-        assert tirith.ensure_installed() is None
-        assert entered.wait(10)
-        assert pm.installed_package("tirith") is None
-        assert tirith.missing_is_expected(), "an in-flight first download is not a fault"
-    finally:
-        release.set()
-        for thread in tirith._install_threads.values():
-            thread.join(10)
-            assert not thread.is_alive()
-    assert Path(tirith.ensure_installed()) == pm.installed_package("tirith").binary
+    assert "--import" in calls[0] and "--verify" in calls[1]
+    assert not Path(calls[0][calls[0].index("--homedir") + 1]).exists()
 
 
 @pytest.mark.platforms("posix")
 def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypatch):
     from agent.secret_sources.bitwarden import fetch_bitwarden_secrets, install_bws
     from agent.proxy_sources.iron_proxy import install_iron_proxy, iron_proxy_version
-    from tools.tirith_security import check_command_security, ensure_installed
 
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
     monkeypatch.setenv("MY_PRIVATE_TOKEN", "not-for-proxy")
     pin(consumer_store, "bws", payload=(
         f"#!{sys.executable}\nimport json,os,sys\n"
@@ -240,28 +175,18 @@ def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypat
     ).encode())
     proxy = install_iron_proxy()
     assert iron_proxy_version(proxy) == "private proxy fixture"
-    pin(consumer_store, "tirith", payload=(
-        f"#!{sys.executable}\nimport json,sys\n"
-        "if '--version' in sys.argv: print('tirith fixture')\n"
-        "else:\n"
-        " assert sys.argv[1:] == ['check','--json','--non-interactive','--shell','posix','--','echo hello']\n"
-        " print(json.dumps({'summary':'managed scan','findings':[]}))\n sys.exit(2)\n"
-    ).encode())
-    ensure_installed(explicit=True)
-    assert check_command_security("echo hello") == {"action": "warn", "summary": "managed scan", "findings": []}
 
 
 @pytest.mark.platforms("posix")
 def test_nonregular_security_binary_is_never_published(consumer_store, monkeypatch):
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
-    _, install = consumer("tirith")
-    pin(consumer_store, "tirith")
+    _, install = consumer("iron-proxy")
+    pin(consumer_store, "iron-proxy")
     old = install()
-    pin(consumer_store, "tirith", "2", link=True)
+    pin(consumer_store, "iron-proxy", "2", link=True)
     with pytest.raises(pm.InstallError, match="not a regular file"):
         install()
-    assert str(pm.installed_package("tirith", allow_outdated=True).binary) == old
+    assert str(pm.installed_package("iron-proxy", allow_outdated=True).binary) == str(old)
 
 
 @pytest.mark.platforms("posix")
@@ -299,41 +224,14 @@ def test_external_executable_does_not_require_pm_platform_support(tmp_path, monk
 
 
 @pytest.mark.platforms("posix")
-def test_tirith_failed_cold_scans_make_one_attempt_then_explicit_can_retry(consumer_store, monkeypatch):
-    from tools import tirith_security as tirith
-    monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS")
-    monkeypatch.setattr(tirith, "_crash_count", 0)
-    monkeypatch.setattr(tirith, "_circuit_open", False)
-    pin(consumer_store, "tirith", bad_hash=True)
-    requests = []
-    real_get = RangeHandler.do_GET
-    def record(handler):
-        requests.append(handler.path)
-        real_get(handler)
-    monkeypatch.setattr(RangeHandler, "do_GET", record)
-    tirith.check_command_security("echo hello")
-    first_attempt = list(requests)
-    assert first_attempt
-    tirith.check_command_security("echo hello")
-    tirith.check_command_security("echo hello")
-    assert requests == first_attempt
-    pin(consumer_store, "tirith")
-    assert tirith.ensure_installed(explicit=True)
-
-
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("name", ["tirith", "iron-proxy"])
+@pytest.mark.parametrize("name", ["iron-proxy"])
 def test_locked_provenance_is_required_even_without_a_verifier(consumer_store, monkeypatch, name):
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("TIRITH_ENABLED", "true")
     _, install = consumer(name)
     pin(consumer_store, name, signature=b"pinned-signature")
     old = Path(install())  # absent verifier permits hash-verified installation
     pin(consumer_store, name, "2", signature=b"pinned-signature")
-    suffix = "sig" if name == "tirith" else "asc"
-    missing = f"/{name}/2/checksums.txt.{suffix}"
+    missing = f"/{name}/2/checksums.txt.asc"
     raw = RangeHandler.payloads.pop(missing)
     with pytest.raises(pm.InstallError):
         install()

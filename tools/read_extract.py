@@ -256,7 +256,7 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
         return None
     try:
         proc = subprocess.run(
-            ["pdftotext", path, "-"], capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT)
+            ["pdftotext", path, "-"], stdin=subprocess.DEVNULL, capture_output=True, timeout=PDF_PAGE_SCAN_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return None
     out = proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else ""
@@ -621,12 +621,3 @@ def _sqlite_cell(value: Any) -> str:
 _STDLIB_EXTRACTORS: dict[str, Callable[[str], str]] = {
     ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx,
     ".db": _extract_sqlite, ".sqlite": _extract_sqlite, ".sqlite3": _extract_sqlite}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_XLSX_BYTES = 50 * 1024 * 1024
-# ---- END PLUGIN-COMPAT ----

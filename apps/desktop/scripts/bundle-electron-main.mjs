@@ -36,10 +36,14 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   // Dev bundles leave the environment alone so source-tree resolution keeps working.
   const envBanner = dev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')
   const define = {}
+  let bakedStamp = null
   if (!dev) {
     if (!stamp) throw new Error('A prepared install stamp is required')
     const raw = readFileSync(stamp, 'utf8')
     const metadata = JSON.parse(raw)
+    // The baked bytes, and the clock the caller must record: re-reading the stamp
+    // after this point would report a restamp the output never saw.
+    bakedStamp = metadata.builtAt ?? null
     define['process.env.HERMES_DESKTOP_IS_PACKAGED'] = JSON.stringify(true)
     define.__HERMES_INSTALL_STAMP__ = raw
     define.__HERMES_PRODUCT_IDENTITY__ = productIdentity(source, metadata)
@@ -56,7 +60,9 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   }
   await build({
     ...common,
-    entryPoints: [join(source, 'apps/desktop/electron/main.ts')],
+    // entry.ts picks the Linux ozone platform (native Wayland/WSLg) and
+    // relaunches before main.ts loads; Electron reads it only from argv.
+    entryPoints: [join(source, 'apps/desktop/electron/entry.ts')],
     format: 'esm',
     outfile: join(out, 'electron-main.mjs'),
     banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner },
@@ -75,6 +81,7 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     format: 'cjs',
     outfile: join(out, 'preview-guest-preload.js'),
   })
+  return { stampClock: bakedStamp }
 }
 
 if (isMain(import.meta.url)) {

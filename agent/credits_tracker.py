@@ -380,6 +380,30 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         return None
 
 
+# Process-lifetime memory of the usage band last shown per session_id: see
+# _remember_shown_band. Bounded MRU so a long-lived gateway cannot grow it without limit.
+_seen_usage_bands: dict = {}
+_SEEN_USAGE_BANDS_MAX = 500
+
+
+def _remember_shown_band(session_id, band) -> None:
+    """Remember the usage band last evaluated for ``session_id`` (process-lifetime).
+
+    Desktop reap/resume rebuilds the AIAgent per turn, so the in-memory ``_credits_latch``
+    (and its ``usage_band``) never survives across messages — every rebuild re-announces the
+    current band as a fresh crossing (#101578). ``agent.session_id`` IS stable across those
+    rebuilds, so this map lets ``_hydrate_seed_state`` restore the band the user already saw.
+    Deliberately NOT durable: a real process restart is a real ``session open`` and the
+    cold-start seed should still warn immediately. Bounded (MRU eviction) so a long-lived
+    gateway juggling many sessions cannot grow it without limit."""
+    if not session_id:
+        return
+    _seen_usage_bands.pop(session_id, None)  # re-insert at the MRU end
+    _seen_usage_bands[session_id] = band
+    if len(_seen_usage_bands) > _SEEN_USAGE_BANDS_MAX:
+        _seen_usage_bands.pop(next(iter(_seen_usage_bands)))
+
+
 def _hydrate_seed_state(agent, state) -> None:
     """Install a seed CreditsState on the agent and fire the notice policy once. Primes the crossing gate:
     the cold-start snapshot IS the first observation, so a session opening in a band warns immediately."""
@@ -389,6 +413,12 @@ def _hydrate_seed_state(agent, state) -> None:
     latch = getattr(agent, "_credits_latch", None)
     if isinstance(latch, dict) and state.used_fraction is not None:
         latch["seen_below_90"] = True  # ONLY this gate — priming seen_grant_unspent would revive the steady-state nag
+        # Restore the band this logical session already showed (desktop reap/resume rebuilds the
+        # agent object but keeps session_id) so an unchanged band is not re-announced per message.
+        prior_band = _seen_usage_bands.get(getattr(agent, "session_id", None))
+        if prior_band is not None:
+            latch["usage_band"] = prior_band
+            latch["active"].add(CREDITS_USAGE_KEY)
     _rerun_notice_policy(agent)
 
 

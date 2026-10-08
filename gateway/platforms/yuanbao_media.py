@@ -317,12 +317,3 @@ def _basename_from_url(url: str) -> str:
         return os.path.basename(urllib.parse.urlparse(url).path)
     except Exception:
         return ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-COS_USE_ACCELERATE = True
-# ---- END PLUGIN-COMPAT ----

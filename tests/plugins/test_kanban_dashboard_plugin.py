@@ -7,6 +7,7 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -73,7 +74,10 @@ def test_board_empty(client):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
-    assert data["assignees"] == []
+    # Assignee lanes union task-holders with profiles on disk, so the
+    # implicit `default` profile that the fixture's HERMES_HOME creates is
+    # present even on an empty board (no task-holders yet).
+    assert data["assignees"] == ["default"]
     assert data["latest_event_id"] == 0
 
 # ---------------------------------------------------------------------------
@@ -1038,6 +1042,64 @@ def test_specify_happy_path(client, monkeypatch):
     assert "**Goal**" in (detail["body"] or "")
 
 # ---------------------------------------------------------------------------
+# Aux-LLM endpoints under multiplexed hosting — profile secret scope (#123372)
+# ---------------------------------------------------------------------------
+
+def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_path, monkeypatch):
+    """Specify / Decompose / Estimate reach the aux client with no agent turn, so under
+    multi-profile hosting an unscoped provider-key read fails closed (``LLM error:
+    UnscopedSecretError``). The plugin router is mounted the way ``_mount_plugin_api_routes``
+    mounts every plugin router — behind ``_plugin_route_secret_scope`` — so the launch profile
+    (A) and a ``?profile=`` request (B) each resolve their OWN key, and B never leaks into A."""
+    import agent.secret_scope as ss
+    from fastapi import Depends
+    from hermes_cli import profiles
+    from hermes_cli.web_server_dashboard import _plugin_route_secret_scope
+    from tui_gateway import launch_profile_policy
+    from unittest.mock import MagicMock
+
+    (kanban_home / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=key-of-launch-a\n")
+    profiles_root = tmp_path / "profiles"
+    (profiles_root / "workerb").mkdir(parents=True)
+    (profiles_root / "workerb" / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=key-of-worker-b\n")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: kanban_home)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+
+    seen: list = []
+
+    def fake_call_llm(**kwargs):
+        seen.append(ss.get_secret("KANBAN_AUX_SCOPE_TEST_KEY"))
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = json.dumps({"title": "Polished", "body": "**Goal**\nDo it."})
+        return resp
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban",
+                       dependencies=[Depends(_plugin_route_secret_scope)])
+    client = TestClient(app)
+
+    def _specify(profile=None):
+        params = {"profile": profile} if profile else None
+        task = client.post("/api/plugins/kanban/tasks", params=params,
+                           json={"title": "one-liner", "triage": True}).json()["task"]
+        return client.post(f"/api/plugins/kanban/tasks/{task['id']}/specify", params=params,
+                           json={"author": "ui-tester"}).json()
+
+    was_active, snapshot = ss.is_multiplex_active(), launch_profile_policy._snapshot
+    ss.set_multiplex_active(True)
+    try:
+        for profile in (None, "workerb", None):
+            body = _specify(profile)
+            assert body["ok"] is True, body
+    finally:
+        ss.set_multiplex_active(was_active)
+        launch_profile_policy._snapshot = snapshot
+    assert seen == ["key-of-launch-a", "key-of-worker-b", "key-of-launch-a"]
+
+
+# ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
 
@@ -1065,6 +1127,134 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
 
+
+# Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
-# Diagnostic severity colours follow the dashboard theme
-# ---------------------------------------------------------------------------
+
+
+def test_board_card_exposes_current_run_start(client):
+    """#99819: after a review timeout + retry, the card must expose the fresh
+    run's start (not the task's first-ever start) so the run clock ticks from
+    the current attempt."""
+    now = int(time.time())
+    first_start = now - 7200  # task first started 2h ago
+    retry_start = now - 90  # retry run started 90s ago
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="retried", assignee="x")
+        lock = "lock-runclock"
+        future = now + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', started_at=?, claim_lock=?, "
+            "claim_expires=?, worker_pid=? WHERE id=?",
+            (first_start, lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, retry_start),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        # A sibling task with no run at all: key present, null.
+        u = kb.create_task(conn, title="unclaimed", assignee="x")
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    columns = {c["name"]: c for c in r.json()["columns"]}
+    card = next(c for c in columns["running"]["tasks"] if c["id"] == t)
+    assert card["started_at"] == first_start
+    # Red on base: this key did not exist at all.
+    assert card["current_run_started_at"] == retry_start
+    todo = next(c for c in columns["ready"]["tasks"] if c["id"] == u)
+    assert todo["current_run_started_at"] is None
+
+    # The detail endpoint carries the same contract.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]
+    assert detail["current_run_started_at"] == retry_start
+
+
+def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch):
+    """A stale dashboard tab reopens /events?board=<slug> after the operator
+    archived or deleted that board. The stream must close instead of handing
+    the slug to connect(), which used to resurrect an empty DB-only board
+    (#43243)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    def _fake_ws_auth_ok(ws):
+        return ws.query_params.get("token", "") == "secret-xyz"
+
+    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz", _ws_auth_ok=_fake_ws_auth_ok)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    for action, board in (("archive", "gone"), ("delete", "nuked")):
+        kb.create_board(board)
+        kb.remove_board(board, archive=(action == "archive"))
+
+        # Stale tab: open the event stream for the dead board. Bounded
+        # receive: with the fix the handshake rejects the slug and closes
+        # immediately; on an unfixed build nothing is ever sent, so the
+        # receive runs on a daemon thread and must not block the suite.
+        import threading
+
+        recv: dict = {}
+        ws_cm = c.websocket_connect(
+            f"/api/plugins/kanban/events?token=secret-xyz&board={board}&since=0"
+        )
+        ws = ws_cm.__enter__()
+
+        def _recv() -> None:
+            try:
+                ws.receive_json()
+            except WebSocketDisconnect:
+                recv["closed"] = True
+            except Exception as exc:  # noqa: BLE001 - reported via the dict
+                recv["error"] = exc
+
+        thread = threading.Thread(target=_recv, daemon=True)
+        thread.start()
+        thread.join(timeout=2.0)  # unfixed build: stream stays open, times out
+        received_close = bool(recv.get("closed"))
+        try:
+            ws.close()
+        except Exception:
+            pass
+        try:
+            ws_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+
+        # With the fix the stream rejects the dead slug at the handshake.
+        assert received_close, (
+            f"event stream stayed open for the {action}d board {board!r}"
+        )
+        # No DB-only stub may reappear at the original slug.
+        assert not (kb.board_dir(board) / "kanban.db").exists()
+        if action == "archive":
+            assert kb.read_board_metadata(board)["archived"] is True
+        else:
+            assert board not in [b["slug"] for b in kb.list_boards(include_archived=True)]
+
+    # A live board still streams.
+    kb.create_board("alive")
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=alive"
+    ) as ws:
+        assert ws is not None

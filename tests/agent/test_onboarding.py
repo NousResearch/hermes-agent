@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hermes_yaml as yaml
+import pytest
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
@@ -98,13 +99,20 @@ class TestProfileBuildMode:
 
 
 class TestFirstContactTurnNote:
-    def test_returns_profile_directive_and_marks_seen(self, tmp_path):
+    @pytest.mark.parametrize("guest", [False, True])
+    def test_first_contact_offer_follows_the_onboarding_gate(self, tmp_path, monkeypatch, guest):
+        # The /initiate-setup offer ships with guest onboarding; everyone else keeps the memory profile offer.
         from agent.onboarding import (
             PROFILE_BUILD_FLAG,
+            SETUP_OFFER_NOTE,
             first_contact_turn_note,
             profile_build_directive,
         )
 
+        if guest:
+            monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        else:
+            monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
         cfg_path = tmp_path / "config.yaml"
         cfg = {"onboarding": {"profile_build": "ask"}}
         note = first_contact_turn_note(
@@ -112,10 +120,61 @@ class TestFirstContactTurnNote:
             cfg_path,
             session_history_empty=True,
             install_has_prior_sessions=False,
+            message="hello",
         )
-        assert note == profile_build_directive().strip()
+        expected = SETUP_OFFER_NOTE.format(command="/initiate-setup") if guest else profile_build_directive().strip()
+        assert note == expected
         loaded = yaml.safe_load(cfg_path.read_text())
         assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
+
+    def test_every_first_contact_note_puts_a_real_task_first(self, tmp_path):
+        # Default "ask" (offer) and "off" (plain intro) must both
+        # tell the model to do a first-message task before the intro/offer.
+        from agent.onboarding import TASK_FIRST_CLAUSE, first_contact_turn_note
+
+        for mode in ("ask", "off"):
+            note = first_contact_turn_note(
+                {"onboarding": {"profile_build": mode}},
+                tmp_path / f"{mode}.yaml",
+                session_history_empty=True,
+                install_has_prior_sessions=False,
+                message="hello",
+            )
+            assert TASK_FIRST_CLAUSE in note, mode
+
+    def test_no_note_in_the_task_chat_setup_hands_off_to(self, tmp_path, monkeypatch):
+        # The first-task chat is the first chat in the user's own profile, but setup already ran:
+        # no setup offer, no intro, and the offer latch stays unset.
+        from agent.first_task_prompt import MARKER
+        from agent.onboarding import PROFILE_BUILD_FLAG, first_contact_turn_note
+
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        cfg_path = tmp_path / "config.yaml"
+        note = first_contact_turn_note(
+            {"onboarding": {"profile_build": "ask"}},
+            cfg_path,
+            session_history_empty=True,
+            install_has_prior_sessions=False,
+            message=f"Set up Blender for me{MARKER}skill text",
+            setup_handoff=True,
+        )
+        assert note is None
+        assert not cfg_path.exists() or PROFILE_BUILD_FLAG not in cfg_path.read_text()
+
+    def test_a_first_message_quoting_the_handoff_marker_still_gets_the_offer(self, tmp_path, monkeypatch):
+        # Only start_chat marks a handoff; a user who types the marker text is still a first contact.
+        from agent.first_task_prompt import MARKER
+        from agent.onboarding import SETUP_OFFER_NOTE, first_contact_turn_note
+
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        note = first_contact_turn_note(
+            {"onboarding": {"profile_build": "ask"}},
+            tmp_path / "config.yaml",
+            session_history_empty=True,
+            install_has_prior_sessions=False,
+            message=f"what does this mean?{MARKER}",
+        )
+        assert note == SETUP_OFFER_NOTE.format(command="/initiate-setup")
 
     def test_returns_none_when_not_first_contact(self, tmp_path):
         from agent.onboarding import first_contact_turn_note
@@ -127,6 +186,7 @@ class TestFirstContactTurnNote:
                 cfg_path,
                 session_history_empty=False,
                 install_has_prior_sessions=False,
+                message="hello",
             )
             is None
         )
@@ -136,6 +196,7 @@ class TestFirstContactTurnNote:
                 cfg_path,
                 session_history_empty=True,
                 install_has_prior_sessions=True,
+                message="hello",
             )
             is None
         )

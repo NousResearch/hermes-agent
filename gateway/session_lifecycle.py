@@ -58,28 +58,36 @@ def auto_continue_freshness_window() -> float:
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
-    def _is_session_ended_in_db(self, session_id: str) -> bool:
-        """True iff state.db has this session with a non-null end_reason (same staleness test as
-        ``_prune_stale_sessions_locked``; no DB/row or DB error -> False). Lets routing self-heal a
-        session ended while the gateway stays alive. Store resolved from the owning profile.
+    def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
+        """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
+        (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as
+        ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
+        while the gateway stays alive. Store resolved from the owning profile.
 
         Used by ``get_or_create_session`` to self-heal at routing time: ``_prune_stale_sessions_locked``
         only runs at startup, so a session ended in the DB while the gateway stays alive (any path that
         finalizes the row without clearing sessions.json) would otherwise be reused as a live routing key
         and silently swallow every subsequent message until the next restart (#54878 — the live-gateway
-        variant of #52804/FM9). DB errors are non-fatal — never block routing on a failed lookup.
+        variant of #52804/FM9). A hard delete is the same shape one step further: the row is GONE, not
+        merely ended, and reusing the route makes run_agent's INSERT OR IGNORE resurrect the deleted
+        session with its old id (#42422) — so a missing row is treated exactly like an ended one. DB
+        errors are non-fatal — never block routing on a failed lookup.
         The store is resolved from the row's owning profile rather than the ambient scope: an unscoped
         background writer keeps its own copy of the same session, and comparing against that copy reports a
         live session as ended (#66887).
+
+        Pass *session_key* when the owning key is known but the id may have left the routing index:
+        after the self-heal re-homes the key, the id has no owner and would resolve to the launch
+        store, which never holds a routed profile's rows (#118862).
         """
-        db = self._db_for_session_id(session_id)
+        db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
         try:
             row = db.get_session(session_id)
         except Exception:
             return False
-        return bool(row is not None and row.get("end_reason") is not None)
+        return row is None or row.get("end_reason") is not None
 
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
         """Only explicit suspension replaces a routed conversation; time never does."""

@@ -176,7 +176,7 @@ def which_binary() -> Optional[Path]:
                 try:
                     out = subprocess.run(
                         [str(p), "--version"],
-                        capture_output=True,
+                        stdin=subprocess.DEVNULL, capture_output=True,
                         text=True,
                         timeout=5,
                     )
@@ -393,7 +393,7 @@ def run_sg(
     try:
         return subprocess.run(
             cmd,
-            capture_output=capture,
+            stdin=subprocess.DEVNULL, capture_output=capture,
             text=True,
             timeout=timeout,
         )
@@ -605,7 +605,8 @@ def cmd_install(_args: argparse.Namespace) -> int:
         err(f"installer not found: {installer}")
         return 1
     trace(f"running installer: {' '.join(cmd)}")
-    return subprocess.run(cmd).returncode
+    # health: allow HX006 -- the installer downloads a release; its duration depends on the network
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL).returncode
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

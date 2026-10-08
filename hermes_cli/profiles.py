@@ -1746,66 +1746,68 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
-    # Retire plugin callbacks/workers before removing profile files.
-    try:
-        from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
-        unload_plugin_manager_for_home(profile_dir)
-    except Exception:
-        logger.warning("Could not unload plugin manager for deleted profile %s", profile_dir, exc_info=True)
+    # Reserve the home through teardown and file removal so a same-home lookup cannot recreate
+    # callbacks or a host for a directory being deleted.
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+    with reserve_plugin_manager_for_home(profile_dir) as (_unloaded, teardown_error):
+        if teardown_error is not None:
+            logger.warning("Could not unload plugin manager for deleted profile %s: %s",
+                           profile_dir, teardown_error,
+                           exc_info=(type(teardown_error), teardown_error, teardown_error.__traceback__))
 
-    # Release this process's holographic memory-store connections into the profile. The
-    # Desktop's main serve process opens memory_store.db for every profile and is
-    # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
-    # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
-    with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
-        # 2c. See #88347.
-        from plugins.memory import import_provider_module
-        _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
-        if _released:
-            print(f"✓ Released {_released} memory-store connection(s) held by this process")
-    with contextlib.suppress(Exception):
-        from persistence_assembly import close_stores_under
-        _closed = close_stores_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
+        # Release this process's holographic memory-store connections into the profile. The
+        # Desktop's main serve process opens memory_store.db for every profile and is
+        # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.
+        # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
+        with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
+            # 2c. See #88347.
+            from plugins.memory import import_provider_module
+            _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
+            if _released:
+                print(f"✓ Released {_released} memory-store connection(s) held by this process")
+        with contextlib.suppress(Exception):
+            from persistence_assembly import close_stores_under
+            _closed = close_stores_under(profile_dir)
+            if _closed:
+                print(f"✓ Released {_closed} session database connection(s) held by this process")
 
-    # The Desktop serve process routes its agent/errors logs for every profile through one
-    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
-    # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
-    with contextlib.suppress(Exception):
-        from hermes_logging import release_profile_log_handlers
-        _released_logs = release_profile_log_handlers(profile_dir)
-        if _released_logs:
-            print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
+        # The Desktop serve process routes its agent/errors logs for every profile through one
+        # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
+        # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
+        with contextlib.suppress(Exception):
+            from hermes_logging import release_profile_log_handlers
+            _released_logs = release_profile_log_handlers(profile_dir)
+            if _released_logs:
+                print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
-    # 3. Remove wrapper script
-    if wrapper_path and remove_wrapper_script(canon):
-        print(f"✓ Removed {wrapper_path}")
+        # 3. Remove wrapper script
+        if wrapper_path and remove_wrapper_script(canon):
+            print(f"✓ Removed {wrapper_path}")
 
-    # 4. Remove profile directory
-    remove_error: Exception | None = None
-    try:
-        # A multiplexer still tearing the profile down holds its gateway.lock: never remove a home
-        # a live runtime owns (its writers would recreate the tree under the tombstone).
-        if not wait_profile_unowned(profile_dir):
-            raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
-        _rmtree_with_retry(profile_dir, _rmtree_make_writable)
-        record_delete_finished(profile_dir)
-        print(f"✓ Removed {profile_dir}")
-    except Exception as e:
-        print(f"⚠ Could not remove {profile_dir}: {e}")
-        remove_error = e
+        # 4. Remove profile directory
+        remove_error: Exception | None = None
+        try:
+            # A multiplexer still tearing the profile down holds its gateway.lock: never remove a home
+            # a live runtime owns (its writers would recreate the tree under the tombstone).
+            if not wait_profile_unowned(profile_dir):
+                raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
+            _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+            record_delete_finished(profile_dir)
+            print(f"✓ Removed {profile_dir}")
+        except Exception as e:
+            print(f"⚠ Could not remove {profile_dir}: {e}")
+            remove_error = e
 
-    if remove_error is not None:
-        raise delete_failed_error(canon, profile_dir, remove_error) from remove_error
-    print(f"\nProfile '{canon}' deleted.")
-    if not identity_settled:
-        # Filesystem work and runtime teardown are done; the durable identity is not. Report the
-        # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
-        # instead of a clean success; the type carries the path and the retry for surfaces that
-        # can report a partial success.
-        raise ProfileIdentitySettlementPending(canon, profile_dir)
-    return profile_dir
+        if remove_error is not None:
+            raise delete_failed_error(canon, profile_dir, remove_error) from remove_error
+        print(f"\nProfile '{canon}' deleted.")
+        if not identity_settled:
+            # Filesystem work and runtime teardown are done; the durable identity is not. Report the
+            # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
+            # instead of a clean success; the type carries the path and the retry for surfaces that
+            # can report a partial success.
+            raise ProfileIdentitySettlementPending(canon, profile_dir)
+        return profile_dir
 
 
 def _s6_runtime_manager():
@@ -2244,6 +2246,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # racing writer); after it, the old name is never re-served.
     from hermes_constants import hermes_home_key
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
     gw_running = _check_gateway_running(old_dir)
     service_removed = live_mux = renamed = False
     old_identity, unfinished_delete = None, named_profile_is_deleted(old_dir)
@@ -2261,11 +2264,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
-        # Retire the cached manager before moving its home.
-        from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
-        unload_plugin_manager_for_home(old_dir)
-        old_dir.rename(new_dir)
-        renamed = True
+        with reserve_plugin_manager_for_home(old_dir) as (_unloaded, teardown_error):
+            if teardown_error is not None:
+                raise teardown_error
+            old_dir.rename(new_dir)
+            renamed = True
     finally:
         moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
         if not moved and old_identity is not None:

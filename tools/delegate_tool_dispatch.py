@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import (
+    _attach_child, _defer_child_cost_rollup, _detach_child, _fabricated_entry, _signal_child_stop,
+)
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
@@ -134,9 +136,12 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
 
     def _entry_of(future, idx):
         if not future.done():
-            return _fabricated_entry(
-                idx, "interrupted", "Parent agent interrupted — child did not finish in time", _child_by_index.get(idx),
+            child = _child_by_index.get(idx)
+            entry = _fabricated_entry(
+                idx, "interrupted", "Parent agent interrupted — child did not finish in time", child,
             )
+            _defer_child_cost_rollup(child, future, parent_agent, entry.get("_child_cost_usd", 0.0))
+            return entry
         try:
             return future.result()
         except Exception as exc:

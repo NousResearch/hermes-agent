@@ -8,9 +8,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 
+import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 import { FIELD_LABELS } from './constants'
 import { schemaKeyToFieldCopyKey } from './field-copy'
-import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
 // The vi.mock factory below replaces the computed (read-only) atom with a
 // writable one; narrow the import back so tests can drive it.
@@ -55,7 +55,9 @@ vi.mock('@/store/settings-scope', () => ({
   $settingsScopeProfile: atom<string>('default')
 }))
 
-vi.mock('@/store/projects', () => ({
+vi.mock('@/store/projects', async () => ({
+  // The Scan now row reads the in-flight atom off the same module.
+  $reposScanning: (await import('nanostores')).atom(false),
   repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
@@ -82,14 +84,14 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings(activeSectionId = 'safety') {
+function renderConfigSettings(activeSectionId = 'safety', subpage?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} subpage={subpage} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -170,6 +172,15 @@ describe('ConfigSettings workspace section', () => {
 
     expect(await screen.findByText(scanRow)).toBeTruthy()
     expect(screen.getByText(nestedRow)).toBeTruthy()
+  })
+
+  it('offers a manual scan on the projects subpage', async () => {
+    withDiscovery({ repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+
+    renderConfigSettings('workspace', 'projects')
+
+    expect(await screen.findByText('Repository Discovery Scan')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Scan now' })).toBeTruthy()
   })
 
   it('hides nested discovery while the scan itself is off', async () => {

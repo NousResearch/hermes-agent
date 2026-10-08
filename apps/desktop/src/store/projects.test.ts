@@ -931,7 +931,9 @@ describe('repository discovery policy', () => {
       }
     })
 
-    await scanAndRecordRepos()
+    // `accepted: false` is what the backend answers for a disabled policy too, so the outcome has to
+    // name the setting rather than report a rejection.
+    await expect(scanAndRecordRepos()).resolves.toEqual({ reason: 'disabled' })
 
     expect(scanRepos).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
@@ -956,7 +958,7 @@ describe('repository discovery policy', () => {
       terminal: { cwd: '~/Developer/pasei' }
     })
 
-    await scanAndRecordRepos()
+    await expect(scanAndRecordRepos()).resolves.toEqual({ found: 1, reason: 'ok' })
 
     expect(scanRepos).toHaveBeenCalledWith(['~/Developer/pasei'], {
       enabled: true,
@@ -987,9 +989,11 @@ describe('repository discovery policy', () => {
       terminal: { cwd: '.' }
     })
 
-    await scanAndRecordRepos()
+    // Nothing to walk: the crawl is skipped (an empty root list can only ever return nothing) and the
+    // empty outcome names the reason, instead of reading as a scan that looked and found sitting there.
+    await expect(scanAndRecordRepos()).resolves.toEqual({ reason: 'no-roots' })
 
-    expect(scanRepos).toHaveBeenCalledWith([], { enabled: true, excludePaths: [], nested: false })
+    expect(scanRepos).not.toHaveBeenCalled()
   })
 
   it('passes custom roots and exclusions to Electron and records on the origin gateway', async () => {

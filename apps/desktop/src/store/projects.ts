@@ -864,6 +864,7 @@ export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): strin
  */
 export function defaultRepoScanRoot(config: unknown): null | string {
   const terminal = config && typeof config === 'object' ? (config as { terminal?: unknown }).terminal : undefined
+
   const raw =
     terminal && typeof terminal === 'object' && typeof (terminal as { cwd?: unknown }).cwd === 'string'
       ? ((terminal as { cwd: string }).cwd || '').trim()
@@ -896,7 +897,21 @@ function syncReposScanning(): void {
 
 $gateway.subscribe(syncReposScanning)
 
-export async function scanAndRecordRepos(force = false): Promise<void> {
+/**
+ * What a discovery scan did.
+ *
+ * Every way this can come up empty is quiet by construction: nothing configured to walk, a backend that
+ * refused the policy it was sent, a build with no local git bridge. Reported so a caller can say so —
+ * an unpopulated sidebar and a scan that ran and found nothing look identical otherwise.
+ */
+export type RepoScanOutcome =
+  | { found: number; reason: 'ok' }
+  /** `disabled`: the setting is off. `no-roots`: nothing configured to walk. `no-bridge`: no local git
+   *  bridge in this build. `rejected`: the backend holds a different policy. `skipped`: this run was a
+   *  repeat, or a newer scan took over. `failed`: anything else. */
+  | { reason: 'disabled' | 'failed' | 'no-bridge' | 'no-roots' | 'rejected' | 'skipped' }
+
+export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome> {
   if (isDesktopFsRemoteMode()) {
     // On a remote backend the desktop can't crawl the host filesystem.
     // Ask the host to scan its own discovery roots (`projects.discover_repos`
@@ -919,7 +934,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       if (discovered?.repos === undefined) {
         markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
 
-        return
+        return { reason: 'failed' }
       }
 
       // Remote scan succeeded: refresh the tree so the merged session-derived +
@@ -928,15 +943,17 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       if (stillOnProjectsContext(context)) {
         await refreshProjectTreeOn(context)
       }
+
+      return { found: Array.isArray(discovered.repos) ? discovered.repos.length : 0, reason: 'ok' }
     } catch (err) {
       // Surface the failure (stale backend, RPC error, gateway drop) instead
       // of swallowing it: a silent return is exactly the "sidebar goes quiet"
       // symptom `scan:true` was meant to fix (#81723). Keep the old list and
       // let the sidebar show the error/absent state.
       markProjectsRpcFailure(err)
-    }
 
-    return
+      return { reason: 'failed' }
+    }
   }
 
   let context: ActiveProjectsContext
@@ -944,13 +961,13 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   try {
     context = await activeProjectsContext()
   } catch {
-    return
+    return { reason: 'failed' }
   }
 
   const scan = desktopGit()?.scanRepos
 
   if (!scan) {
-    return
+    return { reason: 'no-bridge' }
   }
 
   const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
@@ -968,41 +985,49 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     const signature = repoDiscoveryPolicySignature({ ...policy, roots })
 
     if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
-      return
+      return { reason: 'skipped' }
     }
 
     generation = ++state.generation
     state.runningSignature = signature
 
-    if (!policy.enabled) {
-      await gatewayRequestOn(
-        context.gateway,
-        'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos: [] }, context.profile)
-      )
-    } else {
+    // A scan with nothing to walk is not a scan: it would record an empty result as if it had looked
+    // (and record it over the last real one), so it is reported instead of run.
+    const willScan = policy.enabled && roots.length > 0
+    let repos: Awaited<ReturnType<typeof scan>> = []
+
+    if (willScan) {
       scanningGatewayGenerations.set(context.gateway, generation)
       syncReposScanning()
 
-      const repos = await scan(roots, {
+      repos = await scan(roots, {
         enabled: true,
         excludePaths: policy.exclude_paths,
         nested: policy.nested
       })
 
       if (state.generation !== generation) {
-        return
+        return { reason: 'skipped' }
       }
-
-      await gatewayRequestOn(
-        context.gateway,
-        'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos }, context.profile)
-      )
     }
 
+    // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
+    // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
+    // worth reporting rather than leaving the caller to look at an unchanged sidebar.
+    const recorded = await gatewayRequestOn<{ accepted?: unknown }>(
+      context.gateway,
+      'projects.record_repos',
+      projectParams({ discovery_policy: policy, repos }, context.profile)
+    )
+
     if (state.generation !== generation) {
-      return
+      return { reason: 'skipped' }
+    }
+
+    // Only an enabled policy can be "refused": with discovery off the backend answers `accepted:
+    // false` by design, and that is the `disabled` outcome below, not a rejection.
+    if (policy.enabled && recorded?.accepted === false) {
+      return { reason: 'rejected' }
     }
 
     state.completedSignature = signature
@@ -1014,8 +1039,16 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     if (stillOnProjectsContext(context)) {
       await refreshProjectTree()
     }
+
+    if (!policy.enabled) {
+      return { reason: 'disabled' }
+    }
+
+    return willScan ? { found: repos.length, reason: 'ok' } : { reason: 'no-roots' }
   } catch {
     state.completedSignature = undefined
+
+    return { reason: 'failed' }
   } finally {
     state.runningSignature = undefined
 
@@ -1413,6 +1446,7 @@ export async function deleteProject(id: string): Promise<void> {
   // exactly what the auto tiers key on (sessions left in it, and the disk scan), so without this
   // the row the user just removed comes straight back as an auto-discovered one.
   const removed = snap.projects.find(project => project.id === id)
+
   const removedPaths = [
     removed?.primary_path,
     ...(removed?.folders ?? []).map(folder => folder.path)

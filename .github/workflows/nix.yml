@@ -159,7 +159,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          package="$(nix build "path:$RUNNER_TEMP/release-source#hermes-agent" --no-link --print-out-paths)"
+          package="$(nix build "path:$RUNNER_TEMP/release-source#default" --no-link --print-out-paths)"
           actual="$("$package/bin/hermes" --version)"
           ACTUAL_VERSION="$actual" python3 - <<'PY'
           import os

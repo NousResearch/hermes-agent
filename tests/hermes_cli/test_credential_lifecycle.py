@@ -10,7 +10,9 @@ All fake secrets are constructed at runtime so no key-shaped literal ever
 lands in the repo.
 """
 
+import errno
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +26,10 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 FAKE_ZAI_KEY = "zk-" + "a" * 24
 FAKE_OAUTH_TOKEN = "oa-" + "b" * 24
 NEW_KEY = "zk-" + "c" * 24
+
+FAULT_ENV_VAR = "AUDIT_PROVIDER_API_KEY"
+FAULT_OLD_KEY = "old-" + "d" * 24
+FAULT_NEW_KEY = "new-" + "e" * 24
 
 
 @pytest.fixture
@@ -113,6 +119,157 @@ def test_delete_clears_provider_models_cache(hermes_home):
 
 def _write_config(home, text):
     home.joinpath("config.yaml").write_text(text, encoding="utf-8")
+
+
+def _seed_fault_transaction(home, monkeypatch):
+    """One env credential mirrored by both runtime precedence-bearing inline schemas."""
+    monkeypatch.delenv(FAULT_ENV_VAR, raising=False)
+    env_path = home / ".env"
+    config_path = home / "config.yaml"
+    env_path.write_text(
+        f"# keep env comment\n{FAULT_ENV_VAR}={FAULT_OLD_KEY}\nUNCHANGED=value\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "# keep config comment\n"
+        "model:\n"
+        "  provider: custom\n"
+        "  default: audit/model\n"
+        "  base_url: https://audit.invalid/v1\n"
+        f"  key_env: {FAULT_ENV_VAR}  # keep inline comment\n"
+        f"  api_key: {FAULT_OLD_KEY}\n"
+        "providers:\n"
+        "  audit-endpoint:\n"
+        "    base_url: https://audit.invalid/v1\n"
+        f"    api_key: {FAULT_OLD_KEY}\n"
+        "unrelated: \"off\"\n",
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        env_path.chmod(0o640)
+        config_path.chmod(0o640)
+
+    from hermes_cli import config as config_mod
+
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+    config_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+    config_mod.invalidate_env_cache()
+    return env_path, config_path
+
+
+def _fail_first_write(monkeypatch, target, name):
+    real = getattr(target, name)
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.EIO, f"injected {name} failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, fail_once)
+    return lambda: calls
+
+
+def _assert_transaction_artifacts_preserved(env_path, config_path):
+    env_text = env_path.read_text(encoding="utf-8")
+    config_text = config_path.read_text(encoding="utf-8")
+    assert "# keep env comment" in env_text
+    assert "UNCHANGED=value" in env_text
+    assert "# keep config comment" in config_text
+    assert "# keep inline comment" in config_text
+    assert 'unrelated: "off"' in config_text
+    if os.name == "posix":
+        assert env_path.stat().st_mode & 0o777 == 0o640
+        assert config_path.stat().st_mode & 0o777 == 0o640
+
+
+def _resolved_audit_runtime_key():
+    from hermes_cli import config as config_mod
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+    config_mod.invalidate_env_cache()
+    return resolve_runtime_provider(requested="custom")["api_key"]
+
+
+@pytest.mark.parametrize("failed_write", ["config", "env"])
+def test_rotation_retries_each_failed_write_and_converges(
+    hermes_home, monkeypatch, failed_write
+):
+    """A failed mirror-first rotation keeps .env provenance for a convergent retry."""
+    from hermes_cli import config as config_mod
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+
+    env_path, config_path = _seed_fault_transaction(hermes_home, monkeypatch)
+    target_name = "atomic_config_replace" if failed_write == "config" else "save_env_value"
+    call_count = _fail_first_write(monkeypatch, config_mod, target_name)
+
+    with pytest.raises(OSError, match=f"injected {target_name} failure"):
+        save_provider_env_credential(FAULT_ENV_VAR, FAULT_NEW_KEY)
+
+    # If the mirror write failed, neither store moved. If .env failed, every higher-precedence
+    # mirror already points at the requested value while .env retains the old retry provenance.
+    assert config_mod.load_env()[FAULT_ENV_VAR] == FAULT_OLD_KEY
+    config_after_fault = config_mod.read_user_config_raw(config_path)
+    expected_inline = FAULT_OLD_KEY if failed_write == "config" else FAULT_NEW_KEY
+    assert config_after_fault["model"]["api_key"] == expected_inline
+    assert config_after_fault["providers"]["audit-endpoint"]["api_key"] == expected_inline
+
+    result = save_provider_env_credential(FAULT_ENV_VAR, FAULT_NEW_KEY)
+
+    assert result["ok"] is True
+    assert call_count() == 2
+    assert config_mod.load_env()[FAULT_ENV_VAR] == FAULT_NEW_KEY
+    final_config = config_mod.read_user_config_raw(config_path)
+    assert final_config["model"]["api_key"] == FAULT_NEW_KEY
+    assert final_config["providers"]["audit-endpoint"]["api_key"] == FAULT_NEW_KEY
+    assert FAULT_OLD_KEY not in env_path.read_text(encoding="utf-8")
+    assert FAULT_OLD_KEY not in config_path.read_text(encoding="utf-8")
+    assert _resolved_audit_runtime_key() == FAULT_NEW_KEY
+    _assert_transaction_artifacts_preserved(env_path, config_path)
+
+
+@pytest.mark.parametrize("failed_write", ["config", "env"])
+def test_revocation_retries_each_failed_write_and_converges(
+    hermes_home, monkeypatch, failed_write
+):
+    """A failed mirror-first revocation keeps .env provenance for a convergent retry."""
+    from hermes_cli import config as config_mod
+    from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+    env_path, config_path = _seed_fault_transaction(hermes_home, monkeypatch)
+    target_name = "atomic_config_replace" if failed_write == "config" else "remove_env_value"
+    call_count = _fail_first_write(monkeypatch, config_mod, target_name)
+
+    with pytest.raises(OSError, match=f"injected {target_name} failure"):
+        remove_provider_env_credential(FAULT_ENV_VAR)
+
+    assert config_mod.load_env()[FAULT_ENV_VAR] == FAULT_OLD_KEY
+    config_after_fault = config_mod.read_user_config_raw(config_path)
+    if failed_write == "config":
+        assert config_after_fault["model"]["api_key"] == FAULT_OLD_KEY
+        assert config_after_fault["providers"]["audit-endpoint"]["api_key"] == FAULT_OLD_KEY
+    else:
+        assert "api_key" not in config_after_fault["model"]
+        assert "api_key" not in config_after_fault["providers"]["audit-endpoint"]
+
+    result = remove_provider_env_credential(FAULT_ENV_VAR)
+
+    assert result["ok"] is True
+    assert result["found"] is True
+    assert call_count() == 2
+    assert FAULT_ENV_VAR not in config_mod.load_env()
+    final_config = config_mod.read_user_config_raw(config_path)
+    assert "api_key" not in final_config["model"]
+    assert "api_key" not in final_config["providers"]["audit-endpoint"]
+    assert FAULT_OLD_KEY not in env_path.read_text(encoding="utf-8")
+    assert FAULT_OLD_KEY not in config_path.read_text(encoding="utf-8")
+    assert _resolved_audit_runtime_key() != FAULT_OLD_KEY
+    _assert_transaction_artifacts_preserved(env_path, config_path)
 
 
 def test_update_rotates_config_yaml_model_mirror(hermes_home):

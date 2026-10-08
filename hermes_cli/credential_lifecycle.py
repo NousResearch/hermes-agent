@@ -176,17 +176,25 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, require_env_writable, save_env_value
+    from hermes_cli.config import (
+        load_env,
+        require_env_writable,
+        save_env_value,
+        validate_env_var_name_for_write,
+    )
 
-    # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
-    # scrub below would still move the new value into config.yaml.
+    # A locked or invalid key must fail before the mirror-first transaction changes config.yaml.
+    # save_env_value's lock refusal returns like a success, so the lifecycle preflights both gates.
     require_env_writable(env_var, "set")
+    validate_env_var_name_for_write(env_var)
     old_value = load_env().get(env_var)
-    save_env_value(env_var, value)
-
     config_updates: List[str] = []
     if value and old_value and old_value != value:
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
+    # The env value is the retry provenance for value-matched mirrors. Reconcile higher-precedence
+    # inline copies first so a failed config write leaves it intact; if this write fails instead,
+    # retry still sees ``old_value`` and can finish the same idempotent transition.
+    save_env_value(env_var, value)
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
     providers = _providers_for_env_var(env_var)
@@ -207,9 +215,11 @@ def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
     require_env_writable(env_var, "remove")
     old_value = load_env().get(env_var)
+    # Keep the env value until every higher-precedence inline copy is gone. It is both the match
+    # key and durable retry provenance when the config write fails.
+    config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)
-    config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
 
     return {
         "ok": True,

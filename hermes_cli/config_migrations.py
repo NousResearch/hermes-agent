@@ -696,10 +696,19 @@ def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
     present = [key for key in _RETIRED_TIRITH_KEYS if key in security]
     if not present:
         return
+    # A fail-closed setup was relying on tirith to block commands: tell that user where it went.
+    strict = security.get("tirith_fail_open") is False
     for key in present:
         del security[key]
     _commit(config, results, quiet, "removed security.tirith_* (scanner no longer bundled)",
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
+    if strict:
+        message = ("You had tirith set to block commands (tirith_fail_open: false). Tirith is now a plugin "
+                   "maintained by its author: https://github.com/sheeki03/hermes-plugin-tirith "
+                   "(`hermes plugins install tirith` once it is in the catalog).")
+        results["warnings"].append(message)
+        if not quiet:
+            print(f"  ⚠ {message}")
 
 
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (

@@ -21,3 +21,17 @@ class TestRetiredTirithKeys:
         assert raw["security"] == {"redact_secrets": True}
         assert not (raw.get("plugins") or {}).get("enabled")
         assert not any(key.startswith("tirith") for key in DEFAULT_CONFIG["security"])
+
+
+    def test_v50_points_fail_closed_users_at_the_plugin(self, tmp_path, monkeypatch):
+        """Only a user who had tirith blocking commands (fail_open false) is told where it went."""
+        from hermes_cli.config_migrations import run_migrations
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for fail_open, expect in ((False, True), (True, False)):
+            (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+                "_config_version": 49, "security": {"tirith_enabled": True, "tirith_fail_open": fail_open},
+            }), encoding="utf-8")
+            results = {"env_added": [], "config_added": [], "warnings": []}
+            run_migrations(49, results, quiet=True)
+            assert any("sheeki03/hermes-plugin-tirith" in w for w in results["warnings"]) is expect

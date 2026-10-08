@@ -17,7 +17,7 @@ from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace')
+_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 _PS_FLAGS = ("-NoProfile", "-NonInteractive")
 _FILE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
@@ -42,7 +42,7 @@ def _probe(argv: list, timeout: int, ok, *, missing: str | None = None) -> bool:
 def _pipe_to_file(argv: list, dest: Path) -> bool:
     """Run *argv* with stdout redirected into *dest*; True when a non-empty file resulted."""
     with open(dest, "wb") as f:
-        subprocess.run(argv, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
     return _nonempty(dest)
 
 
@@ -163,7 +163,7 @@ def _macos_save_file_image(dest: Path) -> bool:
 def _macos_pngpaste(dest: Path) -> bool:
     """pngpaste (brew install pngpaste) — fastest, cleanest."""
     try:
-        r = subprocess.run(["pngpaste", str(dest)], capture_output=True, timeout=3)
+        r = subprocess.run(["pngpaste", str(dest)], stdin=subprocess.DEVNULL, capture_output=True, timeout=3)
         return r.returncode == 0 and _nonempty(dest)
     except FileNotFoundError:
         pass  # pngpaste not installed
@@ -360,7 +360,7 @@ def _convert_to_png(path: Path) -> bool:
     tmp = path.with_suffix(".bmp")
     try:
         path.rename(tmp)
-        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], capture_output=True,
+        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=5)
         if r.returncode == 0 and _nonempty(path):
             tmp.unlink(missing_ok=True)

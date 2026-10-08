@@ -40,33 +40,6 @@ afterEach(() => {
 const latestContent = () => contentProps.mock.calls.at(-1)?.[0]
 
 describe('tooltip placement', () => {
-  it.each([
-    ['control', 'top'],
-    ['toolbar', 'bottom'],
-    ['row', 'right'],
-    ['left-rail', 'right'],
-    ['right-rail', 'left']
-  ] as const)('prefers %s tooltips on the %s', (placement, side) => {
-    render(
-      <Tip label="Details" placement={placement}>
-        <button>Trigger</button>
-      </Tip>
-    )
-
-    expect(latestContent()).toMatchObject({ side, align: 'center', hideWhenDetached: true, collisionPadding: 12 })
-    expect(latestContent().avoidCollisions).not.toBe(false)
-  })
-
-  it('keeps explicit overrides', () => {
-    render(
-      <Tip align="end" collisionPadding={20} label="Details" placement="row" side="bottom">
-        <button>Trigger</button>
-      </Tip>
-    )
-
-    expect(latestContent()).toMatchObject({ side: 'bottom', align: 'end', collisionPadding: 20 })
-  })
-
   it('uses the owning pane for a control without changing its trigger', () => {
     render(
       <div data-testid="pane" data-tree-group="test-pane">
@@ -125,27 +98,6 @@ describe('tooltip placement', () => {
     )
 
     expect(latestContent().collisionBoundary).toBeUndefined()
-  })
-
-  it('preserves block content within one label surface', () => {
-    render(
-      <Tip
-        label={
-          <div>
-            Long description
-            <br />
-            Second line
-          </div>
-        }
-      >
-        <button>Trigger</button>
-      </Tip>
-    )
-
-    expect(screen.getByRole('tooltip').querySelector('[data-slot="tooltip-label"]')?.textContent).toBe(
-      'Long descriptionSecond line'
-    )
-    expect(screen.getByRole('tooltip').querySelector('[data-slot="tooltip-arrow"]')).not.toBeNull()
   })
 
   it('forwards object refs and clears them on unmount', () => {

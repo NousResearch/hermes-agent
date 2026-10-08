@@ -31,7 +31,7 @@ def test_list_authenticated_providers_includes_full_models_list_from_user_provid
     
     Regression test: previously only default_model was shown in /model picker.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     
     user_providers = {
@@ -77,7 +77,7 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     list-format ``models:`` and silently dropped dict-format entries,
     even though Hermes's own writer and downstream readers use dict format.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     user_providers = {
@@ -121,7 +121,7 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     showing only the configured subset in the /model picker, even though their
     /v1/models endpoint exposed newly added models.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("CRS_TEST_KEY", "sk-test")
 
@@ -184,7 +184,7 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     ``default_model``, so new-shape entries written by Hermes's own writer
     surfaced with empty ``api_url`` and no default.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     user_providers = {
@@ -213,6 +213,48 @@ def test_list_authenticated_providers_accepts_base_url_and_singular_model(monkey
     assert custom["total_models"] == 3
 
 
+def test_list_authenticated_providers_splits_comma_default_model_chain(monkeypatch):
+    """Comma-separated ``default_model`` chains surface as individually selectable entries.
+
+    Regression (fixes #50557): a volcengine-agent-plan style fallback chain in
+    ``providers:`` rendered as one dropdown entry in the Desktop picker, which
+    feeds off this payload. The raw chain stays first as the default (fallback)
+    pick; the split ids follow, deduped in order.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+
+    user_providers = {
+        "volcengine-agent-plan": {
+            "name": "VOLCENGINE-AGENT-PLAN",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "default_model": "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="volcengine-agent-plan",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "volcengine-agent-plan"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["models"] == [
+        "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+    ]
+    assert user_prov["total_models"] == 4
+
+
 def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monkeypatch):
     """When the same slug appears in both ``providers:`` dict and
     ``custom_providers:`` list, emit exactly one row (providers: dict wins
@@ -221,7 +263,7 @@ def test_list_authenticated_providers_dedupes_when_user_and_custom_overlap(monke
     Regression: section 3 previously had no ``seen_slugs`` check, so
     overlapping entries produced two picker rows for the same provider.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     providers = list_authenticated_providers(
@@ -261,7 +303,7 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     emitted ``custom:openrouter`` rows for the same endpoint — both labelled
     identically, bypassing ``seen_slugs`` dedup because the slug shapes differ.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     # Singular ``model:``-only entries are un-narrowed → section 3 now probes
     # them; stub the probe so the test stays hermetic (endpoints are fake).
@@ -360,7 +402,7 @@ def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeyp
 
 def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     """/model switch should resolve credentials for providers: dict providers."""
-    import yaml
+    import hermes_yaml as yaml
     
     config = {
         "providers": {
@@ -373,7 +415,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     }
     
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(yaml.dump(config))
+    config_file.write_text(yaml.safe_dump(config))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     
     # Mock validation to pass
@@ -472,7 +514,7 @@ def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
     vLLM) that don't require auth previously showed an empty/minimal model
     list because section 3 gated probing on ``api_url and api_key``.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     probed = {}
@@ -519,7 +561,7 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     ``default_model`` entry suppressed live discovery and the /model picker
     showed a one-line menu for local no-auth endpoints.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
 
     probed = {}
@@ -566,7 +608,7 @@ def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
     curated catalog. The current model is now injected at the front of the
     current provider's list.
     """
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     # Pin a small curated catalog so the assertion is deterministic.
@@ -594,7 +636,7 @@ def test_current_custom_model_is_surfaced_in_builtin_provider_row(monkeypatch):
 def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     """The current model is only injected into the CURRENT provider's row,
     never into other providers (which can't serve it)."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("NOUS_API_KEY", "sk-test")
@@ -621,7 +663,7 @@ def test_overlay_provider_row_merges_configured_models(monkeypatch):
     it already extends built-in rows; the picker used to show only the live/current id (#27989)."""
     from hermes_cli.providers import HERMES_OVERLAYS
 
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {"azure-foundry": HERMES_OVERLAYS["azure-foundry"]})
     monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_k: ["gpt-5.6-sol", "shared"])
@@ -644,7 +686,7 @@ def test_entra_only_azure_foundry_row_is_listed_without_api_key(monkeypatch, bas
     from hermes_cli.model_switch_providers import _collect_authed_provider_slugs
     from hermes_cli.providers import HERMES_OVERLAYS
 
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {"azure-foundry": HERMES_OVERLAYS["azure-foundry"]})
     monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_k: ["gpt-5.6-sol"])

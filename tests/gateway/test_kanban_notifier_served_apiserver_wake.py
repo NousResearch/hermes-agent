@@ -156,7 +156,7 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 
@@ -196,12 +196,16 @@ def test_served_profile_wake_runs_in_process_only_for_the_session_it_owns(served
     assert _unseen(task) == []
 
     # Ownership of the exact session — not the platform — is the only proof.
-    resolve = lambda sub, profile="builder", **kw: _adapter_for_subscription(  # noqa: E731
+    resolve = lambda sub, profile="builder", **kw: _adapter_for_subscription(
         _make_runner(**kw), Platform.API_SERVER, sub, profile)
     assert resolve(_api_sub(chat_id="20260918_051500_deadbe")) is None           # unknown session
     assert resolve(_api_sub(), profile="atlas") is None                          # not the owner
     assert resolve(_api_sub(), profile="ghost") is None                          # unserved profile
-    assert resolve(_api_sub(), builder_adapters={Platform.DISCORD: object()}) is None  # own boundary
+    # An adapter on ANOTHER platform is not a boundary for this one (#115460); an own api_server
+    # adapter is — the primary never stands in for a credential the profile holds itself.
+    assert resolve(_api_sub(), builder_adapters={Platform.DISCORD: object()}) is not None
+    own_api = object()
+    assert resolve(_api_sub(), builder_adapters={Platform.API_SERVER: own_api}) is own_api
     _own_session(served.atlas, "stamped-elsewhere", "builder")                   # foreign store
     assert resolve(_api_sub(chat_id="stamped-elsewhere")) is None
     # A row in the served store stamped for another profile is not ownership either.

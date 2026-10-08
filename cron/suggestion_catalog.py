@@ -30,11 +30,11 @@ class CatalogEntry:
     key: str                 # stable dedup key (never re-offered once dismissed)
     title: str
     description: str
-    job_spec: Dict[str, Any]  # kwargs for cron.jobs.create_job
+    job_spec: dict[str, Any]  # kwargs for cron.jobs.create_job
 
 
 # The curated set. Schedules use the cron/interval syntax create_job accepts.
-CATALOG: List[CatalogEntry] = [
+CATALOG: list[CatalogEntry] = [
     CatalogEntry(
         key="catalog:daily-briefing",
         title="Daily briefing",
@@ -116,9 +116,9 @@ CATALOG: List[CatalogEntry] = [
 
 
 def seed_catalog_suggestions(
-    *, add_fn: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
-    keys: Optional[List[str]] = None,
-) -> List[Dict[str, Any]]:
+    *, add_fn: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
+    keys: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
     """Register catalog entries as pending suggestions.
 
     ``add_fn`` defaults to ``cron.suggestions.add_suggestion`` (injectable for tests). ``keys``
@@ -130,7 +130,7 @@ def seed_catalog_suggestions(
         from cron.suggestions import add_suggestion as add_fn  # type: ignore[assignment]
 
     wanted = set(keys) if keys else None
-    created: List[Dict[str, Any]] = []
+    created: list[dict[str, Any]] = []
     for entry in CATALOG:
         if wanted is not None and entry.key not in wanted:
             continue

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.incidents as incidents
+from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
 from hermes_time import now as _hermes_now
@@ -50,7 +50,6 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
 
     def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
-        return None
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
@@ -92,6 +91,25 @@ def test_new_failure_creates_incident_and_is_new(monkeypatch, tmp_path):
     assert row["failure_type"] == "timeout"
     assert row["first_seen_at"] == row["last_seen_at"]
     assert inc.count_incidents() == 1
+
+
+def test_incidents_list_newest_instant_first_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    inc = _point_db(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    )
+    earlier, _ = inc.upsert_incident("job-1", "first failure")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    )
+    later, _ = inc.upsert_incident("job-2", "second failure")
+
+    assert [row["id"] for row in inc.list_incidents()] == [later, earlier]
 
 
 def test_same_signature_dedups_same_incident(monkeypatch, tmp_path):
@@ -284,6 +302,26 @@ def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
         _tick_failing(job, tmp_path, deliveries, error="boom signature B")
         assert len(deliveries) == 2, "changed signature must re-alert"
         assert inc.count_incidents() == 2
+
+
+def test_ack_holds_when_only_a_measured_duration_differs(monkeypatch, tmp_path):
+    """The inactivity watchdog polls every few seconds, so the same stall reports a slightly
+    different idle time each run. That is the same failure: the ack must keep it silent."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    stall = "Cron job 'x' idle for {}s (limit 600s) — last activity: waiting for tool"
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(601))
+        assert len(deliveries) == 1
+        (first,) = inc.list_incidents()
+        assert inc.ack_incident(first["id"]) is True
+
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(604))
+
+        assert len(deliveries) == 1, "acked stall must not re-ping on a new idle reading"
+        assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
 
 
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):

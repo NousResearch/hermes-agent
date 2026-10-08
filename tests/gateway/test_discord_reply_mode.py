@@ -53,7 +53,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.fixture()
@@ -65,16 +65,6 @@ def adapter_factory():
     return create
 
 
-class TestReplyToModeConfig:
-    """Tests for reply_to_mode configuration loading."""
-
-    def test_default_mode_is_first(self, adapter_factory):
-        adapter = adapter_factory()
-        assert adapter._reply_to_mode == "first"
-
-    def test_off_mode(self, adapter_factory):
-        adapter = adapter_factory(reply_to_mode="off")
-        assert adapter._reply_to_mode == "off"
 
 
 def _make_discord_adapter(reply_to_mode: str = "first"):

@@ -1,0 +1,162 @@
+"""Regression tests for the macOS `open` frontmost raise-ladder.
+
+Issue #95261: on macOS, `open <file>` / `open -a <App> <file>` returns exit 0
+and genuinely opens the document, but the window lands BEHIND the Hermes
+desktop window (Hermes is typically maximised), so the user sees nothing happen
+while the agent reports success.
+
+The fix appends a verified raise-ladder after the `open` that brings the opened
+app to the front. These tests pass the platform as data (``system="Darwin"`` /
+``system="Linux"``) so they exercise the ladder and prove the no-op identically
+on any OS — no monkeypatching of ``platform``.
+
+Regression proof: if ``_transform_macos_open_command`` is reverted (i.e. stops
+transforming on Darwin), ``test_bare_open_file_is_transformed_on_darwin`` and
+``test_open_dash_a_file_is_transformed_on_darwin`` FAIL.
+"""
+
+import tools.terminal_tool_macos_open as macos_open
+
+# Markers that must appear in a transformed command.
+LADDER_MARKERS = ("osascript", "activate", "lsappinfo", "frontmost")
+
+
+def _assert_transformed(command, system="Darwin"):
+    transformed = macos_open._transform_macos_open_command(command, system=system)
+    assert transformed is not None
+    assert transformed != command
+    assert transformed.startswith(command + "; ")
+    for marker in LADDER_MARKERS:
+        assert marker in transformed
+    return transformed
+
+
+def _assert_unchanged(command, system="Darwin"):
+    assert macos_open._transform_macos_open_command(command, system=system) == command
+
+
+# --- Darwin: file-opening `open` invocations ARE transformed ---------------
+
+def test_bare_open_file_is_transformed_on_darwin():
+    _assert_transformed("open /path/to/file.pdf")
+
+
+def test_open_dash_a_file_is_transformed_on_darwin():
+    _assert_transformed("open -a Preview /path/to/file.pdf")
+
+
+def test_open_dash_a_app_with_spaces_is_transformed_on_darwin():
+    transformed = _assert_transformed("open -a 'Google Chrome' /path/to/file.pdf")
+    # App name with spaces must be preserved in the ladder.
+    assert "Google Chrome" in transformed
+
+
+# --- Non-Darwin: pure no-op ------------------------------------------------
+
+def test_bare_open_file_unchanged_on_linux():
+    _assert_unchanged("open /path/to/file.pdf", system="Linux")
+
+
+def test_open_dash_a_file_unchanged_on_linux():
+    _assert_unchanged("open -a Preview /path/to/file.pdf", system="Linux")
+
+
+# --- Darwin: non-file-opening `open` invocations are NOT transformed -------
+
+def test_open_with_no_args_not_transformed():
+    _assert_unchanged("open")
+
+
+def test_open_dash_R_not_transformed():
+    _assert_unchanged("open -R /path/to/file.pdf")
+
+
+def test_open_dash_e_not_transformed():
+    _assert_unchanged("open -e /path/to/file.pdf")
+
+
+def test_open_dash_t_not_transformed():
+    _assert_unchanged("open -t /path/to/file.pdf")
+
+
+def test_open_dash_f_not_transformed():
+    _assert_unchanged("open -f")
+
+
+def test_open_dash_g_not_transformed():
+    _assert_unchanged("open -g /path/to/file.pdf")
+
+
+def test_open_dash_n_not_transformed():
+    _assert_unchanged("open -n /path/to/file.pdf")
+
+
+def test_open_dash_W_not_transformed():
+    _assert_unchanged("open -W /path/to/file.pdf")
+
+
+def test_open_dash_h_not_transformed():
+    _assert_unchanged("open -h")
+
+
+def test_open_dash_b_not_transformed():
+    _assert_unchanged("open -b com.apple.Preview")
+
+
+def test_open_dash_D_not_transformed():
+    _assert_unchanged("open -D /path/to/file.pdf")
+
+
+def test_open_dash_a_with_no_file_not_transformed():
+    _assert_unchanged("open -a Preview")
+
+
+# --- Darwin: non-`open` commands are NOT transformed ------------------------
+
+def test_echo_not_transformed():
+    _assert_unchanged("echo hello")
+
+
+def test_ls_not_transformed():
+    _assert_unchanged("ls -la")
+
+
+def test_cat_not_transformed():
+    _assert_unchanged("cat file.txt")
+
+
+def test_compound_command_not_transformed():
+    _assert_unchanged("open /path/to/file.pdf && echo done")
+
+
+def test_none_input_returns_none():
+    assert macos_open._transform_macos_open_command(None, system="Darwin") is None
+
+
+# --- Outcome reporting: distinct open-but-not-front outcome ----------------
+
+def test_ladder_reports_distinct_outcomes_from_final_state():
+    transformed = _assert_transformed("open -a Preview /path/to/file.pdf")
+    # Success and open-but-not-front are two distinct, observable outcomes
+    # read from the FINAL frontmost state — a focus race can never read as
+    # plain success (issue #95261 requirement 2).
+    assert "is now frontmost" in transformed
+    assert "opened but another application holds focus" in transformed
+    # The not-front branch names whichever application actually holds focus.
+    assert "name of first application process whose frontmost is true" in transformed
+
+def test_ladder_is_valid_shell_syntax_for_quoting_edge_cases():
+    import subprocess
+
+    for command in (
+        "open /path/to/file.pdf",
+        "open '/Users/some one/file name.pdf'",
+        'open -a "Google Chrome" "/path/to/file.pdf"',
+        "open -a Preview file.txt",
+    ):
+        transformed = macos_open._transform_macos_open_command(command, system="Darwin")
+        assert transformed is not None and transformed != command, command
+        result = subprocess.run(
+            ["bash", "-n", "-c", transformed], capture_output=True, text=True
+        )
+        assert result.returncode == 0, (command, result.stderr)

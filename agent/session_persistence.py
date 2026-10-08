@@ -14,6 +14,7 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER,
     ContextCompressor,
     _newest_checkpoint_carrier,
+    _strip_persistence_markers,
     drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
@@ -22,6 +23,9 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
+from agent.message_metadata import (
+    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
+    tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -66,7 +70,7 @@ def _safe_session_filename_component(session_id: str) -> str:
     return f"{sanitized}_{hashlib.sha256(raw.encode('utf-8', errors='surrogatepass')).hexdigest()[:12]}"
 
 
-def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
+def _override_replaces_content(msg: dict, content: Any, override: Any) -> bool:
     """May the persist override replace ``content``? A plain-text override must not replace native image/audio
     blocks (a list override is the clean multimodal payload and does), nor a message MERGED with a compaction
     summary (overwriting would drop the summary)."""
@@ -77,7 +81,17 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     )
 
 
-def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
+def _content_with_turn_override(msg: dict, content: Any, override: Any) -> Any:
+    """Replace only the absorbed current turn, leaving unanswered history intact. The join matches
+    ``_merge_consecutive_users``; a row that no longer holds the prefix takes the plain override."""
+    prefix = msg.get(MERGED_TURN_PREFIX)
+    if isinstance(content, str) and isinstance(override, str) and isinstance(prefix, str):
+        if content == prefix or content.startswith(prefix + "\n\n"):
+            return prefix + "\n\n" + override if override else prefix
+    return override
+
+
+def durable_user_row_content(agent, msg: dict, content: Any, api_content: Any) -> tuple[Any, Any]:
     """``(content, api_content)`` as the current turn's user row is written: the persist override is the
     clean transcript, the live content is what the wire sent — so when they differ and nothing else was
     injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
@@ -86,11 +100,11 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     if _override_replaces_content(msg, content, override):
         if api_content is None and isinstance(content, str) and content != override:
             api_content = content
-        content = override
+        content = _content_with_turn_override(msg, content, override)
     return content, api_content
 
 
-def _summary_display_kind(msg: Dict) -> Any:
+def _summary_display_kind(msg: dict) -> Any:
     """Standalone handoffs are hidden so they never occupy the active user slot in retry/undo dispatch;
     merge-into-tail carriers keep their prior visibility."""
     if (
@@ -129,6 +143,42 @@ def _persist_lock(agent):
     return nullcontext() if lock is None else lock
 
 
+def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any) -> bool:
+    """Re-stage the transcript's unanswered tail row as THIS turn's user message; True when adopted.
+
+    A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
+    instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
+    so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
+    reuse it as this turn's user dict and the flush writes no second row. What differs per lane is only HOW
+    the dispatcher knows the DM is unanswered:
+
+    * ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` — the delivery lanes' re-run is a fresh CLI
+      process, told so through ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``.
+    * ``gateway.platforms.api_server`` — the peer-DM lane re-runs the turn in-process and calls this
+      directly on the agent it just built for the re-run (#115325).
+
+    The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
+    ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the
+    dispatcher retries that too. The DM is still unanswered while nothing after it is a plain assistant reply,
+    so it is adopted and the failed attempt's scaffolding leaves the in-memory transcript: the re-run starts
+    the turn over from the DM (the rows stay in the DB as the record of the failed attempt; the re-run's
+    answer lands after them as a valid continuation). Anything else declines — no user row at the tail, or a
+    different text there — so a person's deliberate re-send of the same text is never swallowed.
+    """
+    idx = next((i for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], dict) and history[i].get("role") == "user"), None)
+    if idx is None or history[idx].get("content") != query:
+        return False
+    if not all(isinstance(row, dict) and (row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")))
+               for row in history[idx + 1:]):
+        return False
+    tail = history[idx]
+    del history[idx:]
+    tail[_DB_PERSISTED_MARKER] = True
+    agent._pending_cli_user_message = tail
+    return True
+
+
 # --- flush phases (module-level so the flush also works bound onto duck-typed agents) ---
 
 def _db_flush_seed_ids(agent) -> set:
@@ -141,7 +191,7 @@ def _db_flush_seed_ids(agent) -> set:
     return seed_ids if isinstance(seed_ids, set) else set()
 
 
-def _db_flush_scan_start(agent, messages: List[Dict]) -> int:
+def _db_flush_scan_start(agent, messages: list[dict]) -> int:
     """Skip the identity-matched, still-marked prefix of the previous flush's snapshot."""
     scan_start = 0
     for prev, cur in zip(getattr(agent, "_db_flush_scan_prefix", None) or (), messages):
@@ -151,7 +201,7 @@ def _db_flush_scan_start(agent, messages: List[Dict]) -> int:
     return scan_start
 
 
-def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any]:
+def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any]:
     """Build the session-db row for ``msg``, applying the persist override to THIS row only."""
     role = msg.get("role", "unknown")
     content = msg.get("content")
@@ -173,30 +223,42 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         api_content = content
     # Key order is the divert-JSONL wire order (divert_session_transcript_jsonl).
     row = {
-        "role": role, "content": _durable_content(content), "tool_name": msg.get("tool_name"),
+        "role": role, "content": _durable_content(content),
+        "tool_name": msg.get("tool_name") or (msg.get("name") if role == "tool" else None),
         "tool_calls": msg["tool_calls"] if isinstance(msg.get("tool_calls"), list) else None,
-        "tool_call_id": msg.get("tool_call_id"), "finish_reason": msg.get("finish_reason"),
+        "tool_call_id": msg.get("tool_call_id"), "effect_disposition": msg.get("effect_disposition"),
+        "token_count": msg.get("token_count"), "finish_reason": msg.get("finish_reason"),
         **{k: msg.get(k) for k in _ROW_REASONING_KEYS},
         "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
-        "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        # Load-bearing for restart drain-window recovery dedup.
+        "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
+        "observed": bool(msg.get("observed")),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    # The merge witness rides on the survivor's row (an owned column: a row-addressed rewrite of the
+    # survivor writes it too), so a restart sees which rows the composite folded.
+    copy_identity_fields(msg, row)
+    if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
+        row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row
 
 
-def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optional[List[Dict]]):
-    """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction."""
+def _db_flush_collect(agent, messages: list[dict], conversation_history: Optional[list[dict]],
+                      replay_history: bool = False):
+    """Scan for un-flushed messages; returns ``(rows, msgs)`` to write in one transaction. ``replay_history``
+    (session-row heal) writes the history prefix again instead of stamping it as already durable."""
     seed_ids = _db_flush_seed_ids(agent)
     history_ids = {id(item) for item in (conversation_history or []) if isinstance(item, dict)}
     ov_idx = getattr(agent, "_persist_user_message_idx", None)
     # Also match the staged CLI dict by identity — the close safety-net may flush a shortened snapshot whose
     # turn index refers to the full history.
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
-    batch_rows: List[Dict[str, Any]] = []
-    batch_msgs: List[Dict] = []
+    batch_rows: list[dict[str, Any]] = []
+    batch_msgs: list[dict] = []
+    tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
@@ -204,22 +266,28 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
+        is_history = id(msg) in history_ids
         if (
-            id(msg) in history_ids or id(msg) in seed_ids
+            (is_history and not replay_history) or id(msg) in seed_ids
         ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
             continue
-        if getattr(agent, "_mute_notification_reply", False):
+        if getattr(agent, "_mute_notification_reply", False) and not is_history:
             # Only new rows, never the cached history prefix. Keep evidence/model
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
             msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
+        if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
+            # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
+            # minted (same-batch pairing happens inside the insert).
+            if (tool_uid := tool_call_uid_from_history(messages, msg_idx, tool_uid_owners)) is not None:
+                msg[TOOL_CALL_UID] = tool_uid
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
+def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
@@ -260,18 +328,74 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
     return True
 
 
-def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int) -> bool:
-    """Classify a failed flush; True when the caller should retry once on an adopted compression tip."""
+def _db_flush_session_row_gone(agent, session_id: Optional[str]) -> bool:
+    """True only when ``session_id``'s row is confirmed absent; a failed lookup is not proof."""
+    try:
+        return agent._session_db.get_session(session_id) is None
+    except Exception as lookup_exc:
+        logger.warning("session row lookup failed for %s: %s", session_id, lookup_exc)
+        return False
+
+
+def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adoption_budget: int,
+                     messages: list[dict]) -> Optional[str]:
+    """Classify a failed flush and name the one retry the caller should take, or None to fail closed.
+
+    ``"adopted"``: a compression-closed session moved onto its live tip. ``"healed"``: the session row was
+    deleted under the live agent and has been recreated (unparented for a delegate child whose parent went
+    with it); flush markers are reset so the caller replays the full in-memory transcript. Either retry is
+    taken at most once (``adoption_budget``)."""
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
-    # explanation can distinguish lock contention from disk-full/read-only.
+    # explanation names the real cause.
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
+    if agent._last_persistence_error_cause == "session_row_missing":
+        # The session row was removed under this live agent (`hermes sessions delete`, the Desktop/web
+        # delete, bulk prune, a profile-repair move, an in-place store rebuild — none visible to the
+        # cached agent, so the cached `_session_db_created` flag is stale and every later append hits
+        # the FK). The deletion already erased the session's message rows with it, so the durable
+        # transcript is empty: drop the stale flag, reset the flush markers, and replay the FULL
+        # in-memory transcript onto the recreated row — not just the current tail (#123583).
+        # The FK class also covers the sessions table's own parent/system-prompt FKs, and create is an
+        # upsert: only heal when the row is really gone, or the replay would duplicate a live transcript.
+        if adoption_budget <= 0 or not _db_flush_session_row_gone(agent, agent.session_id):
+            return None
+        _strip_persistence_markers(messages)
+        # The durable history prefix is gone with the row: keep a replay pending until a write succeeds, so
+        # a failed recreate or a failed retry write can't let a later flush stamp that prefix durable.
+        agent._session_row_replay_pending = agent.session_id
+        agent._flushed_db_message_ids = set()
+        agent._last_flushed_db_idx = 0
+        agent._session_db_created = False
+        agent._ensure_db_session()
+        parent_id = agent._parent_session_id
+        if not agent._session_db_created and parent_id and _db_flush_session_row_gone(agent, parent_id):
+            # Delegate child whose parent was deleted (cascade): the row's own parent FK would reject every
+            # recreate. Create it unparented for this call only; the relay and hooks still use the parent id.
+            agent._parent_session_id = None
+            try:
+                agent._ensure_db_session()
+            finally:
+                agent._parent_session_id = parent_id
+        if not agent._session_db_created:
+            # Row creation failed too (transient store trouble): don't append into a guaranteed
+            # rollback — keep the batch unmarked so the next flush retries the whole thing. That flush
+            # recreates the row up front (no FK error, no heal); the pending replay covers the history prefix.
+            logger.warning("Session DB row for %s is missing and could not be recreated; will retry next flush",
+                           getattr(agent, "session_id", None))
+            return None
+        logger.warning("Session DB row for %s was removed under the live agent; recreated it and replaying the transcript",
+                       getattr(agent, "session_id", None))
+        return "healed"
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
-            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
+            # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
+            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
+                                            [{k: v for k, v in r.items() if k not in REPAIR_BOOKKEEPING_FIELDS}
+                                             for r in batch_rows])
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)
@@ -279,16 +403,17 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         # Compression race: another path rotated this session mid-write. Retry exactly once on the live tip; a
         # second closed-parent write fails closed.
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
-            return True
+            return "adopted"
         agent._compression_adoption_failed = True  # lets the turn explanation name rotation, not full-disk advice
     logger.warning("Session DB append_message failed: %s", e)
-    return False
+    return None
+
 
 
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
 
-    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
+    def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not
         leak into transcripts or resumed history."""
         idx = getattr(self, "_persist_user_message_idx", None)
@@ -301,13 +426,13 @@ class SessionPersistenceMixin:
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
         if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = override
+            msg["content"] = _content_with_turn_override(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp
         if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)
             msg["platform_message_id"] = platform_id
 
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _persist_session(self, messages: list[dict], conversation_history: list[dict] = None):
         """Save to SQLite on any exit path. Trailing empty-response scaffolding is dropped from
         the live list; the persist override is applied to the DB row only.
 
@@ -317,6 +442,9 @@ class SessionPersistenceMixin:
         """
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
+            # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
+            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
+            # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
@@ -325,37 +453,26 @@ class SessionPersistenceMixin:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
 
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
-        tool-result / assistant(tool_calls) pair the failed iteration left hanging — otherwise the next user
-        turn lands as ``...tool, user`` and providers return empty content forever."""
+    def _drop_trailing_empty_response_scaffolding(self, messages: list[dict]) -> None:
+        """Pop empty-response retry scaffolding from the tail. The
+        assistant(tool_calls) / tool rows before it stay: they were saved before the tools ran, so
+        dropping them from the live history only makes the model repeat a side effect the durable
+        transcript already records."""
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
 
-        def tail_role(role: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
-
-        dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
-            messages.pop()
-            dropped_scaffolding = True
-        if not dropped_scaffolding:
-            return
-        while tail_role("tool"):
-            messages.pop()
-        # Providers reject a dangling assistant(tool_calls) whose results were just popped.
-        if tail_role("assistant") and tail("tool_calls"):
             messages.pop()
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None):
+    def _flush_messages_to_session_db(self, messages: list[dict], conversation_history: Optional[list[dict]] = None):
         """Serialize direct and turn-boundary session flushes per agent."""
         with _persist_lock(self):
             return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
 
     def _flush_messages_to_session_db_unlocked(
-        self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None, _adoption_budget: int = 1,
+        self, messages: list[dict], conversation_history: Optional[list[dict]] = None, _adoption_budget: int = 1,
     ):
         """Persist un-flushed messages to SQLite. Dedup is the intrinsic ``_DB_PERSISTED_MARKER`` on each written
         dict — not positional slices (drift after sequence repair) nor an ``id(msg)`` set (address reuse). The
@@ -373,12 +490,15 @@ class SessionPersistenceMixin:
         # a write here would land the curator's turn in the user's real history.
         if getattr(self, "_persist_disabled", False) or not self._session_db:
             return None
-        batch_rows: List[Dict[str, Any]] = []
+        batch_rows: list[dict[str, Any]] = []
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
+            # getattr: object.__new__ test agents flush without running AIAgent init.
+            replay = getattr(self, "_session_row_replay_pending", None) == self.session_id
+            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history, replay)
             _db_flush_write(self, batch_rows, batch_msgs, messages)
+            self._session_row_replay_pending = None
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
@@ -386,11 +506,13 @@ class SessionPersistenceMixin:
             self._db_flush_scan_prefix = messages[:]
             return True
         except Exception as e:
-            if _db_flush_failed(self, e, batch_rows, _adoption_budget):
-                return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
-            return False
+            retry = _db_flush_failed(self, e, batch_rows, _adoption_budget, messages)
+            if retry is None:
+                return False
+            # After a heal the pending replay re-sends the history prefix instead of stamping it durable.
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
 
-    def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
+    def _get_messages_up_to_last_assistant(self, messages: list[dict]) -> list[dict]:
         """Messages before the last assistant turn (rollback point for a malformed final answer); all if none."""
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "assistant":
@@ -400,7 +522,7 @@ class SessionPersistenceMixin:
     _format_tools_for_system_message = _forward("agent.system_prompt", "format_tools_for_system_message")
     _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
+    def _save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
         """Save conversation trajectory to JSONL file."""
         if not self.save_trajectories:
             return

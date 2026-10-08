@@ -4619,6 +4619,7 @@ export interface GatewayReadyPayload {
   change_events: boolean
   replay_epoch: string
   heartbeat?: boolean | null
+  turn_alive_s?: number | null
 }
 /** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {
@@ -4721,6 +4722,15 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
+/** ``tui_gateway/turn_alive.py``: this session's turn is still running and nothing else was emitted for it in ``quiet_s`` seconds. */
+export interface TurnAlivePayload {
+  status: TurnAliveStatus
+  quiet_s: number
+  activity?: string | null
+  activity_age_s?: number | null
+}
+/** ``server._session_live_status`` values of a turn that is still running. */
+export type TurnAliveStatus = 'working' | 'starting'
 /** ``server._start_usage_ticker``. */
 export interface SessionUsagePayload {
   usage: Usage
@@ -5965,6 +5975,8 @@ export interface BackendGatewayEventMap {
   'tool.output_risk': ToolOutputRiskPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** Liveness for a running turn that has emitted nothing lately (a quiet tool call, a long prefill), so a client can tell a quiet turn from a dead one. Ephemeral: never sequenced or kept for replay. */
+  'turn.alive': TurnAlivePayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Live STT text so far while the user is still speaking. */
@@ -6050,6 +6062,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.generating',
   'tool.output_risk',
   'tool.start',
+  'turn.alive',
   'voice.interrupted',
   'voice.partial',
   'voice.status',

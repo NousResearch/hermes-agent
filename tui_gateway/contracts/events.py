@@ -55,6 +55,8 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
+    #: WebSocket transport only: a running turn quiet this many seconds gets a ``turn.alive`` frame.
+    turn_alive_s: float | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -221,6 +223,30 @@ class StatusUpdatePayload(Payload):
 
 
 event("status.update", StatusUpdatePayload, doc="Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …).")
+
+
+class TurnAliveStatus(WireEnum):
+    """``server._session_live_status`` values of a turn that is still running."""
+
+    working = "working"
+    starting = "starting"
+
+
+class TurnAlivePayload(Payload):
+    """``tui_gateway/turn_alive.py``: this session's turn is still running and nothing else was emitted for it in
+    ``quiet_s`` seconds."""
+
+    status: TurnAliveStatus
+    quiet_s: float
+    #: The agent's own last-activity label ("waiting for stream response (60s, prefill)"), when it runs here.
+    activity: str | None = None
+    #: Seconds since that label was stamped.
+    activity_age_s: float | None = None
+
+
+event("turn.alive", TurnAlivePayload,
+      doc="Liveness for a running turn that has emitted nothing lately (a quiet tool call, a long prefill), so a "
+          "client can tell a quiet turn from a dead one. Ephemeral: never sequenced or kept for replay.")
 
 
 class SessionUsagePayload(Payload):

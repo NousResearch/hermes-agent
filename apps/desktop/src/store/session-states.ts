@@ -347,6 +347,11 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // Bound on the status request itself; past it the check counts as unanswered.
 export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
+// How long a submitted turn the backend has not accepted may outlast an "idle"
+// answer (see awaitingAcceptance). Two silence windows: a healthy submit is
+// accepted within seconds, and past this the prompt never started, so holding
+// busy only keeps a turn clock running under a reply that already finished.
+export const UNACCEPTED_TURN_GRACE_MS = 2 * LIVE_TURN_EVENT_SILENCE_MS
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // One token per status check in flight: an event, a settle, or a newer check
 // drops it, so a late answer cannot act on a turn that moved on.
@@ -510,14 +515,15 @@ function turnHasReply(messages: ChatMessage[]): boolean {
   return false
 }
 
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+function withNoReplyNotice(messages: ChatMessage[], runtimeId: string): ChatMessage[] {
   const last = messages.findLast(message => !message.hidden)
+  // The runtime id is the one fact that lets a copied error-details blob be
+  // traced to this turn in agent.log.
+  const errorSurface: ErrorSurface = { ...NO_REPLY_SURFACE, session: runtimeId }
 
   // A turn that ran tools but never wrote text carries the notice on its own bubble.
   if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
+    return messages.map(message => (message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface } : message))
   }
 
   const occurredAt = Date.now() / 1000
@@ -527,7 +533,7 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
     {
       completedAt: occurredAt,
       error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
+      errorSurface,
       id: `assistant-no-reply-${Date.now()}`,
       parts: [],
       pending: false,
@@ -543,7 +549,7 @@ function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
     state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
+      : { ...state, messages: withNoReplyNotice(state.messages, runtimeId) }
   )
 }
 
@@ -585,7 +591,7 @@ async function onEventSilence(runtimeId: string) {
 
   silentTurnChecks.delete(runtimeId)
 
-  if (verdict !== 'ended') {
+  if (verdict !== 'ended' || awaitingAcceptance($sessionStates.get()[runtimeId])) {
     noteSessionEvent(runtimeId)
 
     return
@@ -593,6 +599,26 @@ async function onEventSilence(runtimeId: string) {
 
   settleEndedLiveTurn(runtimeId)
   await recoverEndedLiveTurn(runtimeId)
+}
+
+/** Submitted, but the backend has not accepted the turn yet: no message.start,
+ *  no running=true edge, no payload. The backend honestly lists such a session
+ *  idle — rehydrateLiveSessionStatuses keeps it busy for the same reason — so
+ *  "idle" or "absent" is not a turn end here, and ending it would offer a Retry
+ *  while the first submit may still start. It is asked again next window.
+ *
+ *  BOUNDED, like the running=false pre-start gate (#86795): the hold counts
+ *  from the optimistic arm (turnStartedAt). Unbounded, an arm the backend never
+ *  took up kept busy — and the turn clock under the finished reply — forever,
+ *  since rehydrateLiveSessionStatuses also keeps it and nothing else ends it. */
+function awaitingAcceptance(state: ClientSessionState | undefined, now = Date.now()): boolean {
+  if (!state?.awaitingResponse || state.turnLive || state.sawAssistantPayload) {
+    return false
+  }
+
+  const armedAt = state.turnStartedAt
+
+  return typeof armedAt === 'number' && now - armedAt < UNACCEPTED_TURN_GRACE_MS
 }
 
 /** Record that this session just produced an event. A live turn that then goes
@@ -611,6 +637,10 @@ export function noteSessionEvent(runtimeId: string) {
     return
   }
 
+  armEventSilence(runtimeId)
+}
+
+function armEventSilence(runtimeId: string) {
   sessionEventSilenceTimers.set(
     runtimeId,
     setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
@@ -762,6 +792,18 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   if (next.busy) {
     setSessionStalled(next.storedSessionId, false)
     armWatchdog(runtimeId)
+
+    // A live turn always has a silence window running, however it went live.
+    // Only events armed it before, so busy re-armed by something that is not
+    // followed by an event (a submit the backend never takes up) was never
+    // checked against the backend, and its turn clock never stopped.
+    if (
+      isLiveTurnAwaitingEvents(next) &&
+      !sessionEventSilenceTimers.has(runtimeId) &&
+      !silentTurnChecks.has(runtimeId)
+    ) {
+      armEventSilence(runtimeId)
+    }
   } else {
     clearWatchdog(runtimeId)
 

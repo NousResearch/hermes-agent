@@ -32,6 +32,7 @@ def _abort(agent, error):
 @pytest.mark.parametrize("errors,expected", [
     ([_error("79.9"), _error("79.9")], 1),
     ([_error("79.9"), _error("83.7")], 1),
+    ([_error("79.9"), _error("83.7").replace("60.0s", "90.0s")], 2),
     ([_error("79.9"), "HTTP 401", "HTTP 403"], 3),
     (["other service (79.9s elapsed)", "other service (83.7s elapsed)"], 2),
     ([None, None], 1),
@@ -70,6 +71,21 @@ def test_changed_attempt_route_rearms_warning(monkeypatch):
     assert len(agent.warnings) == 3
 
 
+@pytest.mark.parametrize("stale", [False, True])
+def test_retries_do_not_key_on_attempt_ids_or_stale_routes(monkeypatch, stale):
+    monkeypatch.setattr(cc, "_emit_aborted_attempt_telemetry", lambda *args: None)
+    agent = _agent()
+    for attempt in ("a", "b"):
+        agent._compression_attempt_id = attempt
+        agent.context_compressor._last_compression_telemetry = {
+            "attempt_id": "old" if stale else attempt,
+            "aux_provider": attempt if stale else "provider",
+            "aux_model": attempt if stale else "model",
+        }
+        _abort(agent, _error("79.9" if attempt == "a" else "83.7"))
+    assert len(agent.warnings) == 1
+
+
 @pytest.mark.parametrize("committed,progress,fallback,expected", [
     (True, True, False, 2), (False, True, False, 1),
     (True, False, False, 1), (True, True, True, 1),
@@ -101,3 +117,38 @@ def test_fallback_outcome_still_notifies(monkeypatch):
     cc._warn_summary_or_aux_fallback(agent)
     assert len(agent.warnings) == 2
     assert "fallback context marker" in agent.warnings[-1]
+
+
+def test_real_compression_recovery_rearms_abort_notice(tmp_path, monkeypatch):
+    from tests.agent.test_compression_attempt_lifecycle import _build_agent
+
+    db, agent = _build_agent(tmp_path, "warning-recovery")
+    warnings = []
+    monkeypatch.setattr(agent, "_emit_warning", warnings.append)
+    compressor = agent.context_compressor
+    compressor.tail_token_budget = 10
+    messages = [{"role": "system", "content": "sys"}]
+    for i in range(12):
+        messages.extend([
+            {"role": "user", "content": f"Question {i} " * 100},
+            {"role": "assistant", "content": f"Answer {i} " * 100},
+        ])
+    def failed(*args, **kwargs):
+        compressor._last_summary_error = _error("79.9")
+        compressor._last_summary_network_failure = True
+        return None
+
+    try:
+        monkeypatch.setattr(compressor, "_generate_summary", failed)
+        unchanged, _ = cc.compress_context(agent, copy.deepcopy(messages), "sys", force=True, approx_tokens=50_000)
+        assert unchanged == messages
+        assert len([w for w in warnings if "Compression aborted" in w]) == 1
+        monkeypatch.setattr(compressor, "_generate_summary", lambda *args, **kwargs: "A healthy summary of previous work.")
+        compacted, _ = cc.compress_context(agent, copy.deepcopy(messages), "sys", force=True, approx_tokens=50_000)
+        assert compacted != messages
+        assert agent._last_compaction_in_place is True
+        monkeypatch.setattr(compressor, "_generate_summary", failed)
+        cc.compress_context(agent, copy.deepcopy(messages), "sys", force=True, approx_tokens=50_000)
+        assert len([w for w in warnings if "Compression aborted" in w]) == 2
+    finally:
+        db.close()

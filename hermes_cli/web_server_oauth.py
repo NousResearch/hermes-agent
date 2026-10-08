@@ -40,6 +40,34 @@ def _token_status(source: str, source_label: str, creds: Dict[str, Any]) -> Dict
     }
 
 
+def _anthropic_pool_status() -> Optional[Dict[str, Any]]:
+    """Status of the first non-expired ``hermes_pkce`` pool row, or None when there is none.
+
+    ``hermes auth add anthropic`` lands the login in the credential pool, not in the
+    ``.anthropic_oauth.json`` singleton — without this leg the card stays signed out although
+    ``hermes auth list`` shows the credential (#133328). Expired rows don't count as a login
+    (same gate as the claude-code card): they are exactly the stale pile a re-login replaces.
+    """
+    try:
+        from agent.anthropic_credentials import is_claude_code_token_valid
+        from hermes_cli.auth import read_credential_pool
+        for row in read_credential_pool("anthropic"):
+            if not str(row.get("source") or "").endswith("hermes_pkce"):
+                continue
+            creds = {
+                "accessToken": row.get("access_token"),
+                "expiresAt": row.get("expires_at_ms"),
+                "refreshToken": row.get("refresh_token"),
+            }
+            if is_claude_code_token_valid(creds):
+                label = str(row.get("label") or "").strip()
+                return _token_status(
+                    "hermes_pkce", f'Credential pool{f" ({label})" if label else ""}', creds)
+    except Exception:
+        pass
+    return None
+
+
 def _anthropic_oauth_status() -> Dict[str, Any]:
     """Status for the "Anthropic Account" card: Hermes-managed PKCE file first, then the
     registry-ordered env vars (process env — where Bitwarden-sourced secrets land — then .env).
@@ -54,6 +82,9 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         hermes_creds = None
     if hermes_creds and hermes_creds.get("accessToken"):
         return _token_status("hermes_pkce", f"Hermes PKCE ({_get_hermes_oauth_file()})", hermes_creds)
+    pool_status = _anthropic_pool_status()
+    if pool_status is not None:
+        return pool_status
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:

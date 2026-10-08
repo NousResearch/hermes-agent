@@ -2135,7 +2135,14 @@ def _inject_context_engine_tools(agent):
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            agent.tools.append({"type": "function", "function": _schema})
+            _tool_def = {"type": "function", "function": _schema}
+            try:
+                from tools.schema_sanitizer import sanitize_tool_schemas
+                _sanitized = sanitize_tool_schemas([_tool_def])
+                _tool_def = _sanitized[0] if _sanitized else _tool_def
+            except Exception as _sanitize_err:
+                _ra().logger.debug("Context engine schema sanitization skipped for %s: %s", _tname, _sanitize_err)
+            agent.tools.append(_tool_def)
             for _names in (agent.valid_tool_names, agent._context_engine_tool_names, _existing_tool_names):
                 _names.add(_tname)
 

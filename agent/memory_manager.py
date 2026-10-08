@@ -153,7 +153,14 @@ def inject_memory_provider_tools(agent: Any) -> int:
                 "name; skipping to avoid poisoning the request (%r)", raw_schema,
             )
         elif schema["name"] not in existing_tool_names:
-            tools.append({"type": "function", "function": schema})
+            tool_def = {"type": "function", "function": schema}
+            try:
+                from tools.schema_sanitizer import sanitize_tool_schemas
+                sanitized = sanitize_tool_schemas([tool_def])
+                tool_def = sanitized[0] if sanitized else tool_def
+            except Exception as sanitize_err:
+                logger.debug("Memory provider schema sanitization skipped for %s: %s", schema["name"], sanitize_err)
+            tools.append(tool_def)
             agent.valid_tool_names.add(schema["name"])
             existing_tool_names.add(schema["name"])
             added += 1

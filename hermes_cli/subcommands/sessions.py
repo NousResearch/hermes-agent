@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from hermes_cli.config_defaults import SESSION_LIST_SORT_VALUES
 from hermes_cli.subcommands._shared import add_json_flag, add_yes_flag
 
 
@@ -25,6 +26,14 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+    sessions_list.add_argument(
+        "--sort",
+        choices=SESSION_LIST_SORT_VALUES,
+        default=None,
+        help="Sort order: 'started' by session creation time, "
+        "'last-active' by most recent message "
+        "(default: sessions.list_sort from config.yaml)",
+    )
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

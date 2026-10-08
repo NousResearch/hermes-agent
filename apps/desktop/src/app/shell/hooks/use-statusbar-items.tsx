@@ -96,6 +96,34 @@ interface StatusbarItemsOptions {
   toggleCommandCenter: () => void
 }
 
+// Maps the statusbar i18n bundle onto the pill's copy shape. Module-level so the
+// hook stays within its FUNC_LINES budget; the mapping is pure string picking.
+function gatewayPillCopy(copy: {
+  backend: string
+  gatewayChecking: string
+  gatewayConnecting: string
+  gatewayNeedsSetup: string
+  gatewayOffline: string
+  gatewayReady: string
+  gatewayRestarting: string
+  gatewayUnavailable: string
+  messagingDegraded: (name: string) => string
+  messagingStopped: string
+}) {
+  return {
+    backend: copy.backend,
+    checking: copy.gatewayChecking,
+    connecting: copy.gatewayConnecting,
+    messagingDegraded: copy.messagingDegraded,
+    messagingStopped: copy.messagingStopped,
+    needsSetup: copy.gatewayNeedsSetup,
+    offline: copy.gatewayOffline,
+    ready: copy.gatewayReady,
+    restarting: copy.gatewayRestarting,
+    unavailable: copy.gatewayUnavailable
+  }
+}
+
 export function useStatusbarItems({
   agentsOpen,
   chatOpen,
@@ -366,18 +394,7 @@ export function useStatusbarItems({
 
   const gatewayHealth = statusBarGatewayHealth({
     connectionState: gatewayState,
-    copy: {
-      backend: copy.backend,
-      checking: copy.gatewayChecking,
-      connecting: copy.gatewayConnecting,
-      messagingDegraded: copy.messagingDegraded,
-      messagingStopped: copy.messagingStopped,
-      needsSetup: copy.gatewayNeedsSetup,
-      offline: copy.gatewayOffline,
-      ready: copy.gatewayReady,
-      restarting: copy.gatewayRestarting,
-      unavailable: copy.gatewayUnavailable
-    },
+    copy: gatewayPillCopy(copy),
     inferenceStatus,
     messagingConfigured: statusSnapshot?.gateway_messaging_configured,
     messagingRunning: statusSnapshot?.gateway_running,

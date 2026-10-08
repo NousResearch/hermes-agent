@@ -1047,7 +1047,7 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
-- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes supports Telegram's native streaming-draft API as an opt-in transport for private chats. The default remains the legacy `editMessageText` path because draft previews can visibly collapse and re-render on some Telegram clients.
+- **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes supports Telegram's native streaming-draft API for private chats. Some Telegram clients can visibly collapse or re-render draft previews; select `transport: edit` if this happens on your client.
 
 ### Streaming transport (`gateway.streaming.transport`)
 
@@ -1055,7 +1055,7 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 
 | Value | Behaviour |
 |---|---|
-| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back if the draft endpoint is unavailable or rejected. |
 | `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
 | `edit` | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
@@ -1063,23 +1063,27 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 In `~/.hermes/config.yaml`:
 
 ```yaml
-gateway:
-  streaming:
-    enabled: true
-    transport: auto    # auto | draft | edit | off
+streaming:
+  enabled: true
+  transport: draft    # auto | draft | edit | off
+  edit_interval: 0.8
 ```
 
-**What you'll see in DMs with `edit` (default)** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.
+The nested `gateway.streaming` form is also accepted; a top-level `streaming` block takes precedence. After changing streaming or Telegram rendering settings, run `hermes gateway restart` (or send `/restart` as a gateway administrator). This restarts the background program that handles Telegram messages so it reads the new settings; it does not restart your Telegram app.
 
-**What you'll see in DMs with `auto` or `draft`** — Telegram shows an animated draft preview that updates token-by-token. When the reply finishes, it's delivered as a regular message and the draft preview clears naturally on the client. Drafts have no message id, so the final answer is what stays in your chat history.
+**What you'll see in DMs with `edit`** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.
+
+**What you'll see in DMs with `auto` or `draft`** — Hermes updates the same ephemeral draft with cumulative text. With the default `rich_drafts: false`, previews append raw text without reformatting unfinished Markdown or adding a cursor. The draft preview is bounded by Telegram's text limit; the complete answer still uses the normal MarkdownV2 or opt-in Rich Message renderer, splitting long messages when required, and stays in your chat history. Preview batching does not change the model, prompt, or completed answer.
+
+**Update cadence and animation are separate.** `edit_interval` controls how often Hermes submits a new preview, not how quickly Telegram paints each character. Between updates, incoming deltas are combined so the next preview contains the latest available text rather than replaying a fixed number of characters. Telegram's client controls the animation of newly added text; its smoothness can differ between clients. Hermes also shares Telegram's per-chat draft/typing allowance (20 calls per 5 seconds and 40 per 30 seconds), so lowering `edit_interval` cannot force unlimited updates. See [Telegram's streaming guidance](https://core.telegram.org/api/bots/ai).
 
 **What about groups, supergroups, forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for everything else — same UX as before.
 
-**What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
+**What if a draft frame fails?** A locally rate-limited preview is skipped and the next allowed update uses the latest text. Telegram's `RetryAfter` temporarily pauses draft updates without abandoning native streaming. An unavailable endpoint or a rejected draft falls back to editing a regular message for the rest of that response; the next response gets a fresh attempt. The complete final answer is delivered through the existing final-message path even when intermediate previews are skipped.
 
 ## Rendering: Rich Messages, Tables and Link Previews
 
-**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
+**Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the ephemeral streaming preview as raw plain text, then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.
 
 The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 

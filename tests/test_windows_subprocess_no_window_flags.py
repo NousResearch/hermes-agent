@@ -583,7 +583,7 @@ def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured.append((list(cmd), kwargs))
-        return _Completed(stdout="8192, 4096, NVIDIA GeForce RTX 4060 Ti, 0x250410DE, 4096, 12\n", returncode=0)
+        return _Completed(stdout="0, GPU-ab-01, 8192, 4096, NVIDIA GeForce RTX 4060 Ti, 0x250410DE, 4096, 12\n", returncode=0)
 
     monkeypatch.setattr(hardware, "_gpu_query_cache", None)
     monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")

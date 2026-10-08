@@ -62,6 +62,10 @@ def test_retirement_preserves_live_stop_until_owner_settles(tmp_path):
         assert store.stop_requested('live')
         assert store.status_for_run('first', 'live')['status']['status'] == 'running'
         store.update_status('live', {'status': 'cancelled'})
+        assert store.status_for_run('first', 'live')['status']['status'] == 'cancelled'
+        store._conn.execute('UPDATE run_idempotency SET updated_at=0,retention_until=1')
+        store._conn.commit()
+        store.observe_room_authority('next', (authority[0], 2, 'successor'))
         assert store.status_for_run('first', 'live') is None
         assert store.reserve('first', 'running', 'f', 'late', {'status': 'queued'},
                              room_authority=authority)[0] == 'authority_retired'

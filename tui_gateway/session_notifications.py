@@ -22,6 +22,16 @@ def _notif_current_keys(sid: str, session: dict) -> set:
     return {str(session.get("session_key") or ""), _session_lookup_key(session, fallback=sid)}
 
 
+def _notif_profile_key(session: dict) -> str:
+    from hermes_constants import get_process_hermes_home, hermes_home_key
+    return hermes_home_key(session.get("profile_home") or get_process_hermes_home())
+
+
+def _notif_event_profile_matches(session: dict, evt: dict) -> bool:
+    event_profile = str(evt.get("_profile_key") or "")
+    return not event_profile or event_profile == _notif_profile_key(session)
+
+
 def _notif_session_matches(s: dict, keys) -> bool:
     return str(s.get("session_key") or "") in keys or _session_lookup_key(s, fallback="") in keys
 
@@ -49,6 +59,19 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session. Background completions carry the ``session_key`` of the
     session that started the work; async delegation completions also carry ``origin_ui_session_id`` (the live TUI tab)."""
+    if not _notif_event_profile_matches(session, evt):
+        # A foreign-profile poller may dequeue the shared event first. Requeue only while a
+        # live owner exists; otherwise the ordinary unowned path hands the durable offer back.
+        candidates = _notif_locked_sessions(
+            lambda ss: [
+                (other_sid, other) for other_sid, other in ss.items()
+                if other is not session and not other.get("_finalized")
+                and _notif_event_profile_matches(other, evt)
+            ],
+            [],
+        )
+        return any(_session_owns_notification_event(other_sid, other, evt)
+                   for other_sid, other in candidates)
     evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
     if evt_ui_sid:
         if evt_ui_sid == str(sid or "") and not session.get("_finalized"):
@@ -94,7 +117,7 @@ def _notif_other_profile_session_owns(sid: str, session: dict, evt: dict) -> boo
 def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool:
     """True iff *this* session PROVABLY owns ``evt`` (UI origin is this live session, or ``session_key`` raw/compression-
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
-    if session.get("_finalized"):
+    if session.get("_finalized") or not _notif_event_profile_matches(session, evt):
         return False
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
@@ -469,7 +492,9 @@ def _background_notifications_off(session: dict) -> bool:
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import (
+        begin_event_delivery, claim_event_delivery, complete_event_delivery, release_event_delivery,
+    )
     try:
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
@@ -479,6 +504,10 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
         # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
+        _notif_release_turn(session)
+        return
+    if not begin_event_delivery(evt, claim):
+        # A lease takeover won before this consumer reached the side-effect boundary.
         _notif_release_turn(session)
         return
     evt_type = evt.get("type")
@@ -570,7 +599,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
     from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import (
+        begin_event_delivery, claim_event_delivery, complete_event_delivery, release_event_delivery,
+    )
 
     if not notifications:
         return
@@ -583,7 +614,8 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     claimed: list = []
     try:
         for event, event_text in notifications:
-            if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None:
+            if ((claim := claim_event_delivery(event, "tui-completion-batch")) is not None
+                    and begin_event_delivery(event, claim)):
                 claimed.append((event, event_text, claim))
         batch = ProcessNotificationBatch(tuple((event, event_text) for event, event_text, _claim in claimed))
         text = batch.render(registry)

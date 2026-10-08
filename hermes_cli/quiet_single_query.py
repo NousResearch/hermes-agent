@@ -206,7 +206,9 @@ def continue_quiet_notify_completions(
     budget handshake below).
     """
     from tools.process_registry import process_registry
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery
+    from tools.async_delegation import (
+        begin_event_delivery, claim_event_delivery, complete_event_delivery, return_completion_offer,
+    )
 
     last: Any = None
     key = session_id or ""
@@ -223,6 +225,9 @@ def continue_quiet_notify_completions(
             # injecting the same result twice. Same contract as every other drain consumer.
             claim = claim_event_delivery(event, "cli-quiet")
             if claim is None:
+                return_completion_offer(event)
+                continue
+            if not begin_event_delivery(event, claim):
                 continue
             complete_event_delivery(event, claim)
             drained.append((event, text))

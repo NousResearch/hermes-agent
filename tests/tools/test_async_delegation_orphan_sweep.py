@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
@@ -156,6 +156,64 @@ def test_sweep_is_bound_to_the_profile_home_it_runs_under(tmp_path):
         assert ad.sweep_orphaned_completions(q, now=later + 60) == 0
     assert q.empty()
     assert _row(home_b, id_b)["delivery_state"] == "pending"
+
+
+def test_profile_scoped_claims_and_expired_lease_takeover_have_one_barrier_winner(tmp_path, monkeypatch):
+    """A->B->A with the same raw id never crosses ledgers, and only one claimant may start delivery.
+
+    A stale lease may be taken over before delivery starts.  Once either claimant crosses the
+    admission barrier, the loser cannot inject and a later timeout cannot create a second winner.
+    """
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    delegation_id = "deleg_same_raw_id"
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr(ad.time, "time", lambda: clock["now"])
+
+    def pending_event(home: Path) -> dict:
+        with _Home(home):
+            profile_key = hermes_home_key(get_hermes_home())
+            ad._persist_dispatch({
+                "delegation_id": delegation_id, "session_key": "shared-session",
+                "origin_ui_session_id": "shared-ui", "parent_session_id": "shared-session",
+                "dispatched_at": clock["now"], "goal": "profile-owned task",
+            })
+            event = {
+                "type": "async_delegation", "delegation_id": delegation_id,
+                "session_key": "shared-session", "origin_ui_session_id": "shared-ui",
+                "parent_session_id": "shared-session", "status": "completed",
+                "completed_at": clock["now"], "_profile_key": profile_key,
+            }
+            ad._persist_completion(event, {"status": "completed", "summary": "done"})
+            return event
+
+    event_a, event_b = pending_event(home_a), pending_event(home_b)
+
+    with _Home(home_a):
+        first = ad.claim_event_delivery(event_a, "consumer-a-old")
+        assert first
+        clock["now"] += ad._CLAIM_LEASE_S + 1
+        takeover = ad.claim_event_delivery(event_a, "consumer-a-takeover")
+        assert takeover
+        assert ad.begin_completion_delivery(delegation_id, first) is False
+        assert ad.begin_completion_delivery(delegation_id, takeover) is True
+        # Crossing the barrier makes the claim non-expiring: no third delivery can start.
+        clock["now"] += ad._CLAIM_LEASE_S + 1
+        assert ad.claim_event_delivery(event_a, "consumer-a-third") is None
+        assert ad.complete_completion_delivery(delegation_id, takeover) is True
+
+    with _Home(home_b):
+        # B must reject A's stamped event before touching B's same-id pending row.
+        assert ad.claim_event_delivery(event_a, "consumer-b-cross-profile") is None
+        own = ad.claim_event_delivery(event_b, "consumer-b-own")
+        assert own and ad.begin_completion_delivery(delegation_id, own)
+        assert ad.complete_completion_delivery(delegation_id, own)
+        assert _row(home_b, delegation_id)["delivery_attempts"] == 1
+
+    with _Home(home_a):
+        assert _row(home_a, delegation_id)["delivery_state"] == "delivered"
+        assert _row(home_a, delegation_id)["delivery_attempts"] == 2
 
 
 def test_restart_replay_and_sweep_never_offer_the_same_row_twice(tmp_path):

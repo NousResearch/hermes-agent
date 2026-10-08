@@ -8,6 +8,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 _SUBAGENT_SNAPSHOT_FIELDS = (
     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
@@ -51,6 +52,7 @@ def _visible_subagent_records(session_id, transport, owner):
 
 
 @method("subagent.list")
+@_profile_scoped
 def _(rid, params):
     session_id = _str_param(params, "session_id")
     transport, owner = _current_session_steer_authority(session_id)
@@ -79,6 +81,7 @@ def _failed_delegations(session_id, owner):
 
 
 @method("subagent.interrupt")
+@_profile_scoped
 def _(rid, params):
     from agent.interrupt_compat import request_hard_interrupt
 
@@ -103,6 +106,7 @@ def _(rid, params):
 
 
 @method("subagent.tail")
+@_profile_scoped
 def _(rid, params):
     session_id = _str_param(params, "session_id")
     subagent_id = _str_param(params, "subagent_id")

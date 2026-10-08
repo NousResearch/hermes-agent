@@ -1,5 +1,6 @@
 """Shared RPC contracts exercised against real registries and transcript I/O."""
 
+import contextlib
 import json
 import threading
 from types import SimpleNamespace
@@ -85,6 +86,96 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         _unregister_subagent("foreign")
         release.set()
         assert finished.wait(10)
+
+
+def test_same_raw_child_and_session_ids_stay_profile_owned_a_b_a(tmp_path, monkeypatch):
+    """A multiplexed backend must treat ``(profile, raw id)`` as the live-child identity.
+
+    Stored conversation ids and deterministic child ids can legitimately collide across
+    profile stores.  Listing and both control paths must keep selecting the child from the
+    calling session's profile while the public ``subagent_id`` stays unchanged.
+    """
+    from agent.secret_scope import set_multiplex_active
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+    from tui_gateway import server
+
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    transport = SimpleNamespace(write=lambda frame: True)
+    parent_a = SimpleNamespace(session_id="shared-session", _session_db=None)
+    parent_b = SimpleNamespace(session_id="shared-session", _session_db=None)
+    owner_a = {
+        "session_key": "shared-session", "profile_home": str(home_a),
+        "history": [], "transport": transport, "agent": parent_a,
+    }
+    owner_b = {
+        "session_key": "shared-session", "profile_home": str(home_b),
+        "history": [], "transport": transport, "agent": parent_b,
+    }
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    set_multiplex_active(True)
+    monkeypatch.setattr(server, "_sessions", {"ui-a": owner_a, "ui-b": owner_b})
+    steered_a, steered_b, stopped_a, stopped_b = [], [], [], []
+    child_a = SimpleNamespace(
+        _subagent_id="same-child", _delegate_depth=1, _parent_session_id="shared-session", model="test",
+        steer=lambda text: steered_a.append(text) or True,
+        hard_interrupt=lambda text: stopped_a.append(text),
+    )
+    child_b = SimpleNamespace(
+        _subagent_id="same-child", _delegate_depth=1, _parent_session_id="shared-session", model="test",
+        steer=lambda text: steered_b.append(text) or True,
+        hard_interrupt=lambda text: stopped_b.append(text),
+    )
+
+    @contextlib.contextmanager
+    def profile(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    def call(ui_session, method, **params):
+        return server.dispatch({
+            "id": 1, "method": method,
+            "params": {"session_id": ui_session, **params},
+        }, transport=transport)["result"]
+
+    with profile(home_a):
+        _register_child(child_a, parent_a, "profile A task", owner_session_id="ui-a",
+                        owner_transport=transport, owner_session_record=owner_a)
+    with profile(home_b):
+        _register_child(child_b, parent_b, "profile B task", owner_session_id="ui-b",
+                        owner_transport=transport, owner_session_record=owner_b)
+    try:
+        # Deterministic A -> B -> A proves that no process-global "last profile" sticks.
+        assert [r["goal"] for r in call("ui-a", "subagent.list")["subagents"]] == ["profile A task"]
+        assert [r["goal"] for r in call("ui-b", "subagent.list")["subagents"]] == ["profile B task"]
+        assert call("ui-b", "subagent.steer", subagent_id="same-child", text="B only")["status"] == "queued"
+        assert call("ui-b", "subagent.interrupt", subagent_id="same-child")["found"] is True
+        assert [r["goal"] for r in call("ui-a", "subagent.list")["subagents"]] == ["profile A task"]
+        assert call("ui-a", "subagent.steer", subagent_id="same-child", text="A only")["status"] == "queued"
+        assert call("ui-a", "subagent.interrupt", subagent_id="same-child")["found"] is True
+        assert steered_a == ["A only"] and steered_b == ["B only"]
+        assert len(stopped_a) == len(stopped_b) == 1
+        # Even without a same-id B record to select, B must fail closed rather than fall
+        # through to the one remaining foreign raw id.
+        with profile(home_b):
+            _unregister_subagent("same-child", agent=child_b)
+        assert call("ui-b", "subagent.list")["subagents"] == []
+        assert call("ui-b", "subagent.steer", subagent_id="same-child", text="foreign")["status"] == "rejected"
+        assert call("ui-b", "subagent.interrupt", subagent_id="same-child")["found"] is False
+        assert [r["goal"] for r in call("ui-a", "subagent.list")["subagents"]] == ["profile A task"]
+        assert steered_a == ["A only"] and len(stopped_a) == 1
+    finally:
+        with profile(home_a):
+            _unregister_subagent("same-child", agent=child_a)
+        with profile(home_b):
+            _unregister_subagent("same-child", agent=child_b)
+        set_multiplex_active(False)
 
 
 def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):

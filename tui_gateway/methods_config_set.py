@@ -276,7 +276,6 @@ def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
-    from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
@@ -286,18 +285,15 @@ def _set_yolo(rid, params, key, value, session):
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        skey = session["session_key"]
-        enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
-        (enable_session_yolo if enable else disable_session_yolo)(skey)
-        # Persist like the CLI's /yolo so a resume in a new backend restores it. Row id prefers the agent's
-        # session_id: after compression the key can still name the ended parent (#20001).
-        row_id = getattr(session.get("agent"), "session_id", None) or skey
-        try:
+        from tools.approval_yolo import toggle_session_yolo
+        # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
+
+        def persist(on):
             with _session_db(session) as db:
                 if db is not None:
-                    db.set_session_yolo(row_id, enable)
-        except Exception:
-            logger.warning("failed to persist session yolo flag for %s", row_id, exc_info=True)
+                    db.set_session_yolo(row_id, on)
+        enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

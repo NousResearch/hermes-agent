@@ -442,17 +442,6 @@ class GatewayAgentCacheMixin:
                 # Never fails the boundary itself, but a surviving ON would come back after a restart.
                 logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
 
-    @staticmethod
-    def _restore_session_yolo(session_key: str, session_entry) -> None:
-        """Re-arm a persisted /yolo bypass after a gateway restart (the in-memory approval set starts
-        empty). Restore-only: ``_handle_yolo_command`` is the one writer and persists before it flips
-        the live flag, so a turn never sees a stale ON that it would wrongly revive."""
-        if not session_key or getattr(session_entry, "yolo", False) is not True:
-            return
-        from tools.approval import enable_session_yolo, is_session_yolo_enabled
-        if not is_session_yolo_enabled(session_key):
-            enable_session_yolo(session_key)
-
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result
         from a worker /stop or /new invalidated is recognized and dropped."""

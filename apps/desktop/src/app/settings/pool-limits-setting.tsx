@@ -109,7 +109,7 @@ export function PoolLimitsSetting() {
             <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">ms</span>
           </div>
         }
-        description="How long an unused bot backend stays warm before it is shut down. Raise this so bots you revisit every few minutes never pay a cold start."
+        description="How long an unused remote bot connection stays cached before it is dropped. Local backends keep running while idle, since they run cron jobs and bot chats."
         id={settingElementId(SETTING_IDS.advanced.backendIdleTimeout)}
         title={t.settings.poolLimits.backendIdleTimeoutTitle}
       />

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 # tools.skills_hub / tools.skills_guard are imported inside functions (cycles + startup cost).
 from hermes_constants import display_hermes_home
@@ -161,16 +162,19 @@ def _report_ok(c: Console, result: dict, fallback: str = "") -> bool:
     return False
 
 
-def _skill_md_preview(bundle) -> Optional[str]:
-    """First 50 lines of the bundle's SKILL.md (None when absent)."""
-    if not bundle or "SKILL.md" not in bundle.files:
-        return None
-    content = bundle.files["SKILL.md"]
-    if isinstance(content, bytes):
-        content = content.decode("utf-8", errors="replace")
-    lines = content.split("\n")
-    more = f"\n\n... ({len(lines) - 50} more lines)" if len(lines) > 50 else ""
-    return "\n".join(lines[:50]) + more
+def _print_bundle_review(c: Console, bundle, *, title: str = "Installable Bundle") -> dict:
+    """Render every path/hash and every text file without interpreting Rich markup."""
+    from tools.skills_hub_install import bundle_manifest, bundle_review_files
+    manifest = bundle_manifest(bundle)
+    lines = [f"Bundle digest: {manifest['digest']}", f"Files: {len(manifest['files'])}"]
+    for entry in manifest["files"]:
+        lines.extend(("", entry["path"], f"  bytes: {entry['size']}", f"  sha256: {entry['sha256']}"))
+    c.print(Panel(Text("\n".join(lines)), title=title, border_style="cyan"))
+    for path, text in bundle_review_files(bundle):
+        body = (Text(text) if text is not None else
+                Text("Binary file; review its byte length and SHA-256 in the manifest above."))
+        c.print(Panel(body, title=Text(path), border_style="dim"))
+    return manifest
 
 
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
@@ -376,7 +380,7 @@ def do_search(query: str, source: str = "all", limit: int = 10, console: Optiona
         table.add_row(r.name, _truncate(r.description, 60), _display_source(r),
                       _trust_cell(r.trust_level, r.source), r.identifier)
     c.print(table)
-    c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
+    c.print("[dim]Use: hermes skills inspect <identifier> to review every file, "
             "hermes skills install <identifier> to install "
             "(--json for scripting)[/]\n")
 
@@ -445,7 +449,7 @@ def _render_browse_page(c: Console, deduped, page_items, page: int, total_pages:
     if timed_out:
         c.print(f"  [yellow]⚡ Slow sources skipped: {', '.join(timed_out)} "
                 f"— run again for cached results[/]")
-    c.print("[dim]Tip: 'hermes skills inspect <identifier>' to preview, "
+    c.print("[dim]Tip: 'hermes skills inspect <identifier>' to review every file, "
             "'hermes skills install <identifier>' to install, "
             "'hermes skills search <query>' to search deeper[/]\n")
 
@@ -489,7 +493,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
-    """Preview a skill's SKILL.md content without installing."""
+    """Review a skill's complete installable bundle without installing."""
     c = console or _console
     identifier, meta, bundle, _src = _resolve_identifier(identifier, _sources(), c)
     if not identifier:
@@ -506,22 +510,33 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         info_lines.append(f"[bold]Tags:[/] {', '.join(meta.tags)}")
     info_lines.extend(_format_extra_metadata_lines(meta.extra))
     c.print(Panel("\n".join(info_lines), title=f"Skill: {meta.name}"))
-    preview = _skill_md_preview(bundle)
-    if preview is not None:
-        c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
+    if bundle is not None:
+        _print_bundle_review(c, bundle, title="Complete Installable Bundle")
+        c.print("[dim]Install only if every file above matches what you expect: "
+                "hermes skills install <id>[/]")
     c.print()
 
 
 def inspect_skill(identifier: str) -> Optional[dict]:
-    """Skill metadata (+ SKILL.md preview) for programmatic callers."""
+    """Skill metadata plus a complete deterministic bundle review for programmatic callers."""
     ident, meta, bundle, _ = _resolve_identifier(identifier, _sources(), Console(quiet=True))
     if not ident or not meta:
         return None
     out = {**_row(meta, "name", "description", "source", "identifier"),
            "tags": list(meta.tags) if meta.tags else []}
-    preview = _skill_md_preview(bundle)
-    if preview is not None:
-        out["skill_md_preview"] = preview
+    if bundle is not None:
+        from tools.skills_hub_install import bundle_manifest, bundle_review_files
+        review_files = bundle_review_files(bundle)
+        out["bundle_manifest"] = bundle_manifest(bundle)
+        out["bundle_files"] = [
+            {"path": path, "text": text, "binary": text is None}
+            for path, text in review_files
+        ]
+        skill_md = next((text for path, text in review_files if path == "SKILL.md"), None)
+        if skill_md is not None:
+            # Backward-compatible field; no longer truncated, so legacy clients do not
+            # silently approve less than the bundle's actual SKILL.md.
+            out["skill_md_preview"] = skill_md
     return out
 
 
@@ -907,13 +922,22 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     if metadata_lines:
         c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
+    try:
+        approved_manifest = _print_bundle_review(c, bundle, title="Bundle Review — approve these exact bytes")
+    except ValueError as exc:
+        _invalid_path(c, bundle, exc, q_path)
+        return bundle, failed
+
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
     if not force and not skip_confirm and not _confirm_install(c, bundle, category):
         shutil.rmtree(q_path, ignore_errors=True)
         return bundle, None, None
 
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        install_dir = install_from_quarantine(
+            q_path, bundle.name, category, bundle, result,
+            expected_digest=approved_manifest["digest"],
+        )
     except ValueError as exc:
         _invalid_path(c, bundle, exc, q_path)
         attempt["failure_class"] = "invalid_bundle"
@@ -1714,7 +1738,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
-        "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
+        "  [cyan]inspect[/] <identifier>        Review every installable file without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"

@@ -8,8 +8,8 @@ is still read from there at call time.
 
 from __future__ import annotations
 
-import logging
 import hashlib
+import logging
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -28,11 +28,79 @@ if TYPE_CHECKING:  # origin class; runtime use is via the lazy origin import
 logger = logging.getLogger("tools.skills_hub")
 
 
+def _bundle_file_items(bundle: SkillBundle) -> List[Tuple[str, bytes]]:
+    """Validated bundle files as deterministic ``(POSIX path, bytes)`` rows."""
+    normalized: Dict[str, bytes] = {}
+    for rel_path, content in bundle.files.items():
+        safe_path = _validate_bundle_rel_path(rel_path)
+        if safe_path in normalized:
+            raise ValueError(f"Duplicate bundle file path after normalization: {safe_path}")
+        normalized[safe_path] = content if isinstance(content, bytes) else content.encode("utf-8")
+    return sorted(normalized.items())
+
+
+def _manifest_digest(items: List[Tuple[str, bytes]]) -> str:
+    """Unambiguous SHA-256 framing for a complete ordered path/bytes manifest."""
+    h = hashlib.sha256()
+    h.update(b"hermes-skill-bundle-v1\x00")
+    for rel_path, content in items:
+        path_bytes = rel_path.encode("utf-8")
+        h.update(len(path_bytes).to_bytes(8, "big"))
+        h.update(path_bytes)
+        h.update(len(content).to_bytes(8, "big"))
+        h.update(content)
+    return h.hexdigest()
+
+
+def _legacy_content_digest(items: List[Tuple[str, bytes]]) -> str:
+    """Keep lock/update hashes symmetric with ``skills_guard.content_hash``."""
+    h = hashlib.sha256()
+    for rel_path, content in items:
+        h.update(rel_path.encode("utf-8") + b"\x00")
+        h.update(content)
+    return h.hexdigest()
+
+
+def bundle_manifest(bundle: SkillBundle) -> Dict[str, Any]:
+    """Complete deterministic manifest for the exact bytes in an installable bundle."""
+    items = _bundle_file_items(bundle)
+    return {
+        "digest": f"sha256:{_manifest_digest(items)}",
+        "files": [
+            {"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            for path, content in items
+        ],
+    }
+
+
+def bundle_review_files(bundle: SkillBundle) -> List[Tuple[str, Optional[str]]]:
+    """Every manifest-ordered file decoded for review; binary entries use ``None``."""
+    rows: List[Tuple[str, Optional[str]]] = []
+    for path, content in _bundle_file_items(bundle):
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        rows.append((path, text))
+    return rows
+
+
 def _is_path_redirect(path: Path) -> bool:
     """True when ``path`` is a symlink or (on Windows) a directory junction —
     either lets a writer in ``skills/`` redirect a later ``rmtree`` outside it.
     ``is_junction`` only exists on Python 3.12+ Windows; gate with ``hasattr``."""
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _directory_file_items(root: Path) -> List[Tuple[str, bytes]]:
+    """Read a staged/installed tree using the same paths and bytes as ``bundle_manifest``."""
+    rows: List[Tuple[str, bytes]] = []
+    for entry in root.rglob("*"):
+        if _is_path_redirect(entry):
+            raise ValueError(f"Installed skill contains symlinks, which is not allowed: {entry.relative_to(root)}")
+        if entry.is_file():
+            rows.append((entry.relative_to(root).as_posix(), entry.read_bytes()))
+    return sorted(rows)
 
 
 def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
@@ -62,8 +130,9 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     from tools.skills_hub import _quarantine_dir, ensure_hub_dirs
     ensure_hub_dirs()
     skill_name = _validate_skill_name(bundle.name)
-    # Validate every path before touching disk so a bad member aborts cleanly.
-    validated_files = [(_validate_bundle_rel_path(rel_path), content) for rel_path, content in bundle.files.items()]
+    # Validate and canonicalize every path/byte string before touching disk. This
+    # is the exact representation shown in the review manifest.
+    validated_files = _bundle_file_items(bundle)
     dest = _quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)
@@ -71,12 +140,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
         file_dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(file_content, bytes):
-            file_dest.write_bytes(file_content)
-        else:
-            # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
-            # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
-            file_dest.write_text(file_content, encoding="utf-8", newline="")
+        file_dest.write_bytes(file_content)
     return dest
 
 
@@ -143,8 +207,9 @@ def _check_install_target(install_dir: Path) -> None:
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[Dict[str, Any]] = None,
+    expected_digest: Optional[str] = None,
 ) -> Path:
-    """Move a scanned skill from quarantine into the skills directory."""
+    """Move a scanned skill into place only when it still matches the approved digest."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
@@ -157,8 +222,6 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -172,28 +235,32 @@ def install_from_quarantine(
             safe_skill_name, f"{skill_size:,}",
         )
 
-    # A symlink in the bundle would copy its target into skills/ and leak it
-    # to the agent on the next skill_view.
-    for entry in quarantine_path.rglob("*"):
-        if _is_path_redirect(entry):
-            try:
-                rel = entry.relative_to(quarantine_resolved)
-            except ValueError:
-                rel = entry
-            raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
+    approved_digest = expected_digest or ""
+    staged_items = _directory_file_items(quarantine_path)
+    if approved_digest and f"sha256:{_manifest_digest(staged_items)}" != approved_digest:
+        raise ValueError("Bundle changed after review; refusing installation")
+
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
+    if approved_digest and f"sha256:{_manifest_digest(_directory_file_items(install_dir))}" != approved_digest:
+        shutil.rmtree(install_dir, ignore_errors=True)
+        raise ValueError("Bundle changed while installing; refusing installation")
     installed_hash = content_hash(install_dir)
+    lock_metadata = dict(bundle.metadata)
+    if approved_digest:
+        lock_metadata["approved_bundle_digest"] = approved_digest
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict, skill_hash=installed_hash,
         install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
-        files=list(bundle.files.keys()), metadata=bundle.metadata,
+        files=[path for path, _content in _bundle_file_items(bundle)], metadata=lock_metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
     )
     append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
-                     installed_hash)
+                     approved_digest or installed_hash)
     try:
         from tools.skill_usage import record_installed
         record_installed(safe_skill_name)
@@ -235,14 +302,7 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
 
     That function keys files by ``relative_to(...).as_posix()`` — forward slashes on every OS. See #62310.
     """
-    h = hashlib.sha256()
-    normalized = {rel_path.replace("\\", "/"): content for rel_path, content in bundle.files.items()}
-    for rel_path in sorted(normalized):
-        h.update(rel_path.encode("utf-8"))
-        h.update(b"\x00")
-        content = normalized[rel_path]
-        h.update(content if isinstance(content, bytes) else content.encode("utf-8"))
-    return f"sha256:{h.hexdigest()[:16]}"
+    return f"sha256:{_legacy_content_digest(_bundle_file_items(bundle))[:16]}"
 
 
 _SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}

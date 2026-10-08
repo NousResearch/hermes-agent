@@ -3474,6 +3474,8 @@ class BasePlatformAdapter(ABC):
         if session_key and session_key in self._active_sessions:
             self._active_sessions[session_key].set()
         await self._stop_typing_quietly(chat_id, metadata)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        await cancel_auto_tts(self._background_tasks, session_key)
 
     def register_post_delivery_callback(
         self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
@@ -3996,6 +3998,8 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        await cancel_auto_tts(self._background_tasks, session_key)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -4196,7 +4200,11 @@ class BasePlatformAdapter(ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
+    def background_auto_tts(self, chat_id: str) -> bool:
+        """Whether attachment speech may outlive the text turn (live playback must not)."""
+        return False
+
+    async def _synthesize_auto_tts(self, text_content: str, *, output_dir: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
         post-handler."""
@@ -4204,14 +4212,19 @@ class BasePlatformAdapter(ABC):
         requested_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-            if check_tts_requirements():
+            if output_dir is not None or check_tts_requirements():
                 import json as _json
                 speech_text = self.prepare_tts_text(text_content)
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
                 requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
+                if output_dir is not None:
+                    from gateway.platforms.base_auto_tts_worker import synthesize
+                    requested_path = str(Path(output_dir) / Path(requested_path).name)
+                    tts_data = await synthesize(speech_text, requested_path)
+                else:
+                    tts_data = _json.loads(await asyncio.to_thread(
+                        text_to_speech_tool, text=speech_text, output_path=requested_path))
                 if tts_data.get("success", True):
                     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
                     paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
@@ -4409,7 +4422,7 @@ class BasePlatformAdapter(ABC):
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> tuple:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
@@ -4417,6 +4430,7 @@ class BasePlatformAdapter(ABC):
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return result, delivery_adapter
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -4599,8 +4613,10 @@ class BasePlatformAdapter(ABC):
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
+                _wants_tts = self._wants_auto_tts(
+                    event, session_key, interrupt_event, text_content, media_files)
+                _background_tts = _wants_tts and self.background_auto_tts(event.source.chat_id)
+                if _wants_tts and not _background_tts:
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
@@ -4628,9 +4644,13 @@ class BasePlatformAdapter(ABC):
                         or _tts_paths or _tts_caption_delivered:
                     self.pause_typing_for_chat(event.source.chat_id)
                 if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
+                    _text_result, _text_adapter = await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                    if _background_tts and _text_result.success and _text_result.message_id:
+                        from gateway.platforms.base_auto_tts import schedule_auto_tts
+                        await schedule_auto_tts(_text_adapter, event, session_key, text_content,
+                                                _text_result.message_id, _final_thread_metadata)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,

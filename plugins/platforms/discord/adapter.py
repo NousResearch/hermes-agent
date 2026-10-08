@@ -3621,6 +3621,11 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
+    def background_auto_tts(self, chat_id: str) -> bool:
+        # Keep live VC ordering/barge-in unchanged; only attachments are detached.
+        return not any(str(text_id) == str(chat_id) and self.is_in_voice_channel(gid)
+                       for gid, text_id in self._voice_text_channels.items())
+
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
         for gid, text_ch_id in self._voice_text_channels.items():

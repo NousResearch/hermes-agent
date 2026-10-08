@@ -483,6 +483,11 @@ class GatewayStatusCommandsMixin:
         lines += ["", t("gateway.agents.running_processes", count=len(running_processes))]
         lines += _capped_rows(running_processes, _proc_row)
         lines += ["", t("gateway.agents.async_jobs", count=len(background_tasks))]
+        audio_tasks = [task for task in background_tasks
+                       if isinstance(task, asyncio.Task) and task.get_name().startswith("auto-tts:")]
+        if audio_tasks:
+            lines += ["", f"Pending audio: {len(audio_tasks)} (text already delivered)"]
+            lines += _capped_rows(audio_tasks, lambda task: [f"- `{task.get_name()[9:]}`"])
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
             lines += _capped_rows(delegations, _agents_delegation_lines)

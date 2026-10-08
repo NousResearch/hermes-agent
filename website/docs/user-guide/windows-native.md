@@ -373,6 +373,17 @@ This is unrelated to Windows but sometimes surfaces first there. Usually it mean
 **"Works on my other machine" encoding weirdness after `git pull`.**
 If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Notepad on older Windows versions, some Chinese IMEs), the file may have been saved with a BOM. Hermes tolerates `utf-8-sig` on most config reads, but a BOM inside a folded YAML scalar (`description: >`) silently breaks YAML parsing. Re-save the file as plain UTF-8 without BOM.
 
+**`hermes update` fails, or the desktop window still shows an old version after updating.**
+Two separate problems hide behind this. A stale uv *index* cache makes resolvable
+packages look undated (`has no publish time`), and the desktop window reads its version
+from a stamp inside the built bundle rather than from git. See
+**[Upgrade Troubleshooting](../guides/upgrade-troubleshooting.md)**.
+
+**`error: Failed to bytecode-compile ... (os error 231)`.**
+`os error 231` is "all pipe instances are in use" — a shell pipe that a child process
+deadlocked on, not a packaging fault. Re-run the command from a normal terminal; if a
+tool you own captures the child's output, stop passing `stdout=PIPE`.
+
 ## Where to go next
 
 - **[Installation](../getting-started/installation.md)** — the full install page, including Linux/macOS/WSL2.

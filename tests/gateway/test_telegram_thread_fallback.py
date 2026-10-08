@@ -582,6 +582,8 @@ async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch
         "all_proxy",
     ):
         monkeypatch.delenv(proxy_var, raising=False)
+    # urllib also discovers the OS proxy on Windows/macOS; this test needs direct DNS.
+    monkeypatch.setattr("httpx._utils.getproxies", lambda: {})
 
     answers = iter(("93.184.216.34", "169.254.169.254"))
 

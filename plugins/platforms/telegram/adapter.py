@@ -181,6 +181,12 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_generation import TelegramGenerationMixin
+from plugins.platforms.telegram.telegram_private_controls import TelegramPrivateControlsMixin
+from plugins.platforms.telegram.telegram_rich_controls import (
+    NativeControlMarkup, TelegramRichControlsMixin, legacy_control_markup)
+from plugins.platforms.telegram.telegram_rich_media import (
+    RichMediaError, TelegramRichMediaMixin, _RichMediaTransient, content_needs_rich_media, media_ref_html, rich_media_spec)
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -401,7 +407,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, bounded_put, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -497,6 +503,7 @@ _TEXT_SEND_DEADLINE = 30.0
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
+_CONTROL_CALLBACK_CONTEXT: ContextVar[Optional[Dict[str, Any]]] = ContextVar("telegram_control_callback", default=None)
 
 
 class _PollingLifecycleAbort(RuntimeError):
@@ -511,9 +518,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
-    """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
-
+class TelegramAdapter(TelegramPrivateControlsMixin, TelegramRichControlsMixin, TelegramRichMediaMixin, TelegramGenerationMixin, TelegramHeldInboundMixin, BasePlatformAdapter):
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
     _STATUS_MESSAGE_IDS_MAX = 2000
 
@@ -605,6 +610,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Requester-only group controls (Bot API 10.2/10.3 ephemeral messages); fail closed.
+        self._private_controls: bool = self._coerce_bool_extra("private_controls", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
@@ -1329,6 +1336,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """
         if not content:
             return False
+        if content_needs_rich_media(content):
+            return True
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
@@ -1364,7 +1373,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             and self._rich_content_ok(content))
 
     def _should_attempt_rich(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        return bool(not (metadata or {}).get("expect_edits") and self._rich_eligible(content))
+        return bool(
+            not (metadata or {}).get("expect_edits") and (
+                self._rich_eligible(content) or (
+                    "telegram_rich_message" in (metadata or {}) and self._rich_transport_available())))
 
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Replace a streamed preview with a fresh rich final — DM topics only. Root DMs stay off (a live
@@ -1380,7 +1392,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata = metadata or {}
         if not (metadata.get("telegram_dm_topic_reply_fallback") or self._metadata_direct_messages_topic_id(metadata)):
             return False
-        return self._rich_eligible(content)
+        return self._rich_eligible(content) or bool(metadata.get("telegram_rich_message") and self._rich_transport_available())
 
     def _rich_transport_available(self) -> bool:
         return bool(
@@ -1391,10 +1403,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         isn't fragmented at 4,096. None (→ legacy limit) if rich is unavailable."""
         return self.RICH_MESSAGE_MAX_CHARS if self._rich_transport_available() else None
 
-    def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
+    def _rich_message_payload(
+        self, content: str, *, skip_entity_detection: bool = False,
+        metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        from plugins.platforms.telegram.telegram_rich_media import build_rich_message
+        payload: Dict[str, Any] = build_rich_message(content, metadata) or {"markdown": content}
+        if "markdown" in payload:
+            payload["markdown"] = _rich_normalize_linebreaks(payload["markdown"])
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -1487,7 +1504,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if routing is None:
             return None
         reply_to_id, thread_kwargs = routing
-        payload = self._rich_payload_base(chat_id, content)
+        payload = self._rich_payload_base(chat_id, content, metadata)
         # Only non-None routing keys: direct_messages_topic_id is paired with message_thread_id=None.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
@@ -1520,8 +1537,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
-    def _rich_payload_base(self, chat_id: str, content: str) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content)}
+    def _rich_payload_base(
+        self, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        from plugins.platforms.telegram.telegram_rich_media import hoist_rich_media_uploads
+        payload: Dict[str, Any] = hoist_rich_media_uploads({
+            "chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content, metadata=metadata)})
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         return payload
@@ -1541,7 +1561,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Edit a message in place as rich (``editMessageText`` + ``rich_message``) so a streamed preview
         finalizes without send+delete. Same contract as :meth:`_try_send_rich`."""
         # No topic routing on edits: message_thread_id/direct_messages_topic_id make Telegram reject it.
-        payload = {**self._rich_payload_base(chat_id, content), "message_id": int(message_id)}
+        try:
+            payload = {**self._rich_payload_base(chat_id, content, metadata), "message_id": int(message_id)}
+        except RichMediaError as exc:
+            return SendResult(success=False, error=_redact_telegram_error_text(exc), retryable=False)
         try:
             await _await_with_thread_deadline(
                 self._bot.do_api_request("editMessageText", api_kwargs=payload),
@@ -1571,7 +1594,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Emit one ``sendRichMessageDraft`` frame; True on success. Frames are ephemeral, so any failure
         returns False and the caller renders the legacy draft; capability failures latch off."""
         payload: Dict[str, Any] = {
-            "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id), "rich_message": self._rich_message_payload(content)}
+            "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),
+            "rich_message": self._thinking_draft_payload(content, metadata)}
+        payload.update(self._generation_draft_options(chat_id, draft_id, metadata))
         payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
         try:
             return bool(await _await_with_thread_deadline(
@@ -1787,7 +1812,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # helper and abandon the partial updater (caller rebuilds).
             await _await_with_thread_deadline(
                 app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES, drop_pending_updates=drop_pending_updates, error_callback=_generation_error_callback),
+                    allowed_updates=[*Update.ALL_TYPES, "stopped_message_generation"],
+                    drop_pending_updates=drop_pending_updates, error_callback=_generation_error_callback),
                 timeout=_UPDATER_START_TIMEOUT,
                 on_abandon=((lambda app=app: _shutdown_abandoned_app(app)) if abandon_app_on_timeout else None))
         finally:
@@ -2897,6 +2923,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
+        # PTB retains newer API fields in api_kwargs; handle without replacing its update parser.
+        app.add_handler(TypeHandler(Update, self._handle_generation_stopped), group=98)
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
         app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
         # Everything appended above is core; a late plugin re-wire must land BEFORE these (#87770).
@@ -3114,7 +3142,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         webhook_path = urlparse(webhook_url).path or "/telegram"
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
-            secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
+            secret_token=webhook_secret, allowed_updates=[*Update.ALL_TYPES, "stopped_message_generation"],
             drop_pending_updates=self._cold_boot_drop_pending(is_reconnect=is_reconnect),
        )
         self._webhook_mode = True
@@ -3620,6 +3648,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
+        if (metadata or {}).get("telegram_private_control"):
+            from plugins.platforms.telegram.telegram_private_controls import DECLINE_ERROR
+            return SendResult(success=False, error=DECLINE_ERROR, retryable=False,
+                              raw_response={"success": False, "code": "egress_declined", "error": DECLINE_ERROR})
         if not self._bot:
             live = self._replacement_telegram_adapter()
             if live is not None:
@@ -3635,7 +3667,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
-        if not content or not content.strip():
+        if (not content or not content.strip()) and not (
+                "telegram_rich_message" in (metadata or {}) and self._rich_transport_available()):
             return SendResult(success=True, message_id=None)
         # One chat at a time (held only around the API calls, never across the reconnect wait above), so
         # two concurrent split replies to one chat cannot interleave their chunks (#114396).
@@ -3681,6 +3714,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     for chunk in chunks
                ]
             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
+        except RichMediaError as exc:
+            return SendResult(success=False, error=_redact_telegram_error_text(exc), retryable=False)
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)
             return self._with_partial_send(classified, chunks[len(delivered):], delivered, tail_certain=classified.retryable)
@@ -3855,7 +3890,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # 4,096 overflow pre-flight because the rich text cap is 32,768 — a rich table that exceeds the
         # MarkdownV2 limit must not be split into legacy chunks. Falls back to the legacy edit path
         # (overflow split included) on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and (self._rich_eligible(content) or (
+                (metadata or {}).get("telegram_rich_message") and self._rich_transport_available())):
             rich_result = await self._try_edit_rich(chat_id, message_id, content, metadata=metadata)
             if rich_result is not None:
                 return rich_result
@@ -4055,6 +4091,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         Bot API ``deleteMessage`` works for bot-posted messages in the last 48 hours. Failures are non-fatal
         — the caller leaves the preview in place and logs at debug level.
         """
+        if isinstance(message_id, str) and message_id.startswith("eph:"):
+            return await self.delete_ephemeral_control(message_id, chat_id=chat_id)
         if not self._bot:
             return False
         try:
@@ -4077,7 +4115,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="not_connected")
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
+        rich_content = content or "<tg-thinking>Thinking…</tg-thinking>"
+        if self._should_attempt_rich_draft(rich_content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
             return SendResult(success=True, message_id=None)
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
@@ -4097,6 +4136,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if use_markdown:
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
             kwargs.update(draft_thread_kwargs)
+            options = self._generation_draft_options(chat_id, draft_id, metadata)
+            if options:
+                kwargs["api_kwargs"] = options
             try:
                 if await _await_with_thread_deadline(
                     self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
@@ -4140,10 +4182,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     self._bot.send_message(**retry_kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             raise
 
-    async def _send_control_message(
+    async def _send_control_message_routed(
         self, chat_id: str, text: str, *, parse_mode: Any, thread_id: Optional[str], metadata: Optional[Dict[str, Any]],
-        reply_markup: Any = None, reply_to_mode: Optional[str] = None):
-        """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
+        reply_markup: Any = None, reply_to_mode: Optional[str] = None, on_sent: Any = None):
+        """Control send with private-first routing and an opt-in rich fast-path."""
+        callback = _CONTROL_CALLBACK_CONTEXT.get()
+        if callback and str(callback.get("chat_id")) == str(chat_id):
+            meta = dict(metadata or {})
+            if meta.get("telegram_requester_user_id") in {None, str(callback["user_id"]), callback["user_id"]}:
+                meta.update(telegram_chat_type=str(callback.get("chat_type") or ""),
+                            telegram_requester_user_id=str(callback["user_id"]),
+                            telegram_callback_query_id=callback.get("callback_query_id"),
+                            telegram_callback_from_ephemeral=callback.get("telegram_callback_from_ephemeral", False),
+                            telegram_ephemeral_reply_id=callback.get("telegram_ephemeral_reply_id"))
+                metadata = meta
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
@@ -4152,6 +4204,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         kwargs["reply_to_message_id"] = reply_to_id
         kwargs.update(self._thread_kwargs_for_send(
             chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=reply_to_mode))
+        if self.private_control_requested(chat_id, metadata):
+            return await self.send_private_control_prompt(
+                dict(kwargs), {**(metadata or {}), "telegram_private_control": True}, on_sent=on_sent)
+        rich_result = await self._try_send_rich_control(kwargs)
+        if rich_result is not None:
+            if rich_result.success:
+                message = (rich_result.raw_response or {}).get("message")
+                if message is not None:
+                    return message
+            return rich_result
+        kwargs["reply_markup"] = legacy_control_markup(kwargs.get("reply_markup"))
         return await self._send_message_with_thread_fallback(**kwargs)
 
     async def _send_prompt(self, what: str, chat_id: str, metadata: Optional[Dict[str, Any]], build, *,
@@ -4165,9 +4228,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if isinstance(built, SendResult):
                 return built
             text, keyboard, on_sent = built
-            msg = await self._send_control_message(
+            msg = await self._send_control_message_routed(
                 chat_id, text, parse_mode=parse_mode if parse_mode is not None else ParseMode.MARKDOWN_V2,
-                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode)
+                reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode,
+                on_sent=on_sent)
+            if isinstance(msg, SendResult):
+                return msg
             if on_sent is not None:
                 on_sent(msg)
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4180,13 +4246,42 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """2-per-row layout keeps labels readable on mobile (a 4-button row truncates)."""
         return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
+    def _native_control_markup(self, rows: list, *, overrides=None, row_contents=None, rich_text=None,
+                               row_alignments=None):
+        """Keep legacy actions intact; native presentation never leaks into legacy requests."""
+        legacy = InlineKeyboardMarkup(rows)
+        if not self._rich_controls_enabled():
+            return legacy
+        return NativeControlMarkup(legacy, overrides=overrides, row_contents=row_contents,
+                                   rich_text=rich_text, row_alignments=row_alignments)
+
+    def _selection_rows(self, buttons: list) -> list:
+        if not self._rich_controls_enabled():
+            return self._rows_of_two(buttons)
+        rows, compact = [], []
+        for button in buttons:
+            label = button.get("text", "") if isinstance(button, dict) else getattr(button, "text", "")
+            if len(str(label)) <= 18:
+                compact.append(button)
+                if len(compact) == 2:
+                    rows.append(compact)
+                    compact = []
+            else:
+                if compact:
+                    rows.append(compact)
+                    compact = []
+                rows.append([button])
+        if compact:
+            rows.append(compact)
+        return rows
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
         def build():
             default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
             text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
-            keyboard = InlineKeyboardMarkup([[
+            keyboard = self._native_control_markup([[
                 InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
                 InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
             return text, keyboard, None
@@ -4241,7 +4336,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+            return prompt.text, self._native_control_markup(self._selection_rows(buttons)), (
                 lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
@@ -4252,12 +4347,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Render a three-button slash-command confirmation prompt."""
         def build():
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")],
-                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")],
-           ])
+            buttons = [
+                InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
+                InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")]
+            rows = self._selection_rows(buttons)
+            rows.append([InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")])
+            keyboard = self._native_control_markup(rows)
             # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
             preview = self.format_message(self._ea_fit(
                 message, self.MAX_MESSAGE_LENGTH - utf16_len(self.format_message("...")), escape=self.format_message))
@@ -4279,8 +4374,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
-                keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+                keyboard = self._native_control_markup(
+                    rows, rich_text=f"❓ {_html.escape(question)}",
+                    row_contents=[f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices)] + [""])
+            def remember(msg):
+                self._clarify_state[clarify_id] = session_key
+                if not hasattr(self, "_clarify_prompt_context"):
+                    self._clarify_prompt_context = {}
+                bounded_put(self._clarify_prompt_context, clarify_id, text, 512)
+            return text, keyboard, remember
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
@@ -4328,7 +4430,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 buttons.append(InlineKeyboardButton(label, callback_data=f"cp:{i}"))
             if not buttons:
                 return SendResult(success=False, error="No choices")
-            keyboard = InlineKeyboardMarkup(self._rows_of_two(buttons))
+            keyboard = self._native_control_markup(
+                self._selection_rows(buttons), overrides={
+                    f"cp:{i}": {"disabled": True, "style": "success"}
+                    for i, choice in enumerate(choices) if choice.get("is_current")})
 
             def _remember(msg):
                 self._choice_picker_state[str(chat_id)] = {
@@ -4343,6 +4448,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             await query.edit_message_text(text=self.format_message(result_text), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
         except Exception:
+            if getattr(query, "is_rich_control", False) is True or getattr(query, "is_private_control", False) is True:
+                raise  # A lost rich/private edit acknowledgement is not permission to race another edit.
             with contextlib.suppress(Exception):
                 await query.edit_message_text(text=result_text, parse_mode=None, reply_markup=None)
 
@@ -4395,12 +4502,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     def _picker_back_cancel_row() -> list:
         return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
 
-    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
-        rows = self._rows_of_two(buttons)
+    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list, *, overrides=None) -> tuple:
+        rows = self._selection_rows(buttons)
+        alignments = ["left"] * len(rows)
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
+            alignments.append("center")
         rows.append(tail_row)
-        return InlineKeyboardMarkup(rows), page_meta["page_info"]
+        alignments.append("center")
+        return self._native_control_markup(rows, overrides=overrides, row_alignments=alignments), page_meta["page_info"]
 
     def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
         """Paginated top-level provider keyboard folding provider families (Kimi/Moonshot, MiniMax, xAI…)
@@ -4410,6 +4520,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception:
             group_providers = None
         by_slug = {p.get("slug"): p for p in providers}
+        overrides = {f"mp:{p['slug']}": {"style": "success"} for p in providers if p.get("is_current")}
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
@@ -4420,6 +4531,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     if any(m.get("is_current") for m in members):
                         label = f"✓ {label}"
                     buttons.append(InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}"))
+                    if any(m.get("is_current") for m in members):
+                        overrides[f"mpg:{row['group_id']}"] = {"style": "success"}
                 else:
                     p = by_slug.get(row["slug"])
                     if p is not None:
@@ -4427,19 +4540,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         else:
             buttons = [self._provider_button(p) for p in providers]
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
-        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
+        return self._paged_keyboard(page_buttons, page_meta, "mpv",
+            [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")], overrides=overrides)
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, *, current_model: str = "") -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons: list = []
         for i, model_id in enumerate(page_models):
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
+            short = model_id if self._rich_controls_enabled() else model_id.split("/")[-1]
+            if not self._rich_controls_enabled() and len(short) > 38:
                 short = short[:35] + "..."
+            if current_model and model_id == current_model:
+                short = f"✓ {short}"
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
-        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+        overrides = {f"mm:{start + i}": {"disabled": True, "style": "success"}
+                     for i, model in enumerate(page_models) if current_model and model == current_model}
+        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row(), overrides=overrides)
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
@@ -4450,7 +4568,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        current_model = state.get("current_model", "") if state.get("selected_provider") == state.get("current_provider") else ""
+        keyboard, page_info = self._build_model_keyboard(models, page, current_model=current_model)
         pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
@@ -4561,7 +4680,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             except Exception:
                 warning = None
             if warning is not None:
-                keyboard = InlineKeyboardMarkup([
+                keyboard = self._native_control_markup([
                     [InlineKeyboardButton(t("platform.telegram.picker.switch_anyway"), callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
@@ -4581,14 +4700,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if not members:
                 await query.answer(text=_toast("platform.telegram.picker.group_not_found"))
                 return
-            rows = self._rows_of_two([self._provider_button(p) for p in members])
+            rows = self._selection_rows([self._provider_button(p) for p in members])
             rows.append(self._picker_back_cancel_row())
             await self._picker_edit(
                 query,
                 f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
                 f"{t('platform.telegram.picker.provider_family', family=f'*{_label or group_id}*')}\n\n"
                 f"{t('platform.telegram.picker.select_provider')}",
-                InlineKeyboardMarkup(rows))
+                self._native_control_markup(rows, overrides={
+                    f"mp:{p['slug']}": {"style": "success"} for p in members if p.get("is_current")}))
         elif data == "mb":  # back to provider list (folds groups)
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
@@ -4598,13 +4718,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         else:
             await query.answer()  # e.g. page-counter button "mx:noop"
 
-    async def _notify_clarify_expired(self, query, user_display: str) -> None:
+    async def _notify_clarify_expired(self, query, user_display: str, prompt_context: str = "") -> None:
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
         the tap leaves a misleading ✓ the agent never sees."""
         with contextlib.suppress(Exception):
             await query.answer(text=_toast("platform.telegram.prompt.expired_toast"))
         await self._edit_html_quiet(
-            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>{_html.escape(t('platform.telegram.prompt.expired_body'))}</i>")
+            query, f"{prompt_context or _html.escape(query.message.text or '')}\n\n<i>{_html.escape(t('platform.telegram.prompt.expired_body'))}</i>")
 
     @staticmethod
     async def _edit_html_quiet(query, text: str) -> None:
@@ -4665,12 +4785,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     @staticmethod
     def _callback_ctx(query) -> Dict[str, Any]:
-        """Chat/thread/user context of a button tap, for the callback auth gate."""
+        """Chat/thread/user context of a button tap, including trusted ephemeral identity."""
         query_message = getattr(query, "message", None)
         query_chat = getattr(query_message, "chat", None)
+        from plugins.platforms.telegram.telegram_private_controls import _ephemeral_fields
+        ephemeral = _ephemeral_fields(query_message)
         return {
             "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
-            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
+            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None),
+            "user_id": getattr(query.from_user, "id", None), "callback_query_id": getattr(query, "id", None),
+            "telegram_callback_from_ephemeral": ephemeral is not None,
+            "telegram_ephemeral_reply_id": f"eph:{ephemeral[0]}:{ephemeral[1]}" if ephemeral else None}
 
     async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
         """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
@@ -4687,16 +4812,29 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         query = update.callback_query
         if not query or not query.data:
             return
+        # Ephemeral (requester-only) controls wrap FIRST: the receiver gate runs before
+        # _accept_update and the allowlist so a mismatched tap never drives another member's control.
+        wrapped_private = self.wrap_private_control_query(query)
+        if wrapped_private is not None:
+            if not await self.gate_private_control_query(wrapped_private):
+                return
+            query = wrapped_private
         self._accept_update()
+        query = self.wrap_rich_control_query(query)
         data = query.data
         cb = self._callback_ctx(query)
-        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
+        token = _CONTROL_CALLBACK_CONTEXT.set(cb)
+        try:
+            await self._dispatch_control_callback(query, data, cb)
+        finally:
+            _CONTROL_CALLBACK_CONTEXT.reset(token)
+
+    async def _dispatch_control_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         for prefixes, handler in (
             (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
-                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
                 if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
                     await handler(query, data, chat_id)
                 return
@@ -4784,6 +4922,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             from tools import slash_confirm as _slash_confirm_mod
             result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
             if result_text and query.message:
+                if getattr(query, "is_private_control", False) is True:
+                    await query.edit_message_text(self.format_message(result_text), parse_mode=ParseMode.MARKDOWN_V2)
+                    return
+                control_metadata = {
+                    "telegram_chat_type": str(cb.get("chat_type") or ""),
+                    "telegram_requester_user_id": str(cb.get("user_id") or ""),
+                    "telegram_callback_query_id": cb.get("callback_query_id")}
+                if self.private_control_requested(cb["chat_id"], control_metadata):
+                    await self._send_control_message_routed(
+                        str(cb["chat_id"]), self.format_message(result_text), parse_mode=ParseMode.MARKDOWN_V2,
+                        thread_id=cb.get("thread_id"), metadata=control_metadata)
+                    return
                 # Inherit the prompt's topic: forums use message_thread_id; private DM-topic lanes need
                 # both the topic id and the prompt reply anchor.
                 thread_id = getattr(query.message, "message_thread_id", None)
@@ -4806,7 +4956,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         ), str(thread_id), meta, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode))
                 await self._send_message_with_thread_fallback(**send_kwargs)
         except Exception as exc:
-            logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            logger.error("[%s] slash-confirm callback failed: %s", self.name, _redact_telegram_error_text(exc))
 
     async def _handle_clarify_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``cl:<clarify_id>:<idx|other>`` — resolve a clarify prompt or flip to text capture."""
@@ -4821,6 +4971,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        prompt_context = getattr(self, "_clarify_prompt_context", {}).get(clarify_id) or _html.escape(query.message.text or "")
         if choice_token == "other":
             # Flip to text-capture: the gateway's text-intercept resolves the clarify with the next message.
             # Do NOT pop _clarify_state yet — still needed if the entry gets cleared by something else.
@@ -4833,12 +4984,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if not flipped:
                 # Entry evicted / gateway restarted — a typed answer would go nowhere.
                 self._clarify_state.pop(clarify_id, None)
-                await self._notify_clarify_expired(query, user_display)
+                getattr(self, "_clarify_prompt_context", {}).pop(clarify_id, None)
+                await self._notify_clarify_expired(query, user_display, prompt_context)
                 return
             await query.answer(text=_toast("platform.telegram.prompt.type_answer"))
             await self._edit_html_quiet(
                 query,
-                f"❓ {query.message.text or ''}\n\n"
+                f"{prompt_context}\n\n"
                 f"<i>{_html.escape(t('platform.telegram.prompt.awaiting_typed', user=user_display))}</i>")
             return
         # Numeric choice → resolve immediately with the chosen text
@@ -4859,6 +5011,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # Race (timeout / session reset): echo the index so the agent sees an intentional response.
             resolved_text = f"choice {idx + 1}"
         self._clarify_state.pop(clarify_id, None)
+        getattr(self, "_clarify_prompt_context", {}).pop(clarify_id, None)
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
             resolved = resolve_gateway_clarify(clarify_id, resolved_text)
@@ -4868,11 +5021,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if resolved:
             await query.answer(text=f"✓ {resolved_text[:60]}")
             await self._edit_html_quiet(
-                query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
+                query, f"{prompt_context}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
             logger.info("Telegram clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, resolved_text, user_display)
         else:
             # Entry evicted / gateway restarted between ask and tap.
-            await self._notify_clarify_expired(query, user_display)
+            await self._notify_clarify_expired(query, user_display, prompt_context)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
@@ -5327,7 +5480,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             return await self._send_local_file(
                 "Image", actual_path, chat_id, reply_to, metadata, "photo",
-                lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+                lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed, rich_caption=caption)
         finally:
             if compressed:
                 with contextlib.suppress(OSError):
@@ -5335,6 +5488,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
+        *, rich_caption: Optional[str] = None,
     ) -> SendResult:
         """Shared shell for native local-file sends: existence check, open, send with routing, then
         ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
@@ -5344,10 +5498,35 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
             with open(path, "rb") as f:
+                if self._rich_media_active():
+                    legacy = build_kwargs(f)
+                    spec = {**rich_media_spec(media_key, f),
+                            "filename": legacy.get("filename") or os.path.basename(path)}
+                    spec.update({key: value for key, value in legacy.items()
+                                 if key not in {media_key, "caption", "filename", "parse_mode"}})
+                    caption_text = _html.escape(rich_caption or "", quote=False).replace("\n", "<br>")
+                    body = f"{caption_text}<br><br>" if caption_text else ""
+                    body += media_ref_html(media_key, spec["id"])
+                    rich_metadata = dict(metadata or {})
+                    rich_metadata["telegram_rich_message"] = {"html": body}
+                    if self._content_fits_rich_limits(body):
+                        try:
+                            rich_msg = await self._send_rich_media(chat_id, body, [spec], reply_to, rich_metadata)
+                        except _RichMediaTransient as exc:
+                            return self._rich_media_transient_result(exc)
+                        if rich_msg is not None:
+                            if isinstance(rich_msg, dict):
+                                message_id = rich_msg.get("message_id", (rich_msg.get("result") or {}).get("message_id"))
+                            else:
+                                message_id = rich_msg.message_id
+                            return SendResult(success=True, message_id=str(message_id))
+                    f.seek(0)
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
             return SendResult(success=True, message_id=str(msg.message_id))
+        except RichMediaError as exc:
+            return SendResult(success=False, error=_redact_telegram_error_text(exc), retryable=False)
         except Exception as e:
             return await on_error(e)
 
@@ -5365,7 +5544,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             lambda e: self._warn_then(
                 "document", e, super(
                     TelegramAdapter, self,
-                ).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)))
+                ).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)), rich_caption=caption)
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -5395,7 +5574,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 "Video", video_path, chat_id, reply_to, metadata, "video", build_kwargs,
                 lambda e: self._warn_then(
                     "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
-                ))
+                ), rich_caption=caption)
         finally:
             if thumb_path:
                 with contextlib.suppress(OSError):
@@ -7094,6 +7273,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+        from plugins.platforms.telegram.telegram_private_controls import _ephemeral_fields
+        ephemeral = _ephemeral_fields(message)
+        if ephemeral is not None:
+            handle = f"eph:{ephemeral[0]}:{ephemeral[1]}"
+            source.message_id = None
+            # Ephemeral addresses are process-local control targets, not ordinary Telegram message ids:
+            # keeping the handle in source.message_id makes reply routing call int("eph:...") and
+            # serializes a dead private address into durable session state. Keep it only in trusted metadata.
+            source.telegram_control_metadata = {
+                "telegram_chat_type": chat_type,
+                "telegram_requester_user_id": source.user_id,
+                "telegram_callback_from_ephemeral": True,
+                "telegram_ephemeral_reply_id": handle,
+            }
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
@@ -7101,7 +7294,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
-            message_id=str(message.message_id), platform_update_id=update_id,
+            message_id=source.message_id, platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
             timestamp=message.date)

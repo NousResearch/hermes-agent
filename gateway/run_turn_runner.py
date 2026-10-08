@@ -955,6 +955,8 @@ class TurnRunner:
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
+                        on_generation_stop=self._runner._generation_stop_callback(
+                            ctx.source, ctx.session_key, ctx.run_generation),
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

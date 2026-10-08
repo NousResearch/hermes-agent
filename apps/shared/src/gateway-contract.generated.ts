@@ -2474,6 +2474,12 @@ export interface ProjectsUpdateParams {
   color?: string | null
   board_slug?: string | null
 }
+/** ``parent_id`` names the project this one nests under in the sidebar; ``''`` moves it to the top level, and an absent (or null) value hands it back to folder containment. Looping moves are refused (5063). */
+export interface ProjectsSetParentParams {
+  profile?: string | null
+  id: string
+  parent_id?: string | null
+}
 export interface ProjectsAddFolderParams {
   profile?: string | null
   id: string
@@ -2549,6 +2555,7 @@ export interface RepoDiscoveryPolicyParams {
   repo_scan_enabled?: boolean | null
   repo_scan_roots?: string[] | null
   repo_scan_exclude_paths?: string[] | null
+  repo_scan_nested?: boolean | null
 }
 export interface ProjectsRecordReposResult {
   repos: DiscoveredRepo[]
@@ -2570,6 +2577,7 @@ export interface ProjectTreeNode {
   id: string
   label: string
   path?: string | null
+  parentId?: string | null
   color?: string | null
   icon?: string | null
   isAuto?: boolean
@@ -6371,6 +6379,8 @@ export interface RpcMethods {
   'projects.remove_folder': { params: ProjectFolderParams; result: ProjectResult }
   /** Switch (or clear) the active project for the profile. */
   'projects.set_active': { params: ProjectsSetActiveParams; result: ActiveIdResult }
+  /** Nest a project under another, or move it back out; answers the refreshed project. */
+  'projects.set_parent': { params: ProjectsSetParentParams; result: ProjectResult }
   /** Make one attached folder the project's primary path. */
   'projects.set_primary': { params: ProjectFolderParams; result: ProjectResult }
   /** Project → repo → lane overview with counts and a few preview sessions per project. */
@@ -6730,6 +6740,7 @@ export const RPC_METHODS = [
   'projects.record_repos',
   'projects.remove_folder',
   'projects.set_active',
+  'projects.set_parent',
   'projects.set_primary',
   'projects.tree',
   'projects.update',

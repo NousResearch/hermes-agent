@@ -102,6 +102,18 @@ method("projects.update", params=ProjectsUpdateParams, result=ProjectResult,
        doc="Patch a project's display fields; answers the refreshed project.")
 
 
+class ProjectsSetParentParams(ProjectIdParams):
+    """``parent_id`` names the project this one nests under in the sidebar; ``''`` moves it to the top
+    level, and an absent (or null) value hands it back to folder containment. Looping moves are
+    refused (5063)."""
+
+    parent_id: str | None = None
+
+
+method("projects.set_parent", params=ProjectsSetParentParams, result=ProjectResult,
+       doc="Nest a project under another, or move it back out; answers the refreshed project.")
+
+
 class ProjectsAddFolderParams(ProjectIdParams):
     path: str
     label: str | None = None
@@ -268,6 +280,9 @@ class ProjectTreeNode(Result):
     id: str
     label: str
     path: str | None = None
+    # The project this one nests under in the sidebar, or null at the top level. Display grouping:
+    # the row's own folders still decide which project owns a session.
+    parentId: str | None = None
     color: str | None = None
     icon: str | None = None
     isAuto: bool = False

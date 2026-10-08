@@ -352,17 +352,27 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
     would make the one-shot ring fallback sticky for a whole TTL."""
+    from tools.interrupt import is_interrupted
     from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
 
+    def _interrupted() -> dict:
+        return {"success": False, "error": "Interrupted"}
+
     def _paid_search() -> tuple[dict, bool]:
+        if is_interrupted():
+            return _interrupted(), True
         fetch_limit = bucket_limit(limit)
         try:
             resp = provider.search(query, fetch_limit)
         except Exception as exc:  # noqa: BLE001 — candidate for fallback / rescue
+            if is_interrupted():
+                return _interrupted(), True
             served = _served_after_failure(str(exc), fetch_limit)
             if served is None:
                 raise
             return served, True
+        if is_interrupted():
+            return _interrupted(), True
         if not resp.get("success"):
             served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
             if served is not None:
@@ -372,20 +382,30 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
         """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
         eligible; None means the vendor's own failure stands."""
+        if is_interrupted():
+            return _interrupted()
         fallback = _managed_search_fallback(provider, error, query, fetch_limit)
+        if is_interrupted():
+            return _interrupted()
         if fallback is not None:
             return fallback
         return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
+    if is_interrupted():
+        return _interrupted()
     response_data = search_memo.lookup(provider.name, query, limit)
     if response_data is None:
         with search_memo.flight_lock(provider.name, query, limit):
+            if is_interrupted():
+                return _interrupted()
             # Re-check inside the lock: a concurrent identical call may have stored.
             response_data = search_memo.lookup(provider.name, query, limit)
             if response_data is None:
                 response_data, was_rescued = _paid_search()
-                if not was_rescued:
+                if not was_rescued and not is_interrupted():
                     search_memo.store(provider.name, query, limit, response_data)
+    if is_interrupted():
+        return _interrupted()
     return slice_search_response(response_data, limit)
 
 

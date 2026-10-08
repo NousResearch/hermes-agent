@@ -15,6 +15,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
+from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +388,11 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
     order = _ring_order(name)
     vendor, result = None, None
     for i, vendor in enumerate(order):
+        if is_interrupted():
+            return order, vendor, result, False
         result = call(vendor)
+        if is_interrupted():
+            return order, vendor, result, False
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
@@ -404,6 +409,8 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any
         return not result.get("success") and _is_search_failover_eligible(result.get("error", ""))
 
     order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    if is_interrupted():
+        return search_fail("Interrupted")
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
@@ -422,6 +429,10 @@ def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
         return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
 
     order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
+    if is_interrupted():
+        if not results:
+            return [_page_error(u, "Interrupted") for u in urls]
+        return [r if not r.get("error") else {**r, "error": "Interrupted"} for r in results]
     if not order:
         return [_page_error(u, _ALL_PAID_MSG) for u in urls]
     return results

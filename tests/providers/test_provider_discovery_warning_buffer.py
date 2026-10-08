@@ -78,7 +78,9 @@ def test_format_empty_failures():
 
 def test_format_exact_limit_has_no_overflow_line():
     failures = tuple(
-        ProviderLoadFailure(plugin_name=f"plugin-{i}", source="bundled", error=f"err-{i}")
+        ProviderLoadFailure(
+            plugin_name=f"plugin-{i}", source="bundled", error=f"err-{i}"
+        )
         for i in range(3)
     )
     lines = format_provider_load_failures(failures)
@@ -89,7 +91,9 @@ def test_format_exact_limit_has_no_overflow_line():
 
 def test_format_truncates_with_overflow_line():
     failures = tuple(
-        ProviderLoadFailure(plugin_name=f"plugin-{i}", source="bundled", error=f"err-{i}")
+        ProviderLoadFailure(
+            plugin_name=f"plugin-{i}", source="bundled", error=f"err-{i}"
+        )
         for i in range(5)
     )
     lines = format_provider_load_failures(failures)
@@ -298,7 +302,8 @@ def test_replay_cursor_survives_max_rollover(caplog):
     with caplog.at_level(_logging.WARNING, logger="providers"):
         assert replay_provider_load_failures() == 1
     assert any(
-        "rollover-new-zz" in r.getMessage() and "rollover-new-marker-zz" in r.getMessage()
+        "rollover-new-zz" in r.getMessage()
+        and "rollover-new-marker-zz" in r.getMessage()
         for r in caplog.records
         if r.levelno >= _logging.WARNING
     )
@@ -306,14 +311,14 @@ def test_replay_cursor_survives_max_rollover(caplog):
     # Multi-eviction variant: N records past MAX surface exactly once.
     for i in range(3):
         _providers_pkg._record_plugin_failure(
-            f"rollover-multi-zz-{i}", "bundled", RuntimeError(f"rollover-multi-marker-{i}")
+            f"rollover-multi-zz-{i}",
+            "bundled",
+            RuntimeError(f"rollover-multi-marker-{i}"),
         )
     caplog.clear()
     with caplog.at_level(_logging.WARNING, logger="providers"):
         assert replay_provider_load_failures() == 3
-    warned = [
-        r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING
-    ]
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
     for i in range(3):
         assert any(
             f"rollover-multi-zz-{i}" in m and f"rollover-multi-marker-{i}" in m
@@ -322,3 +327,170 @@ def test_replay_cursor_survives_max_rollover(caplog):
     caplog.clear()
     with caplog.at_level(_logging.WARNING, logger="providers"):
         assert replay_provider_load_failures() == 0
+
+
+def _property_warned_names(caplog):
+    import logging as _logging
+
+    return [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
+
+
+def _property_assert_cursor_bounded():
+    assert 0 <= _providers_pkg._REPLAYED_COUNT <= len(_providers_pkg._LOAD_FAILURES)
+    assert len(_providers_pkg._LOAD_FAILURES) <= _providers_pkg.MAX_LOAD_FAILURES
+
+
+def test_property_buffer_overflow_keeps_newest_and_replays_once(caplog):
+    """Randomized un-replayed overflow: survivors replay exactly once, cursor bounded.
+
+    Covers survived mutant M2 (inverted eviction guard): the suite never
+    overflowed the buffer without an intervening replay, so only a test
+    that piles records past MAX before any replay diverges on that mutant.
+    Fixed seed 13423501.
+    """
+    import logging as _logging
+    import random as _random
+
+    from providers import MAX_LOAD_FAILURES, replay_provider_load_failures
+
+    rng = _random.Random(13423501)
+    recorded: list[str] = []
+    tag = 0
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        for _ in range(30):
+            for _ in range(rng.randint(0, MAX_LOAD_FAILURES + 20)):
+                name = f"prop-buf-zz-{tag}"
+                _providers_pkg._record_plugin_failure(
+                    name, "bundled", RuntimeError(f"prop-buf-marker-{tag}")
+                )
+                recorded.append(name)
+                tag += 1
+            _property_assert_cursor_bounded()
+
+        survivors = recorded[-MAX_LOAD_FAILURES:] if recorded else []
+        assert [f.plugin_name for f in get_provider_load_failures()] == survivors
+
+        caplog.clear()
+        assert replay_provider_load_failures() == len(survivors)
+        warned = _property_warned_names(caplog)
+        assert len(warned) == len(survivors)
+        for name in survivors:
+            assert sum(f"'{name}'" in m for m in warned) == 1
+        _property_assert_cursor_bounded()
+
+        caplog.clear()
+        with caplog.at_level(_logging.WARNING, logger="providers"):
+            assert replay_provider_load_failures() == 0
+        assert _property_warned_names(caplog) == []
+
+
+def test_property_cursor_stays_bounded_under_random_record_replay(caplog):
+    """Random record/replay interleavings: cursor bounded, exactly-once delivery.
+
+    Covers survived mutant M8 (unfloored cursor subtraction) and M1-class
+    eviction drift: small random batches with coin-flip replays, asserting
+    the cursor invariant after every op. Fixed seed 13423502.
+    """
+    import logging as _logging
+    import random as _random
+
+    from providers import replay_provider_load_failures
+
+    rng = _random.Random(13423502)
+    recorded: list[str] = []
+    warned: list[str] = []
+    tag = 0
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        for _ in range(40):
+            for _ in range(rng.randint(0, 15)):
+                name = f"prop-cursor-zz-{tag}"
+                _providers_pkg._record_plugin_failure(
+                    name, "bundled", RuntimeError(f"prop-cursor-marker-{tag}")
+                )
+                recorded.append(name)
+                tag += 1
+            _property_assert_cursor_bounded()
+            if rng.random() < 0.5:
+                caplog.clear()
+                newly = replay_provider_load_failures()
+                batch = _property_warned_names(caplog)
+                assert newly == len(batch)
+                for name in recorded:
+                    hits = sum(f"'{name}'" in m for m in batch)
+                    if hits:
+                        assert hits == 1
+                        assert name not in warned  # never double-reported
+                        warned.append(name)
+                for m in batch:
+                    assert any(f"'{n}'" in m for n in recorded)  # no phantoms
+                _property_assert_cursor_bounded()
+
+        caplog.clear()
+        replay_provider_load_failures()
+        for m in _property_warned_names(caplog):
+            for name in recorded:
+                if f"'{name}'" in m and name not in warned:
+                    warned.append(name)
+        assert len(warned) == len(set(warned))
+        buffered = {f.plugin_name for f in get_provider_load_failures()}
+        assert buffered <= set(warned)  # final drain leaves nothing pending
+        _property_assert_cursor_bounded()
+
+        caplog.clear()
+        with caplog.at_level(_logging.WARNING, logger="providers"):
+            assert replay_provider_load_failures() == 0
+        assert _property_warned_names(caplog) == []
+
+
+def test_property_late_arrivals_surface_exactly_once(caplog):
+    """Randomized late-arrival timing: post-replay records surface on next replay, once.
+
+    Each trial records a random pre-batch, replays, records a random late
+    batch, and proves the late batch (and only it) arrives on the second
+    replay. Trial totals stay under MAX so overflow cannot mask a timing
+    drop. Fixed seed 13423503.
+    """
+    import logging as _logging
+    import random as _random
+
+    from providers import MAX_LOAD_FAILURES, replay_provider_load_failures
+
+    rng = _random.Random(13423503)
+    tag = 0
+    with caplog.at_level(_logging.WARNING, logger="providers"):
+        for _ in range(20):
+            n_pre = rng.randint(0, 5)
+            for _ in range(n_pre):
+                _providers_pkg._record_plugin_failure(
+                    f"prop-late-pre-zz-{tag}",
+                    "bundled",
+                    RuntimeError(f"prop-late-pre-marker-{tag}"),
+                )
+                tag += 1
+            assert replay_provider_load_failures() == n_pre
+            _property_assert_cursor_bounded()
+
+            n_late = rng.randint(1, 8)
+            assert n_pre + n_late <= MAX_LOAD_FAILURES
+            late = []
+            for _ in range(n_late):
+                name = f"prop-late-zz-{tag}"
+                _providers_pkg._record_plugin_failure(
+                    name, "bundled", RuntimeError(f"prop-late-marker-{tag}")
+                )
+                late.append(name)
+                tag += 1
+            _property_assert_cursor_bounded()
+
+            caplog.clear()
+            assert replay_provider_load_failures() == n_late
+            batch = _property_warned_names(caplog)
+            assert len(batch) == n_late
+            for name in late:
+                assert sum(f"'{name}'" in m for m in batch) == 1
+
+            caplog.clear()
+            with caplog.at_level(_logging.WARNING, logger="providers"):
+                assert replay_provider_load_failures() == 0
+            assert _property_warned_names(caplog) == []
+            _property_assert_cursor_bounded()

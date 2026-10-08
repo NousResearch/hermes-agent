@@ -613,6 +613,7 @@ class SubagentSnapshot(Result):
     goal: str | None = None
     delegation_id: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     started_at: float | None = None
     status: SubagentStatus | None = None
     tool_count: int | None = None

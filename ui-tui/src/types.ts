@@ -43,6 +43,7 @@ export interface SubagentProgress {
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string
+  reasoningEffort?: string
   reasoningTokens?: number
   startedAt?: number
   status: SubagentStatus

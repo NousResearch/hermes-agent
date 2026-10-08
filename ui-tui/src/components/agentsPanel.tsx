@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
-import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
+import { processLabel, type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $uiState } from '../app/uiStore.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
@@ -60,17 +60,20 @@ export const processSummary = (block: ProcessBlock): string => {
   return [block.running ? T.running(block.running) : '', done ? T.done(done) : ''].filter(Boolean).join(' · ')
 }
 
-/** One `⚙ command · 42s · last: …` line per process; the exit verdict replaces the
+/** One `● pnpm dev  cor-4426 · 42s · last: …` line per process; the exit verdict replaces the
  * activity once the process has finished. */
 export function ProcessRowLine({ cols, row, t }: { cols: number; row: ProcessRow; t: Theme }) {
   const glyph = processGlyph(row.status, t)
+  const { label, where } = processLabel(row.command)
   const activity = row.status === 'running' ? `${fmtDuration(row.elapsedSeconds)} · ${row.detail}` : row.detail
-  const commandWidth = Math.max(8, cols - stringWidth(activity) - 6)
+  const tail = `${where ? `  ${where}` : ''} · ${activity}`
+  const labelWidth = Math.max(8, cols - stringWidth(tail) - 4)
 
   return (
     <Text wrap="truncate-end">
       <Text color={glyph.color}>{glyph.glyph} </Text>
-      <Text color={t.color.text}>{compactPreview(row.command, commandWidth)}</Text>
+      <Text color={t.color.text}>{compactPreview(label, labelWidth)}</Text>
+      {where ? <Text color={t.color.label}>{`  ${where}`}</Text> : null}
       <Text color={t.color.muted}> · {activity}</Text>
     </Text>
   )

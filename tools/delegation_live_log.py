@@ -281,7 +281,9 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                 # Same mounted dir as the .log files, so the goal needs the same redaction.
                 "goal": _redact(str(t.get("goal", ""))[:500]),
                 "log": paths[i] if i < len(paths) else None,
-                "status": "running"} for i, t in enumerate(task_list)]})
+                "status": "running",
+                **{k: t[k] for k in ("model", "provider") if isinstance(t.get(k), str) and t[k].strip()},
+            } for i, t in enumerate(task_list)]})
 
 
 def update_manifest_statuses(delegation_id: Optional[str],

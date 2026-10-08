@@ -526,6 +526,7 @@ export interface SubagentListResponse {
     depth?: number | null
     goal?: string | null
     model?: string | null
+    reasoning_effort?: string | null
     started_at?: number | null
     status?: string | null
     tool_count?: number | null

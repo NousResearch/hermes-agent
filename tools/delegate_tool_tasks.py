@@ -17,6 +17,47 @@ _TEMPLATE_MARKER_RE = re.compile(
     r"<[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+>|\{[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+\}"
 )
 _MIN_BATCH_GOAL_LEN = 10
+_TASK_ROUTING_FIELDS = ("model", "provider", "reasoning_effort")
+
+
+def _task_routing_error(task_list: List[Dict[str, Any]], parent_provider: Optional[str] = None) -> Optional[str]:
+    """Why a task's model/provider/reasoning_effort cannot be honoured (checked offline), else None."""
+    from hermes_cli.models_validate import static_model_provider_conflict
+    from hermes_constants import parse_reasoning_effort
+    for i, task in enumerate(task_list):
+        for key in _TASK_ROUTING_FIELDS:
+            if key not in task or task[key] is None:
+                continue
+            value = task[key]
+            if not isinstance(value, str) or not value.strip():
+                return f"Task {i} '{key}' must be a non-empty string."
+        effort = task.get("reasoning_effort")
+        if effort is not None and parse_reasoning_effort(effort.strip()) is None:
+            return (
+                f"Task {i} reasoning_effort {effort!r} is not a known level "
+                "(none, minimal, low, medium, high, xhigh)."
+            )
+        model = (task.get("model") or "").strip()
+        provider = (task.get("provider") or "").strip()
+        if provider and not model:
+            return f"Task {i} sets provider {provider!r} without a model; name the model to run on it."
+        conflict = static_model_provider_conflict(model, provider or parent_provider) if model else None
+        if conflict:
+            return f"Task {i}: {conflict['message']}"
+    return None
+
+
+def _task_routing_cfg(base_cfg: Dict[str, Any], task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """*base_cfg* with the task's model/provider layered on (a provider drops the config endpoint), else None."""
+    overrides = {k: task[k].strip() for k in ("model", "provider") if isinstance(task.get(k), str) and task[k].strip()}
+    if not overrides:
+        return None
+    cfg = dict(base_cfg)
+    if "provider" in overrides:
+        for key in ("base_url", "api_key", "api_mode"):
+            cfg.pop(key, None)
+    cfg.update(overrides)
+    return cfg
 
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""

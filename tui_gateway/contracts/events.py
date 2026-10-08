@@ -493,6 +493,7 @@ class SubagentEventPayload(Payload):
     delegation_id: str | None = None
     depth: int | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     tool_count: int | None = None
     toolsets: list[str] | None = None
     input_tokens: int | None = None

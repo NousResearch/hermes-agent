@@ -95,6 +95,12 @@ class CredentialPoolAdminMixin:
                 if entry.id == raw:
                     return idx, entry, None
 
+            # A number is the position `auth list` prints, so it outranks a label that
+            # looks like one. The length cap keeps int() under its digit limit.
+            position = int(raw) if raw.isdecimal() and len(raw) < 10 else None
+            if position is not None and 1 <= position <= len(self._entries):
+                return position, self._entries[position - 1], None
+
             label_matches = [
                 (idx, entry)
                 for idx, entry in enumerate(self._entries, start=1)
@@ -104,11 +110,8 @@ class CredentialPoolAdminMixin:
                 return label_matches[0][0], label_matches[0][1], None
             if len(label_matches) > 1:
                 return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
-            if raw.isdigit():
-                index = int(raw)
-                if 1 <= index <= len(self._entries):
-                    return index, self._entries[index - 1], None
-                return None, None, f"No credential #{index}."
+            if position is not None:
+                return None, None, f"No credential #{position}."
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:

@@ -100,17 +100,18 @@ git push -u origin HEAD
 
 **With gh:**
 
+Write the body to a file first — with the **write_file tool**, not with echo/heredoc
+inside a shell string (see "Long bodies: hand off via a file" in `issues.md`) — then
+pass it as a file:
+
 ```bash
+# pr-body.md holds the Markdown body (## Summary, ## Test Plan, Closes #42, ...).
+# Write it into the working directory with the write_file tool and pass the same
+# relative path — the file tool and the shell resolve it against that one
+# directory. Delete it when the call is done.
 gh pr create \
   --title "feat: add JWT-based user authentication" \
-  --body "## Summary
-- Adds login and register API endpoints
-- JWT token generation and validation
-
-## Test Plan
-- [ ] Unit tests pass
-
-Closes #42"
+  --body-file pr-body.md
 ```
 
 Options: `--draft`, `--reviewer user1,user2`, `--label "enhancement"`, `--base develop`

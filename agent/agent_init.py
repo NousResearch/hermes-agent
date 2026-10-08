@@ -813,6 +813,10 @@ def init_agent(
     agent.openrouter_min_coding_score = openrouter_min_coding_score
 
     # Store toolset filtering options
+    from toolsets import get_allowed_toolsets, restrict_toolsets
+
+    # Provider injectors read this same effective set, not the caller's wider request.
+    enabled_toolsets = restrict_toolsets(enabled_toolsets, get_allowed_toolsets())
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
     

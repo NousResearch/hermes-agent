@@ -33,6 +33,10 @@ def get_allowed_toolsets(config: Optional[Dict[str, Any]] = None) -> Optional[Se
     if allowed_raw is not None:
         return {value.strip() for value in allowed_raw.split(",") if value.strip()}
 
+    if config is None:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
     agent_cfg = (config or {}).get("agent") or {}
     configured = agent_cfg.get("allowed_toolsets")
     if configured is None:

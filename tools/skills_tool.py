@@ -694,6 +694,23 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
+def _with_deferred_tool_disclosure(parsed: dict, result: str, kw: dict) -> str:
+    """Attach the schemas of the skill's ``requires_*`` tools that sit behind the tool_call bridge
+    in this session (local and plugin skills alike: both carry ``_source_path``)."""
+    from tools.skills_tool_disclosure import disclosed_tools_for_skill
+    source = parsed.get("_source_path")
+    if not source:
+        return result
+    frontmatter = _safe_frontmatter(content=_read_skill_text(Path(source)))
+    disclosed = disclosed_tools_for_skill(
+        frontmatter, enabled_toolsets=kw.get("enabled_toolsets"), disabled_toolsets=kw.get("disabled_toolsets"))
+    if not disclosed:
+        return result
+    parsed["deferred_tools"] = disclosed["tools"]
+    parsed["deferred_tools_note"] = disclosed["note"]
+    return _json(parsed)
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
@@ -711,6 +728,8 @@ def _skill_view_with_bump(args, **kw):
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
+            if not args.get("file_path"):
+                result = _with_deferred_tool_disclosure(parsed, result, kw)
             _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view

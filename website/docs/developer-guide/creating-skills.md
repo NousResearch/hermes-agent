@@ -134,6 +134,8 @@ metadata:
 
 **Use case for `requires_*`:** Create a skill that only makes sense when certain tools are present. For example, a web scraping workflow skill with `requires_toolsets: [web]` won't clutter the prompt when web tools are disabled.
 
+A tool that [Tool Search](../user-guide/features/tool-search.md) has deferred behind the `tool_call` bridge still counts as available: the skill stays listed, and when the model loads it with `skill_view` the result carries a `deferred_tools` map with the full schema of each required tool the session can only reach through `tool_call`, plus a `deferred_tools_note` saying how to invoke them. Reading the skill is the moment the model needs those schemas, so it does not have to discover them with `tool_search` first. Only tools inside the session's own toolset grant are disclosed.
+
 ### Environment Variable Requirements
 
 Skills can declare environment variables they need. When a skill is loaded via `skill_view`, its required vars are automatically registered for passthrough into sandboxed execution environments (terminal, execute_code).

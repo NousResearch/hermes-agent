@@ -129,6 +129,9 @@ async def test_ordinary_revoke_and_reinvite_keeps_exact_same_epoch_cancellations
             revoked = await cli.post('/v1/room-members/grants/revoke', headers=_headers(grant), json={})
             assert revoked.status == 200 and not (await revoked.json())['authority_retired']
             replacement, body = await _invitation(cli)
+            stale_retirement = await cli.post('/v1/room-members/grants/revoke', headers=_headers(grant),
+                                              json={'retire_authority': True})
+            assert stale_retirement.status in {401, 403}
             replay = await cli.post('/v1/runs', headers=_headers(replacement), json=body)
             assert replay.status == 202
             result = await replay.json()

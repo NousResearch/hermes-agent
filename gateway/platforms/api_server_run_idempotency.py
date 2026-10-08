@@ -199,6 +199,12 @@ class RunIdempotencyStore:
         with self._lock:
             return not superseded(self._conn, authority)
 
+    def room_authority_retired(self, authority):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT retired_through FROM run_room_authorities WHERE authority_key=?", (authority[0],)).fetchone()
+        return row is not None and authority[1] <= row[0]
+
     def observe_room_authority(self, scope, authority):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():

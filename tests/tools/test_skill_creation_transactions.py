@@ -390,11 +390,23 @@ def test_metadata_lock_contention_cannot_hang_an_applied_write(home, monkeypatch
     path = (home / "skills" / ".locks" / "ledger.lock" if metadata == "ledger"
             else home / "skills" / ".usage.json.lock")
     op = {"action": "patch", "name": "existing", "old_string": "Original body.", "new_string": "Metadata bounded."}
+    native_lock = skill_usage.skill_file_lock
+    budgets = []
+
+    def observe_lock(lock_path, **kwargs):
+        if Path(lock_path) == path:
+            timeout = kwargs.get("timeout")
+            budgets.append(policy.remaining_write_wait() if timeout is None else timeout)
+        return native_lock(lock_path, **kwargs)
+
+    monkeypatch.setattr(skill_usage, "skill_file_lock", observe_lock)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        with skill_usage.skill_file_lock(path):
+        with native_lock(path):
             future = pool.submit(lambda: json.loads(smt.skill_manage(**op)) if flat else dispatch(op))
+            # Allow scheduling/I/O headroom; verify the actual lock budget separately.
             # The holder exits before executor teardown even when this assertion fails.
-            result = future.result(timeout=3)
+            result = future.result(timeout=15)
+    assert budgets and all(budget is not None and 0 <= budget <= 0.5 for budget in budgets), budgets
     assert result["success"] and not result.get("staged"), result
     assert "Metadata bounded." in (home / "skills" / "existing" / "SKILL.md").read_text()
     assert wa.pending_count(wa.SKILLS) == 0

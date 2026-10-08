@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
@@ -140,6 +141,18 @@ def check_monitor(job: dict) -> MonitorOutcome:
     last_hash = raw_state.get("last_output_hash") if isinstance(raw_state, dict) else None
 
     if last_hash is not None and new_hash == last_hash:
+        if output.strip() and (job.get("monitor_mode") or "change") == "level":
+            repeat = float(job.get("monitor_repeat_every_s") or 300)
+            last_notified = raw_state.get("last_notified_at") if isinstance(raw_state, dict) else None
+            try:
+                elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(last_notified)).total_seconds()
+            except (TypeError, ValueError):
+                elapsed = repeat
+            if elapsed >= repeat:
+                _persist_monitor_state(job_id, new_hash, output, notified=True)
+                return MonitorOutcome(ok=True, changed=True, context_block=(
+                    "## MONITOR LEVEL ALERT\n\nThe monitored source remains in the same non-empty state.\n\n"
+                    f"### Current output\n\n```\n{output[:MAX_OUTPUT_CHARS]}\n```"))
         return MonitorOutcome(ok=True, changed=False)
 
     first_run = last_hash is None
@@ -168,7 +181,7 @@ def check_monitor(job: dict) -> MonitorOutcome:
     return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
 
 
-def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
+def _persist_monitor_state(job_id: str, new_hash: str, output: str, *, notified: bool = True) -> None:
     from cron.jobs import _hermes_now, update_job
 
     _write_last_output(job_id, output)
@@ -179,6 +192,7 @@ def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
                 "monitor_state": {
                     "last_output_hash": new_hash,
                     "last_changed_at": _hermes_now().isoformat(),
+                    "last_notified_at": _hermes_now().isoformat() if notified else None,
                 }
             },
         )

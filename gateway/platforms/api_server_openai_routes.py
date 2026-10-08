@@ -654,6 +654,13 @@ class OpenAICompatRoutesMixin:
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
         stream = _coerce_request_bool(body.get("stream"), default=False)
+        # Opt-in, streaming only: a client that may lose its socket without giving up the turn
+        # (a phone suspended on screen lock, a tunnel that drops) asks the turn to survive the
+        # disconnect. Advertised as ``detach_on_disconnect_header`` in GET /v1/capabilities —
+        # per-request rather than per-session because it is a property of this client's transport,
+        # and there is no socket to lose on a non-streaming request.
+        detach_on_disconnect = _coerce_request_bool(
+            request.headers.get("X-Hermes-Detach-On-Disconnect"), default=False)
 
         # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
         # (Anthropic rejects images there, OpenAI text models ignore them).
@@ -784,7 +791,8 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key,
+                detach_on_disconnect=detach_on_disconnect)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -886,11 +894,14 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None) -> "web.StreamResponse":
+        gateway_session_key: str = None, detach_on_disconnect: bool = False) -> "web.StreamResponse":
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
-        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
+        disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled —
+        unless the client opted in with ``X-Hermes-Detach-On-Disconnect``, which keeps the turn
+        running server-side instead (a lost socket is not a withdrawn question)."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _detach_agent_task,
+            _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
@@ -963,8 +974,14 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
-            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            if detach_on_disconnect:
+                # Opt-in: keep the turn. The client lost its socket, not its question — it reads
+                # the reply from the session transcript when it reconnects (or from the run
+                # record, which the done-callback retires only when the turn really ends).
+                await _detach_agent_task(self, agent_task, stream_q, run_id=completion_id)
+            else:
+                await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
+                logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
         except Exception:
             # Agent crashed mid-stream: an error chunk beats a TransferEncodingError.
             import traceback as _tb
@@ -986,6 +1003,9 @@ class OpenAICompatRoutesMixin:
         -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,
         an ``incomplete`` snapshot replaces ``in_progress`` so GET / chaining still work.
+        ``X-Hermes-Detach-On-Disconnect`` does not apply here: the response store is written by
+        this writer, so a detached turn would strand its snapshot at ``in_progress``. Clients
+        that need a turn to outlive its socket use /v1/chat/completions.
         """
         from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)

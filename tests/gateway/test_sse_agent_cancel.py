@@ -4,6 +4,10 @@ When a streaming /v1/chat/completions client disconnects mid-stream
 (network drop, browser tab close), the agent is interrupted via
 agent.interrupt() so it stops making LLM API calls, and the asyncio
 task wrapper is cancelled.
+
+A client that opts in with ``X-Hermes-Detach-On-Disconnect`` asks for the opposite
+(``TestSSEDetachOnDisconnect``): a phone whose screen locked lost its socket, not its
+question, so the turn is left to finish and land in the session transcript.
 """
 
 import asyncio
@@ -448,3 +452,145 @@ class TestThreadSafeAsyncQueueCrossThreadBoundary:
 
         loop.run_until_complete(consumer())
         loop.close()
+
+
+class TestSSEDetachOnDisconnect:
+    """``X-Hermes-Detach-On-Disconnect``: a lost socket must not kill the turn.
+
+    The opt-in turns the disconnect branch into a detach — no interrupt, no process reaping,
+    no task cancellation — and hands the delta queue to a tracked drain so a turn with no
+    writer cannot retain everything it emits.
+    """
+
+    def test_detach_keeps_the_turn_running_and_drains_the_queue(self):
+        adapter = _make_adapter()
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            agent_done = asyncio.Event()
+
+            async def fake_agent():
+                await agent_done.wait()
+                return ({"final_response": "done"},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            writes = 0
+
+            async def write_side_effect(data):
+                nonlocal writes
+                writes += 1
+                if writes >= 2:
+                    raise ConnectionResetError("client disconnected")
+
+            mock_response.write = AsyncMock(side_effect=write_side_effect)
+            mock_response.prepare = AsyncMock()
+
+            with (
+                patch("gateway.platforms.api_server.web.StreamResponse", return_value=mock_response),
+                patch("gateway.platforms.api_server.request_hard_interrupt") as hard_interrupt,
+                patch("gateway.platforms.api_server._reap_disconnected_agent_processes") as reap,
+            ):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-detach", "gpt-4", 1234567890, stream_q, agent_task,
+                    agent_ref=[MagicMock()], detach_on_disconnect=True)
+
+                # The turn outlives the socket it was streaming to.
+                assert not agent_task.done()
+                hard_interrupt.assert_not_called()
+                reap.assert_not_called()
+
+                # The writer is gone, so the drain owns the queue: deltas the client never saw
+                # are consumed, not retained (ThreadSafeAsyncQueue is unbounded).
+                assert len(adapter._background_tasks) == 1
+                for i in range(50):
+                    stream_q.put_nowait(f"delta-{i}")
+                await asyncio.sleep(0.05)
+                assert stream_q.empty()
+
+                # ...and the drain ends with the turn, not on a queue nobody will ever fill.
+                agent_done.set()
+                await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), timeout=5)
+
+            assert agent_task.done()
+            assert not agent_task.cancelled()
+
+        asyncio.run(run())
+
+    def test_drain_ends_when_eos_was_consumed_before_the_writer_failed(self):
+        """The writer can fail on its terminal frames *after* consuming the EOS sentinel — the
+        drain must notice the finished run instead of awaiting a queue forever."""
+        adapter = _make_adapter()
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+
+            async def finished_agent():
+                return {"final_response": "done"}, {"input_tokens": 1, "output_tokens": 1}
+
+            agent_task = asyncio.ensure_future(finished_agent())
+            await asyncio.sleep(0)  # No sentinel: the run is already over and the queue is empty.
+            assert agent_task.done() and stream_q.empty()
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock(side_effect=ConnectionResetError("client disconnected"))
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse", return_value=mock_response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-detach-eos", "gpt-4", 1234567890, stream_q, agent_task,
+                    detach_on_disconnect=True)
+
+            assert len(adapter._background_tasks) == 1  # the drain owns the queue
+            # Would hang (until the 5s guard) if the drain only ever waited on the sentinel.
+            await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), timeout=5)
+
+        asyncio.run(run())
+
+    def test_without_the_opt_in_the_turn_is_still_interrupted(self):
+        """Default contract unchanged: no header, no detach — the turn is interrupted and its
+        processes reaped, so a closed browser tab still stops the work."""
+        adapter = _make_adapter()
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            agent_done = asyncio.Event()
+
+            async def fake_agent():
+                await agent_done.wait()
+                return {"final_response": "done"}, {}
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            agent = MagicMock()
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock(side_effect=ConnectionResetError("client disconnected"))
+            mock_response.prepare = AsyncMock()
+
+            with (
+                patch("gateway.platforms.api_server.web.StreamResponse", return_value=mock_response),
+                patch("gateway.platforms.api_server.request_hard_interrupt") as hard_interrupt,
+                patch("gateway.platforms.api_server._reap_disconnected_agent_processes") as reap,
+            ):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-legacy", "gpt-4", 1234567890, stream_q, agent_task,
+                    agent_ref=[agent])
+
+                assert hard_interrupt.call_args.args[0] is agent
+                assert hard_interrupt.call_args.args[1] == "SSE client disconnected"
+                assert reap.called
+                assert agent_task.cancelled() or agent_task.done()
+                assert not adapter._background_tasks  # nothing detached, nothing to drain
+
+            agent_done.set()
+
+        asyncio.run(run())

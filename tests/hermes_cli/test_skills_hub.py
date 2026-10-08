@@ -744,3 +744,60 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
     assert f"'{name}' is a built-in skill" in error and f"`hermes skills uninstall {name}`" in error
     assert "already available" not in sink.getvalue()
     assert (stranger / "SKILL.md").read_text().endswith("stranger\n")
+
+
+# ---------------------------------------------------------------------------
+# hermes skills publish --to github
+# ---------------------------------------------------------------------------
+
+def test_github_publish_uploads_the_skill_tree_as_url_paths(tmp_path, monkeypatch):
+    """Each file is PUT to the Contents API, whose path is a URL path — ``/`` on every OS. Spelled
+    natively, a Windows publish sent ``references\api.md`` as one literal filename, so the skill
+    arrived in the submitted PR flattened: every directory the skill layout defines was gone and
+    every ``skill_view(name, file_path)`` reference in its SKILL.md pointed at nothing."""
+    import httpx
+
+    from hermes_cli.skills_hub import _github_publish
+
+    skill = tmp_path / "my-skill"
+    (skill / "references").mkdir(parents=True)
+    (skill / "scripts").mkdir()
+    (skill / "SKILL.md").write_text("---\nname: my-skill\n---\n", encoding="utf-8")
+    (skill / "references" / "api.md").write_text("api\n", encoding="utf-8")
+    (skill / "scripts" / "run.py").write_text("print(1)\n", encoding="utf-8")
+
+    class _Resp:
+        def __init__(self, status_code, payload=None):
+            self.status_code, self._payload, self.text = status_code, payload or {}, ""
+
+        def json(self):
+            return self._payload
+
+    uploaded = []
+
+    def _post(url, **_kw):
+        if url.endswith("/forks"):
+            return _Resp(202, {"full_name": "contributor/hermes-skills"})
+        if url.endswith("/pulls"):
+            return _Resp(201, {"html_url": "https://github.com/x/y/pull/1"})
+        return _Resp(201)
+
+    def _get(url, **_kw):
+        if "/git/refs/heads/" in url:
+            return _Resp(200, {"object": {"sha": "0" * 40}})
+        return _Resp(200, {"default_branch": "main"})
+
+    def _put(url, **_kw):
+        uploaded.append(url.split("/contents/skills/my-skill/", 1)[1])
+        return _Resp(201)
+
+    monkeypatch.setattr(httpx, "post", _post)
+    monkeypatch.setattr(httpx, "get", _get)
+    monkeypatch.setattr(httpx, "put", _put)
+
+    ok, message = _github_publish(
+        skill, "my-skill", "NousResearch/hermes-skills",
+        type("_Auth", (), {"get_headers": staticmethod(dict)})())
+
+    assert ok, message
+    assert sorted(uploaded) == ["SKILL.md", "references/api.md", "scripts/run.py"]

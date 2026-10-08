@@ -1096,8 +1096,11 @@ class TestOptionalSkillSourceBinaryAssets:
         bundle = src.fetch("official/mlops/models/neutts")
 
         assert bundle is not None
-        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.wav")] == wav_bytes
-        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.txt")] == b"hello\n"
+        # Slash-spelled, like the exclusion assertion below and `skills_guard.content_hash`:
+        # `os.path.join` here accepted the native key that made a Windows bundle hash differently
+        # from the same skill read back off disk (#62310).
+        assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
+        assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
 
     def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):

@@ -1,7 +1,6 @@
 """Multi-file third-party skill bundles and scanner provenance (#60598)."""
 
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -492,7 +491,7 @@ def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypa
 
     bundle = source.fetch("official/category/official-demo")
     assert bundle is not None
-    assert set(bundle.files) == {"SKILL.md", os.path.join("references", "all.md")}
+    assert set(bundle.files) == {"SKILL.md", "references/all.md"}
 
 
 UPSTREAM_STUB_MD = """---

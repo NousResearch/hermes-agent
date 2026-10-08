@@ -1423,7 +1423,10 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
     for f in skill_path.rglob("*"):
         if not f.is_file():
             continue
-        rel = str(f.relative_to(skill_path))
+        # The Contents API path is a URL path, so the separator is ``/`` on every OS: the native
+        # spelling uploaded ``references\api.md`` as one literal filename and the submitted PR
+        # carried a flat skill with no subdirectories at all.
+        rel = f.relative_to(skill_path).as_posix()
         try:
             call("put", f"{fork_repo}/contents/skills/{skill_name}/{rel}",
                  json={"message": f"Add {skill_name} skill: {rel}",

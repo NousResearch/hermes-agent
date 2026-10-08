@@ -175,14 +175,16 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
         import tools.process_registry as pr
         from tools.registry import registry
         result = registry.get_entry("process_manage").handler(
-            {"action": "log", "session_id": sys.argv[1]})
+            {"action": "log", "session_id": sys.argv[1]},
+            task_id="resumed-turn", session_id=sys.argv[2])
         status = registry.get_entry("process_manage").handler(
-            {"action": "poll", "session_id": sys.argv[1]})
+            {"action": "poll", "session_id": sys.argv[1]},
+            task_id="resumed-turn", session_id=sys.argv[2])
         print(json.dumps({"result": json.loads(result), "status": json.loads(status),
                           "replayed": not pr.process_registry.completion_queue.empty()}))
     ''')
-    def read_result(profile):
-        result = subprocess.run([sys.executable, "-c", consumer, process_id],
+    def read_result(profile, owner_session_id):
+        result = subprocess.run([sys.executable, "-c", consumer, process_id, owner_session_id],
                                 cwd=tmp_path, env={**env, "HERMES_HOME": str(profile)},
                                 check=True, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", timeout=30)
@@ -191,13 +193,13 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     receipt = json.loads((home / "logs" / "process-results" / f"{process_id}.json").read_text(encoding="utf-8"))
     assert receipt["parent_session_id"]  # CLI owner must be stamped before its reader starts.
     env["HERMES_SESSION_ID"] = receipt["parent_session_id"]
-    recovered = read_result(home)
+    recovered = read_result(home, receipt["parent_session_id"])
     assert recovered["result"]["status"] == "exited", recovered
     assert recovered["status"]["exit_code"] == 7, recovered
     assert "SYNTHETIC_REVIEW_COMPLETE" in recovered["result"]["output"]
     assert "review stderr" in recovered["result"]["output"]
     assert recovered["replayed"] is False
-    assert read_result(tmp_path / "other-profile")["result"]["status"] == "not_found"
+    assert read_result(tmp_path / "other-profile", receipt["parent_session_id"])["result"]["status"] == "not_found"
 
 
 def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch):

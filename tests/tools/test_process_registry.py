@@ -18,6 +18,7 @@ from tools.process_registry import (
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
+    _process_owner_principal,
 )
 
 
@@ -56,6 +57,7 @@ def _make_session(
         id=sid,
         command=command,
         task_id=task_id,
+        owner_principal=_process_owner_principal(task_id),
         started_at=started_at or time.time(),
         exited=exited,
         exit_code=exit_code,
@@ -1440,6 +1442,105 @@ class TestProcessToolHandler:
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
 
+    def test_profile_scoped_owner_principal_blocks_same_raw_session_id_a_b_a(
+        self, registry, monkeypatch, tmp_path
+    ):
+        """A process handle is authority for one (profile, session), not the raw session id alone."""
+        import tools.process_registry as process_registry_module
+        from gateway.session_context import scoped_current_session_id
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import registry as tool_registry
+
+        class FakePty:
+            def __init__(self):
+                self.alive = True
+                self.writes = []
+                self.eof_sent = False
+                self.terminated = False
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def sendeof(self):
+                self.eof_sent = True
+
+            def terminate(self, force=False):
+                self.terminated = force
+                self.alive = False
+
+            def isalive(self):
+                return self.alive
+
+            def close(self):
+                pass
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        raw_session_id = "shared-session-id"
+        process_id = "proc_profile_owner"
+        fake_pty = FakePty()
+        monkeypatch.setattr(process_registry_module, "process_registry", registry)
+
+        def in_profile(home, action, *, caller_task_id: object = raw_session_id, **extra):
+            token = set_hermes_home_override(home)
+            try:
+                result = tool_registry.dispatch(
+                    "process_manage",
+                    {"action": action, "session_id": process_id, **extra},
+                    task_id=str(caller_task_id),
+                    session_id=raw_session_id,
+                )
+                assert isinstance(result, str)
+                return json.loads(result)
+            finally:
+                reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(profile_a)
+        try:
+            with scoped_current_session_id("stale-process-context"):
+                session = registry._new_session(
+                    "profile-a-command",
+                    raw_session_id,
+                    raw_session_id,
+                    "shared-route",
+                    str(tmp_path),
+                    owner_session_id=raw_session_id,
+                )
+        finally:
+            reset_hermes_home_override(token)
+        session.id = process_id
+        session.output_buffer = "profile-a-output"
+        session._pty = fake_pty
+        registry._running[session.id] = session
+
+        assert [p["session_id"] for p in in_profile(profile_a, "list")["processes"]] == [process_id]
+        assert in_profile(profile_a, "log")["output"] == "profile-a-output"
+
+        assert in_profile(profile_b, "list")["processes"] == []
+        for action, extra in (
+            ("poll", {}),
+            ("log", {}),
+            ("wait", {"timeout": 1}),
+            ("write", {"data": "foreign-write"}),
+            ("submit", {"data": "foreign-submit"}),
+            ("close", {}),
+            ("kill", {}),
+        ):
+            assert in_profile(profile_b, action, **extra)["status"] == "not_found"
+        assert fake_pty.writes == []
+        assert fake_pty.eof_sent is False
+        assert fake_pty.terminated is False
+
+        assert in_profile(profile_a, "log")["output"] == "profile-a-output"
+        assert [p["session_id"] for p in in_profile(
+            profile_a, "list", caller_task_id="same-session-next-turn")["processes"]] == [process_id]
+        assert in_profile(profile_a, "write", data="owned-write")["status"] == "ok"
+        assert in_profile(profile_a, "kill")["status"] == "killed"
+        assert fake_pty.writes
+        assert fake_pty.terminated is True
+
 
 # =========================================================================
 # format_process_notification + drain_notifications (shared helpers)
@@ -1925,7 +2026,8 @@ class TestHandleProcessRedaction:
             monkeypatch, "printenv",
             "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u",
         )
-        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        out = json.loads(pr._handle_process(
+            {"action": "log", "session_id": sess.id}, task_id=sess.owner_task_id))
         assert "abc123randomopaquetokenvalue999" not in out["output"]
         assert "HOME=/home/u" in out["output"]
 
@@ -1934,7 +2036,8 @@ class TestHandleProcessRedaction:
             monkeypatch, "python app.py",
             "leaked OPENAI_API_KEY sk-proj-abc123def456ghi789jkl012 here",
         )
-        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        out = json.loads(pr._handle_process(
+            {"action": "poll", "session_id": sess.id}, task_id=sess.owner_task_id))
         assert "abc123def456" not in out["output_preview"]
 
     def test_list_redacts_command_and_output(self, monkeypatch):
@@ -1948,7 +2051,7 @@ class TestHandleProcessRedaction:
             monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
             "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
         )
-        out = json.loads(pr._handle_process({"action": "list"}))
+        out = json.loads(pr._handle_process({"action": "list"}, task_id=sess.owner_task_id))
         assert len(out["processes"]) >= 1
         entry = out["processes"][0]
         assert "sk-abc123def456ghi789jkl012345" not in entry["command"]
@@ -1966,7 +2069,8 @@ class TestHandleProcessRedaction:
         sess.exit_code = 0
         reg._running[sess.id] = sess
         monkeypatch.setattr(pr, "process_registry", reg)
-        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        out = json.loads(pr._handle_process(
+            {"action": "log", "session_id": sess.id}, task_id=sess.owner_task_id))
         assert "zzzopaque1234567890abcdef" in out["output"]
 
 
@@ -1998,7 +2102,8 @@ class TestHandleProcessTransformHook:
 
         pr, sess = self._setup(monkeypatch, "raw line\n", hook=hook)
         for action, key in (("poll", "output_preview"), ("log", "output"), ("wait", "output"), ("kill", "output")):
-            out = json.loads(pr._handle_process({"action": action, "session_id": sess.id}, task_id="task-bg"))
+            out = json.loads(pr._handle_process(
+                {"action": action, "session_id": sess.id}, task_id=sess.owner_task_id))
             assert out[key].startswith("REWRITTEN:raw line"), (action, out)
         assert [s for s in seen if s[0] == "transform_terminal_output"]
         # The hook sees the command, the recorded exit code (None while running) and the process
@@ -2012,7 +2117,8 @@ class TestHandleProcessTransformHook:
             monkeypatch, "plain output",
             hook=lambda hook_name, **kw: [f"OPENAI_API_KEY={secret}"] if hook_name == "transform_terminal_output" else [],
         )
-        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        out = json.loads(pr._handle_process(
+            {"action": "log", "session_id": sess.id}, task_id=sess.owner_task_id))
         assert secret not in out["output"]
         assert "OPENAI_API_KEY=" in out["output"]
 

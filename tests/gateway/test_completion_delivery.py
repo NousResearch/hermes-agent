@@ -263,6 +263,7 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
         id="proc_kill_redacted",
         command="printenv",
         task_id="task",
+        owner_principal=pr_module._process_owner_principal("task"),
         started_at=1.0,
         output_buffer="PRIVATE_TOKEN=opaque-value\n",
         exited=True,
@@ -281,7 +282,7 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
     result = json.loads(pr_module._handle_process({
         "action": "kill",
         "session_id": session.id,
-    }))
+    }, task_id="task"))
     assert result["output"] == "PRIVATE_TOKEN=<redacted>\n"
 
 

@@ -516,6 +516,43 @@ def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
 
+def _process_owner_principal(owner_session_id: str, profile_home=None) -> str:
+    """Immutable authority key for one raw agent session inside one profile.
+
+    Session ids can legitimately collide across profile-local state stores. Pair
+    them with the canonical Hermes home before they enter the process-global
+    registry.
+    """
+    owner = str(owner_session_id or "")
+    if not owner:
+        return ""
+    from hermes_constants import hermes_home_key
+
+    return json.dumps(
+        [hermes_home_key(profile_home), owner],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _owner_principal_profile(principal: str) -> str:
+    """Canonical profile component, or empty for a missing/malformed principal."""
+    try:
+        value = json.loads(principal)
+    except (TypeError, ValueError):
+        return ""
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or not isinstance(value[0], str)
+        or not isinstance(value[1], str)
+        or not value[0]
+        or not value[1]
+    ):
+        return ""
+    return value[0]
+
+
 def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
     from tools.ansi_strip import strip_ansi
@@ -543,6 +580,8 @@ class ProcessSession:
                                                 # may be collapsed by _resolve_container_task_id)
     owner_task_id: str = ""                     # RAW spawning task id ("sa-..."); ownership
                                                 # checks must use this, not task_id
+    owner_principal: str = ""                   # Immutable (profile home, agent session) authority;
+                                                # replaced only by explicit handoff
     session_key: str = ""                       # Gateway session key (reset protection)
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -647,10 +686,10 @@ class ProcessSession:
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
 _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
-# ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
+# ``session_id``; ``command`` is redacted and ownership is persisted verbatim).
 _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
-    "started_at", "task_id", "owner_task_id", "session_key",
+    "started_at", "task_id", "owner_task_id", "owner_principal", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release")
@@ -1107,10 +1146,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
         from gateway.session_context import get_session_env
 
+        raw_owner = owner_task_id or task_id
+        explicit_owner_session_id = str(extra.pop("owner_session_id", "") or "")
+        parent_session_id = explicit_owner_session_id or get_session_env("HERMES_SESSION_ID", "")
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
-            owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
-            parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            owner_task_id=owner_task_id,
+            owner_principal=_process_owner_principal(parent_session_id or raw_owner),
+            session_key=session_key, cwd=cwd,
+            parent_session_id=parent_session_id,
             wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
@@ -1196,7 +1240,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
         env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False) -> ProcessSession:
+        owner_session_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
@@ -1209,7 +1253,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release)
+                                    owner_session_id=owner_session_id, persist_on_release=persist_on_release)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1270,13 +1314,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True) -> ProcessSession:
+        notify_on_complete: bool = True, owner_session_id: str = "") -> ProcessSession:
         """Take over a still-running foreground Popen as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
         already captured is lost."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd,
+            owner_session_id=owner_session_id)
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1288,14 +1334,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", owner_session_id: str = "",
+        persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context. ``persist_on_release`` keeps the process out of
         agent-lifecycle kill sweeps (#41225)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
-                                    persist_on_release=persist_on_release)
+                                    owner_session_id=owner_session_id, persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1924,6 +1971,47 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
 
+    @staticmethod
+    def _owner_allows(
+        session: ProcessSession,
+        owner_principal: Optional[str],
+        session_key: str = "",
+    ) -> bool:
+        """Whether a caller may operate on ``session``.
+
+        ``None`` is reserved for trusted lifecycle/UI callers that already hold
+        the registry object. Model-facing actions always pass a string; empty or
+        legacy unstamped principals fail closed. A gateway-session carve-out
+        preserves management of forgotten cross-turn processes, but only inside
+        the same profile.
+        """
+        if owner_principal is None:
+            return True
+        if not owner_principal or not session.owner_principal:
+            return False
+        if session.owner_principal == owner_principal:
+            return True
+        owner_profile = _owner_principal_profile(owner_principal)
+        return bool(
+            session_key
+            and session.session_key == session_key
+            and owner_profile
+            and _owner_principal_profile(session.owner_principal) == owner_profile
+        )
+
+    def get_for_owner(
+        self,
+        session_id: str,
+        *,
+        owner_principal: Optional[str],
+        session_key: str = "",
+    ) -> Optional[ProcessSession]:
+        """Resolve ``session_id`` only when its immutable owner authorizes the caller."""
+        session = self.get(session_id)
+        if session is None or not self._owner_allows(session, owner_principal, session_key):
+            return None
+        return session
+
     def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
         """Resolve a unique session-ID prefix (a bare hex tail is normalized to
         ``proc_<tail>``); :meth:`get` tries exact first."""
@@ -2021,9 +2109,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def _status_head(session: ProcessSession) -> dict:
         return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
 
-    def poll(self, session_id: str) -> dict:
+    def poll(self, session_id: str, *, owner_principal: Optional[str] = None,
+             session_key: str = "") -> dict:
         """Check status and get new output for a background process."""
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         if session is None or self._uncollected_gone(session):
             return _not_found(session_id)
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
@@ -2047,11 +2136,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result
 
-    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200, *,
+                 owner_principal: Optional[str] = None, session_key: str = "") -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         with session._lock:
@@ -2079,7 +2169,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int = None) -> dict:
+    def wait(self, session_id: str, timeout: Optional[int] = None, *,
+             owner_principal: Optional[str] = None, session_key: str = "") -> dict:
         """Block until the process exits, the timeout elapses, the user interrupts, or a
         mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
@@ -2099,7 +2190,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         if timeout and timeout > max_timeout:
             effective_timeout = max_timeout
             timeout_note = f"Requested wait of {timeout}s was clamped to configured limit of {max_timeout}s"
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         deadline = time.monotonic() + effective_timeout
@@ -2158,14 +2249,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             **ProcessRegistry._exit_fields(session), **_completion_output(session)}
 
     def kill_process(
-        self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
+        self, session_id: str, *, owner_principal: Optional[str] = None, session_key: str = "",
+        source: str = "process.kill", consume_output: bool = True,
     ) -> dict:
         """Kill a background process and return its output snapshot.
         ``consume_output`` is true for explicit tool/RPC kills (the caller sees the
         output). Bulk cleanup passes false so it doesn't suppress an autonomous
         completion notification — except abandoned-turn reaping (``kill_started_since``),
         which passes true so a killed abandoned process can't revive stopped work."""
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         if session.exited:
@@ -2315,10 +2407,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             }
         return None
 
-    def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict) -> dict:
+    def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict, *,
+                  owner_principal: Optional[str] = None, session_key: str = "") -> dict:
         """Run a stdin operation on a running session — ``pty_op(pty)`` under PTY mode,
         else ``pipe_op(stdin)`` on the Popen pipe — and return *ok* on success."""
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         if session.exited:
@@ -2334,7 +2427,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def write_stdin(self, session_id: str, data: str) -> dict:
+    def write_stdin(self, session_id: str, data: str, *, owner_principal: Optional[str] = None,
+                    session_key: str = "") -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
 
         def via_pty(pty):
@@ -2349,16 +2443,22 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         def via_pipe(stdin):
             stdin.write(data)
             stdin.flush()
-        return self._stdin_op(session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)})
+        return self._stdin_op(
+            session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)},
+            owner_principal=owner_principal, session_key=session_key)
 
-    def submit_stdin(self, session_id: str, data: str = "") -> dict:
+    def submit_stdin(self, session_id: str, data: str = "", *, owner_principal: Optional[str] = None,
+                     session_key: str = "") -> dict:
         """Send data + newline to stdin (like pressing Enter).
         On a Windows PTY, Enter is a carriage return: ConPTY treats ``\\r`` as
         end-of-line and a bare ``\\n`` through pywinpty is NOT a line terminator — the
         child's blocking line read (``readline()``, Go ``bufio.Scanner``) never returns
         and the process hangs looking healthy. ``\\r\\n`` gives it both; POSIX keeps ``\\n``."""
-        session = self.get(session_id)
-        return self.write_stdin(session_id, data + ("\r\n" if _IS_WINDOWS and session and session._pty else "\n"))
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
+        return self.write_stdin(
+            session_id,
+            data + ("\r\n" if _IS_WINDOWS and session and session._pty else "\n"),
+            owner_principal=owner_principal, session_key=session_key)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close this process's read-only terminal tab. Does NOT
@@ -2378,18 +2478,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     "its output remains available and the user can reopen the tab "
                     "from the status stack."}
 
-    def close_stdin(self, session_id: str) -> dict:
+    def close_stdin(self, session_id: str, *, owner_principal: Optional[str] = None,
+                    session_key: str = "") -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
-        session = self.get(session_id)
+        session = self.get_for_owner(session_id, owner_principal=owner_principal, session_key=session_key)
         msg = "EOF sent" if session is not None and session._pty else "stdin closed"
         return self._stdin_op(
-            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
+            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(),
+            {"status": "ok", "message": msg},
+            owner_principal=owner_principal, session_key=session_key)
 
     def count_running(self) -> int:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
-    def list_sessions(self, task_id: str = None, session_key: str = None, *, include_retained: bool = False) -> list:
+    def list_sessions(
+        self, task_id: Optional[str] = None, session_key: Optional[str] = None, *,
+        include_retained: bool = False, owner_principal: Optional[str] = None,
+    ) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
@@ -2410,10 +2516,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 self._refresh_detached_session(s) for s in sessions.values()
             ) if refreshed is not None and not self._uncollected_gone(refreshed)
         ]
+        if owner_principal is not None:
+            all_sessions = [
+                s for s in all_sessions
+                if self._owner_allows(s, owner_principal, session_key or "")
+            ]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
-                if (task_id and s.owner_task_id == task_id)
+                if (owner_principal is not None and s.owner_principal == owner_principal)
+                or (task_id and s.owner_task_id == task_id)
                 or (session_key and s.session_key == session_key)
             ]
         result = []
@@ -2489,21 +2601,27 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     and s.exit_code is not None
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
-    def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
-                           to_session_key: str, note: str = "") -> Optional[ProcessSession]:
-        """Move a RUNNING process from one owner to another under the registry lock. Ownership is the ``owner_task_id``
-        field: completion notices are stamped from it at exit time and teardown kills by it, so flipping it here is the
-        whole transfer. Returns the session, or None when it is unknown, already exited, or not owned by ``from_owner``
-        (the caller must not report a transfer that did not happen)."""
+    def transfer_ownership(
+        self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
+        to_session_key: str, note: str = "", from_principal: Optional[str] = None,
+        to_principal: Optional[str] = None,
+    ) -> Optional[ProcessSession]:
+        """Atomically move a running process and its optional model-facing authority."""
         session = self.get(session_id)
         with self._lock:
-            if session is None or session.exited or session.owner_task_id != from_owner:
+            principal_mismatch = from_principal is not None and (
+                not from_principal or not to_principal or session is None
+                or session.owner_principal != from_principal)
+            if session is None or session.exited or session.owner_task_id != from_owner or principal_mismatch:
                 return None
             session.owner_task_id = to_owner
+            if to_principal is not None:
+                session.owner_principal = to_principal
             session.task_id = to_task_id
             session.session_key = to_session_key
             session.handoff_note = note
-            return session
+        self._write_checkpoint()
+        return session
 
     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
         """Active processes for a gateway session key. Processes older than
@@ -2692,34 +2810,55 @@ def _redact_process_result(result: dict) -> dict:
     return result
 
 
-def _list_processes(task_id) -> dict:
-    # Also surface session-scoped background processes (e.g. a forgotten preview
-    # server): they share the gateway session_key and can block session reset.
+def _process_action_scope(task_id: Optional[str], session_id: Optional[str] = None) -> dict:
+    """Owner authority supplied to every model-facing registry action."""
     session_key = ""
     with suppress(Exception):
         # See #29177.
         from tools.approval_context import get_current_session_key
         session_key = get_current_session_key(default="") or ""
+    return {
+        "owner_principal": _process_owner_principal(str(session_id or task_id or "")),
+        "session_key": session_key,
+    }
+
+
+def _list_processes(task_id, scope: dict) -> dict:
+    # Also surface session-scoped background processes (e.g. a forgotten preview
+    # server): they share the gateway session_key and can block session reset.
     return {"processes": [
         _redact_process_result(p)
         for p in process_registry.list_sessions(
-            task_id=task_id, session_key=session_key or None, include_retained=True)]}
+            task_id=task_id,
+            session_key=scope["session_key"] or None,
+            include_retained=True,
+            owner_principal=scope["owner_principal"],
+        )]}
 
 
-# action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
+# action -> (handler(session_id, args, scope) -> dict, redact output?). Output-bearing
 # actions are redacted; stdin actions return only status.
 _SESSION_ACTIONS = {
-    "poll": (lambda sid, a: process_registry.poll(sid), True),
-    "log": (lambda sid, a: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200)), True),
-    "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout")), True),
-    "kill": (lambda sid, a: process_registry.kill_process(sid), True),
-    "write": (lambda sid, a: process_registry.write_stdin(sid, str(a.get("data", ""))), False),
-    "submit": (lambda sid, a: process_registry.submit_stdin(sid, str(a.get("data", ""))), False),
-    "close": (lambda sid, a: process_registry.close_stdin(sid), False),
+    "poll": (lambda sid, a, scope: process_registry.poll(sid, **scope), True),
+    "log": (lambda sid, a, scope: process_registry.read_log(
+        sid, offset=a.get("offset"), limit=a.get("limit", 200), **scope), True),
+    "wait": (lambda sid, a, scope: process_registry.wait(
+        sid, timeout=a.get("timeout"), **scope), True),
+    "kill": (lambda sid, a, scope: process_registry.kill_process(sid, **scope), True),
+    "write": (lambda sid, a, scope: process_registry.write_stdin(
+        sid, str(a.get("data", "")), **scope), False),
+    "submit": (lambda sid, a, scope: process_registry.submit_stdin(
+        sid, str(a.get("data", "")), **scope), False),
+    "close": (lambda sid, a, scope: process_registry.close_stdin(sid, **scope), False),
 }
 
 
-def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dict:
+def _handoff_process(
+    session_id: str,
+    args: dict,
+    task_id: Optional[str],
+    owner_principal: str,
+) -> dict:
     """Subagent-only: transfer a running background process to the parent agent so its completion is delivered THERE
     (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
     tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
@@ -2745,9 +2884,17 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     if not note:
         return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
     session = process_registry.transfer_ownership(
-        session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
+        session_id,
+        from_owner=str(task_id or ""),
+        to_owner=parent_owner,
         to_task_id=_resolve_container_task_id(parent_owner),
-        to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
+        to_session_key=str(getattr(parent, "session_id", "") or ""),
+        note=note,
+        from_principal=owner_principal,
+        to_principal=_process_owner_principal(
+            str(getattr(parent, "session_id", "") or parent_owner)
+        ),
+    )
     if session is None:
         return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
                          "with poll/log and report it instead)."}
@@ -2764,17 +2911,23 @@ def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
+    task_id = str(kw.get("task_id") or "")
+    owner_session_id = str(kw.get("session_id") or "")
+    scope = _process_action_scope(task_id, owner_session_id)
     if action == "list":
-        return json.dumps(_list_processes(kw.get("task_id")), ensure_ascii=False)
+        return json.dumps(_list_processes(task_id, scope), ensure_ascii=False)
     if action == "handoff":
         if not session_id:
             return tool_error("session_id is required for handoff")
-        return json.dumps(_handoff_process(session_id, args, kw.get("task_id")), ensure_ascii=False)
+        return json.dumps(
+            _handoff_process(session_id, args, task_id, scope["owner_principal"]),
+            ensure_ascii=False,
+        )
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
-        result = handler(session_id, args)
+        result = handler(session_id, args, scope)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 

@@ -192,6 +192,46 @@ def test_v2_marker_naming_our_pid_at_a_nearby_creation_time_is_a_killed_update(m
     lock.release()
 
 
+def test_v2_marker_naming_our_own_pid_by_a_whole_second_is_ours(marker, other_pid):
+    """The macOS POSIX hand-off records creation times with `ps -o lstart` — whole seconds
+    (`scripts/desktop-update/marker.sh:proc_ct` writes ``"<n>.000"``). Our own delegate line then
+    missed _OWN_CREATE_TIME_EPSILON (5 ms) and read DEAD, leaving only the hand-off's custodian —
+    a sibling of the update, never an ancestor of it — as a live identity. Every Desktop update
+    exited 2 with "another Hermes update is already running (process <custodian>)".
+    """
+    _claim_v2(marker, other_pid)  # the hand-off's custodian: a live process that is not us
+    own = process_create_time()
+    assert own is not None, "this machine must expose our creation time for the test to mean anything"
+    holder_line = f"delegate:{os.getpid()} ct:{float(int(own)):.3f}\n"
+    with marker.open("a", encoding="utf-8") as fh:
+        fh.write(holder_line)  # us, as posix.sh records us
+
+    from hermes_cli import update_lock
+
+    parsed = update_lock._parse_marker(marker.read_bytes())
+    assert parsed.delegate_live() is True, "the delegate line names this very process"
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True, "refused its own hand-off's marker"
+    assert lock.holder is None and lock.acquired is False, "adopted under the hand-off's claim"
+    lock.release()
+
+
+def test_whole_second_creation_time_matches_only_its_own_second():
+    """The fallback the coarse writer needs, and nothing looser: a whole-second record of the
+    second BEFORE ours stays a different incarnation, as does a sub-second record 1.5 s off."""
+    from hermes_cli import update_lock
+
+    own = update_lock.process_create_time()
+    assert own is not None
+    own = float(own)
+    whole = float(int(own))
+    assert update_lock._own_ct_matches(own, whole) is True, "a whole-second record of our second"
+    assert update_lock._own_ct_matches(whole, own) is True, "our own probe holding whole seconds"
+    assert update_lock._own_ct_matches(own, whole - 1) is False, "the second before ours is not us"
+    assert update_lock._own_ct_matches(own, own - 1.5) is False, "a killed update's pid reuse"
+
+
 def test_one_incarnation_rule_when_our_own_creation_time_is_unreadable(marker, monkeypatch):
     """Degraded (our creation time unreadable): we write no-ct claims, so a no-ct claim naming our
     pid is ours and a ct one is a previous incarnation. The marker reader said so while the

@@ -24,6 +24,7 @@ from __future__ import annotations
 import calendar
 import errno
 import logging
+import math
 import os
 import re
 import secrets
@@ -47,6 +48,18 @@ CREATE_TIME_TOLERANCE_SECONDS = 2.0
 # Our own creation time re-probed by the same clock: only the marker's 3-decimal rounding differs,
 # while two processes are at least one scheduler tick (10 ms) apart.
 _OWN_CREATE_TIME_EPSILON = 0.005
+
+# A writer without sub-second resolution records the whole second our process was created in:
+# macOS `ps -o lstart` — the POSIX hand-off's `proc_ct` (scripts/desktop-update/marker.sh) and
+# :func:`_stdlib_create_time` on a host without psutil. Such a record can never meet
+# _OWN_CREATE_TIME_EPSILON (up to a second of rounding), so the own-identity rule also matches it
+# by that same second, in either direction (either probe may be the coarse one). Still far tighter
+# than the 2 s every FOREIGN identity gets: a pid reused inside the very second it died in is
+# unreachable — the pid space would have to wrap in under a second. Without this a `hermes update`
+# started by the macOS Desktop refuses its OWN hand-off's marker: the delegate line reads dead and
+# the only identity left is the custodian — never an ancestor of the update — so it exits 2 with
+# "another Hermes update is already running (process <custodian>)" on every attempt.
+_WHOLE_SECOND_EPSILON = 1.0
 
 # A claim published by create-then-write (filesystems without hard links) is briefly empty; an
 # empty marker this young is a claim in flight, not a dead one (contract A3).
@@ -288,6 +301,26 @@ def _real_world() -> _World:
     return _World(os.getpid(), _own_create_time(), time.time(), _pid_alive, process_create_time)
 
 
+def _own_ct_matches(ct: float, recorded: float) -> bool:
+    """True when ``recorded`` is this very process's creation time, tolerating ONE coarse probe.
+
+    Both sides normally carry sub-second precision (marker written by psutil, re-probed by psutil),
+    and _OWN_CREATE_TIME_EPSILON is the whole question. When either side is a whole-second record
+    instead (macOS ``ps -o lstart`` in the POSIX hand-off, the stdlib probe without psutil), the
+    comparison falls back to the second both must agree on. Never looser than 1 s, and only ever
+    for our OWN pid — for it we are alive by definition, so the second is all that is in question.
+    """
+    if abs(ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+        return True
+    if abs(ct - recorded) > _WHOLE_SECOND_EPSILON:
+        return False
+    if recorded == int(recorded):
+        return math.floor(ct) == recorded  # the RECORD dropped the fraction
+    if ct == int(ct):
+        return math.floor(recorded) == ct  # OUR probe dropped the fraction
+    return False
+
+
 def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     """:func:`incarnation_live` against world ``w``."""
     if pid <= 0:
@@ -295,7 +328,7 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        return recorded is not None and _own_ct_matches(w.ct, recorded)
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)

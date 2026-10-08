@@ -341,6 +341,39 @@ def test_cron_ticker_stamps_move_but_user_cron_state_still_fails(tmp_path):
     assert report["ok"] is False
 
 
+def test_a_lock_file_is_a_sentinel_not_user_content(tmp_path):
+    """A live process's lock file is never user state and is never read.
+
+    Regression for the Windows install/update E2E: the gateway's cron ticker
+    holds a byte-range lock on ``cron/.tick.lock``, so hashing it raised
+    ``PermissionError`` and failed the upgrade for the harness's own ticker.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    lock = home / "cron" / ".tick.lock"
+    lock.write_text("", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+    assert snap["entries"]["cron/.tick.lock"] == {"kind": "lock"}
+
+    lock.write_text("held", encoding="utf-8")
+    assert vus.verify_home(str(home), snap)["ok"] is True
+
+
+@pytest.mark.platforms("windows")
+def test_snapshot_survives_a_byte_range_lock_held_by_another_handle(tmp_path):
+    import msvcrt
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    with open(home / "cron" / ".tick.lock", "w", encoding="utf-8") as holder:
+        msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            snap = vus.snapshot_home(str(home))
+        finally:
+            msvcrt.locking(holder.fileno(), msvcrt.LK_UNLCK, 1)
+    assert snap["entries"]["cron/.tick.lock"] == {"kind": "lock"}
+
+
 def test_a_dotenv_changed_only_in_comments_is_reported_as_such(tmp_path):
     """The per-key digests ignore comments, order and blanks by design.
 

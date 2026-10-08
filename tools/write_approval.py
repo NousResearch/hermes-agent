@@ -60,15 +60,38 @@ def _normalize_enabled(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in _TRUTHY_STRINGS
 
 
+_PENDING_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
 # --- Pending store (file-backed) ---
 
+def _pending_dir(subsystem: str) -> Path:
+    """return base directory for a pending write subsystem."""
+    if subsystem not in _SUBSYSTEMS:
+        raise ValueError(f"invalid write approval subsystem: {subsystem!r}")
+    return get_hermes_home() / "pending" / subsystem
+
+
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    """resolve path to a pending record file, enforcing subsystem boundary."""
+    base_dir = _pending_dir(subsystem)
+    if not pending_id:
+        return base_dir / ""
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.match(pending_id):
+        raise ValueError(f"invalid pending_id: {pending_id!r}")
+    target = (base_dir / f"{pending_id}.json").resolve()
+    base_resolved = base_dir.resolve()
+    if target.parent != base_resolved:
+        raise ValueError(f"pending path escapes subsystem directory: {pending_id!r}")
+    return target
 
 
 def _pending_files(subsystem: str) -> list:
-    d = _pending_path(subsystem, "").parent
-    return list(d.glob("*.json")) if d.exists() else []
+    try:
+        d = _pending_dir(subsystem)
+        return list(d.glob("*.json")) if d.exists() else []
+    except Exception:
+        return []
 
 
 def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
@@ -105,11 +128,11 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single pending record by id, or None."""
-    path = _pending_path(subsystem, pending_id)
-    if not path.exists():
-        return None
+    """return a single pending record by id, or none."""
     try:
+        path = _pending_path(subsystem, pending_id)
+        if not path.exists() or not path.is_file():
+            return None
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else None
     except Exception:
@@ -117,25 +140,27 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
+    """delete a pending record. returns true if it existed."""
     try:
         path = _pending_path(subsystem, pending_id)
-        if path.exists():
+        if path.exists() and path.is_file():
             path.unlink()
             return True
     except Exception as e:  # pragma: no cover
-        logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
+        logger.error("failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
 
 
 def pending_count(subsystem: str) -> int:
-    """Cheap count of pending records (for notification badges)."""
-    d = _pending_path(subsystem, "").parent
-    if not d.exists():
-        return 0
-    with suppress(Exception):
+    """cheap count of pending records (for notification badges)."""
+    try:
+        d = _pending_dir(subsystem)
+        if not d.exists():
+            return 0
         return sum(1 for _ in d.glob("*.json"))
-    return 0
+    except Exception:
+        return 0
+
 
 
 # --- Write origin ---

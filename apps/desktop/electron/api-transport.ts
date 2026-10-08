@@ -154,8 +154,22 @@ async function withRetry(makeAttempt, options: any = {}) {
   const method = String(options.method || 'GET').toUpperCase()
   const maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2
 
+  // Retry delay must be proportional to the timeout that triggered the retry,
+  // not a fixed small constant. When a request times out after Nms of queueing,
+  // re-entering the queue 200ms later guarantees another timeout: the queue has
+  // not drained. Delay = timeout * 0.1 * 2^attempt, capped at 5s, plus +/-50%
+  // jitter so concurrent failures do not retry in lockstep (which would
+  // synchronise the storm instead of spreading it). For fast-fail errors
+  // (ECONNRESET) where no timeout fired, falls back to the legacy 200ms base.
   const delayFn =
-    options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
+    options.delayFn ||
+    (attempt => {
+      const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 0
+      const base = timeoutMs > 0 ? timeoutMs * 0.1 : 200
+      const backoff = Math.min(base * Math.pow(2, attempt), 5000)
+      const jitter = backoff * 0.5 * Math.random()
+      return new Promise(r => setTimeout(r, backoff + jitter))
+    })
 
   let lastError
 

@@ -135,6 +135,12 @@ _TODO_SENTENCE = (
     "`path:line` instead of pasting whole files."
 )
 _NO_TODO_SENTENCE = "- Reference code as `path:line` instead of pasting whole files."
+_DEFERRED_TODO_SENTENCE = (
+    "- Track multi-step work with `todo_list` through the discovery bridge: "
+    'load its schema with `tool_describe(names=["todo_list"])`, then use '
+    '`tool_call(calls=[{"name": "todo_list", "arguments": {...}}])`. Reference code as '
+    "`path:line` instead of pasting whole files."
+)
 # Clearly non-coding skill categories (deny-list; coding-adjacent and custom ones keep full entries).
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance", "gaming", "gifs", "health", "media",
@@ -323,12 +329,13 @@ class RuntimeMode:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
-    def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None) -> tuple[list[str], list[str], list[str]]:
+    def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None,
+                            deferred_tool_names: frozenset[str] = frozenset()) -> tuple[list[str], list[str], list[str]]:
         """Return (prefix, workspace, trailing) posture blocks in the historical flat order —
         brief, snapshot, operator instructions — so prompt assembly can put a cache boundary
         before the snapshot without changing persisted bytes. The brief carries the model-family
-        edit-format nudge (one cached string); ``valid_tool_names`` drops the ``todo_list``
-        sentence when that tool isn't loaded; operator instructions ride their own block so
+        edit-format nudge (one cached string); tool scope routes ``todo_list`` through the
+        bridge when deferred and drops it when disabled; operator instructions ride their own block so
         the brief stays byte-stable. ``workspace_block`` replays a snapshot the caller already
         pinned at session start (``""`` = no workspace) instead of re-running the git probe;
         ``None`` probes."""
@@ -338,7 +345,8 @@ class RuntimeMode:
         if self.profile.guidance:
             brief = self.profile.guidance
             if valid_tool_names is not None and "todo_list" not in valid_tool_names:
-                brief = brief.replace(_TODO_SENTENCE, _NO_TODO_SENTENCE)
+                brief = brief.replace(_TODO_SENTENCE, _DEFERRED_TODO_SENTENCE
+                                      if "todo_list" in deferred_tool_names else _NO_TODO_SENTENCE)
             family = _model_family(self.model)
             if family is not None:
                 brief = f"{brief}\n{_EDIT_FORMAT_GUIDANCE[family][1]}"
@@ -399,11 +407,13 @@ def coding_selection(*, platform: Optional[str] = None, cwd: Optional[str | Path
 def coding_system_prompt_parts(
     *, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None,
     model: Optional[str] = None, valid_tool_names=None, workspace_block: Optional[str] = None,
+    deferred_tool_names: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str], list[str]]:
     """Return coding prefix, workspace snapshot, and trailing guidance.  ``workspace_block``
     replays the caller's pinned session-start snapshot instead of probing git again."""
     mode = resolve_runtime_mode(platform=platform, cwd=cwd, config=config, model=model)
-    return mode.system_prompt_parts(valid_tool_names=valid_tool_names, workspace_block=workspace_block)
+    return mode.system_prompt_parts(valid_tool_names=valid_tool_names, workspace_block=workspace_block,
+                                   deferred_tool_names=deferred_tool_names)
 
 
 def coding_compact_skill_categories(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> frozenset[str]:

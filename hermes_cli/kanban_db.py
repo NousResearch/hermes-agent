@@ -2253,6 +2253,27 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                         "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
                     )
                 else:
+                    # Grace period: skip promotion if this task was recently
+                    # reopened from a terminal state.  Without this guard, the
+                    # dispatcher tick immediately promotes and re-dispatches a
+                    # reopened task — no review window.
+                    # Root cause: t_t17_board_mcp was reopened at 17:32:38 and
+                    # promoted+dispatched in the same tick (< 1 second).
+                    recent_reopen = conn.execute(
+                        "SELECT 1 FROM task_events "
+                        "WHERE task_id = ? AND kind = 'status' "
+                        "AND json_extract(payload, '$.status') = 'todo' "
+                        "AND (json_extract(payload, '$.reason') LIKE '%reopen%' "
+                        "     OR json_extract(payload, '$.note') LIKE '%reopen%') "
+                        "AND id > COALESCE("
+                        "  (SELECT MAX(id) FROM task_events "
+                        "   WHERE task_id = ? AND kind = 'promoted'), 0) "
+                        "AND created_at > strftime('%s','now') - 60 "
+                        "LIMIT 1",
+                        (task_id, task_id),
+                    ).fetchone()
+                    if recent_reopen:
+                        continue
                     conn.execute(
                         "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
                         (resume_status, task_id),

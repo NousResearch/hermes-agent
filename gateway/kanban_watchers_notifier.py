@@ -44,7 +44,7 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested", "promoted")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -483,6 +483,10 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "promoted": lambda ev, n: (
+        f"{n.head} promoted to {_payload(ev, 'status') or 'ready'}",
+        None, None,
+    ),
 }
 
 

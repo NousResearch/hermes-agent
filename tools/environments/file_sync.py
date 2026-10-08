@@ -161,6 +161,14 @@ def _credential_host_paths() -> set[str]:
         for entry in mounts if isinstance(entry, dict) and entry.get("host_path")}
 
 
+def _refreshable_credential_host_paths() -> set[str]:
+    try:
+        from tools.credential_files import get_refreshable_credential_host_paths
+        return {_resolve_host_path_str(path) for path in get_refreshable_credential_host_paths()}
+    except Exception:
+        return set()
+
+
 def quoted_rm_command(remote_paths: list[str]) -> str:
     """Build a shell ``rm -f`` command for a batch of remote paths."""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
@@ -413,7 +421,9 @@ class FileSyncManager:
                 with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 
-                upload_only = self._upload_only_host_paths | _credential_host_paths()
+                upload_only = (
+                    self._upload_only_host_paths | _credential_host_paths()
+                ) - _refreshable_credential_host_paths()
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
@@ -451,6 +461,12 @@ class FileSyncManager:
 
         if self._is_upload_only_host_path(host_path, upload_only_host_paths):
             logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
+            return 0
+
+        # An archive may include master stores even when they were never mounted.
+        # Apply the canonical deny-list at the final write boundary as well.
+        from tools.credential_files import _credential_read_allowed
+        if not _credential_read_allowed(Path(host_path).resolve(), host_path):
             return 0
 
         if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:

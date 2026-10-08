@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tools.environments.file_sync import FileSyncManager
+from tools.credential_files import register_credential_file
 
 
 @pytest.mark.parametrize("bulk", [False, True])
@@ -50,3 +51,34 @@ def test_host_save_during_upload_survives_unchanged_remote(
     manager._bulk_upload_fn = None
     manager.sync(force=True)
     assert remote.read_bytes() == saved
+
+
+def test_refreshable_credential_is_applied_on_sync_back(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    host = hermes_home / "google_token.json"
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"old token")
+    remote_path = "/root/.hermes/google_token.json"
+    remote = tmp_path / "remote.json"
+
+    def upload(source, destination):
+        remote.write_bytes(Path(source).read_bytes())
+
+    def download(destination):
+        with tarfile.open(destination, "w") as archive:
+            archive.add(remote, arcname=remote_path.lstrip("/"))
+
+    register_credential_file("google_token.json", refreshable=True)
+    manager = FileSyncManager(
+        get_files_fn=lambda: [(str(host), remote_path)],
+        upload_fn=upload,
+        delete_fn=lambda paths: None,
+        bulk_download_fn=download,
+    )
+    manager.sync(force=True)
+    remote.write_bytes(b"refreshed token")
+
+    manager.sync_back()
+
+    assert host.read_bytes() == b"refreshed token"

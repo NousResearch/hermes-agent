@@ -203,6 +203,11 @@ def test_subagent_lifecycle_bypasses_tool_progress_off(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: events.append(event))
 
     server._on_tool_progress(sid, "subagent.start", "delegate_task", "goal", None, goal="goal", subagent_id="s1")
-    server._on_tool_progress(sid, "reasoning.available", "_thinking", "hmm", None)
+    # tool.output_risk is tool chrome, so tool_progress=off drops it. (reasoning.available is
+    # not a control here: reasoning follows display.show_reasoning, never tool_progress.)
+    server._on_tool_progress(
+        sid, "tool.output_risk", "terminal", None, None,
+        tool_call_id="t1", risk_metadata={"risk": "high", "findings": []},
+    )
 
     assert events == ["subagent.start"]

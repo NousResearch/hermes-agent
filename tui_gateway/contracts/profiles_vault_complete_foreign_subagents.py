@@ -48,10 +48,12 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
 
 
 class CompleteSlashParams(Params):
-    """``session_id`` binds skill completions to that session's profile and workspace (project skills)."""
+    """``session_id`` binds skill completions to that session's profile and workspace (project skills);
+    ``profile`` scopes a session-less request (a new-chat draft)."""
 
     text: str | None = None
     session_id: str | None = None
+    profile: str | None = None
 
 
 class CompleteSlashResult(Result):
@@ -120,6 +122,7 @@ class ProfileSessionPreview(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileWorkerSession(Result):
@@ -142,6 +145,7 @@ class ProfileCanonicalSession(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileRow(Result):
@@ -156,7 +160,6 @@ class ProfileRow(Result):
     display_name: str = ""
     skill_count: int = 0
     previous_names: list[str] = Field(default_factory=list)
-    role: Literal["setup"] | None = None
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -170,10 +173,12 @@ class ProfilesListParams(ProfileParams):
 
 
 class ProfilesListResult(Result):
-    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself."""
+    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;
+    ``install_id`` (as on ``/api/status``) names the machine that answered."""
 
     profiles: list[ProfileRow] = Field(default_factory=list)
     bot_mode_protocol: bool = True
+    install_id: str = ""
 
 
 method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
@@ -347,36 +352,6 @@ method("profiles.get_asset", params=ProfilesGetAssetParams, result=ProfilesGetAs
        doc="A profile asset as a data URL.")
 
 
-class OnboardingAnswers(Params):
-    """``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding."""
-
-    name: str | None = None
-    context: str | None = None
-    theme: str | None = None
-    accent: str | None = None
-    layout: str | None = None
-    focus: list[str] | None = None
-    connectors: list[str] | None = None
-    plugins: list[str] | None = None
-    # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
-    model_config = Params.model_config | {"extra": "allow"}
-
-
-class ProfilesRememberOnboardingParams(ProfileParams):
-    answers: OnboardingAnswers | None = None
-
-
-class ProfilesRememberOnboardingResult(Result):
-    saved: bool = True
-    profile: str = "default"
-    target: str = "user"
-
-
-method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
-       result=ProfilesRememberOnboardingResult,
-       doc="Write the onboarding facts into the default profile's user memory and confirm they landed.")
-
-
 # ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────
 
 
@@ -386,11 +361,42 @@ class OnboardingEnsureSetupProfileResult(Result):
     name: str
     path: str
     created: bool
-    role: Literal["setup"] = "setup"
 
 
 method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsureSetupProfileResult,
-       doc="Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.")
+       doc="Create-or-read the backend-owned setup profile; the backend picks the name.")
+
+
+class OnboardingEnsureSetupSessionParams(Params):
+    messages: list[dict[str, JsonValue]] | None = None
+
+
+class OnboardingEnsureSetupSessionResult(Result):
+    profile: str
+    session_id: str
+    empty: bool
+
+
+method("onboarding.ensure_setup_session", params=OnboardingEnsureSetupSessionParams,
+       result=OnboardingEnsureSetupSessionResult)
+
+
+class OnboardingIntro(WireEnum):
+    unseen = "unseen"
+    seen = "seen"
+
+
+class OnboardingStateResult(Result):
+    eligible: bool
+    intro: OnboardingIntro
+    failed_starts: int
+    completed_at: str | None = None
+    profile: str | None = None
+
+
+method("onboarding.state", params=Params, result=OnboardingStateResult)
+method("onboarding.record_failed_start", params=Params, result=OnboardingStateResult)
+method("onboarding.mark_seen", params=Params, result=OnboardingStateResult)
 
 
 class OnboardingResetSetupProfileResult(Result):

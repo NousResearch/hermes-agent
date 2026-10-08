@@ -50,7 +50,7 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
-    "hermes.cron.jobs.overdue",
+    "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
 )
 
 
@@ -334,11 +334,3 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
 
 
 __all__ = ["GatewayHealthExportRuntime", "start_gateway_health_export"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

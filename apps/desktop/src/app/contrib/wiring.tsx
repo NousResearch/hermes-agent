@@ -21,7 +21,6 @@ import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dial
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
-import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
@@ -35,7 +34,9 @@ import {
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
+import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
+import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
@@ -47,7 +48,6 @@ import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
-import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
@@ -56,13 +56,11 @@ import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
-  $freshSessionRequest,
   $profileScope,
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
-  normalizeProfileKey,
-  refreshActiveProfile
+  normalizeProfileKey
 } from '@/store/profile'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
@@ -88,10 +86,11 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -162,16 +161,23 @@ import {
   useBackgroundSync
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
-import { useOnboardingHandoff } from './onboarding-handoff'
-import { useOnboardingKickoff } from './onboarding-kickoff'
-import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
+import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
+import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+import {
+  useCreditsNoticeDemo,
+  useFreshSessionRequest,
+  useGatewayScopeRefresh,
+  useOpenKeybindsListener,
+  usePublishRestartPreviewServer
+} from './wiring-effects'
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
@@ -190,41 +196,12 @@ const StarmapView = lazy(async () => ({ default: (await import('../starmap')).St
 // the controller that assembles them.
 export { WiredPane } from './context'
 
-// Only the RPCs issued by session creation follow the handoff's profile pin.
-const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
-
-export function ContribWiring({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient()
-  const location = useLocation()
-  const navigate = useNavigate()
-
-  const busyRef = useRef(false)
-  const creatingSessionRef = useRef(false)
-  // Billing recovery routes to Settings → Billing from surfaces without router
-  // context (the sticky toast). The shell owns `navigate`, so it consumes the
-  // intent counter here; the ref skips the initial mount value.
-  const billingSettingsSeenRef = useRef(0)
-  const poolLimitsSettingsSeenRef = useRef(0)
-  const routeRequestSeenRef = useRef(0)
-  const backendRestartSeenRef = useRef(0)
-  const cronReviewSeenRef = useRef(0)
-  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
-  const activeTranscriptRequestSequenceRef = useRef(0)
-  // Stable identity for the whole callback surface (see WiringActions). Mutated
-  // in place each render so memoized surfaces never re-render on churn.
-  const actionsRef = useRef<WiringActions | null>(null)
-
-  const gatewayState = useStore($gatewayState)
-  const activeSessionId = useStore($activeSessionId)
-  const billingSettingsRequest = useStore($billingSettingsRequest)
-  const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
+// Generic in-app route intents raised by toast recovery buttons (Open Keys,
+// Open Gateways, Maintenance …) fired from stores with no router context.
+function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): void {
   const routeRequest = useStore($routeRequest)
-  const backendRestartRequest = useStore($backendRestartRequest)
-  const cronReviewRequest = useStore($cronReviewRequest)
-  const currentCwd = useStore($currentCwd)
+  const routeRequestSeenRef = useRef(0)
 
-  // Generic in-app route intents raised by toast recovery buttons (Open Keys,
-  // Open Gateways, Maintenance …) fired from stores with no router context.
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
@@ -234,11 +211,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     routeRequestSeenRef.current = routeRequest.seq
     navigate(routeRequest.path)
   }, [navigate, routeRequest])
+}
 
-  // "Restart Hermes" from a toast: recycle the local backend the user is
-  // looking at (same IPC the Models page uses), then let the boot hook re-dial.
-  // A remote/cloud connection has no local process to recycle — there the
-  // only meaningful "restart" is re-dialing the connection.
+// Recovery actions raised by toast buttons (Restart Hermes, Open Billing, pool
+// caps, cron review) fire from stores with no router context. Each counter is
+// consumed here: the ref skips the initial mount value, and only a fresh
+// request navigates or recycles the backend.
+function useRecoveryRequestToasts(): void {
+  const navigate = useNavigate()
+  const billingSettingsRequest = useStore($billingSettingsRequest)
+  const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
+  const backendRestartRequest = useStore($backendRestartRequest)
+  const cronReviewRequest = useStore($cronReviewRequest)
+  const billingSettingsSeenRef = useRef(0)
+  const poolLimitsSettingsSeenRef = useRef(0)
+  const backendRestartSeenRef = useRef(0)
+  const cronReviewSeenRef = useRef(0)
+
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (backendRestartRequest === backendRestartSeenRef.current) {
@@ -301,6 +290,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
+}
+
+export function ContribWiring({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  const busyRef = useRef(false)
+  const creatingSessionRef = useRef(false)
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptRequestSequenceRef = useRef(0)
+  // Stable identity for the whole callback surface (see WiringActions). Mutated
+  // in place each render so memoized surfaces never re-render on churn.
+  const actionsRef = useRef<WiringActions | null>(null)
+
+  const gatewayState = useStore($gatewayState)
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
+
+  useRouteRequestNavigation(navigate)
+  useRecoveryRequestToasts()
+
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
@@ -377,12 +388,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
 
-  // The guide remains selected while handoff creates on another profile.
-  // Without this pin, the owner ladder sends session.create to the setup profile
-  // despite the gateway switch (#89206). Scope it to the create leg so
-  // concurrent session traffic keeps its recorded owner.
-  const handoffCreateProfileRef = useRef<null | string>(null)
-
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
   // The routing itself lives in createSessionRpcDispatcher (routed by the
@@ -401,14 +406,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const requestGateway = useCallback<AmbientGatewayRequest>(
     (method, params, timeoutMs, signal) => {
-      // The new build belongs to the handoff target; the selected guide's
-      // owner ladder would send its create to the wrong socket (#89206).
-      const handoffProfile = handoffCreateProfileRef.current
-
-      if (handoffProfile !== null && HANDOFF_CREATE_LEG_METHODS.has(method)) {
-        return requestGatewayForProfile(handoffProfile, method, params ?? {}, timeoutMs, signal)
-      }
-
       return dispatchSessionRpc(method, params, timeoutMs, signal)
     },
     [dispatchSessionRpc]
@@ -451,31 +448,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const openProviderSettings = useCallback(() => navigate(`${SETTINGS_ROUTE}?tab=providers`), [navigate])
 
-  // Palette "Keyboard shortcuts" entry dispatches a custom event (contributions
-  // don't have router access); listen and navigate to the settings keybinds tab.
-  useEffect(() => {
-    const onOpenKeybinds = () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-    window.addEventListener('hermes:open-keybinds', onOpenKeybinds)
-
-    return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
-  }, [navigate])
-
-  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
-  // / window.__creditsDemo). Dynamic import inside the DEV guard so the module
-  // is dropped from production builds.
-  useEffect(() => {
-    if (!import.meta.env.DEV) {
-      return
-    }
-
-    let dispose: (() => void) | undefined
-
-    void import('./dev/credits-notice-demo').then(m => {
-      dispose = m.installCreditsNoticeDemo()
-    })
-
-    return () => dispose?.()
-  }, [])
+  useOpenKeybindsListener(navigate)
+  useCreditsNoticeDemo()
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
@@ -549,17 +523,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  // Expose the restart handler to the preview pane contribution (module
-  // boundary crossed via atom — contrib-panes can't import this file).
-  useEffect(() => {
-    $restartPreviewServer.set(restartPreviewServer)
-
-    return () => $restartPreviewServer.set(null)
-  }, [restartPreviewServer])
+  usePublishRestartPreviewServer(restartPreviewServer)
 
   const {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     createBackendSessionForSend,
     openNewSessionTile,
@@ -567,6 +536,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
+    submitTextToNewSession,
     unarchiveSession
   } = useSessionActions({
     activeSessionId,
@@ -581,6 +551,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onFreshDraftRouteIntent: clearRoutedSessionIntent,
     requestGateway,
     resetViewSync,
+    routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -589,43 +560,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  // A profile switch/create drops to a fresh new-session draft so the
-  // previously open session doesn't bleed across contexts. Skip initial value.
-  const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
-      return
-    }
-
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
-  }, [freshSessionRequest, startFreshSessionDraft])
-
-  // Swapping the live gateway to another source or profile must re-pull that
-  // source's model/config/profile state. Two sources commonly both expose a
-  // `default` profile, so profile alone is not a sufficient identity.
-  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const lastGatewayScopeRef = useRef(gatewayScope)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (gatewayScope === lastGatewayScopeRef.current) {
-      return
-    }
-
-    lastGatewayScopeRef.current = gatewayScope
-    // Force: the new source/profile pair has its own defaults, so reseed the
-    // selector even if the composer already shows values from the previous
-    // backend. These refreshes carry intent tokens so an in-flight picker
-    // click still wins.
-    void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
-    void refreshActiveProfile()
-    resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+  useFreshSessionRequest(startFreshSessionDraft)
+  useGatewayScopeRefresh(activeConnectionId, activeGatewayProfile, refreshCurrentModel, refreshHermesConfig)
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -676,31 +612,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
 
-  const runCreatePinnedTo = useCallback(async <T,>(profile: string, create: () => Promise<T>): Promise<T> => {
-    handoffCreateProfileRef.current = profile
+  const adoptSessionRoute = useCallback(
+    async (storedSessionId: string) => {
+      creatingSessionRef.current = true
 
-    try {
-      return await create()
-    } finally {
-      handoffCreateProfileRef.current = null
-    }
-  }, [])
+      try {
+        await resumeSession(storedSessionId, true)
 
-  const kickoffFirstChat = useOnboardingKickoff({
-    createBackendSessionForSend,
-    requestGateway,
-    resumeSession,
-    runCreatePinnedTo
-  })
-
-  useOnboardingHandoff({
-    activeSessionIdRef,
-    ensureSessionState,
-    updateSessionState,
-    createBackendSessionForSend,
-    requestGateway,
-    runCreatePinnedTo
-  })
+        if ($selectedStoredSessionId.get() === storedSessionId) {
+          navigate(sessionRoute(storedSessionId), { replace: true })
+        }
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
+      }
+    },
+    [navigate, resumeSession]
+  )
 
   // "New project" DRAG completion: the dialog created a project that was
   // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
@@ -776,10 +705,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
+  const runKickoffSlash = useCallback<KickoffSlashCommand>(
+    (command, options) => executeSlashCommand(command, { ...options, typed: false }),
+    [executeSlashCommand]
+  )
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    requestGateway: ambientRequestGateway,
+    resumeSession: adoptSessionRoute,
+    runSlashCommand: runKickoffSlash
+  })
+
   // Runs outside the selected ChatBar so queues belonging to background
-  // sessions continue once those sessions are idle.
+  // sessions continue once those sessions are idle. The session dispatcher
+  // routes each send to its owner; a disconnected foreground is not a global gate.
   useBackgroundQueueDrain({
-    enabled: gatewayState === 'open',
+    enabled: true,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     submitText
@@ -789,6 +730,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // the tile TAB menu needs, without touching the primary view).
   useSessionTileDelegate({
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,
@@ -804,7 +746,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
-  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+  useQuickEntryBridge({ submitText, submitTextToNewSession })
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -940,6 +882,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       void armWakeWord(requestGateway)
     }
   }, [gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    const report = () => void reportPendingUpdateRun(requestGateway)
+    report()
+
+    return window.hermesDesktop?.updates?.onPendingRun?.(report)
+  }, [gatewayState, requestGateway])
+
+  useDesktopMetrics({
+    enabled: !isAuxiliaryWindow(),
+    gatewayOpen: gatewayState === 'open',
+    pathname: location.pathname,
+    profile: activeGatewayProfile
+  })
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&
@@ -1334,12 +1294,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
       {!isAuxiliaryWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
           onKickoff={kickoffFirstChat}
           requestGateway={ambientRequestGateway}
+          runsIntro={isMainWindow()}
         />
       )}
       {!isAuxiliaryWindow() && (
@@ -1350,6 +1310,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             void refreshCurrentModel()
             void queryClient.invalidateQueries({ queryKey: ['model-options'] })
           }}
+          profile={activeGatewayProfile}
+          requestGateway={requestGateway}
+        />
+      )}
+      {!isAuxiliaryWindow() && (
+        <SharedMetricsConsentDialog
+          enabled={gatewayState === 'open'}
           profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />
@@ -1375,6 +1342,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />
       <PetGenerateOverlay />

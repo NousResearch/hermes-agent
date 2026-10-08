@@ -18,7 +18,6 @@ import hermes_cli.config as hc
 from tools.approval import check_all_command_guards, load_permanent_allowlist
 from tools.approval_context import _get_approval_config
 from tools.approval_context import _get_cron_approval_mode
-from tools.tirith_security import _load_security_config
 
 
 @pytest.fixture
@@ -29,7 +28,6 @@ def config_home(tmp_path, monkeypatch):
         "model:\n  default: test-model\n"
         "approvals:\n  mode: manual\n  timeout: 300\n  cron_mode: deny\n"
         "command_allowlist: []\n"
-        "security:\n  tirith_enabled: false\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     hc._LOAD_CONFIG_CACHE.clear()
@@ -50,6 +48,5 @@ def test_readers_return_live_cache_without_corrupting_it(
     check_all_command_guards("ls -la", "local")
     _get_cron_approval_mode()
     load_permanent_allowlist()
-    _load_security_config()
     assert _get_approval_config() == before
     assert hc.load_config_readonly()["approvals"]["mode"] == "manual"

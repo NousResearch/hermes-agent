@@ -352,6 +352,84 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
+  it('renders plugin-registered auxiliary tasks after the built-ins with the server label (#40880)', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'vision', provider: 'auto', model: '', base_url: '' },
+        {
+          task: 'grill_tab',
+          provider: 'openrouter',
+          model: 'openai/gpt-5-mini',
+          base_url: '',
+          label: 'Grill Tab',
+          hint: 'Tab-to-grill questions and brief synthesis',
+          plugin: 'grill-tab'
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    const pluginRow = await screen.findByText('Grill Tab')
+    expect(pluginRow).toBeTruthy()
+    expect(screen.getByText('Tab-to-grill questions and brief synthesis')).toBeTruthy()
+    // Server-declared label is used for the plugin row only; built-ins keep i18n labels.
+    expect(screen.getByText('Vision')).toBeTruthy()
+    // Built-ins render first; the plugin row is appended.
+    const vision = document.getElementById('aux-task-vision')
+    const grill = document.getElementById('aux-task-grill_tab')
+    expect(vision && grill && vision.compareDocumentPosition(grill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows an unpinned inheriting plugin task as following its base, and offers Follow once pinned', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'compression', provider: 'openrouter', model: 'vendor/fast', base_url: '' },
+        {
+          task: 'side_task',
+          provider: 'auto',
+          model: '',
+          base_url: '',
+          label: 'Side model',
+          hint: 'side model for side',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'openrouter', model: 'vendor/fast', base_url: '' }
+        },
+        {
+          task: 'pinned_task',
+          provider: 'nous',
+          model: 'hermes-4',
+          base_url: '',
+          label: 'Pinned side',
+          hint: 'pinned',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'nous', model: 'hermes-4', base_url: '' }
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('inherits Compression · openrouter · vendor/fast')).toBeTruthy()
+    // Only the pinned inheriting row offers the way back to its base.
+    const follow = screen.getAllByRole('button', { name: 'Follow Compression' })
+    expect(follow).toHaveLength(1)
+    expect(document.getElementById('aux-task-pinned_task')?.contains(follow[0])).toBe(true)
+
+    fireEvent.click(follow[0])
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: '',
+        provider: 'auto',
+        reasoning_effort: null,
+        scope: 'auxiliary',
+        task: 'pinned_task'
+      })
+    )
+  })
+
   it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },
@@ -579,6 +657,92 @@ describe('ModelSettings', () => {
   })
 })
 
+describe('ModelSettings provider switch', () => {
+  // #59063: a provider's model list is per-provider. Switching must not carry
+  // the previous provider's model over (ModelSelect's withActive() would keep
+  // painting it), and an empty freshly-selected custom provider must be probed
+  // via a refresh-scoped options fetch rather than left at 0 models.
+  it('clears the selected model when the user switches provider', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Custom endpoint',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: ['gemma-4-12b-omni'],
+          authenticated: true
+        }
+      ]
+    })
+
+    renderModelSettings()
+    await screen.findAllByRole('combobox')
+
+    // The model select paints the current provider's model.
+    expect(await screen.findByText('hermes-4')).toBeTruthy()
+
+    // Switch provider through the main selector (first combobox opens the
+    // provider dropdown).
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Custom endpoint/ }))
+
+    // The previous provider's model must not carry over.
+    await waitFor(() => expect(screen.queryByText('hermes-4')).toBeNull())
+  })
+
+  it('probes an empty custom provider with a refresh-scoped options fetch on switch', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Lab',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: [],
+          authenticated: true
+        }
+      ]
+    })
+
+    renderModelSettings()
+    await screen.findAllByRole('combobox')
+
+    // The refresh-scoped fetch repopulates the empty provider's models.
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Lab',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: ['gemma-4-12b-omni'],
+          authenticated: true
+        }
+      ]
+    })
+
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Lab/ }))
+
+    await waitFor(() => {
+      // refresh-scoped, not the plain read the mount effect already made
+      expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }, undefined)
+    })
+
+    // The refreshed catalog repopulates the empty provider's models: open the
+    // model select and the discovered model is offered.
+    fireEvent.click(screen.getAllByRole('combobox')[1])
+    expect(await screen.findByRole('option', { name: 'gemma-4-12b-omni' })).toBeTruthy()
+  })
+})
+
 describe('ModelSettings MoA preset editor', () => {
   const moaConfig = () => ({
     default_preset: 'default',
@@ -778,6 +942,65 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ModelSettings stale-aux banner dismissal', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  const staleAux = {
+    main: { provider: 'nous', model: 'hermes-4' },
+    tasks: [{ task: 'vision', provider: 'alibaba', model: 'qwen3.6-flash', base_url: '' }]
+  }
+
+  it('hides the persistent stale-aux banner after acknowledging it, and re-arms when the main provider changes', async () => {
+    getAuxiliaryModels.mockResolvedValue(staleAux)
+
+    // First visit: the deliberate cross-provider pin surfaces the banner.
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss }))
+
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // Second visit (fresh mount): the acknowledgement persists.
+    cleanup()
+    renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // A main-provider switch re-arms the banner: the acknowledged
+    // configuration no longer matches what is running.
+    cleanup()
+    getGlobalModelInfo.mockResolvedValue({ provider: 'openrouter', model: 'hermes-4' })
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    // The dismiss affordance is offered again for the new configuration.
+    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeTruthy()
+  })
+
+  it('keeps the post-switch notice undismissable — it announces a change that just happened', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-4.7',
+      gateway_tools: [],
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeNull()
   })
 })
 

@@ -6,6 +6,8 @@ Split out of :mod:`hermes_cli.plugins`. Names that tests patch on the origin
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import importlib.metadata
 import logging
 from dataclasses import dataclass
@@ -33,6 +35,29 @@ ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 _FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
     ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
 })
+
+# Set while a caller reads a profile's config WITHOUT wanting that profile's plugins in this process:
+# the multiplex preflight loads a PARKED profile's gateway config for the duplicate-credential guard,
+# and ``load_gateway_config`` discovers plugins in the scope it runs under. Importing them runs their
+# ``register()`` (threads, DB handles) for a profile the operator took out of the host (#123386).
+# A contextvar, not an env flag: it must not leak to other threads or outlive the read.
+_discovery_suppressed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_plugin_discovery_suppressed", default=False)
+
+
+@contextlib.contextmanager
+def suppress_plugin_discovery():
+    """``discover_plugins()`` is a no-op inside; the scope's manager stays undiscovered, so the
+    first real consumer after the block still loads its plugins."""
+    token = _discovery_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _discovery_suppressed.reset(token)
+
+
+def plugin_discovery_suppressed() -> bool:
+    return _discovery_suppressed.get()
 
 
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
@@ -180,7 +205,7 @@ def collect_directory_manifests() -> List[PluginManifest]:
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers"})
+          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -244,8 +269,8 @@ def gate_manifest(
     # Relay lifecycle is core-owned; an old plugin copy would compete for its registries.
     if names & LEGACY_RELAY_PLUGIN_KEYS:
         error = (
-            "removed — Relay lifecycle is owned by Hermes core; configure "
-            f"{RELAY_PLUGINS_CONFIG_ENV} instead"
+            "removed — Relay lifecycle is owned by Hermes core; configure a standard user or system Relay "
+            f"plugins.toml, or use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override"
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:

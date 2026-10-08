@@ -15,7 +15,10 @@ manual import list. A tool that is a whole package (`tools/connectors/`) registe
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
-string.**
+string**, except a tool that hands the model pixels: it may return the multimodal envelope
+`{"_multimodal": True, "content": [text, image_url…], "text_summary": str}` (`registry._normalize_handler_result`
+accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
+private vision check.
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
@@ -67,7 +70,7 @@ Rules for tool code:
 ## Toolsets (`toolsets.py`)
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
-delegation, discord, discord_admin, feishu_doc, feishu_drive, file, homeassistant, image_gen,
+delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
@@ -108,8 +111,8 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
-**Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
-_terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
+**Background-process teardown signals the parent first.** `process_registry_termination.py::
+ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
 `terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the
 snapshot survivors and SIGKILLs whatever ignored both (so a supervisor that reaps its tree — a
 Chromium/Electron browser reaping its zygotes, a shell trap — exits cleanly, while a shell whose
@@ -130,7 +133,7 @@ completion by default; with `delegation.independent_completions` it is split int
 task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
 `async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
 and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
-no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
+no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`, `start_chat`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
@@ -153,3 +156,26 @@ interrupted entry's `summary` is the child's last real assistant text (`_build_r
 assert contracts ("every registered tool has a toolset", "no schema description names a tool from
 another toolset") rather than tool counts. Approval/security-boundary tools are E2E'd with real
 imports against a temp `HERMES_HOME` (see `tests/tools/test_approval_config_readonly.py`).
+
+## Surface capability is a property of the SESSION, never of the process env
+
+A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
+message reactions, Projects) must resolve availability from the **session's own source**, not
+from an env var on the backend. Client and backend are separate machines: the desktop app may
+drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
+only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
+topologies — the tool is stripped from the schema while the platform hint tells the model it
+is "inside the Hermes desktop app". The pattern:
+
+- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
+  toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
+  folds it in when the session's platform says GUI. One resolver, every topology.
+- **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
+  "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
+  (`tools/registry.py`); a per-session answer does not belong there.
+- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
+  spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
+  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
+
+Test: if the capability still makes sense with the client on another machine, it is
+session-scoped. Assert the GUI session gets the tool **with the env var absent**.

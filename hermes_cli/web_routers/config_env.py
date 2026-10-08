@@ -59,18 +59,17 @@ _CATEGORY_ORDER = [
 
 
 @contextlib.contextmanager
-def _env_write_errors(log_msg: str, *, http_passthrough: bool):
+def _env_write_errors(log_msg: str):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
-    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, and
-    the SPA needs the reason, not an opaque 500); anything else is logged and
-    becomes 500 "Internal server error"."""
+    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, the
+    credential lifecycle rejects keys a managed install or administrator pins,
+    and the SPA needs the reason, not an opaque 500); ``HTTPException`` (the
+    profile scope's 404 for an unknown ``?profile=``) passes through; anything
+    else is logged and becomes 500 "Internal server error"."""
     try:
         yield
     except HTTPException:
-        if http_passthrough:
-            raise
-        _log.exception(log_msg)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
@@ -333,15 +332,22 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
     # Display-only previews (sentinel or legacy mask) must never gain write authority.
-    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-    with _env_write_errors("PUT /api/env failed", http_passthrough=False):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+    with _env_write_errors("PUT /api/env failed"):
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+
+def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
+    """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
+    from hermes_cli.config import load_env
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    previous = load_env().get(key)
+    result = save_provider_env_credential(key, value)
+    record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -573,7 +579,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
-    parsed = urllib.parse.urlparse(base_url)
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="base_url must include scheme and host") from exc
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
     if not model:
@@ -590,7 +599,25 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
     endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
     if existing is None:
+        # Settings saves the row the list rendered. A legacy custom_providers
+        # entry is not in providers, so resolving only there forked a keyless
+        # twin and left the list row (and its key_env) behind.
+        from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+
+        legacy = _pop_legacy_custom_provider(cfg, endpoint_id)
+        converted = (
+            _custom_provider_entry_to_provider_config(legacy, provider_key=endpoint_id)
+            if legacy is not None else None
+        )
+        if isinstance(converted, dict):
+            existing = converted
+        elif legacy is not None:
+            restored = cfg.get("custom_providers")
+            if isinstance(restored, list):
+                restored.append(legacy)
+    if existing is None:
         existing = {}
+
 
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for
@@ -720,12 +747,26 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
         # drop this write (or vice versa).
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
+            providers = cfg.get("providers")
+            created = _resolve_custom_endpoint_entry(
+                providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        if created:  # editing an endpoint that exists sets nothing new up
+            _record_custom_endpoint_setup(home)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
+
+
+def _record_custom_endpoint_setup(home: Any) -> None:
+    """Counted after the config lock is released (a cold metrics runtime must not stall writers)."""
+    from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done, web_setup_surface
+
+    record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
@@ -830,6 +871,14 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
     entries = _parse_model_entries(resp)
     ids = [e["id"] for e in entries]
+    if not ids:
+        # A 200 that parses to zero models is the SPA-catch-all signature (#83128): a real
+        # OpenAI-compatible /models answers JSON with a usable list. ``_parse_model_entries``
+        # is lenient by design, so classify the empty result here instead of reporting
+        # success. ok:false + reachable:true is a warning in the UI — Save stays possible
+        # for endpoints that legitimately expose no model list.
+        return {"ok": False, "reachable": True, "message": _no_models_probe_message(resp, resolved),
+                "models": [], "model_details": [], "resolved_base_url": resolved}
     # /models answering proves nothing about the transport the runtime will POST to:
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
@@ -847,6 +896,30 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if missing:
         result.update(ok=False, message=missing)
     return result
+
+def _no_models_probe_message(resp: Any, base_url: str) -> str:
+    """Why a 200 ``/models`` probe yielded no usable models (#83128).
+
+    Distinguishes the three ways that happens — a non-JSON body (an SPA catch-all serves
+    HTML for every route, so 200 proves nothing), a JSON body without a model list, and a
+    genuinely empty list — mirroring the onboarding store's wording for the last case.
+    """
+    url = base_url + "/models"
+    content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
+    try:
+        payload = resp.json()
+    except ValueError:  # json.JSONDecodeError — a non-JSON body (HTML, plain text) is the case being named
+        payload = None
+    if not isinstance(payload, (dict, list)):
+        kind = content_type or "a non-JSON body"
+        return (f"Connected to {url}, but it returned {kind} instead of a JSON model list — "
+                "the URL may be an SPA catch-all or a wrong base URL, not an OpenAI-compatible API.")
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        return f"Connected to {url}, but its response is not an OpenAI-compatible model list."
+    return (f"Connected to {url}, but it advertised no models. "
+            "Start a model on that endpoint and try again.")
+
 
 async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
@@ -998,7 +1071,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # ones kept providers alive in the model picker), the affected providers'
     # model-cache rows, and value-matched config.yaml api_key mirrors.
     # OAuth/device-code/manual pool entries for the same provider are preserved.
-    with _env_write_errors("DELETE /api/env failed", http_passthrough=True):
+    with _env_write_errors("DELETE /api/env failed"):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         result = await scoped_to_thread(

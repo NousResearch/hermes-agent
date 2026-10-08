@@ -193,8 +193,9 @@ export default function ChatNative() {
   }, [setSearchParams]);
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, attachments: string[]) => {
       if (!gwSessionId || sending) return;
+      if (!text && attachments.length === 0) return;
       lastUserTextRef.current = text;
       const now = Date.now();
       const user: NativeMessage = {
@@ -211,8 +212,15 @@ export default function ChatNative() {
       setMessages((prev) => [...prev, user, pending]);
       setSending(true);
       setError(null);
-      gw.request("prompt.submit", { session_id: gwSessionId, text }).catch(
-        (e: Error) => {
+      (async () => {
+        for (const path of attachments) {
+          await gw.request("image.attach", {
+            session_id: gwSessionId,
+            path,
+          });
+        }
+        await gw.request("prompt.submit", { session_id: gwSessionId, text });
+      })().catch((e: Error) => {
           setSending(false);
           setError(e.message || "send failed");
           setMessages((prev) => {

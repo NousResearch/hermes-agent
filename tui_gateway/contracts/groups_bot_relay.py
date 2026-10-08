@@ -294,6 +294,7 @@ class RoomTombstone(Result):
 
 class GroupsDisbandResult(Result):
     tombstone: RoomTombstone
+    retirements: list[dict[str, JsonValue]] = []
 
 
 method("groups.disband", params=GroupsDisbandParams, result=GroupsDisbandResult,
@@ -640,3 +641,18 @@ __all__ = [
     "GroupsLogResult", "RelayEnvelope", "Room", "RoomAuthority", "RoomEvent", "RoomLinkCatalog",
     "RoomMember", "RoomMemberInput",
 ]
+
+
+class GroupsPeerRetireParams(RoomParams):
+    retirement_id: str
+    grant: str | None = None
+
+
+class GroupsPeerRetireResult(Result):
+    retirements: list[dict[str, JsonValue]]
+
+
+method("groups.peer.retirements", params=RoomParams, result=GroupsPeerRetireResult,
+       doc="List retained peer-authority retirement obligations, including ended rooms.")
+method("groups.peer.retire", params=GroupsPeerRetireParams, result=GroupsPeerRetireResult,
+       doc="Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.")

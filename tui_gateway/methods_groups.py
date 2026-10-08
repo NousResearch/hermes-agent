@@ -19,7 +19,8 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register",
+    "groups.peer.retirements", "groups.peer.retire")
 LONG_HANDLERS = frozenset(_METHODS)
 
 _service_lock = threading.Lock()
@@ -356,6 +357,20 @@ def _(rid, params: dict, service) -> dict:
         "target_install_id": catalog.installation_id, "target_profile": target_profile})
 
 
+@_room_method("groups.peer.retirements", code=5124, service_code=4121)
+def _(rid, params: dict, service) -> dict:
+    """List outstanding target-authority cleanup even after room history expires."""
+    from gateway.hosted_room_retirement import status
+    return _ok(rid, {"retirements": status(service.db_path, params["room_id"])})
+
+
+@_room_method("groups.peer.retire", code=5125, service_code=4121)
+def _(rid, params: dict, service) -> dict:
+    """Settle one retained authority using a fresh target-owner-authorized grant."""
+    from gateway.hosted_room_retirement import settle_control
+    return _ok(rid, settle_control(service, params))
+
+
 @_room_method("groups.list", code=5110, db=True)
 def _(rid, params: dict, db_path) -> dict:
     """List rooms hosted by this gateway."""
@@ -426,7 +441,8 @@ def _(rid, params: dict, service) -> dict:
             service.db_path, room_id=params.get("room_id"),
             expected_gateway_id=str(local_gateway_id),
             expected_epoch=int(state["authority_epoch"] if state is not None else 1))
-        return _ok(rid, {"tombstone": tombstone})
+        from gateway.hosted_room_retirement import status
+        return _ok(rid, {"tombstone": tombstone, "retirements": status(service.db_path, room_id)})
     try:
         existing = room_state(
             service.db_path, room_id=params.get("room_id"), include_disbanded=True)

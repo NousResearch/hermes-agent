@@ -1267,6 +1267,42 @@
       }
     },
     {
+      "name": "groups.peer.retire",
+      "summary": "Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsPeerRetireParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRetireResult"
+        }
+      }
+    },
+    {
+      "name": "groups.peer.retirements",
+      "summary": "List retained peer-authority retirement obligations, including ended rooms.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RoomParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPeerRetireResult"
+        }
+      }
+    },
+    {
       "name": "groups.peer.revoke",
       "summary": "Revoke one target-issued grant using its exact profile scope.",
       "params": [
@@ -15058,6 +15094,15 @@
         "properties": {
           "tombstone": {
             "$ref": "#/components/schemas/RoomTombstone"
+          },
+          "retirements": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Retirements",
+            "type": "array"
           }
         },
         "required": [
@@ -15487,6 +15532,67 @@
           "target_profile"
         ],
         "title": "GroupsPeerRegisterResult",
+        "type": "object"
+      },
+      "GroupsPeerRetireParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "retirement_id": {
+            "title": "Retirement Id",
+            "type": "string"
+          },
+          "grant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
+          }
+        },
+        "required": [
+          "room_id",
+          "retirement_id"
+        ],
+        "title": "GroupsPeerRetireParams",
+        "type": "object"
+      },
+      "GroupsPeerRetireResult": {
+        "additionalProperties": false,
+        "properties": {
+          "retirements": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Retirements",
+            "type": "array"
+          }
+        },
+        "required": [
+          "retirements"
+        ],
+        "title": "GroupsPeerRetireResult",
         "type": "object"
       },
       "GroupsPeerRevokeParams": {
@@ -28550,6 +28656,33 @@
           }
         },
         "title": "RoomMemberInput",
+        "type": "object"
+      },
+      "RoomParams": {
+        "additionalProperties": false,
+        "description": "Any method addressed at one hosted room.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "RoomParams",
         "type": "object"
       },
       "RoomTaskReceipt": {

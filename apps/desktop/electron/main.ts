@@ -5306,7 +5306,7 @@ function fetchJson(url, token, options: any = {}) {
         req.end()
       })
     },
-    { method: options.method || 'GET' }
+    { method: options.method || 'GET', timeoutMs: resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS) }
   )
 }
 
@@ -5408,7 +5408,7 @@ function fetchPublicJson(url, options: any = {}) {
 
         req.end()
       }),
-    { method: options.method || 'GET' }
+    { method: options.method || 'GET', timeoutMs: resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS) }
   )
 }
 
@@ -14938,7 +14938,7 @@ async function fetchJsonForBackend(
 
   if (descriptor.authMode === 'oauth') {
     // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
+    // isn't wired there. Fail loudly rather than corrupt the upload.
     if (opts.upload) {
       throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
     }

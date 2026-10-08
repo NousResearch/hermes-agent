@@ -85,6 +85,7 @@ class NormalizedResponse:
     bedrock_content_blocks = property(lambda self: self._pd("bedrock_content_blocks"))  # order-preserving Converse blocks
     codex_reasoning_items = property(lambda self: self._pd("codex_reasoning_items"))
     codex_message_items = property(lambda self: self._pd("codex_message_items"))
+    responses_image_outputs = property(lambda self: self._pd("responses_image_outputs"))
 
 
 def build_tool_call(id: str | None, name: str, arguments: Any, **provider_fields: Any) -> ToolCall:

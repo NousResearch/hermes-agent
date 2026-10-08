@@ -844,8 +844,8 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` / ``service_tier`` are read from the terminal frame — never ``response.output``. Output
-    items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
+    Output items come from ``output_item.done`` (completed images also have a narrow terminal-frame fallback),
+    or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
     has_tool_calls = first_delta_fired = saw_terminal = False
@@ -985,9 +985,62 @@ class _CodexResponseAssembler:
                 self.terminal_incomplete_details = _event_field(resp_obj, "incomplete_details")
             elif event_type == "response.failed":
                 self.terminal_error = _event_field(resp_obj, "error")
+            if event_type in {"response.completed", "response.incomplete"}:
+                self._terminal_images(resp_obj)
         self.saw_response_completed = self.saw_response_completed or event_type == "response.completed"
         self.terminal_status = self.terminal_status or event_type.removeprefix("response.")
         return True
+
+    def _terminal_image_slot(self, item: Any, index: int, unmatched: set[int]) -> int | None:
+        """Match a done occurrence, preferring provider identity over payload equality."""
+        item_id = _event_field(item, "id")
+        for slot in sorted(unmatched):
+            done_id = _event_field(self.output_items[slot], "id")
+            if (item_id and item_id == done_id) or (
+                not item_id and not done_id and self.output_indexes[slot] == index
+            ):
+                return slot
+        if not item_id:
+            for slot in sorted(unmatched):
+                done = self.output_items[slot]
+                if not _event_field(done, "id") and self.output_indexes[slot] is None and all(
+                    _event_field(done, field) == _event_field(item, field)
+                    for field in ("status", "result", "output_format")
+                ):
+                    return slot
+        return None
+
+    def _terminal_images(self, response: Any) -> None:
+        """Some relays omit image item-done events; retain only completed terminal images."""
+        output = _event_field(response, "output", [])
+        unmatched = {slot for slot, item in enumerate(self.output_items)
+                     if _event_field(item, "type") == "image_generation_call"}
+        seen_ids = set()
+        for index, item in enumerate(output if isinstance(output, list) else []):
+            if _event_field(item, "type") != "image_generation_call" or _event_field(item, "status") != "completed":
+                continue
+            item_id = _event_field(item, "id")
+            if item_id and item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            slot = self._terminal_image_slot(item, index, unmatched)
+            if slot is None:
+                self._on_item_done({"item": item, "output_index": index}, "response.output_item.done")
+            else:
+                unmatched.remove(slot)  # equal-byte siblings each consume one occurrence
+                self.output_indexes[slot] = index
+        if output:
+            # Reorder image slots only; do not change existing message/tool wire ordering.
+            slots = [i for i, item in enumerate(self.output_items)
+                     if _event_field(item, "type") == "image_generation_call"]
+            entries = [(self.output_indexes[i], self.output_sequences[i], self.output_items[i]) for i in slots]
+            if all(isinstance(entry[0], int) for entry in entries):
+                entries.sort(key=lambda entry: entry[0])
+                # Keep image sequence positions in terminal order too: pending-function
+                # settlement may fall back to sequence when any tool lacks output_index.
+                sequences = sorted(self.output_sequences[slot] for slot in slots)
+                for slot, sequence, (index, _, item) in zip(slots, sequences, entries):
+                    self.output_items[slot], self.output_indexes[slot], self.output_sequences[slot] = item, index, sequence
 
     # Exact-type handlers first, then substring-matched ones in priority order. ``error`` frames
     # carry the provider's real failure reason; raise so the credential pool + classifier see the body.

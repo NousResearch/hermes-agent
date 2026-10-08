@@ -167,6 +167,8 @@ class StreamDeliveryMixin:
         return bool(normalized) and normalized in getattr(self, "_delivered_interim_texts", set())
 
     def _record_delivered_interim_text(self, text: str) -> None:
+        from agent.responses_images import note_response_images_delivered
+        note_response_images_delivered(self, text)
         normalized = self._normalize_interim_visible_text(text)
         if normalized:
             if not isinstance(getattr(self, "_delivered_interim_texts", None), set):

@@ -437,6 +437,8 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         )
         _final_response = _TRUNCATED_FINAL
     agent._cleanup_task_resources(st.effective_task_id)
+    from agent.responses_images import preserve_recovery_response_images
+    _final_response = preserve_recovery_response_images(agent, st.messages, _final_response, st.finish_reason)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
     return st.end_turn(
@@ -513,6 +515,10 @@ def recover_from_truncation(
         )
 
     _trunc_msg = normalize_response_for_agent(agent, response)
+    # Truncated function-call responses bypass ordinary intake; their completed native
+    # images still belong to this turn even while the existing tool-call retry proceeds.
+    from agent.responses_images import materialize_response_images
+    materialize_response_images(agent, _trunc_msg)
     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
@@ -689,10 +695,12 @@ def continue_codex_incomplete(
 
     agent._codex_incomplete_retries = 0
     agent._codex_reasoning_only_streak = 0
-    agent._persist_session(messages, conversation_history)
-    return partial_result(
-        messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"
+    from agent.responses_images import preserve_recovery_response_images
+    terminal = preserve_recovery_response_images(
+        agent, messages, "Codex response remained incomplete after 3 continuation attempts", finish_reason,
     )
+    agent._persist_session(messages, conversation_history)
+    return partial_result(messages, api_call_count, terminal)
 
 
 @dataclass

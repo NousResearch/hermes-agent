@@ -626,6 +626,13 @@ def finalize_turn(
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+        # Budget/failure exits can bypass finish_text_response. Keep completed artifacts
+        # before persistence without changing the already-decided turn outcome.
+        if any(not item.get("delivered") for item in getattr(agent, "_responses_image_artifacts", {}).values()):
+            from agent.responses_images import preserve_recovery_response_images
+            final_response = preserve_recovery_response_images(
+                agent, messages, final_response or "", "interrupted" if interrupted else "incomplete",
+            )
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)

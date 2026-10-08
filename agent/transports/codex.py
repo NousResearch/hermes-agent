@@ -861,7 +861,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         provider_data = {
             key: getattr(msg, key, None)
-            for key in ("codex_reasoning_items", "codex_message_items", "reasoning_details")
+            for key in ("codex_reasoning_items", "codex_message_items", "reasoning_details", "responses_image_outputs")
             if msg and getattr(msg, key, None)
         }
         return NormalizedResponse(

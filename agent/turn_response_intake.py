@@ -136,6 +136,9 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    from agent.responses_images import materialize_response_images
+    materialize_response_images(agent, assistant_message)
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
@@ -169,10 +172,16 @@ def normalize_model_response(
         agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True, diagnostic=True)
         agent._incomplete_scratchpad_retries = 0
         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
+        from agent.responses_images import preserve_recovery_response_images
+        diagnostic = "Incomplete REASONING_SCRATCHPAD after 2 retries"
+        final_response = preserve_recovery_response_images(agent, messages, diagnostic, finish_reason)
+        if final_response != diagnostic:
+            # Rollback made a separate list; retain the artifact row in both exit transcripts.
+            rolled_back_messages.append(messages[-1])
         agent._cleanup_task_resources(effective_task_id)
         agent._persist_session(messages, conversation_history)
         return _verdict("return", partial_result(
-            rolled_back_messages, api_call_count, "Incomplete REASONING_SCRATCHPAD after 2 retries"
+            rolled_back_messages, api_call_count, final_response
         ))
     agent._incomplete_scratchpad_retries = 0
 

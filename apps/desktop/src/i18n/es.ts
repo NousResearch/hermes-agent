@@ -1159,6 +1159,7 @@ export const esOverrides = {
       },
       desktop: {
         repoScanEnabled: 'Detección automática de repositorios',
+        repoScanNested: 'Detectar también repositorios anidados',
         repoScanRoots: 'Carpetas de búsqueda de repositorios',
         repoScanExcludePaths: 'Rutas de repositorio excluidas'
       },
@@ -1334,7 +1335,8 @@ export const esOverrides = {
       },
       desktop: {
         repoScanEnabled: 'Busca repositorios Git en carpetas locales para mostrarlos en Proyectos.',
-        repoScanRoots: 'Carpetas que se buscarán. Déjalo vacío para buscar en tu directorio de inicio.',
+        repoScanNested: 'Mostrar los repositorios dentro de otro que ya tengas como subproyectos.',
+        repoScanRoots: 'Carpetas adicionales que buscar. Si está vacío se busca tu Directorio de trabajo.',
         repoScanExcludePaths:
           'Carpetas que se omitirán, junto con todos sus subdirectorios, durante la detección de repositorios.'
       },

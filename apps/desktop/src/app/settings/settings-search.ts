@@ -5,7 +5,7 @@ import type { ConfigFieldSchema, EnvVarInfo, HermesConfigRecord } from '@/types/
 import { FIELD_LABELS, SECTIONS } from './constants'
 import { credentialRowLabel } from './credential-key-ui'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { prettyName, sectionFieldEntries, voiceFieldVisible } from './helpers'
+import { prettyName, sectionFieldEntries, sectionFieldVisible } from './helpers'
 import { settingsSubpageForTarget } from './subpages'
 import type { DesktopConfigSection, SettingsView } from './types'
 
@@ -85,7 +85,7 @@ export function buildConfigSearchEntries(
   return sections.flatMap(section => {
     const context = copy.sections[section.id] ?? section.label
     const fields = sectionFields.get(section.id) ?? []
-    const visibleFields = section.id === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+    const visibleFields = fields.filter(([key]) => sectionFieldVisible(section.id, key, config))
 
     return visibleFields.map(([key, field]) => ({
       context,

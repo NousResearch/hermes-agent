@@ -51,7 +51,9 @@ import {
   getNested,
   isExternalMemoryProvider,
   sectionFieldEntries,
+  sectionFieldVisible,
   setConfigField,
+  setNested,
   voiceFieldVisible
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
@@ -456,9 +458,11 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = (
-    activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
-  ).filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
+  // sectionFieldVisible owns the per-section rule and delegates the voice case to
+  // voiceFieldVisible, so it subsumes the voice filter upstream used to inline here.
+  const visibleFields = fields
+    .filter(([key]) => sectionFieldVisible(activeSectionId, key, config))
+    .filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
 
   const showEmptyState =
     visibleFields.length === 0 &&

@@ -106,6 +106,7 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     result = ops.search("*.txt", path=str(home), target="files")
 
     rg_command = _rg_files_commands(env.commands)[0]
+    assert "!Downloads" not in rg_command
     assert "!Downloads/**" not in rg_command
     assert result.warning is None
 
@@ -140,9 +141,10 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     commands = _rg_files_commands(env.commands)
     assert len(commands) == 1
     command = commands[0]
-    assert command.startswith("set -o pipefail; cd '/' && ")
+    assert command.startswith("set -o pipefail; (cd '/' && ")
     assert "--sortr=modified" in command
-    assert "'!Users/alice/Downloads/**'" in command
+    assert "'!/Users/alice/Downloads'" in command
+    assert "'!repo/Downloads'" not in command
     assert "'!repo/Downloads/**'" not in command
     assert "'Users/alice' 'repo'" in command
     assert result.files == [
@@ -173,7 +175,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
 
     command = _rg_files_commands(env.commands)[0]
     assert "cd '/Users/alice' &&" in command
-    assert " -- '.' '--version' 2>/dev/null" in command
+    assert " -- '.' '--version') 2>/dev/null" in command
     assert result.error is None
 
 
@@ -194,3 +196,237 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_rg_prunes_only_protected_entries_from_any_cwd(tmp_path, monkeypatch, native):
+    """#129733: prune before opendir, without hiding project namesakes."""
+    home = tmp_path.resolve() / "home [test]"
+    project = home / "Code" / "Downloads"
+    project.mkdir(parents=True)
+    visible = project / "keep.txt"
+    visible.write_text("needle\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    secret = protected / "private.txt"
+    secret.write_text("needle\n")
+    other = tmp_path.resolve() / "other"
+    other.mkdir()
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    env = LocalEnvironment(cwd=str(project))
+    ops = ShellFileOperations(env)
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    protected.chmod(0)
+    try:
+        for root in (str(home), "../..", f"{home}, {other}"):
+            for target, pattern in (("files", "*.txt"), ("content", "needle")):
+                result = ops.search(pattern, path=root, target=target, file_glob="*.txt")
+                assert not result.error, result.to_dict()
+                paths = result.files if target == "files" else [m.path for m in result.matches]
+                # A relative root reports paths relative to the session cwd, as unscoped rg does.
+                assert {(project / p).resolve() for p in paths} == {visible}, result.to_dict()
+                assert "Skipped macOS protected" in result.warning
+        assert env.cwd == str(project), "search must not move the session cwd"
+    finally:
+        protected.chmod(0o700)
+
+    # A folder explicitly named by the caller is still searchable, even when
+    # another operand is its broad parent.
+    for root in (str(protected), f"{home}, {protected}"):
+        result = ops.search("*.txt", path=root, target="files")
+        assert not result.error, result.to_dict()
+        assert str(secret) in result.files
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_rg_zero_match_hints_share_protected_scope(tmp_path, monkeypatch, native):
+    """Follow-up probes cannot undo the broad search's protected-folder policy."""
+    home = tmp_path.resolve() / "home"
+    protected = home / "Downloads"
+    protected.mkdir(parents=True)
+    (protected / "private.txt").write_text("NEEDLE\nliteral[dot]\n")
+    project = home / "Code" / "Downloads"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(project)))
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    for pattern in ("needle", "literal[dot]"):
+        result = ops.search(pattern, path=str(home), target="content")
+        assert not result.error, result.to_dict()
+        assert result.total_count == 0
+        assert ops._zero_match_probe(pattern, str(home), None) is None
+    hidden = project / ".hint.txt"
+    hidden.write_text("needle\n")
+    hint = ops._zero_match_probe("needle", str(home), None)
+    assert "hidden or gitignored" in hint
+    assert str(hidden) in hint
+
+
+@pytest.mark.platforms("posix")
+def test_data_volume_spelling_of_home_is_pruned_from_root_searches():
+    """/ walks /System/Volumes/Data as well: the firmlinked spelling of the home
+    folders must be pruned too, or rg opens ~/Downloads by the back door."""
+    def excluded(root):
+        return set(_macos_protected_search_exclusions(root, home="/Users/alice", platform="darwin"))
+
+    assert {"Users/alice/Downloads", "System/Volumes/Data/Users/alice/Downloads"} <= excluded("/")
+    assert "Users/alice/Downloads" in excluded("/System/Volumes/Data")
+    assert "Downloads" in excluded("/System/Volumes/Data/Users/alice")
+    assert excluded("/System/Volumes/Data/Users/alice/Downloads") == set()
+    # Same rule the other way round for a home spelled on the Data volume.
+    assert "Users/alice/Downloads" in set(_macos_protected_search_exclusions(
+        "/", home="/System/Volumes/Data/Users/alice", platform="darwin"))
+
+
+@pytest.mark.platforms("macos")
+def test_root_search_prunes_data_volume_spelling_and_names_each_folder_once(monkeypatch):
+    env = RecordingEnvironment("/")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
+
+    result = ops.search("*.txt", path="/", target="files")
+
+    command = _rg_files_commands(env.commands)[0]
+    assert "'!/Users/alice/Downloads'" in command
+    assert "'!/System/Volumes/Data/Users/alice/Downloads'" in command
+    assert result.warning.count("Downloads") == 1, result.warning
+
+
+def _broad_home_with_hints(tmp_path, monkeypatch, native):
+    home = tmp_path.resolve() / "home"
+    (home / "Downloads").mkdir(parents=True)
+    code = home / "Code"
+    code.mkdir()
+    (code / ".hidden.txt").write_text("needle\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(code)))
+    assert ops._has_command("rg"), "real ripgrep required"
+    return home, code, ops
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_broad_search_keeps_zero_match_hint_next_to_protected_notice(tmp_path, monkeypatch, native):
+    """The protected-folder notice used to REPLACE result.warning, so a broad
+    search that found nothing lost the hint telling the model why."""
+    home, code, ops = _broad_home_with_hints(tmp_path, monkeypatch, native)
+    other = tmp_path.resolve() / "other"
+    other.mkdir()
+
+    for root in (str(home), f"{home}, {other}"):
+        result = ops.search("needle", path=root, target="content")
+        assert result.total_count == 0, result.to_dict()
+        assert "hidden or gitignored" in result.warning, result.warning
+        assert str(code / ".hidden.txt") in result.warning
+        assert "Skipped macOS protected folders" in result.warning
+
+    result = ops.search("needle\\nmore", path=str(home), target="content")
+    assert "multiline mode" in result.warning, result.warning
+    assert "Skipped macOS protected folders" in result.warning
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_scoped_multi_root_results_keep_the_callers_root_spelling(tmp_path, monkeypatch, native):
+    """Scoping runs rg from the physical common ancestor; hits must still come
+    back under the root as the caller spelled it (/tmp, not /private/tmp)."""
+    home, code, ops = _broad_home_with_hints(tmp_path, monkeypatch, native)
+    (code / "mine.txt").write_text("x\n")
+    real = tmp_path.resolve() / "real"
+    real.mkdir()
+    (real / "theirs.txt").write_text("x\n")
+    link = tmp_path.resolve() / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    result = ops.search("*.txt", path=f"{home}, {link}", target="files")
+
+    assert not result.error, result.to_dict()
+    assert str(code / "mine.txt") in result.files
+    assert str(link / "theirs.txt") in result.files
+    assert str(real / "theirs.txt") not in result.files
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_other_spellings_of_a_broad_root_still_prune_and_keep_their_spelling(tmp_path, monkeypatch, native):
+    """A symlink to $HOME, a case variant of it (APFS is case-insensitive by default)
+    or a relative root names the same folders: the protected ones stay pruned, and
+    hits come back under the root as spelled (a case-variant absolute operand used to
+    defeat the anchored globs: rg only strips its real-case getcwd() prefix)."""
+    home = tmp_path.resolve() / "a" / "home"
+    (home / "Code").mkdir(parents=True)
+    (home / "Code" / "keep.txt").write_text("needle\n")
+    (home / "Downloads").mkdir()
+    (home / "Downloads" / "private.txt").write_text("needle\n")
+    link = tmp_path.resolve() / "home-link"
+    link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    spellings = [str(link), "."]
+    variant = home.parent / "HOME"
+    if variant.exists() and variant.samefile(home):  # case-insensitive volume
+        spellings.append(str(variant))
+    for root in spellings:
+        for target, pattern in (("files", "*.txt"), ("content", "needle")):
+            result = ops.search(pattern, path=root, target=target)
+            paths = result.files if target == "files" else [m.path for m in result.matches]
+            assert paths == [f"{root}/Code/keep.txt"], (root, result.to_dict())
+            assert "Skipped macOS protected folders" in result.warning
+        hint = ops.search("NEEDLE", path=root, target="content").warning
+        assert f"{root}/Code/keep.txt" in hint and "private.txt" not in hint, hint
+
+
+_DATA_VOLUME = Path("/System/Volumes/Data")
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize("home_spelled_on_data_volume", [False, True])
+@pytest.mark.parametrize("native", ["0", "1"])
+def test_user_facing_and_data_volume_spellings_prune_alike_even_through_symlinks(
+        tmp_path, monkeypatch, native, home_spelled_on_data_volume):
+    """The same home reached as its user-facing path, as its /System/Volumes/Data
+    firmlink alias, or through a symlink to either spelling must prune the same
+    protected folders, and hits come back under the root as the caller spelled it.
+    Whichever spelling $HOME itself uses must not matter."""
+    home = tmp_path.resolve() / "home"
+    (home / "Code").mkdir(parents=True)
+    data_home = _DATA_VOLUME / home.relative_to("/")
+    if not (data_home.exists() and data_home.samefile(home)):
+        pytest.skip("temp dir is not on the firmlinked APFS Data volume")
+    (home / "Code" / "keep.txt").write_text("needle\n")
+    protected = home / "Downloads"
+    protected.mkdir()
+    (protected / "private.txt").write_text("needle\n")
+    to_user = tmp_path.resolve() / "link-to-user-path"
+    to_user.symlink_to(home, target_is_directory=True)
+    to_data = tmp_path.resolve() / "link-to-data-alias"
+    to_data.symlink_to(data_home, target_is_directory=True)
+    monkeypatch.setattr(file_operations, "_HOME", str(data_home if home_spelled_on_data_volume else home))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(home / "Code")))
+    assert ops._has_command("rg"), "real ripgrep required"
+
+    protected.chmod(0)  # any descent would surface as a permission error
+    try:
+        for root in (str(home), str(data_home), str(to_user), str(to_data)):
+            for target, pattern in (("files", "*.txt"), ("content", "needle")):
+                result = ops.search(pattern, path=root, target=target)
+                assert not result.error, (root, result.to_dict())
+                paths = result.files if target == "files" else [m.path for m in result.matches]
+                assert paths == [f"{root}/Code/keep.txt"], (root, result.to_dict())
+                assert "Skipped macOS protected folders" in result.warning, (root, result.warning)
+                assert "Downloads" in result.warning
+            hint = ops.search("NEEDLE", path=root, target="content").warning
+            assert f"{root}/Code/keep.txt" in hint and "private.txt" not in hint, (root, hint)
+    finally:
+        protected.chmod(0o700)

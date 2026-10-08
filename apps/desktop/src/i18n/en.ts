@@ -1116,6 +1116,25 @@ export const en: Translations = {
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
     memoryLayers: enMemoryLayers,
+    repoScan: {
+      title: 'Repository Discovery Scan',
+      hint: 'The same scan the sidebar runs when the Projects view opens or the window regains focus.',
+      scanNow: 'Scan now',
+      scanning: 'Scanning...',
+      found: (count: number) => `Found ${count} repositories.`,
+      foundOne: 'Found 1 repository.',
+      disabled: 'Turn on Automatic Repository Discovery to scan.',
+      noRoots: 'Nothing to scan: set a Working Directory above, or add a discovery root.',
+      noBridge: 'This build cannot read the local disk, so there is nothing to scan.',
+      rejected: 'The backend refused the scan: its discovery settings differ from this page.',
+      failed: 'The scan failed. Try again.'
+    },
+    poolLimits: {
+      warmBotBackendsAria: 'Warm bot backends',
+      warmBotBackendsTitle: 'Warm Bot Backends',
+      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
+      backendIdleTimeoutTitle: 'Backend Idle Timeout'
+    },
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',

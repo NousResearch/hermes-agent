@@ -52,9 +52,7 @@ import {
   isExternalMemoryProvider,
   sectionFieldEntries,
   sectionFieldVisible,
-  setConfigField,
-  setNested,
-  voiceFieldVisible
+  setConfigField
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { MemoryLayersSlot } from './memory/memory-layers'
@@ -64,6 +62,7 @@ import { OnboardingSettings } from './onboarding-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { RepoScanSetting } from './repo-scan-setting'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -330,6 +329,7 @@ function ConfigSettingsInner({
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
   const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const showRepoScan = activeSectionId === 'workspace' && subpage === 'projects'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -458,17 +458,15 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  // sectionFieldVisible owns the per-section rule and delegates the voice case to
-  // voiceFieldVisible, so it subsumes the voice filter upstream used to inline here.
-  const visibleFields = fields
-    .filter(([key]) => sectionFieldVisible(activeSectionId, key, config))
-    .filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
+  const visibleFields = fields.filter(
+    ([key]) => sectionFieldVisible(activeSectionId, key, config) && key !== DELEGATION_ROUTE_COMPANION_KEY
+  )
 
   const showEmptyState =
     visibleFields.length === 0 &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
+      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics && !showRepoScan)
 
   return renderPage(
     <>
@@ -577,6 +575,8 @@ function ConfigSettingsInner({
           ))}
         </div>
       )}
+      {/* The scan acts on the discovery rows above it, so it follows them. */}
+      {showRepoScan ? <RepoScanSetting /> : null}
     </>
   )
 }

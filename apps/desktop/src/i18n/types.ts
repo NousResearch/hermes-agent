@@ -923,6 +923,25 @@ export interface Translations extends NoticeTranslations {
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
+    repoScan: {
+      title: string
+      hint: string
+      scanNow: string
+      scanning: string
+      found: (count: number) => string
+      foundOne: string
+      disabled: string
+      noRoots: string
+      noBridge: string
+      rejected: string
+      failed: string
+    }
+    poolLimits: {
+      warmBotBackendsAria: string
+      warmBotBackendsTitle: string
+      backendIdleTimeoutAria: string
+      backendIdleTimeoutTitle: string
+    }
     customEndpoints: {
       active: string
       apiKeySet: string

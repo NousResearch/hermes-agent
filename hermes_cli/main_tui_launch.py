@@ -459,9 +459,9 @@ def _launch_tui(
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
         if wt_info:
-            with contextlib.suppress(Exception):
-                from cli import _cleanup_worktree
-                _cleanup_worktree(wt_info)
+            # Quitting detaches a viewer; the gateway may still be executing in
+            # this checkout and future resumes retain its frozen cwd.
+            print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.

@@ -62,6 +62,10 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 ### Worktree cleanup
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
+With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
+session. Its worktree is retained even when clean: the turn may still be running
+there, and resuming the session uses the same working directory. Review and prune
+it after the session's work is finished.
 A conservative pruner runs automatically at startup (it only removes clean,
 fully-merged scratch trees past an age threshold), but preserved trees and
 merged local branches still accumulate on busy machines. Reclaim them

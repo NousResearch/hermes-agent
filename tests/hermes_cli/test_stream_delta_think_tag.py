@@ -57,6 +57,12 @@ class TestThinkTagInProse:
         for t in tokens:
             cli._stream_delta(t)
         assert not cli._in_reasoning_block, "<think> in prose should not enter reasoning block"
+        from unittest.mock import patch
+        import shutil
+        with patch.object(shutil, "get_terminal_size", return_value=os.terminal_size((80, 24))):
+            with patch("cli._cprint"):
+                cli._close_reasoning_box = lambda: None
+                cli._flush_stream()  # end-of-stream: the pending latch releases the mention
         full = "".join(cli._emitted)
         assert "<think>" in full, "The literal <think> tag should be in the emitted text"
         assert "Launch production" in full
@@ -137,3 +143,49 @@ class TestFlushRecovery:
         assert not cli._in_reasoning_block
         full = "".join(cli._emitted)
         assert "Launch production" in full
+
+
+class TestMidLineOpenSplitClose:
+    """A mid-line open whose close splits across deltas used to leak the reasoning
+    (#128294): the pair only strips within one buffer and the boundary gate refuses
+    mid-line opens. The pending latch hides it; a mention releases at flush."""
+
+    def test_split_close_hidden(self):
+        cli = _make_cli_stub()
+        cli._stream_delta("Let me check: <think>SECRET")
+        assert not cli._in_reasoning_block  # pending, not the hard block
+        assert "SECRET" not in "".join(cli._emitted)
+        cli._stream_delta(" STUFF</think> ok")
+        full = "".join(cli._emitted)
+        assert "SECRET" not in full and "STUFF" not in full, full
+        assert "Let me check:" in full and "ok" in full
+
+    def test_mention_released_verbatim_at_flush(self):
+        cli = _make_cli_stub()
+        cli._stream_delta("mentions <think> inline")
+        cli._stream_delta(" for reasoning")
+        from unittest.mock import patch
+        import shutil
+        with patch.object(shutil, "get_terminal_size", return_value=os.terminal_size((80, 24))):
+            with patch("cli._cprint"):
+                cli._close_reasoning_box = lambda: None
+                cli._flush_stream()
+        full = "".join(cli._emitted)
+        assert full == "mentions <think> inline for reasoning"
+
+    def test_cap_exceeded_passes_through(self):
+        import agent.think_scrubber as ts
+        cli = _make_cli_stub()
+        big = "x" * (ts.PENDING_RETAIN_CAP + 100)
+        cli._stream_delta("hi <think>" + big)
+        cli._stream_delta(" tail")
+        full = "".join(cli._emitted)
+        assert full == "hi <think>" + big + " tail"
+
+    def test_show_reasoning_routes_confirmed_pending(self):
+        cli = _make_cli_stub()
+        cli.show_reasoning = True
+        cli._stream_delta("check: <think>SECRET")
+        cli._stream_delta("</think> ok")
+        assert "SECRET" in "".join(cli._reasoning_emitted)
+        assert "SECRET" not in "".join(cli._emitted)

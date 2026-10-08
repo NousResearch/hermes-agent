@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from agent.think_scrubber import PENDING_RETAIN_CAP, THINK_CLOSE_TAGS, THINK_OPEN_TAGS
 from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -20,6 +20,10 @@ class StreamThinkFilterMixin:
 
     _OPEN_THINK_TAGS = THINK_OPEN_TAGS
     _CLOSE_THINK_TAGS = THINK_CLOSE_TAGS
+    # Pending latch (#128294): a mid-line open held until its close completes.
+    _pending_think_name = ""
+    _pending_think_text = ""
+    _pending_think_buf = ""
 
     def _at_block_boundary(self, buf: str, idx: int) -> bool:
         """Tag at ``idx`` starts a block: start of text, or newline + optional whitespace.
@@ -71,6 +75,25 @@ class StreamThinkFilterMixin:
                     max_tag = max(len(t) for t in self._CLOSE_THINK_TAGS)
                     self._think_buffer = buf[-max_tag:] if len(buf) > max_tag else buf
                     return
+            elif self._pending_think_name:
+                # Pending latch (#128294): hold everything after the mid-line open until a
+                # completing close hides it as a pair, the cap gives up, or flush releases.
+                close_tag = f"</{self._pending_think_name}>"
+                joined = self._pending_think_buf + buf
+                idx = joined.lower().find(close_tag)
+                if idx != -1:
+                    consumed_from_buf = max(0, idx + len(close_tag) - len(self._pending_think_buf))
+                    self._pending_think_name = self._pending_think_text = self._pending_think_buf = ""
+                    buf = buf[consumed_from_buf:]
+                    continue
+                self._pending_think_buf = joined
+                buf = ""
+                if len(self._pending_think_buf) > PENDING_RETAIN_CAP:
+                    # Give up: pass through verbatim (never worse than the old leak-through).
+                    self._append_accumulated(self._strip_orphan_close_tags(
+                        self._pending_think_text + self._pending_think_buf))
+                    self._pending_think_name = self._pending_think_text = self._pending_think_buf = ""
+                return
             else:
                 best_idx, best_len = self._earliest_open_tag(buf, lower_buf)
                 if best_len:
@@ -78,6 +101,17 @@ class StreamThinkFilterMixin:
                     self._in_think_block = True
                     buf = buf[best_idx + best_len:]
                 else:
+                    # A complete open tag mid-line cannot latch the hard block (that gate IS
+                    # the prose-mention guard); hold the tail in the pending latch (#128294)
+                    # instead of streaming the reasoning out when the close splits.
+                    mid_idx, mid_len = _Scrubber._find_first_tag(buf, self._OPEN_THINK_TAGS)
+                    if mid_len:
+                        self._append_accumulated(buf[:mid_idx])
+                        self._pending_think_text = buf[mid_idx:mid_idx + mid_len]
+                        self._pending_think_name = self._pending_think_text[1:-1].lower()
+                        self._pending_think_buf = ""
+                        buf = buf[mid_idx + mid_len:]
+                        continue
                     # Hold back a partial open tag at the tail.
                     held_back = _Scrubber._max_partial_suffix(buf, self._OPEN_THINK_TAGS)
                     if held_back:
@@ -96,6 +130,14 @@ class StreamThinkFilterMixin:
 
     def _flush_think_buffer(self) -> None:
         """On stream end, flush text held back waiting for a possible open tag."""
+        if self._pending_think_name:
+            # The pending latch (#128294) never saw its close: release the tag literal and
+            # the held text verbatim -- the mention it may have been.
+            self._append_accumulated(self._strip_orphan_close_tags(
+                self._pending_think_text + self._pending_think_buf + self._think_buffer))
+            self._pending_think_name = self._pending_think_text = self._pending_think_buf = ""
+            self._think_buffer = ""
+            return
         if self._think_buffer and not self._in_think_block:
             self._append_accumulated(self._strip_orphan_close_tags(self._think_buffer))
             self._think_buffer = ""

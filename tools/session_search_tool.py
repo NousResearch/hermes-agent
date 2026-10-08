@@ -70,6 +70,11 @@ def _loud(fn, log_msg, error_prefix, *log_args):
     calls whose failure the model must see."""
     try:
         return fn(), None
+    except TimeoutError as e:
+        # A cooperative deadline is an expected bound, not a crash: warn without the
+        # traceback so errors.log does not grow a full stack per deadline hit.
+        logging.warning(log_msg, *log_args, e)
+        return None, tool_error(f"{error_prefix}: {e}", success=False)
     except Exception as e:
         logging.error(log_msg, *log_args, e, exc_info=True)
         return None, tool_error(f"{error_prefix}: {e}", success=False)

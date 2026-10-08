@@ -59,8 +59,10 @@ _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER B
 # The CJK router's LIKE leg (lone 1-char CJK runs, or any CJK query when the trigram
 # route is unavailable) scans the canonical message table without an index. A
 # cooperative SQLite VM deadline keeps a short query on a large live store from
-# monopolising the scan until the tool timeout kills the whole search (#134779);
-# the canonical LIKE fallback carries the same bound (#129839).
+# monopolising the scan until the tool timeout kills the whole search (#134779).
+# Value matches the recent-session browse deadline on main; #129839 proposes the
+# same bound for the canonical LIKE fallback and shares this _like_rows
+# signature — coordinate landing order with it.
 _CJK_LIKE_SEARCH_TIMEOUT_SECONDS = 3.0
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
 _CONTEXT_WINDOW_SQL = """WITH target AS (

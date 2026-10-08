@@ -177,6 +177,10 @@ def _real_profile_snapshot_error(err: str) -> str:
     return f"{_RP}{err}"
 
 
+# Shared by the port-file wait and the listener-accept wait in _launch_real_profile_chrome.
+_REAL_PROFILE_LAUNCH_WINDOW_S = 30.0
+
+
 def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Optional[int], Optional[str]]:
     """Launch the user's REAL browser binary on the profile COPY; return (debug_port, error).
 
@@ -186,6 +190,10 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     Headless by default (a focus-stealing window defeats a background capability); Chrome's NEW
     headless shares the profile's cookie store (legacy --headless does not). browser.headed /
     AGENT_BROWSER_HEADED opts into a window, except on a display-less Linux host (launch would die).
+
+    Returns only once the debug port is ACCEPTING connections: ``DevToolsActivePort`` can be
+    written before the CDP listener accepts, and an attach fired into that window times out with
+    an opaque connect error on every retry (#133659).
     """
     _bt = _origin()
     try:
@@ -205,16 +213,30 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
         return None, f"{_RP}the launch failed: {e}"
     _bt._real_profile_chrome_procs.append(chrome_proc)
 
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + _REAL_PROFILE_LAUNCH_WINDOW_S
+    port: Optional[int] = None
     while time.monotonic() < deadline:
-        line = _read_devtools_port(copy_dir) or ""
-        if line.isdigit():
-            return int(line), None
         if chrome_proc.poll() is not None:
             _terminate_real_profile_chrome()
             return None, _RP + "Chrome exited during startup (another instance may hold the profile copy)."
+        if port is None:
+            line = _read_devtools_port(copy_dir) or ""
+            if line.isdigit():
+                # the file precedes listener readiness; keep probing below
+                port = int(line)
+            else:
+                time.sleep(0.25)
+                continue
+        if _cdp_http_ready(f"http://127.0.0.1:{port}"):
+            return port, None
         time.sleep(0.25)
     _terminate_real_profile_chrome()
+    if port is not None:
+        return None, (
+            _RP
+            + "the real-profile browser's debug port was not accepting connections in time. "
+            "Retry, or turn the toggle off."
+        )
     return None, _RP + "the real-profile browser did not expose a debug port in time. Retry, or turn the toggle off."
 
 

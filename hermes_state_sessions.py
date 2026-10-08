@@ -1698,7 +1698,8 @@ class SessionSessionsMixin:
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock.
+        is protected by an active turn lease or compression lock. Also removes unreferenced desktop
+        composer-images the deleted sessions exclusively referenced.
 
         With ``include_compression_chain=True`` the whole compression chain the session belongs to
         is deleted with it (root and every continuation) — the dashboard delete endpoints use this
@@ -1708,6 +1709,9 @@ class SessionSessionsMixin:
         through :meth:`delete_sessions` keeps the chain-aware guard/counting semantics in one
         place; its return value counts the *requested* ids that existed, so ``> 0`` is exactly
         "the session was found"."""
+        from hermes_cli.desktop_composer_images import (
+            cleanup_composer_for_deletion, collect_composer_refs_for_sessions)
+
         if include_compression_chain:
             return self.delete_sessions(
                 [session_id], sessions_dir=sessions_dir,
@@ -1715,16 +1719,14 @@ class SessionSessionsMixin:
                 include_compression_chain=True,
             ) > 0
         removed_ids: List[str] = []
+        deleted_composer_refs: set[str] = set()
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
+            nonlocal deleted_composer_refs
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            target_ids = (
-                [session_id, *_collect_delegate_child_ids(conn, [session_id])]
-                if exclude_active_write_guards or expected_ids is not None else None
-            )
+            target_ids = [session_id, *_collect_delegate_child_ids(conn, [session_id])]
             if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
-                # Delegate children cascade with the root, so a guard on any of them refuses too.
                 raise SessionActiveWriteGuardError(
                     f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
                 )
@@ -1735,6 +1737,7 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
+            deleted_composer_refs = collect_composer_refs_for_sessions(conn, target_ids)
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1747,6 +1750,9 @@ class SessionSessionsMixin:
         deleted = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if deleted_composer_refs:
+            with contextlib.suppress(Exception):
+                cleanup_composer_for_deletion(self._conn, deleted_composer_refs)
         return bool(deleted)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
@@ -1787,9 +1793,10 @@ class SessionSessionsMixin:
         include_compression_chain: bool = False,
     ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
-        protected by an active turn lease or compression lock are skipped and, when given, appended
-        to ``skipped_ids`` so callers can tell the user. Returns the number deleted.
+        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``,
+        rows protected by an active turn lease or compression lock are skipped and, when given, appended
+        to ``skipped_ids`` so callers can tell the user. Returns the number deleted. Also removes desktop
+        composer-images referenced exclusively by the deleted sessions.
 
         With ``include_compression_chain=True``, each selected id is expanded to its full
         compression chain (root + every continuation, including stale sibling continuations)
@@ -1797,11 +1804,15 @@ class SessionSessionsMixin:
         without the expansion a "deleted" conversation resurfaces as the previous chain link on
         the next list reload (#57543). The returned count still reflects the *requested* rows,
         not the expanded chain links, so the caller's toast matches the user's selection."""
+        from hermes_cli.desktop_composer_images import (
+            cleanup_composer_for_deletion, collect_composer_refs_for_sessions)
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
+        deleted_composer_refs: set[str] = set()
         def _do(conn):
+            nonlocal deleted_composer_refs
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
             ).fetchall()]
@@ -1843,6 +1854,10 @@ class SessionSessionsMixin:
                     expanded = self._expand_compression_lineage(conn, existing)
                 else:
                     expanded = existing
+            cascade_targets: list[str] = []
+            cascade_targets.extend(expanded)
+            cascade_targets.extend(_collect_delegate_child_ids(conn, expanded))
+            deleted_composer_refs = collect_composer_refs_for_sessions(conn, cascade_targets)
             removed_ids.extend(_delete_delegate_children(conn, expanded))
             for chunk in _id_chunks(expanded):
                 ph = _session_ids_placeholders(chunk)
@@ -1860,6 +1875,9 @@ class SessionSessionsMixin:
         count = self._execute_write(_do)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if deleted_composer_refs:
+            with contextlib.suppress(Exception):
+                cleanup_composer_for_deletion(self._conn, deleted_composer_refs)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count

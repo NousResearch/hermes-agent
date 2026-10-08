@@ -7,7 +7,8 @@ import type {
   SessionInfo,
   SessionMessage,
   SessionMessagesResponse,
-  SessionSearchResponse
+  SessionSearchResponse,
+  SessionSearchResult
 } from '@/types/hermes'
 
 import { createSessionMutationClient, type SessionMutationIdentity, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
@@ -444,6 +445,67 @@ export function searchSessions(query: string, profile?: null | string): Promise<
     ...scope,
     path: `/api/sessions/search?q=${encodeURIComponent(query)}${suffix}`
   })
+}
+
+/**
+ * Full-text search across several profiles at once — the "All profiles"
+ * sidebar scope. The FTS endpoint is scoped to ONE state.db per call (unlike
+ * the cross-profile `/api/profiles/sessions` list), so the All-profiles view
+ * fans one `?profile=` request per profile and merges the pages.
+ *
+ * The merge rank-interleaves the per-profile pages (rank 0 of each profile,
+ * then rank 1, ...) instead of concatenating, so one busy profile cannot
+ * push every other profile's best hits past the first render. A conversation
+ * found in two profiles keeps its first hit only. A profile whose request
+ * fails contributes an empty page, never a fatal error — the other profiles'
+ * hits still render. A single default profile is the ambient store, so it
+ * issues the unscoped call exactly like the single-profile path.
+ */
+export async function searchAllProfileSessions(
+  query: string,
+  profiles: readonly string[]
+): Promise<SessionSearchResponse> {
+  const names = [...new Set(profiles.map(name => String(name ?? '').trim()).filter(Boolean))]
+
+  // A lone default profile is the ambient store — issue the unscoped call,
+  // byte-identical to the single-profile path. (A lone NAMED profile is not
+  // ambient: it must be scoped, or the request would read the default store.)
+  if (names.length === 0 || (names.length === 1 && names[0] === 'default')) {
+    return searchSessions(query)
+  }
+
+  if (names.length === 1) {
+    return searchSessions(query, names[0])
+  }
+
+  const pages = await Promise.all(
+    names.map(async profile => {
+      try {
+        return await searchSessions(query, profile)
+      } catch {
+        return { results: [] }
+      }
+    })
+  )
+
+  const maxLen = Math.max(0, ...pages.map(page => page.results.length))
+  const bySession = new Map<string, SessionSearchResult>()
+  const merged: SessionSearchResult[] = []
+
+  for (let rank = 0; rank < maxLen; rank++) {
+    for (const page of pages) {
+      const hit = page.results[rank]
+
+      if (!hit || bySession.has(hit.session_id)) {
+        continue
+      }
+
+      bySession.set(hit.session_id, hit)
+      merged.push(hit)
+    }
+  }
+
+  return { results: merged }
 }
 
 // Resolves a single session row by id on one backend (the active profile, or

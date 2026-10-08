@@ -22,6 +22,7 @@ const {
   getSession,
   getLatestSessionMessages,
   renameSession,
+  searchAllProfileSessions,
   searchSessions,
   setSessionArchived,
   setSessionPinnedRemote,
@@ -86,7 +87,9 @@ describe('deleteSession profile scoping', () => {
       method: 'DELETE',
       path: expect.stringContaining('/api/sessions/sess-3')
     })
-    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain('profile=')
+    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain(
+      'profile='
+    )
   })
 
   it('keeps an explicit local pin routed to the local pool', async () => {
@@ -222,7 +225,13 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
 
 describe('renameSession profile scoping', () => {
   it('carries the owning profile in the PATCH body and request', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
 
     await renameSession('sess-r', 'Prep Butler', 'personal')
 
@@ -235,7 +244,13 @@ describe('renameSession profile scoping', () => {
   })
 
   it('falls back to the active request profile when the argument is omitted', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
     vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
 
     await renameSession('sess-r2', 'Prep Butler')
@@ -351,5 +366,96 @@ describe('searchSessions profile scope', () => {
       path: '/api/sessions/search?q=zebra&profile=research',
       profile: 'research'
     })
+  })
+})
+
+describe('searchAllProfileSessions', () => {
+  const hit = (owner: string, id: string) => ({
+    last_active: null,
+    lineage_root: null,
+    model: null,
+    profile: owner,
+    role: null,
+    session_id: id,
+    session_started: 1000,
+    snippet: id,
+    source: null
+  })
+
+  beforeEach(() => {
+    // Route each scoped call to the profile named in the URL, like the backend.
+    vi.mocked(client.profileScoped).mockImplementation(profile => (profile ? { profile } : {}))
+    hermesApi.mockImplementation(async ({ path }: { path: string }) => {
+      const url = new URL(path, 'http://local')
+      const owner = url.searchParams.get('profile') ?? 'default'
+
+      return {
+        results:
+          owner === 'default'
+            ? [hit('default', 'd1'), hit('default', 'd2')]
+            : owner === 'tommy'
+              ? [hit('tommy', 't1')]
+              : [hit('beta', 'b1'), hit('beta', 'b2'), hit('beta', 'b3')]
+      }
+    })
+  })
+
+  it('fans one scoped request per profile and rank-interleaves the hits', async () => {
+    const { results } = await searchAllProfileSessions('deploy', ['default', 'tommy', 'beta'])
+
+    // Rank 0 of each profile first, then rank 1, ... — so one busy profile
+    // cannot push every other profile's best hits past the first render.
+    expect(results.map(h => h.session_id)).toEqual(['d1', 't1', 'b1', 'd2', 'b2', 'b3'])
+    expect(hermesApi).toHaveBeenCalledTimes(3)
+  })
+
+  it('dedupes a conversation that two profiles both return', async () => {
+    hermesApi.mockImplementation(async ({ path }: { path: string }) => {
+      const owner = new URL(path, 'http://local').searchParams.get('profile') ?? 'default'
+
+      return {
+        results: owner === 'default' ? [hit('default', 'shared'), hit('default', 'd2')] : [hit('tommy', 'shared')]
+      }
+    })
+
+    const { results } = await searchAllProfileSessions('deploy', ['default', 'tommy'])
+
+    expect(results.map(h => h.session_id)).toEqual(['shared', 'd2'])
+  })
+
+  it('treats a per-profile failure as an empty page, not a fatal error', async () => {
+    hermesApi.mockImplementation(async ({ path }: { path: string }) => {
+      const owner = new URL(path, 'http://local').searchParams.get('profile') ?? 'default'
+
+      if (owner === 'tommy') {
+        throw new Error('backend down')
+      }
+
+      return { results: [hit(owner, 'd1')] }
+    })
+
+    const { results } = await searchAllProfileSessions('deploy', ['default', 'tommy'])
+
+    expect(results.map(h => h.session_id)).toEqual(['d1'])
+  })
+
+  it('sends one ambient request for a single default-profile setup', async () => {
+    hermesApi.mockResolvedValue({ results: [hit('default', 'd1')] } as never)
+
+    await searchAllProfileSessions('deploy', ['default'])
+
+    expect(hermesApi).toHaveBeenCalledTimes(1)
+    expect((hermesApi.mock.calls[0][0] as { path: string }).path).toBe('/api/sessions/search?q=deploy')
+  })
+
+  it('keeps a lone named profile scoped', async () => {
+    // A lone NAMED profile is not the ambient store — an unscoped call would
+    // read the default store and silently miss its sessions.
+    hermesApi.mockResolvedValue({ results: [hit('tommy', 't1')] } as never)
+
+    await searchAllProfileSessions('deploy', ['tommy'])
+
+    expect(hermesApi).toHaveBeenCalledTimes(1)
+    expect((hermesApi.mock.calls[0][0] as { path: string }).path).toBe('/api/sessions/search?q=deploy&profile=tommy')
   })
 })

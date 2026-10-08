@@ -53,4 +53,34 @@ describe('searchResultToSession', () => {
     expect(s.title).toBeNull()
     expect(s.preview).toBe('[{"id": "call_d632e8dc7bf740048f242bfe", "c...')
   })
+
+  it('carries the owning profile onto the synthesized row so it can paint its chip', () => {
+    // The All-profiles search fans one scoped request per profile and the
+    // backend stamps each hit with its owner; a hit that isn't loaded yet
+    // must keep that owner, or its row renders with no profile chip.
+    const s = searchResultToSession({
+      session_id: '20260721_114',
+      session_started: null,
+      snippet: 'deploy notes for the staging cut',
+      role: 'user',
+      model: null,
+      source: null,
+      profile: 'tommy'
+    })
+
+    expect(s.profile).toBe('tommy')
+  })
+
+  it('defaults the profile when a legacy backend omits it', () => {
+    const s = searchResultToSession({
+      session_id: '20260722_115',
+      session_started: null,
+      snippet: 'untitled hit from an old backend',
+      role: 'user',
+      model: null,
+      source: null
+    })
+
+    expect(s.profile).toBe('default')
+  })
 })

@@ -890,7 +890,7 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
     Reads through ``read_credential_pool`` so a named profile with no Codex rows of its own sees
     the global-root pool (the per-provider fallback every other pool read uses)."""
     from hermes_cli.auth import _nonempty_str, read_credential_pool
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
     try:
         now = time.time()
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
@@ -924,7 +924,7 @@ def _pool_codex_credential() -> Tuple[str, str]:
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):

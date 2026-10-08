@@ -128,10 +128,8 @@ def test_sole_credential_reset_without_status_stamp_is_still_clamped(tmp_path, m
     bench; without it the provider reset stood unclamped — the #119163 symptom
     on a legacy row. The clamp now measures the bench from now.
     """
-    from agent.credential_pool import (
-        EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
-        _exhausted_until,
-    )
+    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+    from agent.credential_pool_cooldowns import _exhausted_until
 
     stale = _entry(
         429,
@@ -222,7 +220,7 @@ def test_sole_credential_billing_403_survives_reload(tmp_path, monkeypatch):
     process restart would re-read a bare 403 and hand the spent key back after
     60 seconds.
     """
-    from agent.credential_pool import _exhausted_ttl
+    from agent.credential_pool_cooldowns import _exhausted_ttl
 
     pool = _load(
         tmp_path,
@@ -328,8 +326,8 @@ def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     from agent.credential_pool import (
         EXHAUSTED_TTL_DEFAULT_SECONDS,
         EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
-        _exhausted_ttl,
     )
+    from agent.credential_pool_cooldowns import _exhausted_ttl
 
     assert (
         _exhausted_ttl(400, sole_credential=True, failure_reason="billing_unverified")
@@ -359,3 +357,55 @@ def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
     )
     entry = pool.entries()[0]
     assert entry.failure_reason == "billing_unverified"
+
+
+def test_sole_credential_reset_is_clamped_to_the_short_cooldown(tmp_path, monkeypatch):
+    """A subscription-period reset on a lone credential keeps the short cooldown.
+
+    Issue #119163: this fixture is a sole non-billing credential (one entry,
+    ``device_code_exhausted`` 429, ``last_error_reset_at`` a week out), so the
+    clamp in ``_exhausted_until`` caps the bench at the sole-credential short
+    cooldown instead of honouring the absolute reset.
+
+    This test replaces ``test_explicit_reset_timestamp_overrides_default_429_ttl``,
+    which pinned the old rule that an explicit reset timestamp always overrides
+    the default 429 TTL. That rule is preserved for billing failures and for
+    pools with siblings to rotate to — only the lone non-billing case changed.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Prevent auto-seeding from Codex CLI tokens on the host
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: None,
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "weekly-reset",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 7200,
+                        "last_error_code": 429,
+                        "last_error_reason": "device_code_exhausted",
+                        "last_error_reset_at": time.time() + 7 * 24 * 60 * 60,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is True
+    entry = pool.select()
+    assert entry is not None
+    assert entry.id == "cred-1"

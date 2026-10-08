@@ -26,9 +26,10 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
+    STATUS_EXHAUSTED, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider, load_pool, resolve_runtime_pool_key,
 )
+from agent.credential_pool_cooldowns import _parse_absolute_timestamp
 from agent.agent_runtime_pool import _rehydrate_credential_pool, _revert_credential_rotation
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message

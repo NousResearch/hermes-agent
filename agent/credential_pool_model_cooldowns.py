@@ -112,7 +112,7 @@ class CredentialPoolModelCooldownMixin:
         if not entry.model_cooldowns:
             return entry
         try:
-            from agent.credential_pool import _parse_absolute_timestamp
+            from agent.credential_pool_cooldowns import _parse_absolute_timestamp
             from hermes_cli.auth import read_credential_pool
 
             row = next(
@@ -179,7 +179,8 @@ class CredentialPoolModelCooldownMixin:
         would otherwise be re-selected for the very model that just failed.
         Caller holds the lock.
         """
-        from agent.credential_pool import _exhausted_ttl, _normalize_error_context
+        from agent.credential_pool import _normalize_error_context
+        from agent.credential_pool_cooldowns import _exhausted_ttl
 
         observed_at = time.time()
         if failure_reason == "model_entitlement":
@@ -216,7 +217,8 @@ class CredentialPoolModelCooldownMixin:
         ends. Entitlement benches (a year: the plan lacks the model) aren't windows that reset, so
         they're left out. Read-only: never clears or persists a cooldown.
         """
-        from agent.credential_pool import STATUS_DEAD, _exhausted_until
+        from agent.credential_pool import STATUS_DEAD
+        from agent.credential_pool_cooldowns import _exhausted_until
 
         now = time.time()
         with self._lock:

@@ -221,7 +221,7 @@ def build_error_surface_from_exception(
         classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         from agent.agent_runtime_helpers import extract_api_error_context
-        from agent.credential_pool import _parse_absolute_timestamp
+        from agent.credential_pool_cooldowns import _parse_absolute_timestamp
 
         if (resets_at := _parse_absolute_timestamp(extract_api_error_context(exc).get("reset_at"))) is not None:
             synthetic["failure_resets_at"] = resets_at

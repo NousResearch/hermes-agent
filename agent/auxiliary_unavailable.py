@@ -71,7 +71,8 @@ def pool_cooldown_message(provider_id: str, *, model: Optional[str] = None) -> O
     ``model=None`` stays conservative exactly like ``model_cooldown_until``: any active model
     cooldown blocks an unscoped route.
     """
-    from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
+    from agent.credential_pool import STATUS_DEAD, PooledCredential
+    from agent.credential_pool_cooldowns import _exhausted_until
     from agent.credential_pool_model_cooldowns import model_cooldown_until
     from hermes_cli.auth import read_credential_pool
 
@@ -162,8 +163,8 @@ def pool_billing_message(
         STATUS_DEAD,
         STATUS_EXHAUSTED,
         PooledCredential,
-        _exhausted_until,
     )
+    from agent.credential_pool_cooldowns import _exhausted_until
 
     entries: list = []
     with contextlib.suppress(Exception):

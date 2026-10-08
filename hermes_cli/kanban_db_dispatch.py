@@ -1594,6 +1594,14 @@ def check_respawn_guard(
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.
     if lane == "review":
+        # Self-review gate (t_d3290431): the review lane must NEVER spawn a
+        # card under the profile that did the implementation. The kernel
+        # records the implementer on every ``review_requested`` handoff; if
+        # the row's assignee (the profile that would be spawned) is that
+        # implementer, refuse instead of self-reviewing.
+        self_review = _review_lane_self_review_reason(conn, task_id)
+        if self_review:
+            return self_review
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
@@ -1646,22 +1654,6 @@ def check_respawn_guard(
         return "active_pr"
 
     return None
-
-
-def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
-    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
-    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
-    --reclaim``), an unassign, or the dispatcher's own
-    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
-    the very implementer that opened the PR. Events without ``from`` (written
-    before it was recorded) are not trusted as handoffs — fail closed."""
-    if kind != "assigned":
-        return True
-    data = _kb._json_or(payload, {})
-    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
-        return False
-    to = data.get("assignee")
-    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -3034,5 +3026,9 @@ def run_daemon(
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
+from hermes_cli.kanban_db_review import (
+    _is_handoff_event,
+    _review_lane_self_review_reason,
+)
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw

@@ -36,7 +36,7 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
     assert not attachments
     corrected = json.loads(registry.dispatch('kanban_request_review', {
         'task_id': tid, 'summary': 'verified', 'artifacts': [str(artifact)],
-        'metadata': {'custom_key': 'allowed'}}))
+        'metadata': {'custom_key': 'allowed'}, 'reviewer': 'default'}))
     assert corrected.get('ok'), corrected
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, tid).status == 'review'

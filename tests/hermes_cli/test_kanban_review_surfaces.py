@@ -181,7 +181,7 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
             direct_id,
             summary=f"direct {secret}",
             metadata={"nested": [secret]},
-            expected_run_id=direct_run.current_run_id,
+            expected_run_id=direct_run.current_run_id,reviewer="reviewer"
         )
         run = kb.latest_run(conn, direct_id)
         event = [
@@ -242,7 +242,7 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     with kbc.connect() as conn:
         invalid_id = kb.create_task(conn, title="not review", assignee="builder")
         review_id = kb.create_task(conn, title="review", assignee="builder")
-        assert kb.request_review(conn, review_id, summary="ready")
+        assert kb.request_review(conn, review_id, summary="ready", reviewer="reviewer")
 
     invalid_output = kc.run_slash(
         f'reopen-review {invalid_id} --reason "invalid {secret}"'

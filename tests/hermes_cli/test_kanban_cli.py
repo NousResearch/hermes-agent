@@ -66,7 +66,7 @@ def test_run_slash_stats_text_includes_review_lane(kanban_home):
 
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="needs review", assignee="alice")
-        assert kb.request_review(conn, tid, summary="s", force=True)
+        assert kb.request_review(conn, tid, summary="s", force=True, reviewer="reviewer")
 
     assert re.search(r"review\s+1", kc.run_slash("stats"))
     assert json.loads(kc.run_slash("stats --json"))["by_status"].get("review") == 1

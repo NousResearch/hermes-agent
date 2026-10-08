@@ -313,3 +313,32 @@ def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path,
     [record] = _attempt_records(caplog)
     assert (record["commit_status"], record["failure_class"]) == expected
     assert (record["session_id"], record["trigger_source"]) == ("session-effect-test", "post_tool")
+
+
+@pytest.mark.parametrize("in_place", [True, False])
+def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, monkeypatch, in_place):
+    """The commit's memory flush ends the engine session, and that resets the compressor's telemetry
+    before the record is emitted (#118580). The record must still describe this attempt and name the
+    session it started in, in both commit modes."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        skip_context_files=True, skip_memory=True,
+    )
+    agent.compression_in_place = in_place
+    agent.context_compressor.tail_token_budget = 10
+    try:
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+                agent._compress_context(_messages(), "sys", approx_tokens=80_000, trigger="pre_api")
+    finally:
+        agent.close()
+
+    [record] = _attempt_records(caplog)
+    assert record["session_id"] == "db-session"
+    assert (record["trigger_source"], record["method"]) == ("pre_api", "llm_summary")
+    assert record["tokens_after"] is not None and record["middle_window_tokens"] is not None

@@ -718,9 +718,12 @@ test('a native tree missing a piece this host could stage is incomplete; unfixab
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'native-complete-'))
   const put = relative => { fs.mkdirSync(path.dirname(join(tmp, relative)), { recursive: true }); fs.writeFileSync(join(tmp, relative), '') }
   try {
+    // Without a loadable node-pty binding no target is complete.
+    put('get-windows/lib/windows.js')
+    assert.equal(nativeTreeComplete(tmp, 'win32', 'arm64'), false)
+    put('node-pty/prebuilds/any-target/pty.node')
     // A cross-target pack (here: win32 packed off Windows) never builds the HUD helper.
     const crossWin = (arch) => nativeTreeComplete(tmp, 'win32', arch)
-    put('get-windows/lib/windows.js')
     if (process.platform !== 'win32') {
       assert.equal(crossWin('x64'), false) // x64 can still get its prebuilt binding
       assert.equal(crossWin('arm64'), true) // arm64 has no prebuild: nothing a host fix adds
@@ -732,6 +735,15 @@ test('a native tree missing a piece this host could stage is incomplete; unfixab
       put('get-windows/main')
       assert.equal(nativeTreeComplete(tmp, 'darwin', process.arch), false) // HUD helper did not build
       put('native/darwin-universal/hud-modifier-monitor')
+      // node-pty's binding without the spawn-helper beside it fails on the first terminal.
+      assert.equal(nativeTreeComplete(tmp, 'darwin', process.arch), false)
+      put('node-pty/prebuilds/any-target/spawn-helper')
+      assert.equal(nativeTreeComplete(tmp, 'darwin', process.arch), true)
+      // A locally built binding wins over the prebuild (node-pty's own search order), so its
+      // directory must carry the helper too.
+      put('node-pty/build/Release/pty.node')
+      assert.equal(nativeTreeComplete(tmp, 'darwin', process.arch), false)
+      put('node-pty/build/Release/spawn-helper')
       assert.equal(nativeTreeComplete(tmp, 'darwin', process.arch), true)
     }
     if (process.platform === 'linux') {

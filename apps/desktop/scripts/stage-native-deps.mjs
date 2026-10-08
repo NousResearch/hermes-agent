@@ -741,7 +741,20 @@ export function nativeTreeComplete(out, platform, arch) {
   if (native && ['darwin', 'linux', 'win32'].includes(platform)) {
     required.push(hudModifierBinaryRelativePath(platform, arch))
   }
-  return required.every(relative => existsSync(join(out, relative)))
+  return required.every(relative => existsSync(join(out, relative))) && nodePtyComplete(join(out, 'node-pty'), platform)
+}
+
+// node-pty loads pty.node from the first of these that has one (lib/utils.js loadNativeModule), and
+// on macOS spawns through the spawn-helper beside it (lib/unixTerminal.js): a layout with the
+// binding but not the helper loads fine and fails on the first terminal.
+function nodePtyComplete(pty, platform) {
+  const layout = ['build/Release', 'build/Debug', ...readdirSafe(join(pty, 'prebuilds')).map(name => `prebuilds/${name}`)]
+    .find(dir => existsSync(join(pty, dir, 'pty.node')))
+  return !!layout && (platform !== 'darwin' || existsSync(join(pty, layout, 'spawn-helper')))
+}
+
+function readdirSafe(dir) {
+  try { return readdirSync(dir).sort() } catch { return [] }
 }
 
 /**

@@ -6,6 +6,7 @@ HERMES_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -142,6 +143,76 @@ class TestStore:
         assert store.list_pending() == []
         # And accepting again is a no-op (not pending anymore).
         assert store.accept_suggestion("acc") is None
+
+    def test_concurrent_accept_creates_a_single_job(self, store):
+        """Regression for #84490: two callers accepting one pending suggestion must not
+        each create a job. The pending check, the durable create and the accepted
+        transition are one critical section, so the loser observes `accepted`."""
+        record = _add(store, key="race", title="Race")
+        barrier = threading.Barrier(2, timeout=1.0)
+        created = []
+        errors = []
+
+        def fake_create(**kwargs):
+            created.append(kwargs)
+            # Hold the first caller inside create so a second caller can (on the
+            # buggy base) pass the pending check before either marks accepted.
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return {"id": f"job-{len(created)}", **kwargs}
+
+        def accept():
+            try:
+                store.accept_suggestion(record["id"])
+            except Exception as exc:  # noqa: BLE001 - surfaced by the assertion below
+                errors.append(exc)
+
+        with patch("cron.scheduler.create_job_with_scheduler_registration", side_effect=fake_create):
+            threads = [threading.Thread(target=accept) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+        assert errors == []
+        assert len(created) == 1
+        assert store.list_pending() == []
+
+    def test_concurrent_write_during_accept_is_not_clobbered(self, store):
+        """The accepted transition must re-read the store inside the critical
+        section: the durable create is a network round trip, and anything
+        another process persists meanwhile (here: a dismissal) must survive
+        instead of being rewritten from the pre-create snapshot (#84490)."""
+        import json as _json
+
+        first = _add(store, key="accept-me", title="Accept me")
+        second = _add(store, key="dismissed-elsewhere", title="Dismissed")
+        suggestions_file = store._current_suggestions_file()
+
+        def fake_create(**kwargs):
+            # Another process dismisses the sibling while this accept is in
+            # flight (deterministic ordering: this runs before the transition).
+            data = _json.loads(suggestions_file.read_text(encoding="utf-8"))
+            for record in data["suggestions"]:
+                if record["id"] == second["id"]:
+                    record["status"] = "dismissed"
+            suggestions_file.write_text(_json.dumps(data), encoding="utf-8")
+            return {"id": "job-1", **kwargs}
+
+        with patch(
+            "cron.scheduler.create_job_with_scheduler_registration",
+            side_effect=fake_create,
+        ):
+            job = store.accept_suggestion(first["id"])
+
+        assert job is not None
+        by_id = {s["id"]: s for s in store.load_suggestions()}
+        assert by_id[first["id"]]["status"] == "accepted"
+        assert by_id[second["id"]]["status"] == "dismissed", (
+            "the concurrent dismissal was overwritten by the accept"
+        )
 
     def test_registration_failure_marks_suggestion_accepted(self, store):
         """Retrying an acceptance must not create a duplicate durable job."""

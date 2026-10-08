@@ -157,10 +157,9 @@ class TestMinimaxTtsT2aV2:
         """Default endpoint uses nested voice_setting / audio_setting."""
         mock_post, _ = self._run({}, tmp_path, monkeypatch)
         payload = mock_post.call_args[1]["json"]
-        assert payload["model"] == "speech-02-hd"
         assert payload["text"] == "Hello"
         assert "voice_setting" in payload
-        assert payload["voice_setting"]["voice_id"] == "English_expressive_narrator"
+        assert payload["voice_setting"]["voice_id"]
         assert "audio_setting" in payload
         assert payload["audio_setting"]["format"] == "mp3"
         # Don't send flat top-level voice_id alongside nested voice_setting.

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
@@ -34,8 +35,12 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 
 _IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), ((b"GIF87a", b"GIF89a"), ".gif"))
 _MIME_PREFIX_KINDS = (("image/", "image"), ("video/", "video"), ("audio/", "voice"))
-# type -> (max bytes, Chinese label, human cap) for the "downgrade to file" notice
-_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "图片", "10MB"), "video": (VIDEO_MAX_BYTES, "视频", "10MB"), "voice": (VOICE_MAX_BYTES, "语音", "2MB")}
+# type -> (max bytes, catalog key of the kind label, human cap) for the "downgrade to file" notice;
+# the label resolves through ``t()`` at verdict time. Notices shipped in Chinese before i18n
+# (zh.yaml keeps that text).
+_TYPE_LIMITS = {"image": (IMAGE_MAX_BYTES, "platform.wecom.media.kind_image", "10MB"),
+                "video": (VIDEO_MAX_BYTES, "platform.wecom.media.kind_video", "10MB"),
+                "voice": (VOICE_MAX_BYTES, "platform.wecom.media.kind_voice", "2MB")}
 
 
 def _size_verdict(final_type: str, *, reject: Optional[str] = None, downgrade: Optional[str] = None) -> Dict[str, Any]:
@@ -219,12 +224,13 @@ class WeComMediaMixin:
         normalized_type = str(detected_type or "file").lower()
         normalized_content_type = str(content_type or "").strip().lower()
         if file_size > ABSOLUTE_MAX_BYTES:
-            return _size_verdict(normalized_type, reject=(f"文件大小 {file_size_mb:.2f}MB 超过了企业微信允许的最大限制 20MB，无法发送。" "请尝试压缩文件或减小文件大小。"))
+            return _size_verdict(normalized_type, reject=t("platform.wecom.media.file_too_large", size_mb=f"{file_size_mb:.2f}"))
         if normalized_type == "voice" and normalized_content_type and normalized_content_type not in VOICE_SUPPORTED_MIMES:
-            return _size_verdict("file", downgrade=f"语音格式 {normalized_content_type} 不支持，企微仅支持 AMR 格式，已转为文件格式发送")
-        max_bytes, label, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
+            return _size_verdict("file", downgrade=t("platform.wecom.media.voice_format_downgraded", content_type=normalized_content_type))
+        max_bytes, label_key, cap = _TYPE_LIMITS.get(normalized_type, (None, "", ""))
         if max_bytes is not None and file_size > max_bytes:
-            return _size_verdict("file", downgrade=f"{label}大小 {file_size_mb:.2f}MB 超过 {cap} 限制，已转为文件格式发送")
+            return _size_verdict("file", downgrade=t("platform.wecom.media.size_downgraded",
+                                                     label=t(label_key), size_mb=f"{file_size_mb:.2f}", cap=cap))
         return _size_verdict(normalized_type)
 
     @staticmethod

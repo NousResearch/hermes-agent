@@ -1,7 +1,7 @@
-"""``manage_catalog``: the setup agent's catalog search and install-through-the-card.
+"""``manage_catalog``: a desktop chat's catalog search and install-through-the-card.
 
 ``search`` reads the plugin catalog (the Plugins tab's resolver) and the skills hub and says what is
-already installed in ``default``. ``install`` opens the same connection operation
+already installed in this chat's profile. ``install`` opens the same connection operation
 ``manage_connections`` opens, with rows of kind ``plugin`` / ``skill``; the host installs each row
 the user approves (``tools/connectors/catalog.py``). The model sends catalog ids and an action,
 nothing else: the pin, scan, target profile and activation are the host's.
@@ -39,9 +39,10 @@ MANAGE_CATALOG_SCHEMA = {
     "description": (
         "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
-        "one approval card with a row per item and blocks until every row is installed, skipped, or "
-        "the card is closed; the host installs each approved row into the user's default profile at "
-        "the catalog's reviewed version. Pass only catalog ids exactly as 'search' returns them; the "
+        "one approval card with a row per item and blocks until every row is installed, skipped or "
+        "failed, or the card is closed; the host installs each approved row into this chat's profile at "
+        "the catalog's reviewed version, and turns on a catalog plugin that is installed but not "
+        "enabled. Pass only catalog ids exactly as 'search' returns them; the "
         "host decides the source, version, profile and settings, and the user can change them on the "
         "card. Offer an install only for something the user asked for or agreed to."
     ),
@@ -158,15 +159,16 @@ def install(items: List[Dict[str, str]], *, session_id: Optional[str], tool_call
 
 
 def search(query: str, kind: Optional[str], *, installer: Any = None) -> Dict[str, Any]:
-    from tools.connectors.catalog import DEFAULT_PROFILE, target_scope
+    """Runs on the tool call's thread, in this chat's profile scope, so ``installed`` is this
+    chat's profile's."""
+    from hermes_constants import get_hermes_home, profile_name_for_home
 
     rows: List[Dict[str, Any]] = []
-    with target_scope(DEFAULT_PROFILE):
-        if kind in (None, "plugin"):
-            rows += _plugin_rows(query)
-        if kind in (None, "skill") and query.strip():
-            rows += _skill_rows(query)
-    return {"results": rows, "installed_in": DEFAULT_PROFILE}
+    if kind in (None, "plugin"):
+        rows += _plugin_rows(query)
+    if kind in (None, "skill") and query.strip():
+        rows += _skill_rows(query)
+    return {"results": rows, "installed_in": profile_name_for_home(get_hermes_home())}
 
 
 def _plugin_rows(query: str) -> List[Dict[str, Any]]:

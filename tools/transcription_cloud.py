@@ -19,9 +19,11 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
-    _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, RETIRED_GROQ_MODELS, STTResponseError,
+    XAI_STT_BASE_URL,
+    _error_result, _get_stt_section, _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result,
+    normalize_xai_stt_model)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -67,6 +69,9 @@ def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, l
             APIError = APIConnectionError = APITimeoutError = ()
         if isinstance(exc, PermissionError):
             return _error_result(f"Permission denied: {file_path}")
+        if isinstance(exc, STTResponseError):
+            # The provider's own message already reads as an error; no "Transcription failed:" prefix.
+            return _error_result(str(exc))
         for cls, label in ((APIConnectionError, "Connection error"), (APITimeoutError, "Request timeout"),
                            (APIError, "API error")):
             if isinstance(exc, cls):
@@ -79,6 +84,8 @@ def _cloud_failure(exc: BaseException, file_path: str, label: str, detail: Optio
     """Map a REST/SDK provider exception to the shared envelope (``label`` e.g. ``"xAI STT transcription"``)."""
     if isinstance(exc, PermissionError):
         return _error_result(f"Permission denied: {file_path}")
+    if isinstance(exc, STTResponseError):
+        return _error_result(str(exc))
     logger.error("%s failed: %s", label, exc, exc_info=True)
     return _error_result(f"{label} failed: {exc if detail is None else detail}")
 
@@ -98,7 +105,7 @@ def _transcribe_groq(
         return _error_result("GROQ_API_KEY not set")
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
-    if model_name in OPENAI_MODELS:  # auto-correct an OpenAI-only model
+    if model_name in OPENAI_MODELS | RETIRED_GROQ_MODELS:  # OpenAI-only or shut-down model
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
     language = language or _resolve_stt_language("groq")
@@ -108,7 +115,9 @@ def _transcribe_groq(
             transcription = client.audio.transcriptions.create(file=audio_file, model=model_name,
                                                                response_format="text",
                                                                **_sdk_prompt_kwargs(language, prompt))
-        transcript_text = str(transcription).strip()
+        # Shared normalizer, not ``str(transcription)``: a Groq-compatible endpoint answering with a
+        # structured error object must not have its repr logged and returned as the transcript (#78098).
+        transcript_text = _extract_transcript_text(transcription)
         logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
                      Path(file_path).name, model_name, language or "auto", len(transcript_text))
         return _ok_result(transcript_text, "groq")
@@ -134,7 +143,7 @@ def _transcribe_openai(
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
-    if provider_label == "openai" and model_name in GROQ_MODELS:
+    if provider_label == "openai" and model_name in GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 
@@ -191,7 +200,7 @@ def _transcribe_mistral(
     if not api_key:
         return _error_result("MISTRAL_API_KEY not set")
     try:
-        _lazy_ensure_quietly("stt.mistral")
+        _lazy_ensure_quietly("mistral")
         from mistralai.client import Mistral
         with Mistral(api_key=api_key) as client, open(file_path, "rb") as audio_file:
             # Language: hook override > stt.mistral.language > stt.language > env > auto.
@@ -273,9 +282,17 @@ def _transcribe_xai(
 
     def _post() -> Any:
         from tools.xai_http import hermes_xai_user_agent
-        data: Dict[str, str] = {"language": language} if language else {}
-        data.update({flag: "true" for flag, default in (("format", True), ("diarize", False))
-                     if is_truthy_value(xai_config.get(flag, default))})
+        # Always name the model: xAI moved the server default from 1.0 to 2.0 mid-September and
+        # will retire 1.0, so an omitted field silently changes what Hermes runs.
+        resolved_model = normalize_xai_stt_model(model_name)
+        data: Dict[str, str] = {"model": resolved_model}
+        if language:
+            data["language"] = language
+        # ``format`` (inverse text normalization) requires ``language``; /v1/stt answers HTTP 400
+        # "Field 'language' is required when 'format' is true" otherwise, so with stt.language ""
+        # (auto-detect) the flag is dropped instead of failing every transcription.
+        flags = ((("format", True),) if language else ()) + (("diarize", False),)
+        data.update({flag: "true" for flag, default in flags if is_truthy_value(xai_config.get(flag, default))})
 
         def _post_transcription(bearer: str, endpoint_base_url: str):
             headers = {"Authorization": f"Bearer {bearer}", "User-Agent": hermes_xai_user_agent()}
@@ -436,10 +453,27 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
 
 def _extract_transcript_text(transcription: Any) -> str:
-    """Normalize text / object / dict transcription responses to a plain string."""
-    value = transcription if isinstance(transcription, str) else getattr(transcription, "text", None)
-    if not isinstance(value, str) and isinstance(transcription, dict):
-        value = transcription.get("text")
-    text = (value if isinstance(value, str) else str(transcription)).strip()
+    """Normalize text / object / dict transcription responses to a plain string.
+
+    A *structured* response (SDK object or JSON dict) whose ``text`` is missing or
+    non-string must never reach ``str(transcription)``: that renders the object repr
+    (``Transcription(text=None, logprobs=None, usage=None, error='...')``), which
+    every caller then logged and returned as a successful transcript, and the desktop
+    injected as the user's message (#78098). Such a response raises its provider
+    ``error`` instead, so the callers' existing failure paths report it; a structured
+    response carrying neither text nor error is an error in its own right.
+    Unrecognized scalars keep the legacy stringification."""
+    if isinstance(transcription, str):
+        text = transcription.strip()
+    else:
+        is_mapping = isinstance(transcription, dict)
+        value = transcription.get("text") if is_mapping else getattr(transcription, "text", None)
+        if isinstance(value, str):
+            text = value.strip()
+        elif is_mapping or hasattr(transcription, "text"):
+            error = transcription.get("error") if is_mapping else getattr(transcription, "error", None)
+            raise STTResponseError(str(error) if error else "Transcription response contained no text")
+        else:
+            text = str(transcription).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text

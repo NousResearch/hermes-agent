@@ -5,6 +5,7 @@ control-plane model discovery. OpenAI-format messages/tools are converted to Con
 and responses normalized back to OpenAI-shaped objects.
 """
 
+from pm import install_hint
 import base64
 import importlib
 import json
@@ -20,20 +21,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from agent.errors import EmptyStreamError
+
 logger = logging.getLogger(__name__)
-
-# boto3 is not in the [all] extras; lazy_deps installs it on demand.
-try:
-    # --------------------------------------------------------------------------- Ensure boto3/botocore are
-    # installed before any code in this module runs. Upstream removed boto3 from [all] extras (PRs #24220,
-    # #24515); lazy_deps handles on-demand installation so the Bedrock provider still works in the EKS
-    # deployment without baking boto3 into the base image.
-    # ---------------------------------------------------------------------------
-    from tools.lazy_deps import ensure
-    ensure("provider.bedrock", prompt=False)
-except Exception as exc:  # downstream imports surface the real error
-    logger.warning("boto3 lazy install did not complete: %s", exc)
-
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
@@ -82,11 +72,19 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
         )
     return kwargs
 
-# Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
-# Converse. Narrow allowlist so GPT-OSS models stay on the native path.
+# Geo/global cross-Region inference-profile prefixes Bedrock prepends to a model ID.
+_BEDROCK_PROFILE_PREFIXES: Tuple[str, ...] = ("global", "us", "eu", "apac", "ap", "au", "jp", "ca", "sa", "me", "af")
+# The GPT-5.6 Terra/Luna cards also document India geo profiles (``in.openai.gpt-5.6-terra``).
+_BEDROCK_OPENAI_PROFILE_PREFIXES: Tuple[str, ...] = _BEDROCK_PROFILE_PREFIXES + ("in",)
+
+# Bedrock-hosted OpenAI GPT models (bare in-Region IDs). The bare ID is served by the Bedrock Mantle
+# OpenAI-compatible endpoint; its geo/global profile form is served by bedrock-runtime, where these
+# cards list Converse as supported. Narrow allowlist so GPT-OSS models stay on the native path.
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
+    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
 )
+_BEDROCK_OPENAI_MODEL_IDS_LOWER = frozenset(m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
 # Bedrock-hosted xAI Grok (any regional inference-profile prefix) rejects temperature/topP in Converse
 # with a hard 400 ("This model doesn't support the temperature field"); reasoning-first, same
@@ -97,14 +95,22 @@ _MIN_BOTO3_VERSION = (1, 34, 59)
 
 def _require_boto3():
     """Import boto3; converse_stream() needs >= 1.34.59 (a system boto3 can shadow the venv pin)."""
+    install_error = None
     try:
+        # boto3 left [all] (PRs #24220, #24515); PM installs the [bedrock] extra on first use. This
+        # runs at the first client build, never at import: an import-time sync would rebuild the
+        # dependency environment of whatever process happens to import this module.
+        try:
+            from pm import ensure_import
+            ensure_import("bedrock")
+        except Exception as exc:  # the import below decides; exc explains a miss
+            logger.warning("boto3 lazy install did not complete: %s", exc)
+            install_error = exc
         import boto3
     except ImportError:
-        raise ImportError(
-            "The 'boto3' package is required for the AWS Bedrock provider. "
-            "Install it with: pip install boto3\n"
-            "Or install Hermes with Bedrock support: pip install -e '.[bedrock]'"
-        )
+        # A completed install that needs a restart must not be reported as "install it".
+        reason = f": {install_error}" if install_error else f". Run: {install_hint('bedrock')}"
+        raise ImportError(f"The 'boto3' package is required for the AWS Bedrock provider{reason}") from install_error
     try:
         version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
     except (AttributeError, ValueError):
@@ -112,7 +118,7 @@ def _require_boto3():
     if version < _MIN_BOTO3_VERSION:
         raise RuntimeError(
             f"boto3 {boto3.__version__} does not support converse_stream "
-            f"(minimum 1.34.59 required). Upgrade with: pip install --upgrade boto3"
+            f"(minimum 1.34.59 required). Run: hermes pm repair"
         )
     return boto3
 
@@ -151,6 +157,7 @@ def reset_client_cache():
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
     _inference_profile_model_cache.clear()
+    _DEFAULT_WINDOW_WARNED.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -164,9 +171,28 @@ def invalidate_runtime_client(region: str) -> bool:
 
 # --- Bedrock Mantle / OpenAI Responses support ---
 
+def parse_bedrock_openai_model_id(model_id: str) -> Optional[Tuple[str, str]]:
+    """``(bare_id, profile_prefix)`` for a Bedrock-hosted OpenAI model, else None. ``profile_prefix``
+    is ``""`` for the bare in-Region ID and e.g. ``"us"`` / ``"global"`` for a cross-Region profile."""
+    normalized = str(model_id or "").strip().lower()
+    prefix, sep, rest = normalized.partition(".")
+    if sep and prefix in _BEDROCK_OPENAI_PROFILE_PREFIXES and rest.startswith("openai."):
+        normalized = rest
+    else:
+        prefix = ""
+    return (normalized, prefix) if normalized in _BEDROCK_OPENAI_MODEL_IDS_LOWER else None
+
+
 def is_openai_bedrock_model(model_id: str) -> bool:
-    """True for Bedrock-hosted OpenAI models that require Mantle (GPT-OSS excluded)."""
-    return str(model_id or "").strip().lower() in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+    """True for Bedrock-hosted OpenAI GPT models in any endpoint form (GPT-OSS excluded)."""
+    return parse_bedrock_openai_model_id(model_id) is not None
+
+
+def bedrock_openai_uses_mantle(model_id: str) -> bool:
+    """True when the model is served by Mantle's OpenAI Responses endpoint: the bare in-Region ID.
+    A geo/global profile ID is a bedrock-runtime ID (Mantle rejects it) and rides Converse."""
+    parsed = parse_bedrock_openai_model_id(model_id)
+    return parsed is not None and not parsed[1]
 
 
 def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
@@ -627,7 +653,7 @@ def recover_from_redacted_reasoning_rejection(exc, kwargs):
 
 # One optional regional/global inference-profile prefix, then the Claude model family.
 _ANTHROPIC_BEDROCK_MODEL_RE = re.compile(
-    r"^(?:(?:global|us|eu|apac|ap|au|jp|ca|sa|me|af)\.)?anthropic\.claude", re.IGNORECASE,
+    rf"^(?:(?:{'|'.join(_BEDROCK_PROFILE_PREFIXES)})\.)?anthropic\.claude", re.IGNORECASE,
 )
 
 
@@ -925,7 +951,8 @@ def stream_converse_with_callbacks(
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
     has_tool_use = False
-    stop_reason = "end_turn"
+    stop_reason = None
+    interrupted = False
     usage_data: Dict[str, int] = {}
 
     def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
@@ -946,6 +973,7 @@ def stream_converse_with_callbacks(
             with suppress(Exception):
                 on_event()
         if on_interrupt_check and on_interrupt_check():
+            interrupted = True
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
@@ -992,8 +1020,10 @@ def stream_converse_with_callbacks(
         elif "metadata" in event:
             meta_usage = event["metadata"].get("usage", {})
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
+    if stop_reason is None and not interrupted:
+        raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()
-    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason, "")
+    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason or "end_turn", "")
 
 
 # --- High-level API: call Bedrock Converse ---
@@ -1168,10 +1198,12 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
     "xai.grok-4.6": 500_000,
     # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
-    # DEFAULT_CONTEXT_LENGTHS or context compresses early.
+    # DEFAULT_CONTEXT_LENGTHS or context compresses early — Opus 5 reached that table and not this
+    # one, so the offline path resolved 128K for a 1M model (#74263); the pairing is now tested.
     **dict.fromkeys((
-        "anthropic.claude-fable-5", "anthropic.claude-fable", "anthropic.claude-sonnet-5", "anthropic.claude-opus-4-8",
-        "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6", "anthropic.claude-sonnet-4-6",
+        "anthropic.claude-fable-5", "anthropic.claude-fable", "anthropic.claude-sonnet-5", "anthropic.claude-opus-5",
+        "anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7",
+        "anthropic.claude-opus-4-6", "anthropic.claude-sonnet-4-6",
     ), 1_000_000),
     **dict.fromkeys((
         "anthropic.claude-sonnet-4-5", "anthropic.claude-haiku-4-5", "anthropic.claude-opus-4", "anthropic.claude-sonnet-4",
@@ -1184,11 +1216,18 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     **dict.fromkeys((
         "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
-    # OpenAI on Bedrock (Mantle/Responses route): docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
-    **dict.fromkeys(BEDROCK_OPENAI_RESPONSES_MODEL_IDS, 272_000),
+    # OpenAI on Bedrock: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html. GPT-6.1 Sol's
+    # card states "1M tokens"; the other cards state 1,050,000. 272K is the long-context PRICING tier
+    # boundary on these cards, not the window. Each entry stays <= model_metadata.DEFAULT_CONTEXT_LENGTHS.
+    "openai.gpt-6.1-sol": 1_000_000,
+    **dict.fromkeys((
+        "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+    ), 1_050_000),
 }
 
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000  # unknown Bedrock models
+_DEFAULT_WINDOW_WARNED: set = set()  # one fallback WARNING per model id per process
 
 # Probe padding tiers (tokens): a wildly oversized payload yields an opaque InternalServerException
 # instead of a clean ValidationException.
@@ -1246,6 +1285,13 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
             profile_arn,
             f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
         )
+    elif model_id not in _DEFAULT_WINDOW_WARNED:
+        _DEFAULT_WINDOW_WARNED.add(model_id)
+        logger.warning(
+            "Bedrock model %s has no known context window; using the static %s-token fallback "
+            "(not a detected limit). Set model.context_length in config.yaml if the model's window is larger.",
+            model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+        )
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 
@@ -1278,114 +1324,3 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
         logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CONTEXT_OVERFLOW_PATTERNS = [
-    re.compile(r"ValidationException.*(?:input is too long|max input token|input token.*exceed)", re.IGNORECASE),
-    re.compile(r"ValidationException.*(?:exceeds? the (?:maximum|max) (?:number of )?(?:input )?tokens)", re.IGNORECASE),
-    re.compile(r"ModelStreamErrorException.*(?:Input is too long|too many input tokens)", re.IGNORECASE),
-]
-
-OVERLOAD_PATTERNS = [
-    re.compile(r"ModelNotReadyException", re.IGNORECASE),
-    re.compile(r"ModelTimeoutException", re.IGNORECASE),
-    re.compile(r"InternalServerException", re.IGNORECASE),
-]
-
-THROTTLE_PATTERNS = [
-    re.compile(r"ThrottlingException", re.IGNORECASE),
-    re.compile(r"Too many concurrent requests", re.IGNORECASE),
-    re.compile(r"ServiceQuotaExceededException", re.IGNORECASE),
-]
-
-def call_converse_stream(
-    region: str,
-    model: str,
-    messages: List[Dict],
-    tools: Optional[List[Dict]] = None,
-    max_tokens: Optional[int] = 4096,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-    stop_sequences: Optional[List[str]] = None,
-    guardrail_config: Optional[Dict] = None,
-) -> SimpleNamespace:
-    """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
-
-    Consumes the full stream and returns the assembled response. For true
-    streaming with delta callbacks, use ``iter_converse_stream()`` instead.
-    """
-    client = _get_bedrock_runtime_client(region)
-    kwargs = build_converse_kwargs(
-        model=model,
-        messages=messages,
-        tools=tools,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        stop_sequences=stop_sequences,
-        guardrail_config=guardrail_config,
-    )
-
-    try:
-        response = client.converse_stream(**kwargs)
-    except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
-        if retry_kwargs is not None:
-            return normalize_converse_stream_events(
-                client.converse_stream(**retry_kwargs)
-            )
-        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
-        if redacted_retry_kwargs is not None:
-            return normalize_converse_stream_events(
-                client.converse_stream(**redacted_retry_kwargs)
-            )
-        if is_streaming_access_denied_error(exc):
-            # IAM allows bedrock:InvokeModel but not
-            # InvokeModelWithResponseStream — permanent for this session.
-            # Fall back to the non-streaming converse() path.
-            logger.info(
-                "bedrock: converse_stream denied by IAM on (region=%s, model=%s) — "
-                "falling back to non-streaming converse().",
-                region, model,
-            )
-            return normalize_converse_response(client.converse(**kwargs))
-        if is_stale_connection_error(exc):
-            logger.warning(
-                "bedrock: stale-connection error on converse_stream(region=%s, "
-                "model=%s): %s — evicting cached client so the next call reconnects.",
-                region, model, type(exc).__name__,
-            )
-            invalidate_runtime_client(region)
-        raise
-    return normalize_converse_stream_events(response)
-
-def is_context_overflow_error(error_message: str) -> bool:
-    """Return True if the error indicates the input context was too large.
-
-    When this returns True, the agent should compress context and retry
-    rather than treating it as a fatal error.
-    """
-    return any(p.search(error_message) for p in CONTEXT_OVERFLOW_PATTERNS)
-
-def classify_bedrock_error(error_message: str) -> str:
-    """Classify a Bedrock error for retry/failover decisions.
-
-    Returns:
-      - ``"context_overflow"`` — input too long, compress and retry
-      - ``"rate_limit"`` — throttled, backoff and retry
-      - ``"overloaded"`` — model temporarily unavailable, retry with delay
-      - ``"unknown"`` — unclassified error
-    """
-    if is_context_overflow_error(error_message):
-        return "context_overflow"
-    if any(p.search(error_message) for p in THROTTLE_PATTERNS):
-        return "rate_limit"
-    if any(p.search(error_message) for p in OVERLOAD_PATTERNS):
-        return "overloaded"
-    return "unknown"
-# ---- END PLUGIN-COMPAT ----

@@ -20,7 +20,9 @@ from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageType
+from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
 
 class NoNetwork(BaseRequest):
@@ -84,7 +86,7 @@ def update(bot, uid=10, kind="text", *, edited=False, chat=42, text="hello", gro
 
 
 @asynccontextmanager
-async def connected(monkeypatch, *, extra=None, bot_id=111):
+async def connected(monkeypatch, *, extra=None, bot_id=111, is_reconnect=False):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token=f"{bot_id}:offline-test", extra=extra or {}))
     # Only transport/lifecycle services and the final model-work boundary are replaced.
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88")
@@ -102,7 +104,7 @@ async def connected(monkeypatch, *, extra=None, bot_id=111):
         return True
 
     monkeypatch.setattr(adapter, "_start_session_processing", start)
-    assert await adapter.connect()
+    assert await adapter.connect(is_reconnect=is_reconnect)
     try:
         yield adapter, adapter._app, delivered
     finally:
@@ -192,13 +194,14 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             await app.process_update(update(app.bot, **args))
             assert len(delivered) == 2
         if mode == "owners":
-            for profile, bot_id in (("alpha", 222), ("beta", 333), ("alpha", 222)):
+            for profile, bot_id, fresh in (("alpha", 222, 1), ("beta", 333, 1), ("alpha", 222, 0)):
                 token = set_hermes_home_override(tmp_path / profile)
                 try:
                     async with connected(monkeypatch, bot_id=bot_id) as (other, other_app, other_delivered):
                         await other_app.process_update(update(other_app.bot))
                         await asyncio.gather(*other._pending_text_batch_tasks.values())
-                        assert len(other_delivered) == 1
+                        # A rebuilt adapter for the same bot and home reads that home's receipt.
+                        assert len(other_delivered) == fresh
                 finally:
                     reset_hermes_home_override(token)
             await app.process_update(update(app.bot))
@@ -507,7 +510,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
                 await app.process_update(update(app.bot))
             assert not adapter._seen_update_ids and not adapter._inflight_update_ids
             assert adapter._updates_dispatched_total == 2
-            for _ in range(3):
+            for _ in range(tg_adapter._INGRESS_DISPATCH_STALL_HEARTBEATS):
                 adapter._check_ingress_dispatch_stall()
             assert not any("healthy but deaf" in record.message for record in caplog.records)
             return
@@ -739,3 +742,147 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
         assert len(delivered) == 1
         assert delivered[0].text == ("/status" if stage == "dispatch" else "hello")
         assert adapter._platform_event_handler.await_count == (1 if stage in ("prepare", "pressure", "batch_prepare") else 0)
+
+
+@pytest.mark.asyncio
+async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
+    """The reconnect watcher and a gateway restart both build a new adapter, and a new PTB
+    Updater polls from offset 0: Telegram resends every update whose acknowledgement never
+    landed. The receipt must outlive the adapter that completed the update."""
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
+
+    receipts = get_hermes_home() / "telegram_update_receipts_111.json"
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        with monkeypatch.context() as broken:
+            broken.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+            await app.process_update(update(app.bot, 20, text="unaccepted"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [event.text for event in delivered] == ["hello"]
+    # disconnect() waits for the receipt write; the failed preparation is not a receipt.
+    assert set(json.loads(receipts.read_text())["update_ids"]) == {"10"}
+
+    # A fresh adapter, connected the way the gateway reconnect watcher does it.
+    async with connected(monkeypatch, is_reconnect=True) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await app.process_update(update(app.bot, 20, text="unaccepted"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        await app.process_update(update(app.bot, 21, edited=True, text="changed"))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        # Old update dropped; the retry of an unaccepted one and an edit of message 472 still run.
+        assert [event.text for event in delivered] == ["unaccepted", "changed"]
+        assert adapter._updates_dispatched_total == 3
+
+    # Receipts are bot-scoped, and older than Telegram's 24h retention they cannot match.
+    async with connected(monkeypatch, bot_id=222) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1
+    stale = time.time() - RECEIPT_TTL_SECONDS - 1
+    receipts.write_text(json.dumps({"update_ids": {"10": stale, "20": "bad", "x": time.time()}}))
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 10))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1
+    assert set(json.loads(receipts.read_text())["update_ids"]) == {"10"}
+
+    receipts.write_text("{not json")
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await app.process_update(update(app.bot, 30))
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert len(delivered) == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_builds_concurrent_update_processor(monkeypatch):
+    """The PTB Application must not run with the library default max_concurrent_updates=1:
+    the update fetcher then awaits each update's full handler chain inline, so one slow
+    update deafens every other chat (and local commands) until it finishes. The adapter
+    must enable a bounded concurrent processor, overridable via config extra (#125098)."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        assert isinstance(app.update_processor, PerChatUpdateProcessor)
+        assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
+
+    async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (adapter, app, delivered):
+        assert app.concurrent_updates == 7
+
+    for bad in ("lots", float("inf")):  # .inf in YAML: int() raises OverflowError
+        async with connected(monkeypatch, extra={"max_concurrent_updates": bad}) as (adapter, app, delivered):
+            assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
+
+    # Cancelling a waiting same-chat update must neither fail its running predecessor nor
+    # let the next update of that chat overtake it.
+    processor, order, gate = app.update_processor, [], asyncio.Event()
+
+    async def handler(name):
+        order.append(f"start {name}")
+        if name == "A":
+            await gate.wait()
+        order.append(f"end {name}")
+
+    chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
+    tasks = []
+    for name in "ABC":
+        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        await asyncio.sleep(0.01)
+    tasks[1].cancel()
+    await asyncio.sleep(0.01)
+    gate.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert results[0] is None and results[2] is None
+    assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
+
+
+@pytest.mark.asyncio
+async def test_slow_update_does_not_block_other_chats(monkeypatch):
+    """End-to-end through the real PTB fetcher path (update_queue → __update_fetcher):
+    while one chat's update is parked inside its handler chain, a different chat's
+    update must still be dequeued, dispatched and delivered (#125098). Under the PTB
+    default (max_concurrent_updates=1) the fetcher awaits each update inline, so the
+    second update is never dequeued while the first is parked. A later update of the
+    PARKED chat must wait for it: plain concurrency would deliver it first."""
+    gate = asyncio.Event()
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        async def gate_keeper(update, context):
+            if update.update_id == 10:
+                await gate.wait()
+
+        # Group -1 runs before every core handler group inside PTB's real dispatch.
+        app.add_handler(TypeHandler(Update, gate_keeper), group=-1)
+
+        app.update_queue.put_nowait(update(app.bot, uid=10, chat=42))
+        for _ in range(200):  # event-based: u10 has been dequeued and parked in the gate
+            if adapter._inflight_update_ids:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter._inflight_update_ids, "update 10 never started processing"
+
+        app.update_queue.put_nowait(update(app.bot, uid=11, chat=43))
+        app.update_queue.put_nowait(update(app.bot, uid=12, chat=42, text="second"))
+        dequeued = False
+        for _ in range(500):
+            if app.update_queue.qsize() == 0:
+                dequeued = True
+                break
+            await asyncio.sleep(0.01)
+        # THE regression discriminator: the fetcher must pull update 11 while update 10
+        # is still parked. Serial processing leaves it sitting in the queue.
+        assert dequeued, "fetcher never dequeued update 11 while update 10 was parked"
+
+        for _ in range(500):  # u11 flows through batching to the session handler
+            if delivered:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [e.source.chat_id for e in delivered] == ["43"]
+        gate.set()
+        for _ in range(500):  # released u10 finishes its chain, then u12 follows it
+            if any("second" in e.text for e in delivered):
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [e.source.chat_id for e in delivered][0] == "43"
+        same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
+        assert same_chat == "hello\nsecond"

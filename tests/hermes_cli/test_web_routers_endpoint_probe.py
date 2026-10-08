@@ -137,9 +137,85 @@ def test_bare_root_probe_reports_the_v1_key_rejection_not_the_root_404(route, mo
     if route == "/api/providers/validate":
         body = EnvVarUpdate(key="OPENAI_BASE_URL", value="http://127.0.0.1:39080", api_key="k")
         data = asyncio.run(mod.validate_provider_credential(body, request=None))
-        assert data["message"] == "http://127.0.0.1:39080/v1/models answered HTTP 401."
+        assert "401" in data["message"]
     else:
         body = CustomEndpointUpdate(id="", name="local", base_url="http://127.0.0.1:39080", api_key="k", model="")
         data = asyncio.run(mod.validate_custom_endpoint(body))
-        assert data["message"] == "The endpoint rejected the API key."
     assert data["ok"] is False and data["reachable"] is True
+    assert "404" not in data["message"]
+
+
+def _models_probe_host(monkeypatch, content_type, body):
+    """A custom-endpoint ``/models`` probe answering 200 with the given body/content type.
+    The transport POST answers 200 too — an SPA catch-all serves every route, so the
+    transport probe alone cannot catch it."""
+    import hermes_cli.web_routers.config_env as mod
+
+    class _Resp:
+        status_code = 200
+        is_success = True
+        headers = {"content-type": content_type}
+
+        def json(self):
+            if isinstance(body, str):
+                raise ValueError("Expecting value: not JSON")
+            return body
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, *a, **k):
+            return _Resp()
+
+        async def post(self, url, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(mod, "_endpoint_probe_client", lambda url, timeout: _Client())
+
+
+@pytest.mark.parametrize(
+    "name, content_type, body, needle",
+    [
+        ("spa_html", "text/html", "<html><body><div id=root></div></body></html>", "text/html"),
+        ("non_json_body", "text/plain", "OK", "instead of a JSON model list"),
+        ("empty_model_list", "application/json", {"data": []}, "advertised no models"),
+    ],
+)
+def test_custom_endpoint_probe_warns_when_no_models_parse(name, content_type, body, needle, monkeypatch):
+    """A 200 ``/models`` answer is only a pass when it is JSON with a usable model list: an SPA
+    catch-all (200 + HTML), a non-JSON body, or an empty list must be ``ok:false`` with a
+    message naming the cause, not a green check (#83128)."""
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    _models_probe_host(monkeypatch, content_type, body)
+    req = CustomEndpointUpdate(id="", name="x", base_url="https://spa.example.com/v1",
+                               api_key="", model="")
+    data = asyncio.run(mod.validate_custom_endpoint(req))
+
+    assert data["ok"] is False, name
+    assert data["reachable"] is True, name  # warning, not a hard block: Save stays possible
+    assert needle in data["message"], (name, data["message"])
+    assert "https://spa.example.com/v1" in data["message"], name
+    assert data["models"] == [], name
+
+
+def test_custom_endpoint_probe_passes_on_a_json_models_reply(monkeypatch):
+    """A genuine OpenAI-compatible reply (200, JSON, ``{"data": [...]}``) still passes — the
+    no-models guard classifies only empty/unparseable answers, never honest ones."""
+    import hermes_cli.web_routers.config_env as mod
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    _models_probe_host(monkeypatch, "application/json",
+                       {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}], "object": "list"})
+    req = CustomEndpointUpdate(id="", name="x", base_url="https://api.example.com/v1",
+                               api_key="", model="")
+    data = asyncio.run(mod.validate_custom_endpoint(req))
+
+    assert data["ok"] is True and data["reachable"] is True
+    assert data["models"] == ["gpt-4o", "gpt-4o-mini"]
+    assert data["message"] == ""

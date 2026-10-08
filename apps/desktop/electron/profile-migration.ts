@@ -209,10 +209,14 @@ export function decideMigration(
   return { profile: best, _migrated: true }
 }
 
+// hermes_cli/profiles.py::SETUP_PROFILE_MARKER: the backend-made first-run setup profile. Its state.db is the
+// freshest on the machine right after setup, so the recency heuristic would boot every later launch into it.
+const SETUP_PROFILE_MARKER = '.setup-profile.json'
+
 /**
- * List named profile directory names under `profilesRoot`. A directory named
- * `default` is accepted if present (unusual) but production default is not a
- * child of this folder — see `withDefaultCandidate`.
+ * List named profile directory names under `profilesRoot`, minus the setup profile, which is never a startup
+ * profile. A directory named `default` is accepted if present (unusual) but production default is not a child
+ * of this folder — see `withDefaultCandidate`.
  */
 export function listProfileDirs(deps: MigrationDeps): string[] {
   let entries: Dirent[]
@@ -225,6 +229,7 @@ export function listProfileDirs(deps: MigrationDeps): string[] {
 
   return entries
     .filter(e => e.isDirectory() && (e.name === 'default' || deps.isValidProfileName(e.name)))
+    .filter(e => !deps.existsSync(`${deps.profilesRoot}/${e.name}/${SETUP_PROFILE_MARKER}`))
     .map(e => e.name)
 }
 
@@ -270,11 +275,11 @@ export function readExistingPreference(
  * `--profile` instead of pinning `default`.
  */
 export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
-  const existing = deps.existsSync(desktopProfileConfigPath)
-    ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync)
-    : null
+  const exists: boolean = deps.existsSync(desktopProfileConfigPath)
 
-  if (existing && !existing.migrated) {
+  const existing = exists ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync) : null
+
+  if (exists && (!existing || !existing.migrated)) {
     return false
   }
 

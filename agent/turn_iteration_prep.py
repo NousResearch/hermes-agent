@@ -2,7 +2,7 @@
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
 standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
+argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -14,13 +14,29 @@ import random
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
+from agent.turn_truncation import boosted_output_cap
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
+    """True when ``messages[idx]`` is this turn's user row (verbatim, or its user-originated view)."""
+    if not isinstance(idx, int) or not 0 <= idx < len(messages):
+        return False
+    msg = messages[idx]
+    if not (isinstance(msg, dict) and msg.get("role") == "user"):
+        return False
+    if msg.get("content") == user_message:
+        return True
+    from agent.context_compressor import user_originated_turn_view
+
+    view = user_originated_turn_view(msg)
+    return view is not None and view.get("content") == user_message
 
 ITERATION_BUDGET_WARNING_TEMPLATE = (
     "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
@@ -94,15 +110,44 @@ class IterationPrep:
     current_turn_user_idx: Any
 
 
+# Retire hidden interrupt placeholders whose text the model echoes on replay
+# (#81841 for the scaffold, #132949 for the placeholder). A hidden row still
+# reaches the provider as assistant content; a natural-language phrase in that
+# position is reproduced verbatim. The row is never dropped: removal can form
+# ``tool -> user`` (#48879) or ``user -> user``, which repair then merges —
+# losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
+def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    """(new list, neutralised); never mutates ``seq`` or its row dicts."""
+    from agent.agent_runtime_helpers_placeholders import (
+        _INTERRUPTED_PLACEHOLDER,
+        _LEGACY_INTERRUPTED_PLACEHOLDER,
+    )
+    from agent.conversation_loop import _INTERRUPT_SCAFFOLD_MARKER
+    # Retire only spellings that predate the #132949 wording change: the scaffold
+    # (#81841) and the old placeholder, both reproduced verbatim. The current
+    # placeholder is the post-fix value — it stays (this is also what
+    # neutralisation rewrites to, so the rewrite does not retrigger the filter).
+    hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
+    neutralised = 0
+    out: List[Dict[str, Any]] = []
+    for m in seq:
+        if (
+            m.get("display_kind") == "hidden" and m.get("role") == "assistant"
+            and any(isinstance(m.get(k), str) and m[k].strip() in hazards for k in ("content", "api_content"))
+        ):
+            m = {**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER}
+            neutralised += 1
+        out.append(m)
+    return (out if neutralised else seq), neutralised
+
+
 def prepare_iteration(
     agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
 ) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
-    filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
-    from agent.conversation_loop import (
-        _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
-    )
+    filter neutralises copies of hidden interrupt placeholders, and repair runs BEFORE the request build."""
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
 
     # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
     # before this iteration's request is built and with nothing in flight.
@@ -125,10 +170,7 @@ def prepare_iteration(
     # key before the one in hand expires (local JWT exp read; no network unless inside the skew)
     # instead of letting this iteration's request 401. With many agents sharing the hour that
     # 401 was a storm, and the pool benched the sole credential for all of them.
-    try:
-        agent._adopt_nous_key_before_expiry()
-    except Exception:
-        logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+    agent._adopt_nous_key_before_expiry()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that
@@ -167,19 +209,12 @@ def prepare_iteration(
             agent.session_id or "-",
         )
 
-    # Drop legacy hidden assistant placeholders carrying the raw interrupt scaffold
-    # before repair: replayed, the model echoes/self-replicates.
-    def _is_scaffold_ghost(msg: Dict[str, Any]) -> bool:
-        return (
-            msg.get("display_kind") == "hidden"
-            and msg.get("role") == "assistant"
-            and any(
-                isinstance(msg.get(k), str) and msg[k].strip() == _INTERRUPT_SCAFFOLD_MARKER
-                for k in ("content", "api_content")
-            )
+    messages, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
+    if _echo_neutralised:
+        request_logger.info(
+            "Neutralised %d interrupt-placeholder row(s) before request (session=%s)",
+            _echo_neutralised, agent.session_id or "-",
         )
-
-    messages = [msg for msg in messages if not _is_scaffold_ghost(msg)]
 
     # Repair malformed role alternation (tool→user / user→user tails): providers
     # return empty content on them and the empty-retry loop spins. The _with_cursor
@@ -205,6 +240,18 @@ def prepare_iteration(
                     current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
                 )
                 current_turn_user_idx = _reanchored_idx
+    # Mid-turn compaction (post-tool gate, overflow restart, recovery) rebuilds ``messages`` without
+    # handing back a new index. A stale index splits the request's replay prefix inside this turn's
+    # tool rows: prefix canonicalization then drops the assistant tool_call whose result fell past the
+    # split, the orphaned result is sanitized away, and the model silently loses tool output that
+    # state.db still holds. A valid index always lands on this turn's user row; re-anchor otherwise.
+    if user_message is not None and not _anchors_current_turn(messages, current_turn_user_idx, user_message):
+        _reanchored_idx = _reanchor(agent, messages, user_message)
+        request_logger.info(
+            "Re-anchored stale current_turn_user_idx %s -> %s (session=%s)",
+            current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+        )
+        current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -400,7 +447,7 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
@@ -443,10 +490,7 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _issuer = interrupt_issuer(agent)
-        _turn_exit_reason = (
-            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
-        )
+        _turn_exit_reason = interrupted_during_api_call_reason(agent)
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
@@ -502,15 +546,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
-        # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
-        # _ephemeral_max_output_tokens. Keep a larger original provider/model
-        # default as the floor so retries never downshift.
-        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
-        _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-        if _requested_cap is not None:
-            _boost = max(_boost, _requested_cap)
-        _boost_cap = max(32768, _requested_cap or 0)
-        agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
+        # Boost the output budget per retry (shared ladder, see boosted_output_cap).
+        agent._ephemeral_max_output_tokens = boosted_output_cap(
+            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+        )
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.
@@ -519,4 +558,9 @@ def apply_retry_restarts(
         agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
+    # A response arrived, so the turn is not stuck re-issuing a cancelled request: start
+    # the refunding-restart bound over (restart_count = restarts since the last response).
+    # Counting every mid-turn correction for the whole turn ended healthy interactive
+    # turns on the (max_retries + 1)th message (#128000).
+    restart_count = 0
     return _verdict("fallthrough")

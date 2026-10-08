@@ -14,7 +14,8 @@ def proj(tmp_path, monkeypatch):
     d.mkdir()
     (d / "mod.py").write_text(
         "def setup():\n    init_db()\n    return True\n\n"
-        "def teardown():\n    close_db()\n"
+        "def teardown():\n    close_db()\n",
+        newline="\n",
     )
     return d
 
@@ -40,7 +41,7 @@ class TestAutoMultiline:
 
     def test_escaped_backslash_n_stays_literal(self, proj):
         # \\n = literal backslash+n search, not a newline: no multiline mode.
-        (proj / "strings.py").write_text('SEP = "a\\\\nb"\n')
+        (proj / "strings.py").write_text('SEP = "a\\\\nb"\n', newline="\n")
         r = json.loads(search_tool(r"a\\nb", path=str(proj), task_id="t-ml"))
         assert "error" not in r
         assert "multiline" not in (r.get("warning") or "")

@@ -7,8 +7,9 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hermes_constants import hermes_home_key
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.gateway.config import operation_session_key
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
@@ -93,7 +94,9 @@ def _catalog_entry(name: str):
 
     entry = get_entry(name)
     if entry is None:
-        raise ValueError(f"no catalog entry '{name}'")
+        missing = ValueError(f"no catalog entry '{name}'")
+        missing.failure_class = "config_invalid"  # type: ignore[attr-defined]
+        raise missing
     return entry
 
 
@@ -123,19 +126,39 @@ class _CatalogBackend:
     def start_install_oauth(self, name: str, env: Dict[str, str]) -> Any:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
-        from hermes_cli.mcp_catalog import card_install_config
+        from hermes_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
         from tools.connectors import mcp_oauth
 
-        entry = _catalog_entry(name)
-        _check_declared(name, entry, env)
-        return mcp_oauth.start(name, cfg=card_install_config(entry), env=env,
-                               on_commit=lambda: _save_env(env))
+        fresh = not is_installed(name)
+
+        def commit() -> None:
+            _save_env(env)
+            if fresh:
+                record_mcp_install("catalog", name, "success")
+
+        try:
+            entry = _catalog_entry(name)
+            _check_declared(name, entry, env)
+            return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit)
+        except Exception as exc:
+            # An abandoned browser authorization is a cancel, not a failed install: only a flow
+            # that cannot start is counted here.
+            if fresh:
+                record_mcp_install("catalog", name, "failed", error=exc)
+            raise
 
     def install(self, name: str, env: Dict[str, str]) -> List[str]:
         """Probe the entry's in-memory configuration with ephemeral credentials; save both only
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
-        previous configuration."""
-        from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+        previous configuration. A first install is recorded once as an extension install."""
+        from hermes_cli.mcp_catalog import recorded_catalog_install
+
+        with recorded_catalog_install(name):
+            return self._install(name, env)
+
+    def _install(self, name: str, env: Dict[str, str]) -> List[str]:
+        from agent.secret_scope import (
+            current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
         from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
@@ -148,13 +171,19 @@ class _CatalogBackend:
         for key, value in env.items():
             if key not in secret_names and value:
                 cfg = _inline_non_secret_value(cfg, key, value)
-        token = set_secret_scope({**dict(current_secret_scope() or {}), **env})
+        # The merged scope keeps the bound scope's home stamp: dropping it would
+        # reopen the env fallthrough under a routed profile with multiplex off.
+        token = set_secret_scope(
+            {**dict(current_secret_scope() or {}), **env},
+            profile_home=current_secret_scope_home())
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
         finally:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
-            raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected = RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
+            raise rejected
         _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
@@ -182,7 +211,9 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
     declared = {spec.name for spec in (entry.auth.env or [])}
     for key in env:
         if key not in declared:
-            raise ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared = ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared.failure_class = "config_invalid"  # type: ignore[attr-defined]
+            raise undeclared
         validate_env_var_name_for_write(key)
 
 
@@ -314,12 +345,22 @@ class _Runner:
 
                 cancel_attempt(work.attempt.flow)
             else:
-                _LATE_ATTEMPTS.setdefault(operation.session_key, {})[name] = work.attempt
+                _LATE_ATTEMPTS.setdefault(_late_key(operation), {})[name] = work.attempt
         self.work.clear()
 
 
-# session key -> {server: attempt} for OAuth attempts that outlived their card.
-_LATE_ATTEMPTS: Dict[str, Dict[str, Any]] = {}
+def _late_key(operation: ConnectionOperation) -> Tuple[str, str]:
+    """The ``(profile, session)`` pairing ``live.open`` keys an operation by. ``profile_key``
+    is stamped there; the detached no-card path never opens, so fall back to the calling
+    thread's home — ``close`` runs on the tool thread under the turn's profile scope."""
+    return (operation.profile_key or hermes_home_key(), operation.session_key)
+
+
+# (profile key, session key) -> {server: attempt} for OAuth attempts that outlived their card.
+# The profile is part of the key for the same reason live.py keys _open by it: two multiplexed
+# profiles can carry the same session key, and an attempt must only ever be adopted by the
+# profile whose card authorized it.
+_LATE_ATTEMPTS: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 
 def adopt_late_connections(agent: Any) -> List[str]:
@@ -327,7 +368,8 @@ def adopt_late_connections(agent: Any) -> List[str]:
     them to the agent's toolset selection. Runs between turns, so the result that said "not
     connected" is followed by a turn in which the tools are there."""
     session_key = operation_session_key(getattr(agent, "session_id", None))
-    attempts = _LATE_ATTEMPTS.get(session_key)
+    key = (hermes_home_key(), session_key)
+    attempts = _LATE_ATTEMPTS.get(key)
     if not attempts:
         return []
     adopted: List[str] = []
@@ -349,7 +391,7 @@ def adopt_late_connections(agent: Any) -> List[str]:
         except Exception:
             logger.debug("late MCP connection %s was not adopted", name, exc_info=True)
     if not attempts:
-        _LATE_ATTEMPTS.pop(session_key, None)
+        _LATE_ATTEMPTS.pop(key, None)
     enabled = getattr(agent, "enabled_toolsets", None)
     if adopted and enabled is not None and "no_mcp" not in enabled:
         agent.enabled_toolsets = [*enabled, *(n for n in adopted if n not in enabled)]

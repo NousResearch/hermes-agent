@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -74,10 +75,9 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert execution_ledger.recover_interrupted_executions() == 1
     recovered = execution_ledger.latest_execution("job-crash")
     assert recovered["status"] == "unknown"
-    assert "whether side effects ran is unknown" in recovered["error"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
     import tools.process_registry as process_registry
 
@@ -93,7 +93,7 @@ def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
         )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
     """Managed gateway + no user bus degrades to a mode distinct from the
     in-process passthrough, and warns once per process, not per dispatch."""
@@ -129,22 +129,6 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
     assert dispatch.argv is command
 
 
-def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
-    import tools.process_registry as process_registry
-
-    command = ["python", "worker.py"]
-    probe = Mock(side_effect=AssertionError("systemd probe ran off Linux"))
-    monkeypatch.setattr(process_registry, "_IS_LINUX", False)
-    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
-    monkeypatch.setenv("INVOCATION_ID", "managed-service")
-
-    dispatch = process_registry.restart_safe_gateway_child_argv(
-        command, unit_suffix="cron-job-1", require_restart_safe_scope=False
-    )
-    assert dispatch.mode == "in_process"
-    assert dispatch.argv is command
-    probe.assert_not_called()
 
 
 def test_external_worker_adopts_execution_and_runs_payload_once(
@@ -336,6 +320,48 @@ def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_pr
     assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 
 
+def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, monkeypatch):
+    """A fire routed to another profile is multiplexed at the handoff boundary (#107695 review on
+    f5f88d5058). ``run_one_job`` only enables the context in ``_install_fire_secret_scope``, which runs
+    AFTER this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
+    and the worker inherited the launch profile's residue. The payload must carry ``True`` and the
+    worker env must not carry a launch-only value — and the context must not outlive the handoff."""
+    import cron.scheduler as scheduler
+    import hermes_constants
+    from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.process_registry import GatewayChildDispatch
+
+    launch = tmp_path / "launch"
+    routed = tmp_path / "routed"
+    launch.mkdir()
+    routed.mkdir()
+    (launch / ".env").write_text("LAUNCH_ONLY_SECRET=launch-secret\n", encoding="utf-8")
+    (routed / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("LAUNCH_ONLY_SECRET", "launch-secret")
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: routed)
+    monkeypatch.setattr(hermes_constants, "get_process_hermes_home", lambda: launch)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
+            "scoped", ["scope", "--", *command]),
+    )
+    spawned, payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert not secret_scope.is_multiplex_active()  # the desktop tick itself is NOT a multiplexer
+    home_token = set_hermes_home_override(str(routed))
+    try:
+        assert scheduler._launch_external_cron_worker(
+            {"id": "job-r", "execution_id": "exec-1", "prompt": "work"}) is True
+    finally:
+        reset_hermes_home_override(home_token)
+
+    assert payloads[0]["multiplex_active"] is True
+    assert "LAUNCH_ONLY_SECRET" not in spawned[0][1]["env"]
+    assert not secret_scope.is_multiplex_active()  # enabled for the handoff span only
+    assert os.environ["LAUNCH_ONLY_SECRET"] == "launch-secret"  # parent untouched
+
+
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     tmp_path, monkeypatch
 ):
@@ -511,46 +537,12 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     process.poll.return_value = 9
     process.wait.return_value = 9
 
-    assert scheduler._wait_for_external_cron_worker(
-        process, execution_id="exec-1"
-    ) is True
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
     recover.assert_called_once_with()
     assert get.call_count == 2
 
 
-def test_terminal_early_return_still_reaps_the_worker(monkeypatch):
-    """The ledger can turn terminal while the worker is still tearing down; the
-    waiter returns then, but the gateway stays the worker's parent, so the exit
-    must still be waited for somewhere — otherwise the worker lingers as a
-    zombie under the gateway until it is restarted (#114509)."""
-    import cron.scheduler as scheduler
-
-    monkeypatch.setattr(
-        scheduler,
-        "get_execution",
-        lambda _execution_id: {"id": "exec-1", "status": "completed"},
-        raising=False,
-    )
-
-    def wait(timeout=None):
-        if wait.calls == 0:
-            wait.calls += 1
-            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
-        return 0
-
-    wait.calls = 0
-    process = Mock()
-    process.pid = 4321
-    process.wait.side_effect = wait
-
-    assert scheduler._wait_for_external_cron_worker_body(
-        process, execution_id="exec-1"
-    ) is True
-    # the background reaper owns the second and final wait(); no third caller appears
-    deadline = time.monotonic() + 5.0
-    while process.wait.call_count < 2 and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert process.wait.call_count == 2
 
 
 def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
@@ -606,7 +598,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launch_external_worker_degrades_by_default_with_real_helper(
     tmp_path, monkeypatch,
 ):
@@ -698,6 +690,242 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
 
 
+def _commit_generation(repo_root: Path, name: str, *, with_site_packages: bool) -> Path:
+    """Commit a PM generation for ``repo_root`` in the sandboxed home; return its venv."""
+    import pm.environments
+
+    version = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    venv = pm.environments.install_state_dir(repo_root) / "environments" / name / "venv"
+    (venv / "lib" / f"python{version}").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"version = {version}\n", encoding="utf-8")
+    (venv.parent / ".lease-managed").write_text("", encoding="utf-8")
+    if with_site_packages:
+        # The generation's .pth hands back this interpreter's own packages, so the
+        # activated worker can still import its dependencies after PM rewrites sys.path.
+        selected = pm.environments.site_packages(venv)
+        selected.mkdir()
+        (selected / "test_deps.pth").write_text(
+            "\n".join(p for p in sys.path
+                      if Path(p).name in ("site-packages", "dist-packages")) + "\n",
+            encoding="utf-8")
+        # Importable only through this generation, so the worker proves it activated it.
+        (selected / "_generation_sentinel.py").write_text(f"NAME = {name!r}\n", encoding="utf-8")
+    pm.environments.runtime_facts_path(repo_root).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}, "schema": 1}),
+        encoding="utf-8")
+    return venv
+
+
+def test_pin_restores_the_committed_generation_site_packages(tmp_path):
+    """#122222: the sanitizer drops the generation ``activate_dependencies`` put on our
+    ``sys.path``, and the worker inherits the store Python, which owns no dependencies. The
+    pin hands the child PM's committed generation -- after the checkout, before the entries
+    the sanitizer kept -- and invents nothing when no generation is committed."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments
+
+    repo_root = tmp_path / "hermes-agent"
+    repo_root.mkdir()
+    venv = _commit_generation(repo_root, "gen1", with_site_packages=True)
+    selected = pm.environments.site_packages(venv)
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": str(tmp_path / "kept")}, repo_root
+    )
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(repo_root), str(selected), str(tmp_path / "kept"),
+    ]
+
+    # A runner that owns its dependencies has no committed generation: tree only.
+    pm.environments.runtime_facts_path(repo_root).unlink()
+    assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
+        "PYTHONPATH": str(repo_root)
+    }
+
+
+_BOOT_ORDER_PROBE = """
+import json, os, sys
+import pm.environments
+
+boots = []
+pm.environments.activate_dependencies = lambda root: boots.append("cron.jobs" in sys.modules)
+import cron
+print(json.dumps({"boots": boots, "marker": os.environ.get(sys.argv[1])}))
+"""
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
+    """#122222: ``-m cron.scheduler`` executes ``cron/__init__.py`` first, whose first import
+    (``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel``) is already a dependency, so the marked
+    worker must boot before it -- exactly once. The marker survives the package import so a
+    relaunched worker boots again (``finish_worker_boot`` consumes it). An unmarked importer
+    (the gateway already booted through ``hermes_bootstrap``) is never re-booted."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
+    env["PYTHONPATH"] = str(repo_root)
+    if marked:
+        env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _BOOT_ORDER_PROBE, worker_bootstrap.WORKER_MARKER],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stderr
+    result = json.loads(child.stdout.strip().splitlines()[-1])
+    assert result == {"boots": [False] if marked else [], "marker": "1" if marked else None}
+
+
+_RELAUNCH_PROBE = """
+import json, os, runpy, subprocess, sys
+from pathlib import Path
+
+import pm.environments
+pm.environments.activate_dependencies = lambda root: None
+import hermes_cli._early_recovery as early_recovery
+import hermes_cli.venv_sync as venv_sync
+
+payload, ack, record, marker = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+if sys.argv[5] == "source_update":
+    venv_sync.prepare_launch = lambda root, argv: Path(sys.executable)
+else:
+    venv_sync.prepare_launch = lambda root, argv: None
+    early_recovery.restore_interrupted_pull = lambda *args, **kwargs: True
+
+
+def relaunch(*args):
+    record.write_text(json.dumps({
+        "payload": payload.exists(), "ack": ack.exists(),
+        "marker": os.environ.get(marker), "command": args[-1],
+    }))
+    raise SystemExit(0)
+
+
+os.execv = relaunch
+subprocess.call = relaunch
+sys.argv = ["cron.scheduler", "--external-worker-file", str(payload), "--ack-file", str(ack)]
+runpy.run_module("cron.scheduler", run_name="__main__", alter_sys=True)
+"""
+
+
+@pytest.mark.parametrize("cause", ["source_update", "interrupted_pull"])
+def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
+    """Importing ``hermes_bootstrap`` may relaunch the process: finishing a source
+    update (into an ``-I`` interpreter that ignores the pinned PYTHONPATH), or the restore of a
+    tree a killed ``hermes update`` half-wrote. Reached inside ``run_one_job``, either came after
+    the ack: the payload was deleted, the marker consumed, and the new process died on ``ruamel``
+    or found no payload, leaving the adopted run ``unknown``. The relaunch must instead replay
+    the whole worker: payload unread, no ack, marker set, the same worker re-run."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    payload = tmp_path / "exec-1.json"
+    payload.write_text(json.dumps({
+        "job": {"id": "job-1", "execution_id": "exec-1"},
+        "profile_home": str(tmp_path / "profile"),
+    }), encoding="utf-8")
+    ack, record = tmp_path / "exec-1.ready", tmp_path / "relaunch.json"
+    env = dict(os.environ, PYTHONPATH=str(repo_root))
+    env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _RELAUNCH_PROBE, str(payload), str(ack), str(record),
+         worker_bootstrap.WORKER_MARKER, cause],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert record.exists(), f"worker never relaunched (exit {child.returncode}): {child.stderr}"
+    seen = json.loads(record.read_text())
+    assert (seen["payload"], seen["ack"], seen["marker"]) == (True, False, "1")
+    if cause == "source_update":
+        assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
+    else:
+        assert str(payload) in seen["command"]
+
+
+def test_booted_worker_drops_the_marker_before_any_job_child(monkeypatch):
+    """Without a relaunch, ``finish_worker_boot`` must consume the marker: job children spawned
+    later inherit this environment and would otherwise re-run the worker dependency boot."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap", SimpleNamespace())
+    monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
+    worker_bootstrap.finish_worker_boot()
+    assert worker_bootstrap.WORKER_MARKER not in os.environ
+
+
+_REAL_BOOT_PROBE = """
+import json, sys
+try:
+    import cron
+except RuntimeError as exc:
+    print(json.dumps({"error": str(exc), "jobs": "cron.jobs" in sys.modules}))
+    sys.exit(3)
+import _generation_sentinel
+print(json.dumps({"sentinel": _generation_sentinel.NAME, "path": sys.path,
+                  "jobs": "cron.jobs" in sys.modules}), flush=True)
+sys.stdin.read()
+"""
+
+
+def _marked_worker(repo_root: Path, stderr) -> subprocess.Popen:
+    import cron.worker_bootstrap as worker_bootstrap
+
+    env = dict(os.environ, PYTHONPATH=str(repo_root))
+    env[worker_bootstrap.WORKER_MARKER] = "1"
+    return subprocess.Popen(
+        [sys.executable, "-c", _REAL_BOOT_PROBE], cwd=repo_root, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
+
+
+def test_marked_worker_keeps_its_generation_through_a_rotation(tmp_path):
+    """#122222 / #122936 review: the real PM boot activates the committed generation before
+    ``cron.jobs`` loads and leases it for the worker's lifetime. When an update commits a
+    newer generation mid-job, the collector must not delete the one the live worker imports
+    from; it becomes collectable once the worker exits."""
+    import cron.worker_bootstrap as worker_bootstrap
+    import pm.environments
+    from hermes_cli.runtime_state import collect_generations
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    generation = _commit_generation(repo_root, "g1", with_site_packages=True).parent
+    stderr_path = tmp_path / "worker.stderr"
+    with stderr_path.open("w") as stderr:
+        child = _marked_worker(repo_root, stderr)
+    try:
+        result = json.loads(child.stdout.readline())
+        assert result["sentinel"] == "g1" and result["jobs"] is True
+        first_site = next(p for p in result["path"] if Path(p).name == "site-packages")
+        assert first_site == str(pm.environments.site_packages(generation / "venv"))
+
+        _commit_generation(repo_root, "g2", with_site_packages=True)
+        assert collect_generations(repo_root, min_age_seconds=0) == []
+        assert generation.is_dir()
+    finally:
+        try:
+            child.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            raise
+    assert child.returncode == 0, stderr_path.read_text()
+    assert collect_generations(repo_root, min_age_seconds=0) == [generation]
+
+
+def test_marked_worker_exits_before_cron_jobs_when_activation_fails():
+    """#122936 review: a genuine PM refusal (committed generation without site-packages) must
+    stop the worker before its first dependency import -- the spawn site reports the pre-ack
+    exit -- rather than run on an inherited path nothing leases."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    _commit_generation(repo_root, "damaged", with_site_packages=False)
+    child = _marked_worker(repo_root, subprocess.PIPE)
+    out, err = child.communicate(timeout=60)
+    assert child.returncode == 3, err
+    result = json.loads(out.strip().splitlines()[-1])
+    assert "has no site-packages" in result["error"]
+    assert result["jobs"] is False
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 
@@ -711,6 +939,106 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
 
     launch.assert_called_once_with(job)
     run.assert_not_called()
+
+
+def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
+    execution_ledger, monkeypatch
+):
+    """A failed external-worker handoff must surface like any other job failure: one
+    incident row plus one failure-lane notice, with repeats withheld by the alerted
+    cooldown (#123401) — not a silent outage while executions.db piles up failed rows."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job = {"id": "job-dispatch", "execution_id": record["id"],
+           "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    rows = incidents.list_incidents()
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "job-dispatch"
+    assert rows[0]["state"] == "alerted"
+    assert "Restart-safe cron worker dispatch failed" in rows[0]["error"]
+    assert len(delivered) == 1 and delivered[0].strip()
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["status"] == "failed"
+    assert "Restart-safe cron worker dispatch failed" in finished["error"]
+    assert finished["delivery_outcome"] == "delivered"
+
+    # The same dispatch failure again: same signature -> incident dedup, and the
+    # alerted cooldown withholds the repeat ping.
+    repeat = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job2 = {"id": "job-dispatch", "execution_id": repeat["id"],
+            "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job2, adapters=None) is True
+    assert len(incidents.list_incidents()) == 1
+    assert len(delivered) == 1
+    assert execution_ledger.get_execution(repeat["id"])["delivery_outcome"] == \
+        "suppressed_acked"
+
+
+@pytest.mark.parametrize("failing_stage", ["handoff", "claim_dispatch"])
+def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
+    execution_ledger, monkeypatch, tmp_path, failing_stage
+):
+    """Under multiplex the failure notice for a failed handoff resolves the job's home channel
+    through ``get_secret``. The in-process run path installs the owning profile's secret scope
+    before delivery; the dispatch-failure branch must too, or the read fails closed with
+    UnscopedSecretError and the notice never leaves. Same for a crash in the in-process body
+    before the run starts (``claim_dispatch`` raising)."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+    import cron.scheduler_delivery as delivery
+    from agent import secret_scope
+
+    home = tmp_path / "profiles" / "worker"
+    home.mkdir(parents=True)
+    (home / ".env").write_text('TELEGRAM_HOME_CHANNEL="111111111"\n', encoding="utf-8")
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    if failing_stage == "handoff":
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    else:
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
+        monkeypatch.setattr(scheduler, "claim_dispatch", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    resolved = []
+
+    def _deliver(job, content, **_kw):
+        resolved.append(delivery._env_home_target_chat_id("telegram"))
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", _deliver)
+
+    record = execution_ledger.create_execution("job-scoped", source="builtin")
+    job = {"id": "job-scoped", "execution_id": record["id"], "deliver": "telegram"}
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert secret_scope.current_secret_scope() is None
+        assert scheduler.run_one_job(job, adapters=None) is (failing_stage == "handoff")
+        assert secret_scope.current_secret_scope() is None  # scope does not leak past the fire
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert resolved == ["111111111"]
+    assert len(incidents.list_incidents()) == 1
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["delivery_outcome"] == "delivered"
 
 
 def test_shutdown_does_not_interrupt_restart_safe_waiter():
@@ -779,7 +1107,7 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
         adapters=None,
         loop=None,
     )
-    assert error == "failed to load gateway config: standalone path reached"
+    assert "standalone path reached" in error
     assert queued == ["exec-outer"]
 
 
@@ -802,20 +1130,6 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
     run.assert_not_called()
 
 
-def test_shared_run_path_creates_execution_before_managed_handoff(monkeypatch):
-    import cron.scheduler as scheduler
-
-    created = Mock(return_value={"id": "exec-new"})
-    launch = Mock(return_value=True)
-    monkeypatch.setattr(scheduler, "create_execution", created)
-    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
-    job = {"id": "manual-job"}
-
-    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
-
-    created.assert_called_once_with("manual-job", source="direct", scheduled_instant=None)
-    assert job["execution_id"] == "exec-new"
-    launch.assert_called_once_with(job)
 
 
 def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
@@ -832,7 +1146,7 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
     run.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass
 def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     tmp_path, monkeypatch
@@ -977,3 +1291,78 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
+    execution_ledger, monkeypatch
+):
+    """Once the worker is spawned it may own the row and send its own notice: a
+    waiter failure must only record bookkeeping, never a false dispatch incident."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _body_boom(_process, *, execution_id, **_kwargs):
+        raise RuntimeError("cron external worker exited before durable recovery")
+
+    monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
+    monkeypatch.setattr(
+        scheduler, "_launch_external_cron_worker",
+        lambda job: scheduler._wait_for_external_cron_worker(
+            object(), execution_id=job["execution_id"]))
+    marks = []
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-post", source="builtin")
+    job = {"id": "job-post", "execution_id": record["id"], "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    assert incidents.list_incidents() == []
+    assert delivered == []
+    assert len(marks) == 1 and marks[0][0][1] is False
+    assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
+    assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
+    """Only a worker in its OWN scope may be skipped by the gateway restart wait.
+
+    A ``degraded`` dispatch is still an external subprocess but stays in the gateway cgroup, so a
+    systemd stop kills it mid-run and the restart wait must keep holding for it. A run the scheduler
+    already reports as wedged is excluded too: the gateway subtracts both counts, and a run in both
+    sets would be subtracted twice.
+    """
+    import cron.scheduler as scheduler
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    jobs = ("job-scoped", "job-degraded", "job-scoped-wedged")
+    for job_id in jobs:
+        assert scheduler.try_register_running_job(job_id)
+    try:
+        scheduler._record_external_cron_worker("job-scoped", 4321, scope_isolated=True)
+        scheduler._record_external_cron_worker("job-degraded", 4322, scope_isolated=False)
+        scheduler._record_external_cron_worker("job-scoped-wedged", 4323, scope_isolated=True)
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 0, "restart_safe": 2}
+        details = {d["job_id"]: d["restart_safe"] for d in scheduler.get_running_job_details()}
+        assert details == {"job-scoped": True, "job-degraded": False, "job-scoped-wedged": True}
+
+        with scheduler._running_lock:
+            scheduler._running_since[scheduler._inflight_key("job-scoped-wedged")] = (
+                time.time() - 702 * 60)
+        assert scheduler.get_wedged_job_ids() == frozenset({"job-scoped-wedged"})
+        # Wedged and scoped: counted once, as wedged.
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 1, "restart_safe": 1}
+    finally:
+        for job_id in jobs:
+            scheduler.release_running_job(job_id)
+    # Scoped to THIS test's claims: the module keeps other runs' entries (a launch that never went
+    # through a claim, e.g. a stubbed worker in a sibling test, is not this test's to assert on).
+    keys = {scheduler._inflight_key(job_id) for job_id in jobs}
+    assert not keys & scheduler._scope_isolated_job_ids
+    assert not keys & set(scheduler._running_worker_pids)

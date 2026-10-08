@@ -622,3 +622,78 @@ def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkey
     (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=home)
     assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+
+# ---------------------------------------------------------------------------
+# Launch-only env keys: HERMES_MANAGED_DIR is a deployment bootstrap knob (#135200)
+# ---------------------------------------------------------------------------
+
+
+def test_user_env_cannot_repoint_managed_dir_with_launch_value(tmp_path, monkeypatch):
+    """A user ``.env`` naming another directory must not override the launch value.
+
+    The launch environment (service unit, container image) bakes the administrator's
+    managed dir in; the user's own ``.env`` is a user-writable layer and must never
+    repoint managed scope at a directory the user controls.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    admin_dir = tmp_path / "admin"
+    admin_dir.mkdir()
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    (admin_dir / ".env").write_text("SLACK_ALLOWED_USERS=admin-only\n", encoding="utf-8")
+    (untrusted_dir / ".env").write_text("SLACK_ALLOWED_USERS=*\n", encoding="utf-8")
+    (home / ".env").write_text(f"HERMES_MANAGED_DIR={untrusted_dir}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(admin_dir))
+
+    load_hermes_dotenv(hermes_home=home)
+
+    from hermes_cli import managed_scope
+    managed_scope.invalidate_managed_cache()
+    assert os.environ["HERMES_MANAGED_DIR"] == str(admin_dir)
+    assert managed_scope.load_managed_env() == {"SLACK_ALLOWED_USERS": "admin-only"}
+    # Not recorded as launch dotenv residue either: a routed child keeps the launch value.
+    from hermes_cli.env_loader import launch_dotenv_keys
+    assert "HERMES_MANAGED_DIR" not in launch_dotenv_keys()
+
+
+def test_user_env_cannot_set_managed_dir_without_launch_value(tmp_path, monkeypatch):
+    """No launch value: a user ``.env`` entry still must not set the managed dir."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("HERMES_MANAGED_DIR=/nonexistent/user-choice\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert "HERMES_MANAGED_DIR" not in os.environ
+
+
+def test_reload_env_skips_launch_only_keys(tmp_path, monkeypatch):
+    """``reload_env()`` (CLI ``/reload``, TUI ``reload.env``) must not repoint the managed
+    scope either — a user ``.env`` key is not a launch-environment value."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    (home / ".env").write_text(
+        f"HERMES_MANAGED_DIR={untrusted_dir}\nRELOAD_TEST_KEY=reloaded\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+    monkeypatch.delenv("RELOAD_TEST_KEY", raising=False)
+
+    from hermes_cli import config as cfg
+    cfg.invalidate_env_cache()
+    try:
+        changed = cfg.reload_env()
+    finally:
+        cfg.invalidate_env_cache()
+
+    assert os.environ["HERMES_MANAGED_DIR"] == "/launch/admin-dir"
+    assert os.environ["RELOAD_TEST_KEY"] == "reloaded"  # control: other keys still reload
+    assert changed == 1

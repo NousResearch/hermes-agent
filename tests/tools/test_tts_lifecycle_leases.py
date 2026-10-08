@@ -21,12 +21,16 @@ from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_l
 @pytest.fixture(autouse=True)
 def _clean_lifecycle(monkeypatch):
     tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
+    tts_tool_local._clear_neutts_cache("test_reset")
+    for name, cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.items():
+        if name != "neutts":
+            cache.clear()
     yield
     tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
+    tts_tool_local._clear_neutts_cache("test_reset")
+    for name, cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.items():
+        if name != "neutts":
+            cache.clear()
 
 
 class _FakePiperVoice:

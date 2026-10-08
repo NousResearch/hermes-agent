@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--ref-text", required=True, help="Reference voice transcript path")
     parser.add_argument("--model", default="neuphonic/neutts-air-q4-gguf",
                         help="HuggingFace backbone model repo")
+    parser.add_argument("--codec-repo", default="neuphonic/neucodec",
+                        help="HuggingFace codec model repo")
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
 
@@ -59,7 +61,7 @@ def main():
     tts = NeuTTS(
         backbone_repo=args.model,
         backbone_device="gpu" if args.device == "cuda" else args.device,
-        codec_repo="neuphonic/neucodec",
+        codec_repo=args.codec_repo,
         codec_device=args.device)
     wav = tts.infer(args.text, tts.encode_reference(str(ref_audio)), ref_text)
 

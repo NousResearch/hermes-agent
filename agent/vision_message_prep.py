@@ -32,10 +32,10 @@ def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
 
 
-def _salvage_text_parts(content: list, *, any_dict_text: bool) -> List[str]:
+def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
     """Stripped, non-empty text from string parts and text-typed dict parts (or any dict's
     ``text`` when ``any_dict_text``), in order."""
-    texts: List[str] = []
+    texts: list[str] = []
     for part in content:
         if isinstance(part, str):
             text = part.strip()
@@ -162,7 +162,7 @@ class VisionMessagePrepMixin:
         if not self._content_has_image_parts(content):
             return content
 
-        image_notes: List[str] = []
+        image_notes: list[str] = []
         for part in filter(_is_image_part, content):
             image_data = part.get("image_url", {})
             image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")

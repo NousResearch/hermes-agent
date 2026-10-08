@@ -100,21 +100,24 @@ function fakeSsh(rules: any[] = []) {
       // Existing lifecycle fixtures predate the install-wide relaunch gate.
       // Their default remote has no update marker; focused marker tests below
       // use explicit SSH doubles to exercise live/uncertain transitions.
-      if (cmd.includes('.hermes-update-in-progress') && !cmd.includes('marker_clear()') && !/setsid|nohup/.test(cmd)) {
+      const mutexWrapped = /setsid|nohup/.test(cmd) // spawn payloads run under the relaunch probe's marker gate
+
+      if (cmd.includes('.hermes-update-in-progress') && !mutexWrapped) {
         return 'CLEAR'
       }
 
-      const mutexWrapped = cmd.includes('fcntl.flock(fd,fcntl.LOCK_EX)')
-
       const applicableRules = rules.filter(([matcher]) => {
-        if (cmd.includes('marker_clear()') && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
+        if (mutexWrapped && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
           return false
         }
 
         return !(mutexWrapped && matcher instanceof RegExp && /python3 -c/.test(matcher.source))
       })
 
-      if ((cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open')) || cmd.includes('printf TERMINATED')) {
+      if (
+        (cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open') && !mutexWrapped) ||
+        cmd.includes('printf TERMINATED')
+      ) {
         return 'TERMINATED'
       }
 
@@ -184,11 +187,7 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   }
 
   await assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes/profiles/research')
-  assert.match(commands[0], /home\.parent\.name/)
-  assert.match(commands[0], /profiles/)
-  assert.match(commands[0], /\.hermes-update-in-progress/)
-  assert.match(commands[0], /marker\.unlink/)
-  assert.match(commands[0], /\/proc\/%d\/cmdline/)
+  assert.ok(commands[0].endsWith(" '/home/alice/.hermes/.hermes-update-in-progress'"), commands[0].slice(-80))
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
@@ -964,7 +963,10 @@ test('buildSpawnCommand never pins a non-slug profile into the remote argv', () 
   // The roster/SSH bridge hands the profile verbatim; a numeric id or display
   // label must never cross into the remote serve argv, where the CLI used to
   // str()-coerce it into a phantom profiles/0/ directory (#88842).
-  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, {
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
   assert.ok(!bad.includes('--profile'), 'a non-string profile must not be pinned')
 
   const empty = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
@@ -996,7 +998,7 @@ report=${expandRemotePath(reportPath)}
 for fd in /proc/$$/fd/*; do
   target=$(readlink "$fd" 2>/dev/null || true)
   case "$target" in
-    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> "$report.tmp" ;;
+    *hermes-update-in-progress.lock) printf '%s\\n' "$target" >> "$report.tmp" ;;
   esac
 done
 mv "$report.tmp" "$report"
@@ -1138,8 +1140,11 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/python3 -c/, ''], // token file write
     [/printf '%s\\n'/, ''],
     [/setsid/, '777\n'],
-    [/kill -0 777/, 'ALIVE'],
-    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+    // The wrapper may exit before the detached daemon writes READY; startup
+    // must rely on the bounded log wait rather than kill -0 on this pid.
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
+    // The post-readiness served-token adoption still verifies the daemon.
+    [/kill -0 777/, 'ALIVE']
   ])
 
   const result = await connect(
@@ -1841,7 +1846,7 @@ test('connect removes the token file when a fresh backend fails after returning 
     [/kill -0 999/, 'DEAD']
   ])
 
-  await assert.rejects(() => connect(connectDeps(ssh)), /exited before announcing/i)
+  await assert.rejects(() => connect(connectDeps(ssh)), /Timed out waiting for the remote dashboard/i)
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 
@@ -2085,11 +2090,11 @@ test.skipIf(process.platform === 'win32')(
       })
       const argv = (await readFile(argvFile, 'utf8')).split('\0')
 
-      // argv: ['-c', <mutex script>, <mutex path>, <payload>]
+      // argv: ['-c', <marker gate>, <marker path>, <payload>]
       assert.equal(
         argv[2],
-        `${fakeHome}/.hermes/.hermes-update-in-progress.mutex`,
-        'mutex path must reach python fully expanded, with no quote characters'
+        `${fakeHome}/.hermes/.hermes-update-in-progress`,
+        'marker path must reach python fully expanded, with no quote characters'
       )
 
       // The payload assigns reservation/lock/owner_file before its mkdir loop.

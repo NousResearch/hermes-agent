@@ -168,22 +168,11 @@ class CLISessionMixin:
         _dim_notice(self, msg, quiet)
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
-        """Re-enable YOLO bypass on resume when the session row's ``model_config.yolo_mode``
-        says so — the in-memory ``tools.approval._session_yolo`` set starts empty in a fresh
-        process. No-op when already active or when the process was launched with ``--yolo``."""
-        try:
-            from hermes_state import SessionDB
-            from tools.approval import (
-                _YOLO_MODE_FROZEN, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if _YOLO_MODE_FROZEN or not SessionDB.session_yolo_enabled(session_meta):
-            return
-        session_key = self.session_id or "default"
-        if is_session_yolo_enabled(session_key):
-            return
-        enable_session_yolo(session_key)
-        _dim_notice(self, t("cli.session.yolo_restored"), quiet)
+        """Re-arm the session row's persisted /yolo on every resume path (``tools.approval_yolo``)."""
+        from hermes_state import SessionDB
+        from tools.approval_yolo import restore_session_yolo
+        if restore_session_yolo(self.session_id or "default", SessionDB.session_yolo_enabled(session_meta)):
+            _dim_notice(self, t("cli.session.yolo_restored"), quiet)
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
@@ -442,7 +431,10 @@ class CLISessionMixin:
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
-                finalize_session(**context)
+                from cli import _cli_visible_print
+                from hermes_cli.lifecycle import session_end_messages
+                for message in session_end_messages(finalize_session(**context)):
+                    _cli_visible_print(message)
             else:
                 invoke_hook(event_type, **context)
 
@@ -633,7 +625,7 @@ class CLISessionMixin:
         """
         from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = cmd.split()[1:]
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -656,8 +648,12 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
+            from hermes_state import SessionExportTooLargeError
             try:
-                session_data = _db.export_session(_sid, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
+                session_data = load_save_snapshot(_db, _sid, fmt)
+            except SessionExportTooLargeError as e:
+                print(f"(._.) {e}")
+                return
             except Exception:
                 session_data = None
         if not session_data:
@@ -850,26 +846,6 @@ class CLISessionMixin:
 
             write_breadcrumb(self.session_id)
 
-    def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
-        """Move YOLO bypass state to a new session key when ``self.session_id`` is reassigned
-        mid-run (/branch, auto-compression rotation) — ``_session_yolo`` is keyed by id, so
-        without this the toggle silently reverts. Mirrors tui_gateway's rename path."""
-        if not old_session_id or not new_session_id or old_session_id == new_session_id:
-            return
-        try:
-            from tools.approval import (
-                disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if is_session_yolo_enabled(old_session_id):
-            enable_session_yolo(new_session_id)
-            disable_session_yolo(old_session_id)
-            # Carry the persisted flag onto the continuation row so a later --resume restores
-            # it too. getattr: tests call this unbound against a minimal stand-in.
-            _persist = getattr(self, "_persist_session_yolo", None)
-            if _persist:
-                _persist(new_session_id, True)
-
     def _is_session_yolo_active(self) -> bool:
         """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
         (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
@@ -894,8 +870,7 @@ class CLISessionMixin:
         """
         from cli import _cprint
         from hermes_cli.colors import Colors as _Colors
-        from tools.approval import (
-            _YOLO_MODE_FROZEN, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
+        from tools.approval import _YOLO_MODE_FROZEN
 
         # A frozen process-level bypass short-circuits the approval gate ahead of the session
         # check — toggling "OFF" would be a false safety claim. Say so instead.
@@ -904,31 +879,17 @@ class CLISessionMixin:
             _cprint(f"  {t('cli.session.yolo_locked', state=state)}")
             return
 
+        from tools.approval_yolo import toggle_session_yolo
         session_key = self.session_id or "default"
-        # getattr: tests call this unbound against a minimal stand-in; persistence is best-effort.
-        _persist = getattr(self, "_persist_session_yolo", None)
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, False)
-            state = f"{_Colors.BOLD}{_Colors.RED}{t('cli.shared.label_off_upper')}{_Colors.RESET}"
-            _cprint(f"  {t('cli.session.yolo_off', state=state)}")
-        else:
-            enable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, True)
+        db = getattr(self, "_session_db", None)  # getattr: tests call this unbound against a stand-in
+        # The row is created lazily on the first turn; until then with_session_yolo records the toggle.
+        persist = (lambda on: db.set_session_yolo(session_key, on)) if db and session_key != "default" else None
+        if toggle_session_yolo(session_key, persist=persist):
             state = f"{_Colors.BOLD}{_Colors.GREEN}{t('cli.shared.label_on_upper')}{_Colors.RESET}"
             _cprint(f"  {t('cli.session.yolo_on', state=state)}")
-
-    def _persist_session_yolo(self, session_key: str, enabled: bool) -> None:
-        """Persist the YOLO flag to the session row so --resume restores it. Best-effort; the
-        in-memory toggle is authoritative. Skipped without a store or before the row exists
-        (rows are created lazily on the first turn)."""
-        db = getattr(self, "_session_db", None)
-        if db is None or not session_key or session_key == "default":
-            return
-        with contextlib.suppress(Exception):
-            db.set_session_yolo(session_key, enabled)
+        else:
+            state = f"{_Colors.BOLD}{_Colors.RED}{t('cli.shared.label_off_upper')}{_Colors.RESET}"
+            _cprint(f"  {t('cli.session.yolo_off', state=state)}")
 
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression.
@@ -983,6 +944,8 @@ class CLISessionMixin:
                 # generation point at the live continuation, not the ended parent.
                 agent_sid = getattr(self.agent, "session_id", None)
                 if agent_sid and agent_sid != self.session_id:
+                    from tools.approval_yolo import transfer_session_yolo
+                    transfer_session_yolo(self.session_id, agent_sid)
                     self.session_id = self.agent.session_id
                     self._write_terminal_breadcrumb()
                     self._pending_title = None
@@ -1145,6 +1108,11 @@ class CLISessionMixin:
             # Honors NO_COLOR/dumb terminals by skipping silently when there's no real console.
             self._clear_terminal_on_exit()
         print()
+        import cli as _cli_module
+        # Plugin on_session_finalize messages from _run_cleanup: printed after the clear so they survive.
+        for message in _cli_module._session_end_messages:
+            print(message)
+        _cli_module._session_end_messages.clear()
         msg_count = len(self.conversation_history)
         if not msg_count:
             try:

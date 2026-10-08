@@ -17,7 +17,6 @@ Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
@@ -41,17 +40,17 @@ class _FakeSession:
 
     def __init__(
         self,
-        out: Dict[str, Any],
+        out: dict[str, Any],
         capabilities: Optional[set] = None,
-        input_properties: Optional[Dict[str, set]] = None,
+        input_properties: Optional[dict[str, set]] = None,
     ):
         self._out = out
         self._caps = capabilities or set()
         self._input_properties = input_properties or {}
-        self.last_args: Dict[str, Any] = {}
+        self.last_args: dict[str, Any] = {}
         self.calls = []
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0):
+    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0):
         self.last_args = args
         self.calls.append((name, dict(args)))
         return self._out
@@ -214,7 +213,7 @@ def test_foreground_refused_on_old_driver():
 def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.object(cu, "_new_backend", lambda mode: cu._NoopBackend()):
         cu.reset_backend_for_tests()
         be = cu._get_backend()
         cu.handle_computer_use({"action": "click", "element": 5,

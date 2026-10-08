@@ -21,16 +21,16 @@ from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 class _StubStore:
-    def __init__(self, transcript: List[Dict[str, Any]]) -> None:
+    def __init__(self, transcript: list[dict[str, Any]]) -> None:
         self._transcript = transcript
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
         return list(self._transcript)
 
 class _StubAdapter(BasePlatformAdapter):
     """Minimal concrete adapter (BasePlatformAdapter is abstract)."""
 
-    def __init__(self, transcript: List[Dict[str, Any]]) -> None:
+    def __init__(self, transcript: list[dict[str, Any]]) -> None:
         super().__init__(PlatformConfig(), Platform.API_SERVER)
         self._session_store = _StubStore(transcript)
 
@@ -52,7 +52,7 @@ class _StubAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:  # pragma: no cover - unused
         return SendResult(success=True)
 
-def _tts_tool_row(path: str) -> Dict[str, Any]:
+def _tts_tool_row(path: str) -> dict[str, Any]:
     return {
         "role": "tool",
         "content": (

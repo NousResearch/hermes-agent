@@ -68,7 +68,9 @@ if [ "${1:-}" = "--in-container" ]; then
         rm -f "$PREFIX/etc/apt/sources.list.d"/*.list 2>/dev/null || true
         apt update || apt update \
             || fail "apt update failed in the container"
-        apt install -y clang rust make git patchelf binutils pkg-config protobuf cmake ninja autoconf automake libtool \
+        # libc++ is named so apt upgrades it: cmake needs a newer one than the base image ships
+        # (see termux-builder.Dockerfile).
+        apt install -y libc++ clang rust make git patchelf binutils pkg-config protobuf cmake ninja autoconf automake libtool \
             libandroid-posix-semaphore libandroid-support libbz2 libffi \
             libjpeg-turbo libpng freetype libtiff libwebp openjpeg littlecms \
             libheif \

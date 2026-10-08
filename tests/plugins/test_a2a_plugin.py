@@ -168,9 +168,14 @@ class TestTrustedPeers:
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         assert security.A2ASecurityContext.capture().is_trusted_peer("ip:127.0.0.1") is True
+        # No token => identity is always ip:<addr>, so a configured allow-list must not 403 local callers.
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
+        assert security.A2ASecurityContext.capture().is_trusted_peer("ip:127.0.0.1") is True
 
-    def test_no_allowlist_trusts_authenticated(self, monkeypatch):
+    def test_loopback_bind_no_allowlist_trusts_authenticated(self, monkeypatch):
+        """Loopback + bearer token + no allow-list preserves backward compat."""
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
         assert security.A2ASecurityContext.capture().is_trusted_peer("alice") is True
@@ -188,6 +193,15 @@ class TestTrustedPeers:
         monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "true")
         monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
         assert security.A2ASecurityContext.capture().is_trusted_peer("mallory") is True
+
+    def test_non_loopback_bind_empty_allowlist_fails_closed(self, monkeypatch):
+        """#126756: network-exposed bind + bearer token + no allow-list must fail closed."""
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
+        monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        assert security.A2ASecurityContext.capture().is_trusted_peer("ip:1.2.3.4") is False
 
 
 class TestInjectionFilter:
@@ -542,7 +556,7 @@ class TestRegistryDispatchConvention:
 
     def test_register_then_dispatch_via_registry(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        monkeypatch.setattr(tools, "_load_config", dict)
         from tools.registry import registry
 
         class _Ctx:
@@ -1241,7 +1255,7 @@ class TestPushNotificationEndToEnd:
         received_evt = threading.Event()
 
         class _Hook(BaseHTTPRequestHandler):
-            def log_message(self, *a):  # noqa: A002
+            def log_message(self, *a):
                 pass
 
             def do_POST(self):

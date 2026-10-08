@@ -47,7 +47,7 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
             _offset = _dt.timedelta(0)
 
             @classmethod
-            def now(cls, tz=None):  # noqa: D102
+            def now(cls, tz=None):
                 return _dt.datetime.now(tz) + cls._offset
 
         _backup.datetime = _ShimDatetime
@@ -277,6 +277,8 @@ class TestIterBackupFiles:
             "cache/images/x.png": True,
             "cache/citations/ledger.json": True,
             "profiles/sage/cache/images/y.png": True,
+            "cache/generated/images/x.png": True,
+            "profiles/sage/cache/generated/videos/v.mp4": True,
             "skills/example/cache/state.db": True,
         }
         for rel in files:
@@ -915,6 +917,27 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 
 class TestBackupEdgeCases:
+
+    def test_negative_keep_is_rejected_by_backup_parser_and_snapshot_prune(self, capsys):
+        """A negative keep slices away the NEWEST archives/snapshots, so both the
+        ``backup --keep`` parser and ``/snapshot prune N`` refuse it."""
+        import argparse
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        from hermes_cli.subcommands.backup import build_backup_parser
+
+        parser = argparse.ArgumentParser()
+        build_backup_parser(parser.add_subparsers(dest="command"), cmd_backup=lambda args: None)
+        for bad in ("-1", "x"):
+            with pytest.raises(SystemExit) as exc:
+                parser.parse_args(["backup", "--keep", bad])
+            assert exc.value.code == 2
+        assert [parser.parse_args(["backup", *a]).keep for a in (["--keep", "0"], ["-k", "1"], [])] == [0, 1, 3]
+
+        with patch("hermes_cli.backup.prune_quick_snapshots") as prune:
+            CLICommandsMixin._snapshot_prune(object(), ["/snapshot", "prune", "-1"])
+            prune.assert_not_called()
+            CLICommandsMixin._snapshot_prune(object(), ["/snapshot", "prune", "2"])
+            prune.assert_called_once_with(keep=2)
 
     def test_incomplete_archive_is_kept_but_reported_as_failure(self, tmp_path, monkeypatch, capsys):
         """A file that cannot be read is skipped, the zip still lands, and the CLI exits 1: a

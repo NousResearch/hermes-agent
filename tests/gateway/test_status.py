@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -125,7 +126,6 @@ class TestGatewayPidState:
         def fake_kill(pid, sig):
             if pid == 99999:
                 raise ProcessLookupError
-            return None
 
         monkeypatch.setattr(status.os, "kill", fake_kill)
 
@@ -1369,6 +1369,12 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
+        # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.
+        def _no_such_process(pid):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_no_such_process))
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1724,15 +1730,12 @@ class TestResolveGatewayLiveness:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
-            return None
 
         def _reader(path=None):
             seen["status_path"] = path
-            return None
 
         def _runtime_pid(runtime, *, expected_home=None):
             seen["expected_home"] = expected_home
-            return None
 
         status.resolve_gateway_liveness(
             profile_dir=profile_dir,

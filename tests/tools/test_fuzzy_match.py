@@ -161,6 +161,17 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_unicode_normalized_preserves_each_matches_own_unicode(self):
+        """Each normalized match keeps ITS typographic characters; the regions were
+        once concatenated, which spliced both matches' text into every replacement."""
+        content = "Price \u2018old\u2019\u2014ready\nPrice 'old'\u2014ready\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Price 'old'--ready", "Price 'new'--ready", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert strategy == "unicode_normalized"
+        assert new == "Price \u2018new\u2019\u2014ready\nPrice 'new'\u2014ready\n"
+
     def test_self_overlapping_pattern_non_overlapping_matches(self):
         """Self-overlapping patterns must produce non-overlapping spans.
 
@@ -682,7 +693,7 @@ class TestBackslashDoublingDrift:
     """Regression tests for the backslash-run doubling guard.
 
     Live failure (Windows, Aug 2026): the model sent old_string/new_string
-    whose backslash runs were JSON-escaped one extra time (file had ``\``
+    whose backslash runs were JSON-escaped one extra time (file had ``\\``
     where the args had ``\\``). The context_aware strategy matched the
     region anyway and wrote new_string verbatim, doubling every backslash
     in a Windows path inside a Python string literal. The guard must block
@@ -744,7 +755,7 @@ class TestBackslashDoublingDrift:
         assert b * 4 not in result
 
     def test_single_prose_backslash_not_blocked(self):
-        """A lone ``\`` vs ``\\`` in prose is too weak a signal to block."""
+        """A lone ``\\`` vs ``\\`` in prose is too weak a signal to block."""
         b = "\\"
         content = "text with one " + b + " backslash here\nanother line\n"
         old = "text with one " + b * 2 + " backslash here\nanother line"

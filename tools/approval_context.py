@@ -33,26 +33,6 @@ _approval_session_id: contextvars.ContextVar[str] = _ctx("approval_session_id")
 # it onto the non-interactive auto-approve path so a dangerous command runs without the approval callback firing
 # (GHSA-96vc-wcxf-jjff). None = unset → env fallback.
 _hermes_interactive_ctx: contextvars.ContextVar[str | None] = _ctx("hermes_interactive", None)
-# CLI, TUI and Desktop turns hold their approval and clarify prompts open until the user answers or the turn is
-# interrupted: the user is at the screen the prompt is painted on. Messaging platforms, ACP and plugin transports
-# keep ``approvals.timeout`` — a push notification can sit unseen, and their buttons expire.
-_prompts_wait_for_answer: contextvars.ContextVar[bool] = contextvars.ContextVar("prompts_wait_for_answer",
-                                                                                default=False)
-
-
-def set_prompts_wait_for_answer() -> contextvars.Token[bool]:
-    """Bind "built-in prompts wait until answered" for the current turn (CLI / TUI / Desktop)."""
-    return _prompts_wait_for_answer.set(True)
-
-
-def reset_prompts_wait_for_answer(token: contextvars.Token[bool]) -> None:
-    """Restore the prior value from :func:`set_prompts_wait_for_answer`."""
-    _prompts_wait_for_answer.reset(token)
-
-
-def prompts_wait_for_answer() -> bool:
-    """True when the current turn's built-in prompts have no deadline."""
-    return _prompts_wait_for_answer.get()
 
 
 def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
@@ -166,6 +146,15 @@ def _is_unattended_platform_approval_context() -> bool:
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
 
 
+# Platforms where a *registered* gateway notify callback still does not mean a human can answer:
+# the generic TurnRunner lane registers one for every inbound turn
+# (``_run_conversation_with_approval`` registers unconditionally, no platform branch), while the
+# adapter renders no ``send_exec_approval``/``/approve`` surface and the inbound lane is a
+# fire-and-forget ``POST -> 202`` with no reader. Notifier presence is only a meaningful
+# "someone can answer" discriminator on api_server, whose turn paths choose whether to register one.
+_NOTIFIER_BLIND_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook"})
+
+
 def _is_single_query_approval_context() -> bool:
     """True for a single-query (-q) session: ``hermes chat -q`` exports
     ``HERMES_INTERACTIVE=1`` (so sudo password prompts work) but nobody is waiting
@@ -173,6 +162,13 @@ def _is_single_query_approval_context() -> bool:
     fail closed and push the agent toward workarounds (e.g. execute_code).
     ``approvals.single_query_mode`` makes the path deterministic."""
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
+
+
+def _no_user_can_answer() -> bool:
+    """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
+    CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
+    return (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _is_unattended_platform_approval_context())
 
 
 def _is_gateway_approval_context() -> bool:
@@ -278,16 +274,6 @@ def _get_approval_timeout() -> int:
     return min(raw, safe_cap)
 
 
-def approval_wait_seconds() -> int:
-    """How long a built-in approval prompt stays open in this turn: until answered on CLI / TUI / Desktop
-    (the platform-safe maximum, so ``Lock.acquire`` / ``Thread.join`` bounds derived from it stay valid),
-    else ``approvals.timeout``."""
-    if prompts_wait_for_answer():
-        from agent.deadline import MAX_SAFE_TIMEOUT_S
-        return int(MAX_SAFE_TIMEOUT_S)
-    return _get_approval_timeout()
-
-
 def format_approval_window(seconds: int) -> str:
     """The ONE human wording for an approval timeout window, shared by the CLI timeout notice,
     the tool result's ``user_summary`` and the gateway card copy so every surface agrees:
@@ -334,18 +320,6 @@ def _get_unattended_approval_mode() -> str:
     deny — an unattended session never silently runs a flagged action unless the
     operator explicitly trusts it."""
     return _binary_approval_mode("unattended_mode")
-
-
-def _tirith_fail_open() -> bool:
-    """``security.tirith_fail_open`` (default True; True when config is unreadable).
-    False means the operator opted into fail-closed: an un-importable scanner
-    must not silently grant access."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _sec = (load_config_readonly() or {}).get("security", {}) or {}
-        return bool(_sec.get("tirith_fail_open", True)) if _sec.get("tirith_enabled", True) else True
-    except Exception:
-        return True
 
 
 def _get_approval_transport_config() -> tuple[str, str | None]:

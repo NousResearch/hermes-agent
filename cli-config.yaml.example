@@ -567,6 +567,18 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+#   # Work budgets for the gateway lifecycle scan walk (cron/lifecycle_guard.py).
+#   # A command whose referenced scripts exceed a budget is refused (fail-closed).
+#   # Retune a budget for legitimate scripts — e.g. one long encoded line inside
+#   # an otherwise small maintenance script. Each value is a positive int clamped
+#   # to 16x the built-in default; invalid values fall back to the defaults.
+#   # Retuning never authorises lifecycle commands themselves. Defaults shown.
+#   lifecycle_scan:
+#     max_line_bytes: 65536       # Longest physical line (quadratic-shlex bound)
+#     max_total_bytes: 1048576    # Whole referenced-script walk, UTF-8 bytes
+#     max_lines: 16384
+#     max_paths: 1024             # Unique referenced paths
+#     max_remote_reads: 64        # Remote-backend reads (one roundtrip each)
 
 # =============================================================================
 # LSP Diagnostics (post-write lint for write_file / patch)

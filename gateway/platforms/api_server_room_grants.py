@@ -232,7 +232,10 @@ async def _handle_room_member_grant_revoke(
                 return _json_error(_openai_error, "This grant does not authorize room retirement.",
                                    code="room_retirement_not_granted", status=403)
             from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
-            self._run_idempotency_store.retire_room_authority(room_run_scope(claims), room_authority(claims))
+            authority = room_authority(claims)
+            if not self._run_idempotency_store.room_authority_retired(authority):
+                self._room_grant_claims(request, permission="retire")
+            self._run_idempotency_store.retire_room_authority(room_run_scope(claims), authority)
         hosted_rooms.revoke_room_grant_scope(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:

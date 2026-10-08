@@ -52,6 +52,7 @@ _restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsa
 _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
+_cron_required_platform_reason = late("_cron_required_platform_reason", "hermes_cli.web_server_messaging")
 load_env = late("load_env", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
@@ -253,6 +254,11 @@ def _messaging_platform_payload(
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
         # must not project Disabled over the live mirror (#121125).
         enabled, configured = True, True
+    # A loopback-firing cron provider makes the gateway run api_server whatever the toggle says
+    # (and mint a key when none exists); report what the gateway does and lock the switch.
+    required_reason = _cron_required_platform_reason(platform_id)
+    if required_reason:
+        enabled, configured = True, True
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -280,6 +286,8 @@ def _messaging_platform_payload(
         "home_channel": home_channel, "env_vars": env_vars,
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
+        # Set when the platform is required infrastructure for this profile and cannot be disabled.
+        "required_reason": required_reason,
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
@@ -885,6 +893,20 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
     entry = _require_platform(platform_id)
 
     target_profile = body.profile or profile
+    if body.enabled is False:
+        def _required_reason() -> Optional[str]:
+            with _config_profile_scope(target_profile):
+                return _cron_required_platform_reason(platform_id)
+
+        reason = await asyncio.to_thread(_required_reason)
+        if reason:
+            # Reject BEFORE any write: the gateway would start the listener anyway, so a stored
+            # disable would only make the Channels page lie about it.
+            _log.info(
+                "Rejected messaging platform update: platform=%s profile=%s "
+                "(required by the cron provider)", platform_id, target_profile or "current",
+            )
+            raise HTTPException(status_code=409, detail=reason)
     if body.enabled:
         conflict = await asyncio.to_thread(_multiplex_port_binding_conflict, platform_id, target_profile)
         if conflict:

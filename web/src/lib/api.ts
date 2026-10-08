@@ -1705,6 +1705,8 @@ export interface MessagingPlatform {
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
   /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
   ingress_url?: string | null;
+  /** Set when the platform is required infrastructure (e.g. by the cron provider) and cannot be disabled. */
+  required_reason?: string | null;
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;

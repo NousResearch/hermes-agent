@@ -1848,6 +1848,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     cfg = load_gateway_config()
     log_multiplex_decision(resolve_multiplex_mode(cfg))
     if not cfg.multiplex_profiles:
+        _ensure_cron_loopback_listener(cfg, get_hermes_home())
         return cfg
     try:
         from agent.secret_scope import set_multiplex_active
@@ -1862,11 +1863,22 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     try:
         with _profile_runtime_scope(Path(home)):
             scoped = load_gateway_config()
+            scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
+            # The default profile owns the one listener every profile's /p/<name>/ mirror rides on.
+            _ensure_cron_loopback_listener(scoped, Path(home))
     except Exception:
         logger.debug("multiplex default-scope config reload failed; using unscoped load", exc_info=True)
         return cfg
-    scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
     return scoped
+
+
+def _ensure_cron_loopback_listener(cfg: "GatewayConfig", home: "Path") -> None:
+    """Force the loopback api_server on when the cron provider fires through it (never raises)."""
+    try:
+        from gateway.cron_loopback_listener import ensure_cron_loopback_listener
+        ensure_cron_loopback_listener(cfg, home=Path(home), home_count=len(_cron_tick_profile_homes(cfg)))
+    except Exception:
+        logger.warning("Could not check whether the cron provider needs the loopback api_server", exc_info=True)
 
 
 async def _discover_gateway_mcp_tools(config: object) -> None:
@@ -5669,22 +5681,21 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     cron_thread.start()
 
-    # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
-    # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
-    if not isinstance(cron_provider, InProcessCronScheduler):
+    # Loopback-firing providers (``fires_over_loopback``) reach THIS process's api_server, which the
+    # config loader force-enabled for them (gateway/cron_loopback_listener.py). Reaching here without
+    # it means that forced start itself failed (bind error, unusable operator key): say it ONCE.
+    from cron.loopback_fire import provider_fires_over_loopback
+    if provider_fires_over_loopback(cron_provider):
         try:
             _has_api_server = Platform.API_SERVER in (runner.adapters or {})
         except Exception:
             _has_api_server = True  # never let the tell break startup
         if not _has_api_server:
             logger.warning(
-                "Cron provider '%s' is active but the api_server adapter is "
-                "NOT running in this gateway — scheduled fires arrive over "
-                "loopback HTTP and will all fail (jobs only run when "
-                "triggered manually). Most common cause: API_SERVER_KEY is "
-                "missing from this gateway process's environment. Restart "
-                "the gateway through its supervisor (`hermes gateway "
-                "restart`) so the profile env loads.",
+                "Cron provider '%s' delivers scheduled fires over the loopback api_server, but "
+                "the api_server adapter failed to start in this gateway, so every scheduled fire "
+                "will fail (manual runs still work). Check the api_server startup error above "
+                "(port already in use, or an unusable API_SERVER_KEY).",
                 getattr(cron_provider, "name", "external"))
 
     # Gateway-only housekeeping runs independently of the cron provider; shares cron_stop for shutdown.

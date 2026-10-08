@@ -154,7 +154,16 @@ mkdir -p "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 BACKUP_FILE="$BACKUP_DIR/world_${TIMESTAMP}.tar.gz"
 echo "[BACKUP] Starting at $(date)"
-tar -czf "$BACKUP_FILE" -C "$SERVER_DIR" world
+TMP_FILE="$BACKUP_FILE.partial"
+if ! tar -czf "$TMP_FILE" -C "$SERVER_DIR" world; then
+    rm -f -- "$TMP_FILE"
+    echo "[BACKUP] FAILED: tar exited non-zero; existing backups kept, nothing pruned" >&2
+    exit 1
+fi
+if ! mv -- "$TMP_FILE" "$BACKUP_FILE"; then
+    echo "[BACKUP] FAILED: could not publish archive; nothing pruned" >&2
+    exit 1
+fi
 SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
 echo "[BACKUP] Saved: $BACKUP_FILE ($SIZE)"
 BACKUP_COUNT=$(ls -1t "$BACKUP_DIR"/world_*.tar.gz 2>/dev/null | wc -l)

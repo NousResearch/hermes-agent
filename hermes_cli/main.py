@@ -756,6 +756,16 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+# Replay provider-plugin discovery failures buffered before setup_logging()
+# (raw stderr stays clean for the fullscreen TUI pre-logging; every command —
+# not just the TUI console replay — surfaces them here, including agent.log).
+try:
+    from providers import replay_provider_load_failures as _replay_provider_failures
+
+    _replay_provider_failures()
+except Exception:
+    pass  # best-effort — buffer replay must not crash startup
+
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
     try:

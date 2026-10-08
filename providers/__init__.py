@@ -103,9 +103,11 @@ class ProviderLoadFailure:
     falls through to stdlib ``logging.lastResort`` and writes raw stderr —
     which corrupts the fullscreen prompt_toolkit TUI. Load failures are
     therefore buffered here (bounded) at debug level and replayed once startup
-    output is safe (see ``cli_tui_runtime_mixin``). Policy refusals
-    (disabled-plugin gates) are NOT buffered — they are routine config, not
-    failures, and stay bare ``logger.debug``.
+    output is safe (see ``cli_tui_runtime_mixin``). Routine policy gates
+    (disabled-plugin skips) are NOT buffered — they are expected config, not
+    failures, and stay bare ``logger.debug``. An enabled entry point refused
+    under host isolation IS buffered: the user explicitly opted in and the
+    refusal carries the config remedy, so silence would read as a bug.
     """
 
     plugin_name: str
@@ -161,6 +163,35 @@ def format_provider_load_failures(
     if overflow > 0:
         lines.append(t("cli.tui.provider_plugin_load_failed_more", count=overflow))
     return lines
+
+
+# How many buffered failures ``replay_provider_load_failures()`` has already
+# logged. A count (not a bool): discovery can buffer more failures after an
+# early replay, and a later replay must still surface those exactly once.
+_REPLAYED_COUNT = 0
+
+
+def replay_provider_load_failures() -> int:
+    """Log buffered discovery failures as warnings, once each.
+
+    Discovery runs before ``setup_logging()``, so failures cannot be warned
+    about when recorded. Call this after logging is configured (CLI startup,
+    TUI startup) so every command — not just the TUI replay — surfaces them,
+    including in agent.log. Idempotent: only failures buffered since the last
+    call are logged. Returns the number newly replayed.
+    """
+    global _REPLAYED_COUNT
+    with _LOAD_FAILURES_LOCK:
+        pending = list(_LOAD_FAILURES[_REPLAYED_COUNT:])
+        _REPLAYED_COUNT = len(_LOAD_FAILURES)
+    for failure in pending:
+        logger.warning(
+            "Provider plugin %r (%s) failed to load: %s",
+            failure.plugin_name,
+            failure.source,
+            failure.error,
+        )
+    return len(pending)
 
 
 def _sync_auth_registry() -> None:
@@ -643,7 +674,10 @@ def _discover_entry_point_providers() -> None:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
         if refusal:
-            logger.debug("%s", refusal)
+            # Enabled but unloadable: actionable user config, not routine
+            # gating — buffer it (with the remedy text) like a load failure so
+            # the TUI replay and post-setup_logging replay surface it.
+            _record_plugin_failure(ep.name, "entry-point", RuntimeError(refusal))
             continue
         try:
             loaded = ep.load()

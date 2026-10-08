@@ -252,7 +252,7 @@ class PluginContext:
         ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
-            for key, loaded in self._manager._plugins.items()
+            for key, loaded in self._manager.snapshot_plugins()
         )
 
     def _segments(self, key: str) -> tuple[str, ...]:
@@ -1177,6 +1177,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
+        # Guards every ``_plugins`` mutation against concurrent readers (see snapshot_plugins). An RLock
+        # because discovery already holds ``_discovery_lock`` on this thread when it writes.
+        self._plugins_lock = threading.RLock()
         self._hooks: Dict[str, List[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
@@ -1291,7 +1294,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
             # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
-            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
+            loaded_before = frozenset(k for k, p in self.snapshot_plugins() if not p.error and not p.deferred)
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1425,8 +1428,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             self._validate_plugin_config_schema(manifest)
             self._load_plugin(manifest)
         if manifests:
-            logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
-                        sum(1 for p in self._plugins.values() if p.enabled))
+            snapshot = self.snapshot_plugins()
+            logger.info("Plugin discovery complete: %d found, %d enabled", len(snapshot),
+                        sum(1 for _k, p in snapshot if p.enabled))
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]],
@@ -1442,8 +1446,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         elif verdict.action == "defer":
             self._register_deferred_platform(manifest)
         else:
-            self._plugins[manifest_key(manifest)] = LoadedPlugin(
-                manifest=manifest, enabled=verdict.enabled, error=verdict.error)
+            with self._plugins_lock:
+                self._plugins[manifest_key(manifest)] = LoadedPlugin(
+                    manifest=manifest, enabled=verdict.enabled, error=verdict.error)
         if verdict.log:
             logger.log(*verdict.log)
         return False
@@ -1530,6 +1535,19 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
         return self.get_platform_handler_factories("telegram")
 
+    def snapshot_plugins(self) -> List[Tuple[str, "LoadedPlugin"]]:
+        """Point-in-time copy of the plugin map for readers that may run while a load mutates it.
+
+        Plugin loading runs on a deadline worker (``run_with_load_deadline``); when a load times out the
+        worker is abandoned but keeps running, and its ``register()`` can re-enter discovery — or simply
+        land after the timeout — writing ``_plugins`` from another thread. Iterating the live dict against
+        that raises ``RuntimeError: dictionary changed size during iteration``, which is how 'openai' and
+        'web-perplexity' were reported as failed loads. Take this instead of touching ``_plugins`` directly
+        from any thread outside the discovery lock.
+        """
+        with self._plugins_lock:
+            return list(self._plugins.items())
+
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""
         return [
@@ -1539,7 +1557,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
                 "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
                 "commands": len(p.commands_registered), "error": p.error,
-            } for _key, p in sorted(self._plugins.items())
+            } for _key, p in sorted(self.snapshot_plugins())
         ]
 
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
@@ -2251,7 +2269,7 @@ def get_plugin_toolsets() -> List[tuple]:
         if entry:
             toolset_tools.setdefault(entry.toolset, []).append(entry.name)
     toolset_plugin: Dict[str, LoadedPlugin] = {}
-    for loaded in manager._plugins.values():
+    for _key, loaded in manager.snapshot_plugins():
         for tool_name in loaded.tools_registered:
             entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:

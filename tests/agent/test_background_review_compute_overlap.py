@@ -1756,7 +1756,7 @@ def test_review_fork_turn_is_not_a_live_foreground_turn(monkeypatch):
     parent = _bare_agent("fork-not-foreground")
     profile_key = review_admission.current_profile_key()
     fork = _bare_agent(parent.session_id)
-    fork._memory_write_origin = "background_review"
+    fork._foreground_exempt_fork = True
     fork._session_db = None
     fork._persist_disabled = True
     fork._reset_activity_labels_after_turn = lambda: None
@@ -1787,6 +1787,104 @@ def test_review_fork_turn_is_not_a_live_foreground_turn(monkeypatch):
     assert (
         review_admission.other_live_turn(parent.session_id, None, profile_key) is False
     )
+
+
+@pytest.mark.parametrize("write_origin", ["background_review", "side_question"])
+def test_cache_parity_forks_are_stamped_foreground_exempt(review_forks, write_origin):
+    """The builder, not each caller, marks a same-session fork as not-a-foreground-turn: the
+    facade keys on that stamp, so no fork kind can register itself as a live turn on the
+    session it replays."""
+    background_review_module.build_cache_parity_fork(
+        _bare_agent(), {}, max_iterations=3, write_origin=write_origin
+    )
+
+    assert review_forks[0]["attrs"]["_foreground_exempt_fork"] is True
+
+
+class _SideQuestionFork(AIAgent):
+    """What ``build_cache_parity_fork`` constructs for /btw: the real facade over a stubbed loop."""
+
+    def __init__(self, **_init_kwargs):
+        self._session_messages = []
+        self._reset_activity_labels_after_turn = lambda: None
+        self._conversation_root_id = lambda: self.session_id
+        self.log_prefix = ""
+        self._vprint = lambda *_a, **_k: None
+        self._interrupt_requested = False
+        self._interrupt_message = None
+        self._pending_redirect = None
+        self._execution_thread_id = None
+        self._interrupt_thread_signal_pending = False
+
+    def release_clients(self):
+        pass
+
+    def shutdown_memory_provider(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_side_question_fork_answers_beside_a_running_explicit_review(monkeypatch):
+    """/btw replays through the same facade on the parent's session, like the review fork, and
+    is no foreground turn either: upstream answered it beside a running review. It must not
+    fence the run (an explicit /refine included), block behind that run's acknowledgement, or
+    label the session ``live_turn_active`` for the review's own gate."""
+    import agent.conversation_loop as conversation_loop_module
+    from agent.side_question import answer_side_question
+
+    parent = _bare_agent("btw-beside-refine")
+    profile_key = review_admission.current_profile_key()
+    run = background_review_module.prepare_background_review_run(
+        parent, followup_cancellable=False
+    )
+    assert run is not None
+    # /refine mid-request, with a fork that never acknowledges on its own.
+    assert run.begin_request(object()) is True
+
+    def acknowledge_instead_of_hanging(*_args, **_kwargs):
+        # A fence from the facade would wait on this fork's exit; publish it so the assertions
+        # below report instead of the test hanging.
+        background_review_module.finish_background_review_run(parent, run)
+
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        acknowledge_instead_of_hanging,
+    )
+    observed = {}
+
+    def fake_run(fork, *_args, **_kwargs):
+        observed["write_origin"] = fork._memory_write_origin
+        observed["live_turn"] = review_admission.other_live_turn(
+            parent.session_id, None, profile_key
+        )
+        observed["fenced"] = run.cancel_requested.is_set()
+        return {"final_response": "foo.py", "messages": [], "failed": False}
+
+    def no_digest_fallback(*_args, **_kwargs):
+        raise AssertionError("/btw fell back to the digest instead of the fork")
+
+    monkeypatch.setattr(conversation_loop_module, "run_conversation", fake_run)
+    monkeypatch.setattr(run_agent_module, "AIAgent", _SideQuestionFork)
+    monkeypatch.setattr("agent.side_question._answer_via_oneshot", no_digest_fallback)
+    history = [
+        {"role": "user", "content": "fix foo.py"},
+        {"role": "assistant", "content": "fixed"},
+    ]
+    try:
+        answer = answer_side_question("which file?", history, parent_agent=parent)
+    finally:
+        background_review_module.finish_background_review_run(parent, run)
+
+    assert answer == "foo.py"
+    assert observed == {
+        "write_origin": "side_question",
+        "live_turn": False,
+        "fenced": False,
+    }
+    assert run.cancel_requested.is_set() is False
 
 
 # ---------------------------------------------------------------------------

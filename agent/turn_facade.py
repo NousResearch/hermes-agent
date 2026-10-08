@@ -84,16 +84,18 @@ class TurnFacadeMixin:
         review_queue_started = False
         review_profile_key = review_admission.current_profile_key()
         turn_token = review_run = None
-        # The review fork replays through this same facade on the session it reviews. It is
-        # the review, not a foreground turn: registering it would label the owner
-        # ``live_turn_active`` for every other spawn attempt and mask the truthful slot state.
-        review_fork = getattr(self, "_memory_write_origin", None) == "background_review"
+        # A cache-parity fork (the review, a /btw side question; ``build_cache_parity_fork``
+        # stamps it) replays through this same facade on the session it was forked from. It is
+        # not a foreground turn: registering it would label the owner ``live_turn_active`` for
+        # every other spawn attempt and mask the truthful slot state, and a /btw would fence,
+        # then wait on, the review it answers beside — an explicit /refine included.
+        exempt_fork = getattr(self, "_foreground_exempt_fork", False)
 
         try:
             # Linearize registration with review request admission. If the review owns this lock
             # first it publishes its fork under the run lock, so cancellation finds it; if this
             # turn owns it first the review's foreground sample observes the live token.
-            if not review_fork:
+            if not exempt_fork:
                 with review_admission.admission_lock():
                     turn_token = review_admission.note_turn_started(
                         session_id, review_profile_key

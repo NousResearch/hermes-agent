@@ -1394,6 +1394,10 @@ def build_cache_parity_fork(
         review_agent._cached_conversation_root = agent._conversation_root_id()
         _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
+    # The fork replays through the turn facade on the session it was forked from, where it is
+    # not a foreground turn (``agent/turn_facade.py``): a /btw answers beside a running review
+    # and never fences one.
+    review_agent._foreground_exempt_fork = True
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
     review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, review_agent)

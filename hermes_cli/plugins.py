@@ -201,11 +201,25 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # pre_platform_send: outbound platform-send gate, fired by gateway/platforms/base.py immediately
+    # before an adapter's ``send()`` reaches the platform, for EVERY text send through an adapter:
+    # agent replies, streamed finals, cron deliveries over a live adapter, the ``send_message``
+    # tool's adapter path, and gateway-originated notices (heartbeats, home-channel broadcasts,
+    # delivery-failure notices). Re-entrant sends (a subclass ``send`` calling ``super().send``)
+    # fire it once. Kwargs: adapter (BasePlatformAdapter), platform (str), chat_id (str), text (str),
+    # metadata (dict | None). Return {"action": "cancel", "reason"} -> do not send (the caller gets
+    # SendResult(success=False, error_kind="cancelled")); {"action": "rewrite", "text"} -> send this
+    # text instead; None/anything else -> send unchanged. Any cancel wins over every rewrite;
+    # otherwise the first valid rewrite in registration order wins (every callback sees the ORIGINAL
+    # text). A callback that raises is isolated by invoke_hook and counts as None, so a guard plugin
+    # that must fail closed should catch its own errors and return a cancel.
+    "pre_platform_send",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# pre_platform_send: a send gate whose cancel is silently dropped is worse than no gate.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "pre_platform_send"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

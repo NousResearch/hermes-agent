@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import contextvars
+import functools
 import inspect
 import ipaddress
 import logging
@@ -1726,9 +1728,11 @@ _SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
 # not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
-# unknown.
+# unknown, cancelled (a ``pre_platform_send`` plugin hook vetoed the send; nothing reached the
+# platform and a retry would be vetoed again).
 SEND_ERROR_KINDS = frozenset(
-    {"too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient", "unknown"})
+    {"cancelled", "too_long", "bad_format", "forbidden", "not_found", "rate_limited", "transient",
+     "unknown"})
 
 # ``not_found`` substrings by blast radius: chat-level = target dead; thread/topic/message-level
 # leaves the parent chat reachable.
@@ -1914,6 +1918,80 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
+# ``pre_platform_send`` (VALID_HOOKS in hermes_cli/plugins.py) is the one outbound gate every adapter
+# text send passes. It is enforced HERE, on the adapter, not at each caller: agent replies, stream
+# finals, cron deliveries, the send_message tool's adapter path and gateway-originated notices all
+# end in ``adapter.send()``, so wrapping each concrete ``send`` once
+# (``BasePlatformAdapter.__init_subclass__``) covers today's callers and any future one. The
+# contextvar makes the hook fire once per outermost send even when a subclass ``send`` delegates to
+# ``super().send``.
+_PRE_PLATFORM_SEND_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pre_platform_send_active", default=False)
+
+
+def _platform_label(adapter: Any) -> str:
+    platform = getattr(adapter, "platform", None)
+    return str(getattr(platform, "value", platform) or "unknown")
+
+
+async def _resolve_pre_platform_send(
+        adapter: Any, chat_id: str, content: str, metadata: Any) -> Tuple[str, Optional[str]]:
+    """Run the ``pre_platform_send`` hook; return ``(content, cancel_reason)``.
+
+    ``cancel_reason`` is None when the send may proceed. Any cancel wins over every rewrite;
+    otherwise the first valid rewrite wins. Never raises: a dispatch failure is logged and the send
+    proceeds unchanged (the finish-or-fallthrough contract ``pre_gateway_dispatch`` already uses).
+    """
+    try:
+        from hermes_cli.lifecycle import ainvoke_hook, has_hook
+
+        if not has_hook("pre_platform_send"):
+            return content, None
+        results = await ainvoke_hook(
+            "pre_platform_send", adapter=adapter, platform=_platform_label(adapter),
+            chat_id=str(chat_id), text=content, metadata=metadata)
+    except Exception as exc:
+        logger.warning("pre_platform_send invocation failed: %s", exc)
+        return content, None
+
+    rewrite: Optional[str] = None
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action == "cancel":
+            return content, str(result.get("reason") or "cancelled by plugin")
+        if action == "rewrite" and rewrite is None and isinstance(result.get("text"), str):
+            rewrite = result["text"]
+    return (content if rewrite is None else rewrite), None
+
+
+def _guard_platform_send(send: Callable[..., Awaitable["SendResult"]]):
+    """Wrap a concrete adapter ``send`` so ``pre_platform_send`` gates it."""
+    if getattr(send, "_pre_platform_send_guarded", False):
+        return send
+
+    @functools.wraps(send)
+    async def guarded_send(self, chat_id, content, *args, **kwargs):
+        if _PRE_PLATFORM_SEND_ACTIVE.get():
+            return await send(self, chat_id, content, *args, **kwargs)
+        metadata = kwargs.get("metadata", args[1] if len(args) > 1 else None)
+        content, cancel_reason = await _resolve_pre_platform_send(self, chat_id, content, metadata)
+        if cancel_reason is not None:
+            logger.info("pre_platform_send cancel: reason=%s platform=%s chat=%s",
+                        cancel_reason, _platform_label(self), chat_id)
+            return SendResult(success=False, error=f"cancelled by pre_platform_send: {cancel_reason}",
+                              error_kind="cancelled")
+        token = _PRE_PLATFORM_SEND_ACTIVE.set(True)
+        try:
+            return await send(self, chat_id, content, *args, **kwargs)
+        finally:
+            _PRE_PLATFORM_SEND_ACTIVE.reset(token)
+
+    guarded_send._pre_platform_send_guarded = True  # type: ignore[attr-defined]
+    return guarded_send
+
+
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
@@ -1962,6 +2040,14 @@ class BasePlatformAdapter(ABC):
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Gate every concrete coroutine ``send`` with ``pre_platform_send``. Plain functions only:
+        # a class-level mock (tests) is left untouched.
+        send = cls.__dict__.get("send")
+        if inspect.isfunction(send) and inspect.iscoroutinefunction(send):
+            cls.send = _guard_platform_send(send)  # type: ignore[method-assign]
 
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -3662,7 +3748,9 @@ class BasePlatformAdapter(ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
+        # A pre_platform_send veto is final: no retry, no plain-text fallback (both would be vetoed
+        # again), no delivery-failure notice.
+        if result.success or result.error_kind == "cancelled" or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3714,7 +3802,7 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result):
+                if result.error_kind == "cancelled" or self._send_retry_is_final(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after

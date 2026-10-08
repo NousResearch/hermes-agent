@@ -30,7 +30,8 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
+    MINIMUM_CONTEXT_LENGTH, detect_local_server_type, fetch_model_metadata,
+    is_local_endpoint, query_ollama_num_ctx
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -2155,12 +2156,20 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
     agent._ollama_num_ctx: int | None = None
+    agent._ollama_native_api = False
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
     if _override is not None:
         try:
             agent._ollama_num_ctx = int(_override)
         except (TypeError, ValueError):
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+    if agent.base_url and is_local_endpoint(agent.base_url):
+        _key = agent.api_key if isinstance(agent.api_key, str) else ""
+        if (agent.provider or "").lower().startswith("custom") and agent.api_mode == "chat_completions":
+            try:
+                agent._ollama_native_api = detect_local_server_type(agent.base_url, api_key=_key or "") == "ollama"
+            except Exception as exc:
+                _ra().logger.debug("Local server type detection failed: %s", exc)
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # api_key may be a callable (Entra token provider); detection needs a string.

@@ -190,13 +190,13 @@ class TestCustomReasoningWireShape:
 
 
 class TestCustomReasoningWithNumCtx:
-    """Ollama num_ctx and reasoning are independent and compose."""
+    """num_ctx is applied only by the Ollama native transport, never OpenAI /v1."""
 
     def test_num_ctx_alone(self, custom_profile):
         eb, tl = custom_profile.build_api_kwargs_extras(
             reasoning_config=None, ollama_num_ctx=8192, model="qwen3"
         )
-        assert eb == {"options": {"num_ctx": 8192}}
+        assert eb == {}
         assert tl == {}
 
 

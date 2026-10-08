@@ -21,7 +21,7 @@ def _is_windows() -> bool:
 #: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
 #: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
 #: hermes_cli/_launchers.py and scripts/install.ps1.
-_WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
+_WINDOWS_BIN_LAUNCHERS = ("hermes", "lia", "hermes-acp")
 
 
 def _normalize_windows_path(value) -> str:

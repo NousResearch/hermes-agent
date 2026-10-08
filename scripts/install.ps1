@@ -1072,7 +1072,7 @@ function Invoke-SourceCompletion([bool]$Desktop) {
         Pop-Location
     }
     if ($code) { Fail "app products or command publication failed (exit $code)" products_build_failed }
-    Write-Ok "app products and hermes command ready"
+    Write-Ok "app products and LiaAgent commands ready"
 }
 
 function Publish-UserCommand {
@@ -1084,14 +1084,14 @@ function Publish-UserCommand {
     $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
     try {
-        Invoke-Logged "Publishing the hermes command" { & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir }
+        Invoke-Logged "Publishing LiaAgent commands" { & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir }
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
     }
     if ($code) { Fail "launcher staging failed" products_build_failed }
     Set-LauncherUserPath $binDir
-    Write-Ok "hermes command installed at $binDir"
+    Write-Ok "LiaAgent commands installed at $binDir"
 }
 
 function Test-DesktopProductPresent {
@@ -1253,7 +1253,7 @@ function Stage-Complete {
             completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
         }
         $marker | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8
-        Write-Ok "Hermes Agent install complete (pinned $commit). Run: hermes"
+        Write-Ok "LiaAgent install complete (pinned $commit). Run: lia"
     }
 }
 

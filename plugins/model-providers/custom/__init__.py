@@ -58,10 +58,11 @@ class CustomProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
-        if ollama_num_ctx:
-            extra_body["options"] = {"num_ctx": ollama_num_ctx}
-        # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
-        # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
+        # Ollama's OpenAI-compatible /v1 route silently ignores options.num_ctx.
+        # Local custom Ollama requests use the native /api/chat adapter, which
+        # translates the configured ceiling into its supported options field.
+        # disabled -> top-level reasoning_effort="none" plus think=False on
+        # Ollama URLs (the native adapter forwards it to /api/chat); enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,
         # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); None ->
         # omit so the server default applies (auxiliary calls without an effort, and

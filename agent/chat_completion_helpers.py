@@ -776,6 +776,14 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         return agent._anthropic_messages_create(api_kwargs, client=request_client)
     if agent.api_mode == "bedrock_converse":
         return _bedrock_converse_call(api_kwargs, stream=False)
+    if getattr(agent, "_ollama_native_api", False):
+        from agent.ollama_chat import create_completion
+
+        request_client = make_client("ollama_native_request")
+        return create_completion(
+            agent, api_kwargs, timeout=api_kwargs.get("timeout"), stream=False,
+            http_client=getattr(request_client, "_client", None),
+        )
     if agent.provider == "moa":
         # MoA is a virtual provider backed by the in-process MoAClient facade — never
         # rebuild a request-local client from the virtual metadata. After a client
@@ -3114,6 +3122,19 @@ class _StreamingCall(StreamingWaitMonitor):
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
+            if getattr(self.agent, "_ollama_native_api", False):
+                from agent.ollama_chat import create_completion
+
+                stream_kwargs = {**next_api_kwargs, "stream": True}
+                request_client = self._attempt_request_client = self.clients.set_client(
+                    self.agent._create_request_openai_client(
+                        reason="chat_completion_stream_request", api_kwargs=stream_kwargs,
+                    )
+                )
+                return create_completion(
+                    self.agent, stream_kwargs, timeout=timeout, stream=True,
+                    http_client=getattr(request_client, "_client", None),
+                )
             return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
 
         def _flush_pending_stream_text():

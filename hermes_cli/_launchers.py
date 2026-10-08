@@ -99,12 +99,13 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
-WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
+WINDOWS_BIN_LAUNCHERS = ("hermes", "lia", "hermes-acp")
 
 #: command name -> (entry module, callable) — mirrors pyproject.toml
 #: [project.scripts].
 ENTRY_POINTS = {
     "hermes": ("hermes_cli.main", "main"),
+    "lia": ("hermes_cli.main", "main"),
     "hermes-acp": ("acp_adapter.entry", "main"),
 }
 
@@ -902,7 +903,7 @@ def _symlink_sealed_launchers(payload_bin) -> dict:
     written: list[str] = []
     try:
         link_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        for name in ("hermes", "lia", "hermes-agent", "hermes-acp"):
             source = payload_bin / name
             if not source.is_file():
                 continue

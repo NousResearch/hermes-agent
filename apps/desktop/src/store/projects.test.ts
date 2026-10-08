@@ -943,6 +943,30 @@ describe('repository discovery policy', () => {
     })
   })
 
+  it('carries the gateway error when the record call is refused', async () => {
+    // A refused `record_repos` (a contract mismatch, a stale backend) is the one failure the user can
+    // act on, so its message must survive as the outcome's detail.
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.tree') {
+        return { active_id: null, projects: [], scoped_session_ids: [] }
+      }
+
+      throw new Error('invalid params for projects.record_repos: discovery_policy.nested: extra_forbidden')
+    })
+
+    gatewayWith(request)
+    desktopGit.mockReturnValue({ scanRepos: vi.fn().mockResolvedValue([]) } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '~/Developer/pasei' }
+    })
+
+    await expect(scanAndRecordRepos(true)).resolves.toEqual({
+      detail: 'invalid params for projects.record_repos: discovery_policy.nested: extra_forbidden',
+      reason: 'failed'
+    })
+  })
+
   it("scans the profile's working directory when no roots are configured", async () => {
     const request = vi.fn(async (method: string) =>
       method === 'projects.tree'

@@ -57,7 +57,9 @@ export function RepoScanSetting() {
         return copy.rejected
 
       case 'failed':
-        return copy.failed
+        // The gateway's message names the exact key it refused; "the scan failed" alone sends the
+        // user (and whoever reads the report) nowhere.
+        return outcome.detail ? copy.failedWith(outcome.detail) : copy.failed
 
       default:
         return copy.hint

@@ -935,6 +935,7 @@ export interface Translations extends NoticeTranslations {
       noBridge: string
       rejected: string
       failed: string
+      failedWith: (detail: string) => string
     }
     poolLimits: {
       warmBotBackendsAria: string

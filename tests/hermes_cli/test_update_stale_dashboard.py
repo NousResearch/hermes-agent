@@ -24,6 +24,9 @@ import pytest
 from hermes_cli.main_dashboard import _find_stale_dashboard_pids
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
+from hermes_cli import main  # noqa: F401 — collection-time import: in-test ``patch("hermes_cli.main.…")``
+# must not trigger the module's import-time recovery probes under a linked worktree (its .git
+# file points into the shared checkout's git dir, which the home I/O guard treats as real state).
 from hermes_cli import main_dashboard
 from hermes_cli import update_cmd_maint
 
@@ -295,8 +298,11 @@ class TestDashboardUpdateCleanup:
         ) as kill:
             update_cmd_maint._refresh_dashboard_after_update()
 
-        # The sweep only touches this home's backends (#113978).
-        assert kill.call_args.kwargs["scope_home"] == str(own_home)
+        # The sweep scopes to the homes this update owns — the invoking home plus the install
+        # root and profiles (#93349 rule) — never another install's backends (#113978).
+        kwargs = kill.call_args.kwargs
+        assert not kwargs.get("scope_home")
+        assert {Path(h) for h in kwargs["scope_homes"]} >= {own_home.resolve(), tmp_path.resolve()}
         assert "stopped during update" not in capsys.readouterr().out
 
 
@@ -918,6 +924,51 @@ class TestLaunchdSupervisedBackends:
         restart.assert_not_called()
         respawn.assert_called_once_with([list(self.ARGV)])
         assert result["unrecovered"] == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + kickstart")
+    def test_install_root_backend_under_profile_invoked_update_is_kickstarted(self, monkeypatch, tmp_path):
+        """#116503 follow-up: the update runs under ``<root>/profiles/<name>`` while launchd-owned
+        backends live on the install root. Scoping the cleanup to the update's whole install
+        (invoking home + root + profiles) makes the root-home backend a kickstart candidate —
+        an exact invoking-home match never saw it, so its restart never fired and the run ended
+        with ``unaccounted`` rows (exit 1, receipt ``partial``)."""
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "work"
+        monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes",
+                            lambda exclude_pids=None: [(9102, " ".join(self.ARGV))])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: [])
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda pid, ancestors: False)
+        monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: str(root))
+        job = ("gui/501", "ai.hermes.dashboard", list(self.ARGV), None)
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=[job]), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=True) as restart, \
+             patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]), \
+             patch("os.kill", side_effect=self._fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, scope_homes={str(profile_home), str(root)})
+
+        restart.assert_called_once_with("gui/501", "ai.hermes.dashboard", None)
+        respawn.assert_not_called()
+        assert result["killed"] == [9102] and result["unrecovered"] == []
+
+        # The exact invoking-home scope (the old behaviour) must still miss the root backend,
+        # so the widened scope is what carries the regression.
+        monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes",
+                            lambda exclude_pids=None: [(9103, " ".join(self.ARGV))])
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=True) as restart, \
+             patch("os.kill", side_effect=self._fake_kill), \
+             patch("time.sleep"):
+            missed = _kill_stale_dashboard_processes(
+                restart_managed=True, scope_home=str(profile_home))
+        restart.assert_not_called()
+        assert missed["matched"] == []
 
     def test_launchd_job_attribution_is_by_live_pid_ancestor_or_exact_argv(self):
         """A PID is attributed to a loaded launchd backend job by launchd's live PID, by a live-PID

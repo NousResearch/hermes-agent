@@ -1,5 +1,6 @@
 """display.bell_on_prompt / bell_on_complete also drive OSC 9 + Warp OSC 777 via _ring_bell."""
 
+import io
 import json
 
 import pytest
@@ -89,3 +90,21 @@ def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(mo
     assert len(_Loop.queued) == 1
     _Loop.queued[0]()
     assert _Output.raw == ["\a\x1b]9;Hermes: turn complete\x07", "<flush>"]
+
+
+@pytest.mark.parametrize("unpaired_surrogate", ["\udc80", "\udfff"])
+def test_no_app_notification_falls_back_when_tty_cannot_encode(monkeypatch, unpaired_surrogate):
+    """A no-app notification cannot abort the caller on malformed display text."""
+    tty = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    fallback = io.StringIO()
+    monkeypatch.setattr(terminal_notify, "open", lambda *_args, **_kwargs: tty, raising=False)
+    monkeypatch.setattr(terminal_notify.sys, "stdout", fallback)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.bell_on_prompt = True
+    cli._app = None
+
+    context = f"unlock item{unpaired_surrogate}"
+    cli._ring_bell(prompt=True, context=context)
+
+    assert fallback.getvalue() == "\a" + terminal_notify.osc9(f"Hermes: {context}")

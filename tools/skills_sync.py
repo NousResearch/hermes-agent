@@ -199,6 +199,28 @@ def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
     return hasher.hexdigest()
 
 
+def _backfill_existing_bundled_provenance(
+    manifest: Dict[str, str], bundled_skills: List[Tuple[str, Path]]
+) -> None:
+    """Recover manifest entries for pristine bundled copies restored at another path.
+
+    Backups can restore a skills tree before a fresh sync has written the manifest. Match by
+    frontmatter name and content rather than destination path so recategorized/restored copies
+    regain built-in provenance without overwriting user edits.
+    """
+    if not _skills_dir().exists():
+        return
+    active_by_name: Dict[str, List[Path]] = {}
+    for skill_md in _iter_active_skill_mds():
+        active_by_name.setdefault(_read_skill_name(skill_md, skill_md.parent.name), []).append(skill_md.parent)
+    for skill_name, skill_src in bundled_skills:
+        if skill_name in manifest:
+            continue
+        bundled_hash = _dir_hash(skill_src)
+        if any(_dir_hash(candidate) == bundled_hash for candidate in active_by_name.get(skill_name, [])):
+            manifest[skill_name] = bundled_hash
+
+
 def _matches_origin_hash(directory: Path, origin_hash: str, user_hash: Optional[str] = None) -> bool:
     """Prove unchanged package ownership against a clean OR exact legacy hash.
 
@@ -411,6 +433,7 @@ def sync_skills(quiet: bool = False) -> dict:
     suppressed = _read_suppressed_names()
     external_index = _build_external_skill_index()
     st = _SyncState(manifest=_read_manifest(), quiet=quiet)
+    _backfill_existing_bundled_provenance(st.manifest, bundled_skills)
 
     for skill_name, skill_src in bundled_skills:
         # Curator-pruned built-ins must not resurrect on every update; essentials are exempt.

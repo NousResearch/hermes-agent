@@ -35,6 +35,7 @@ if "hermes_plugins.otto_counterpoint" not in sys.modules:
 
 from hermes_plugins.otto_counterpoint.controller import CounterpointController
 from hermes_plugins.otto_counterpoint.counterpoint import HermesRuntime
+from scripts.otto_counterpoint_plugin_smoke import _workflow_smoke_passed
 
 
 class _State:
@@ -82,6 +83,14 @@ def test_discover_uses_launcher_runtime_and_checkout_root(tmp_path, monkeypatch)
     assert runtime.runtime_python == launcher
     assert runtime.source_root == Path(__file__).resolve().parents[2]
     assert runtime.worker_script == _PLUGIN_DIR / "hermes_counterpoint_worker.py"
+
+
+def test_smoke_gate_rejects_blocked_workflow():
+    blocked = SimpleNamespace(status="blocked", decision=SimpleNamespace(verdict="block"))
+    accepted = SimpleNamespace(status="succeeded", decision=SimpleNamespace(verdict="accept_local"))
+
+    assert _workflow_smoke_passed(blocked) is False
+    assert _workflow_smoke_passed(accepted) is True
 
 
 def test_low_risk_turn_is_admitted_directly_without_tool_block(tmp_path):

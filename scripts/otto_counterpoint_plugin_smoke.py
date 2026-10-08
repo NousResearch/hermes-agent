@@ -19,6 +19,14 @@ _RESPONSE = (
 )
 
 
+def _workflow_smoke_passed(result: object) -> bool:
+    """Return whether the full smoke reached a locally accepted terminal result."""
+    return bool(
+        getattr(result, "status", None) == "succeeded"
+        and getattr(getattr(result, "decision", None), "verdict", None) == "accept_local"
+    )
+
+
 def _load_controller():
     namespace = types.ModuleType("hermes_plugins")
     namespace.__path__ = []
@@ -101,6 +109,7 @@ def main() -> int:
                 if "--debug" in sys.argv:
                     error = f"{type(exc).__name__}:{exc}"
                 print(json.dumps({"probe": "failed", "error": error}, sort_keys=True))
+                return 1
             return 0
         if "--critic-probe" in sys.argv:
             from hermes_plugins.otto_counterpoint.counterpoint import Artifact, HermesCounterpointCallbacks
@@ -151,6 +160,7 @@ def main() -> int:
                 )
             except Exception:  # health: allow BLE001 -- diagnostic branch emits only bounded metadata
                 print(json.dumps({"critic_probe": "failed", "error": "critic_probe_failed"}, sort_keys=True))
+                return 1
             return 0
         transformed = controller.on_transform_llm_output(
             response_text=_RESPONSE,
@@ -162,6 +172,7 @@ def main() -> int:
         events = controller.ledger.list_run("cp-smoke-turn")
         pending = controller.pending("smoke-turn")
         result = controller.last_results.get("smoke-turn")
+        smoke_passed = _workflow_smoke_passed(result)
         print(
             json.dumps(
                 {
@@ -184,6 +195,7 @@ def main() -> int:
                 sort_keys=True,
             )
         )
+        return 0 if smoke_passed else 1
     return 0
 
 

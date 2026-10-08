@@ -1546,9 +1546,14 @@ class TestV1SpecRegressionFixes:
 
         async def run():
             assert await adapter.connect() is True
-            resp = await asyncio.to_thread(_post_json, base + "/", {
-                "jsonrpc": "2.0", "id": "v", "method": "GetTask", "params": {"id": "t"}}, {"A2A-Version": "9.9"})
-            assert resp["error"]["code"] == -32009
+            # Negotiation is on Major.Minor: patch numbers are accepted (the unknown task then
+            # yields TaskNotFound), any other Major.Minor is VersionNotSupported.
+            for version, code in (("1.0", -32001), ("1.0.0", -32001), ("1.0.1", -32001),
+                                  ("1.1", -32009), ("2.0.0", -32009), ("0.3", -32009), ("9.9", -32009)):
+                resp = await asyncio.to_thread(_post_json, base + "/", {
+                    "jsonrpc": "2.0", "id": "v", "method": "GetTask", "params": {"id": "t"}},
+                    {"A2A-Version": version})
+                assert resp["error"]["code"] == code, version
             resp = await asyncio.to_thread(post_array)
             assert resp["error"]["code"] == -32600
             await adapter.disconnect()

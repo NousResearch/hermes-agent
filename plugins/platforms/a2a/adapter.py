@@ -63,6 +63,11 @@ _METHODS: dict[str, tuple[str, bool]] = {
 }
 
 
+def _version_supported(version: str) -> bool:
+    """A2A negotiates on ``Major.Minor`` only; patch numbers never affect compatibility."""
+    return ".".join(version.split(".")[:2]) == protocol.PROTOCOL_VERSION
+
+
 def _reply_timeout() -> float:
     """Seconds to wait for the agent to answer an inbound task."""
     try:
@@ -235,7 +240,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         # (the rate limiter must not be consulted for requests rejected before it).
         checks = (
             (lambda: not isinstance(params, dict), 200, protocol.ERR_INVALID_PARAMS, "params must be an object"),
-            (lambda: version and version not in {"1.0", "1.0.0"}, 200, protocol.ERR_VERSION_NOT_SUPPORTED, f"unsupported A2A-Version: {version}"),
+            (lambda: version and not _version_supported(version), 200, protocol.ERR_VERSION_NOT_SUPPORTED, f"unsupported A2A-Version: {version}"),
             (lambda: route.get("error"), 400, protocol.ERR_INVALID_PARAMS, route.get("error")),
             (lambda: not adapter._rate_limiter.allow(identity), 429, protocol.ERR_RATE_LIMITED, "rate limit exceeded"),
             (lambda: not adapter._security_context.is_trusted_peer(identity), 403, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"),

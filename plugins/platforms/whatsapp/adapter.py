@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import dataclasses
 import logging
 import mimetypes
 import os
@@ -9,6 +10,7 @@ import platform
 import re
 import signal
 import subprocess
+from datetime import datetime, timezone
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -913,14 +915,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
                         for msg_data in await resp.json():
+                            # Observed-context collector runs BEFORE the trigger gate so a skipped
+                            # group message is stored (never dispatched) when configured.
+                            if not msg_data.get("isGroup", False) or not msg_data.get("fromMe", False):
+                                if self._whatsapp_should_observe_unmentioned_group_message(msg_data):
+                                    await self._observe_unmentioned_group_message(msg_data)
                             event = await self._build_message_event(msg_data)
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
+                                    self._enqueue_text_event(self._apply_whatsapp_group_observe_attribution(event))
                                 else:
-                                    await self.handle_message(event)
+                                    await self.handle_message(self._apply_whatsapp_group_observe_attribution(event))
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1021,10 +1028,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
         return accepted
 
-    async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data, downloading images to cache."""
+    async def _build_message_event(self, data: Dict[str, Any], *, _skip_policy_gate: bool = False) -> Optional[MessageEvent]:
+        """Build a MessageEvent from bridge message data, downloading images to cache.
+
+        ``_skip_policy_gate=True`` is for the observed-context collector: the message already passed
+        ``_whatsapp_should_observe_unmentioned_group_message``, so the trigger gate must not re-drop it.
+        """
         try:
-            if not self._should_process_message(data):
+            if not _skip_policy_gate and not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
@@ -1210,6 +1221,8 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+    ("observe_unmentioned_group_messages", "WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "lower"),
+    ("observe_allowed_chats", "WHATSAPP_OBSERVE_ALLOWED_CHATS", "csv"),
 )
 
 

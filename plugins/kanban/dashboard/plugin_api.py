@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -68,8 +69,14 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     if board is None or board == "":
         return None
     normed = _normalize_slug_or_400(board)
-    if normed and normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
-        raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+    if normed and normed != kanban_db.DEFAULT_BOARD:
+        if not kanban_db.board_exists(normed):
+            raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+        # An archived board has a tombstone board.json; it must not be openable
+        # (connect() would refuse anyway) — a stale dashboard tab gets a clean
+        # 404 instead of a resurrection or a 500 (#43243).
+        if kanban_db.read_board_metadata(normed).get("archived"):
+            raise HTTPException(status_code=404, detail=f"board {normed!r} is archived")
     return normed
 
 
@@ -164,9 +171,9 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 
 # --- Serialization helpers --------------------------------------------------
 
-# Dashboard columns, left-to-right ("archived" is a filter toggle, not a column). Keep in
-# sync with kanban_db.VALID_STATUSES — a status missing here gets mis-bucketed into ``todo``.
-BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
+# Dashboard columns, left-to-right ("archived" is a filter toggle, not a column), from the
+# one workflow definition. A status missing here gets mis-bucketed into ``todo``.
+BOARD_COLUMNS: list[str] = list(kanban_workflow.DEFAULT_WORKFLOW.keys())
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
@@ -1620,6 +1627,14 @@ class OrchestrationSettingsBody(BaseModel):
 _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 
 
+@router.get("/workflow")
+def get_workflow():
+    """Board columns (order, label, icon, drag target) and the manual move
+    allow-list. Every board uses the default workflow today; per-board
+    workflows (``board.json``) arrive in a later phase behind this same shape."""
+    return kanban_workflow.DEFAULT_WORKFLOW.to_dict()
+
+
 @router.get("/orchestration")
 def get_orchestration_settings():
     """Current orchestration knobs from config.yaml plus the resolved effective
@@ -1714,6 +1729,19 @@ def _ws_board(raw: Optional[str]) -> Optional[str]:
         return None
 
 
+def _ws_board_live(normed: Optional[str]) -> Optional[str]:
+    """Require an already-normalised slug to name a *live* board.
+
+    A stale dashboard tab can keep its old board slug around after the board
+    was archived or deleted; the event stream must reject it instead of handing
+    it to ``connect(board=slug)``, which would resurrect an empty board (#43243).
+    Returns ``None`` when the board is unknown/archived.
+    """
+    if not normed or normed == kanban_db.DEFAULT_BOARD:
+        return normed
+    return normed if kanban_db.board_exists(normed) else None
+
+
 class _EventTail:
     """Per-socket ``task_events`` tailer. One SQLite connection, used/closed only on a
     dedicated single-thread executor (connections are thread-affine); reusing it avoids
@@ -1784,7 +1812,14 @@ async def stream_events(ws: WebSocket):
     await ws.accept()
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.
-    tail = _EventTail(_ws_board(ws.query_params.get("board")))
+    raw_board = _ws_board(ws.query_params.get("board"))
+    board = _ws_board_live(raw_board)
+    if raw_board is not None and board is None:
+        # Stale tab: the slug names an archived or deleted board. Close the
+        # stream instead of connecting, which would resurrect the board (#43243).
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+    tail = _EventTail(board)
     since = _since_param(ws)
     try:
         # Capture the tail at accept, before the first wait, so an event that

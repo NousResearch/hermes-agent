@@ -48,15 +48,23 @@ function isFreeTierStatus(value: unknown): value is FreeTierStatus {
  * cadence (the ambient status snapshot) or a seam that just changed the answer
  * (boot, a completed sign-in, an acknowledged notice).
  *
+ * `isCurrent` lets a caller whose read belongs to one backend/profile drop a
+ * reply that lands after that scope moved: the atom is single and shared, so an
+ * in-flight read from the previous profile must not repaint the new one. Omit
+ * it where the read cannot outlive its scope.
+ *
  * A failed read leaves the last known answer in place rather than blanking the
  * chrome — an older backend without the method, or a gateway flap, is not
  * evidence that the free tier went away.
  */
-export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+export async function refreshFreeTierStatus(
+  requestGateway: FreeTierRequester,
+  isCurrent?: () => boolean
+): Promise<FreeTierStatus | null> {
   try {
     const status = await requestGateway<FreeTierStatus>('free_tier.status')
 
-    if (!isFreeTierStatus(status)) {
+    if (!isFreeTierStatus(status) || (isCurrent && !isCurrent())) {
       return $freeTierStatus.get()
     }
 

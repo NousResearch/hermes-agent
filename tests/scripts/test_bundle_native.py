@@ -250,6 +250,16 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert not (output / "hermes-agent/untracked").exists()
     assert not (output / "hermes-agent/.git").exists()
     facts = Facts(output / "tools/facts.json")
+    venv_fact = facts.get("venv")
+    assert venv_fact is not None
+    assert venv_fact["extras"] == json.loads((output / "enabled-features.json").read_text())["extras"]
+    assert "environment" not in venv_fact
+    from pm.install import venv_is_current
+    with monkeypatch.context() as patch:
+        # The desktop app points the bundled backend's store at the payload's tools dir.
+        patch.setenv("HERMES_RUNTIME_DIR", str(output / "tools"))
+        patch.setattr("pm.paths.repo_root", lambda: output / "hermes-agent")
+        assert venv_is_current(project_root=output / "hermes-agent")
     for name in stale:
         assert facts.get(name) is None
         assert not (output / "tools" / f"cached-{name}").exists()

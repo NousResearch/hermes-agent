@@ -4987,7 +4987,7 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
         server._sessions.pop("slow-close", None)
 
     assert not thread.is_alive()
-    assert response["result"] == {"closed": True}
+    assert response["result"] == {"closed": True, "messages": []}
 
 
 def test_session_close_settles_active_turn_before_teardown(monkeypatch):
@@ -5040,7 +5040,7 @@ def test_session_close_settles_active_turn_before_teardown(monkeypatch):
 
     assert not close_thread.is_alive()
     assert teardown_started.is_set()
-    assert response["result"] == {"closed": True}
+    assert response["result"] == {"closed": True, "messages": []}
 
 
 def test_ws_orphan_reap_interrupts_isolated_turn_then_reaps(monkeypatch):

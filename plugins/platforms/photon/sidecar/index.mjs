@@ -572,6 +572,24 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
+  // iMessage threaded (swipe) reply: spectrum 12.x wraps it as
+  // {type: "reply", content: <inner Content>, target: <Message>}. Normalise the
+  // inner content with the normal ladder and carry a light pointer to the
+  // quoted message, so Python can unwrap it instead of dropping the user's
+  // words as "content type not handled" (#100663).
+  if (content.type === "reply") {
+    const target = content.target;
+    return {
+      type: "reply",
+      content:
+        content.content && typeof content.content === "object"
+          ? await normalizeContent(content.content)
+          : { type: "unknown" },
+      targetMessageId: target?.id ?? null,
+      targetDirection: target?.direction ?? null,
+      targetText: reactionTargetText(target),
+    };
+  }
   // A user tapping a poll choice arrives as `poll_option` carrying the chosen
   // option title + whether it was selected (true) or deselected (false). This
   // is how a native iMessage poll's vote streams back — Python turns a

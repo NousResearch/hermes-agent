@@ -769,16 +769,15 @@ def test_memory_manager_module_identity_survives_fresh_agent_fixture():
     """A fresh-agent fixture must not strand this module's imported class.
 
     ``test_empty_tool_name_loop_dampening.agent_env`` deliberately imports a
-    fresh ``agent.*`` tree.  Its teardown must restore the tree because this
-    module imported ``MemoryManager`` during collection; otherwise the
-    aggregate-budget test patches a different module object than the class it
-    exercises and a provider exception drops its context.
+    fresh ``agent.*`` tree. Its teardown must restore the tree because this
+    module imported ``MemoryManager`` during collection; the operation-level
+    budget constants are read from the manager module at runtime.
     """
     import agent.memory_manager as current_memory_manager
 
     assert current_memory_manager.MemoryManager is MemoryManager
     assert (
-        MemoryManager._normalize_prefetch_result.__globals__
+        MemoryManager.prefetch_all_result.__globals__
         is current_memory_manager.__dict__
     )
 
@@ -1088,13 +1087,13 @@ def test_malformed_observation_tail_shares_operation_traversal_budget(
     candidate fails on its first budget decrement and the tail is dropped
     without deep recursion — while the earlier valid prefix stays admitted.
     """
-    import agent.memory_provider as memory_provider_module
+    import agent.memory_provider_freeze as memory_provider_freeze_module
 
     _disable_hook(monkeypatch)
     _stub_direct_prefetch(monkeypatch)
 
     calls = [0]
-    original_freeze = memory_provider_module._freeze_json_value
+    original_freeze = memory_provider_freeze_module._freeze_json_value
 
     def counting_freeze(value, *, depth=0, budget=None, operation_budget=None):
         calls[0] += 1
@@ -1106,7 +1105,7 @@ def test_malformed_observation_tail_shares_operation_traversal_budget(
         )
 
     monkeypatch.setattr(
-        memory_provider_module, "_freeze_json_value", counting_freeze
+        memory_provider_freeze_module, "_freeze_json_value", counting_freeze
     )
 
     valid_prefix = _observation({"index": 0})

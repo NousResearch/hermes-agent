@@ -1282,3 +1282,145 @@ async def test_resolvable_effort_reaches_the_transport_as_an_ordinal_tag():
             "Fix login · gpt-x · high"]
     finally:
         db.close()
+
+
+# --- Turn-end recompose after an agent-initiated rename (ticket t_55277241) ---
+
+def _turn_runner(runner, source, *, session_key="agent:main:telegram:group:-101", loop=None):
+    """A TurnRunner wired the way run_sync sees it: ctx source/key plus the gateway loop
+    ``_loop_for_step`` the thread->loop hop targets."""
+    ctx = TurnContext(source=source, session_key=session_key)
+    ctx._loop_for_step = loop if loop is not None else asyncio.get_running_loop()
+    return TurnRunner(runner, ctx)
+
+
+@pytest.mark.asyncio
+async def test_turn_end_recompose_picks_up_agent_rename():
+    """An agent-initiated ``hermes sessions rename`` mid-turn reaches the group name at turn
+    end: the hook schedules the recompose on the gateway loop from run_sync's executor
+    thread, and the lane composes from the store the CLI just wrote. The recompose rides the
+    existing scheduler, so the read-back dedupe means a turn that renamed nothing issues no
+    extra transport call (the assert on ``renames`` at the end)."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        # The pre-rename state: the auto-titler already published this name.
+        _title_session(db, "session-turnend", title="Old subject", model="openrouter/gpt-x",
+                       started_at=time.time())
+        await _run_lane(runner, source, "session-turnend", "Old subject")
+        assert adapter._bot.titles["-101"] == compose_group_title(
+            "Old subject", "openrouter/gpt-x", None)
+
+        # The agent renames the session mid-turn through the CLI (store write, no title event).
+        assert db.set_session_title("session-turnend", "Agent renamed subject")
+        _install_store(runner, session_id="session-turnend")
+        tr = _turn_runner(runner, source)
+        # run_sync's body runs in an executor thread: drive the hook from off-loop, exactly
+        # like production, so a get_running_loop-based door would silently no-op here.
+        result = {"interrupted": False, "failed": False}
+        await asyncio.to_thread(tr._maybe_recompose_telegram_group_title_after_turn, result)
+        await _await_renames(adapter._bot, 2)
+
+        assert adapter._bot.renames[-1][1] == compose_group_title(
+            "Agent renamed subject", "openrouter/gpt-x", None)
+        assert adapter._bot.titles["-101"] == compose_group_title(
+            "Agent renamed subject", "openrouter/gpt-x", None)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_recompose_dedupes_when_nothing_changed():
+    """Same hook, no rename during the turn: the read-back dedupe inside the existing lane
+    sees the composed title already applied and issues no Telegram call — the recompose is a
+    no-op that spends nothing, not an unconditional rename (criterion: budget/dedupe still
+    apply through the turn-end door)."""
+    adapter = _adapter()
+    bot = _recorder(adapter)
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    db = _ambient_db()
+    try:
+        _title_session(db, "session-dedupe", title="Stable subject", model="openrouter/gpt-x",
+                       started_at=time.time())
+        await _run_lane(runner, source, "session-dedupe", "Stable subject")
+        renames_before = len(bot.renames)
+
+        _install_store(runner, session_id="session-dedupe")
+        tr = _turn_runner(runner, source)
+        await asyncio.to_thread(
+            tr._maybe_recompose_telegram_group_title_after_turn, {"interrupted": False})
+        # Give the scheduled recompose ample time to (wrongly) rename, then prove it didn't.
+        await asyncio.sleep(0.2)
+        assert len(bot.renames) == renames_before
+        assert _rename_counts(runner, source, "session-dedupe") == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_does_not_recompose():
+    """An interrupted turn must not schedule the recompose: that is exactly when a ``/new``
+    reset may be racing session state, and a store read at that moment could name the group
+    after a session the reset is about to discard (documented guard). Stubbed at the door
+    seam production calls, so a guard regression surfaces as a call, not a silent rename."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    notices = []
+    runner._notify_telegram_group_title_of_switch = (
+        lambda source, session_key: notices.append((source, session_key)))
+    tr = _turn_runner(runner, source)
+
+    await asyncio.to_thread(
+        tr._maybe_recompose_telegram_group_title_after_turn, {"interrupted": True})
+    await asyncio.sleep(0.05)
+
+    assert notices == []
+    assert _recorder(adapter).renames == []
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,chat_type", [
+    (Platform.TELEGRAM, "dm"), (Platform.TELEGRAM, "channel"),
+    (Platform.DISCORD, "group"), (Platform.SLACK, "group"),
+])
+async def test_turn_end_recompose_skips_non_group_and_non_telegram(platform, chat_type):
+    """Non-Telegram and DM/channel sources schedule nothing at turn end: the guard mirrors
+    ``_attach_session_title_callback`` so no pointless hop is ever scheduled (criterion).
+    Asserted at the door seam production calls."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    notices = []
+    runner._notify_telegram_group_title_of_switch = (
+        lambda source, session_key: notices.append((source, session_key)))
+    source = SessionSource(platform=platform, chat_id="-101", chat_type=chat_type)
+    tr = _turn_runner(runner, source)
+
+    await asyncio.to_thread(
+        tr._maybe_recompose_telegram_group_title_after_turn, {"interrupted": False})
+    await asyncio.sleep(0.05)
+
+    assert notices == []
+    assert _recorder(adapter).renames == []
+
+
+@pytest.mark.asyncio
+async def test_turn_end_recompose_never_raises_into_the_turn():
+    """The hook is best-effort by contract: a scheduling seam that explodes (runner without
+    the recompose attribute, dead loop) must not break the turn result."""
+    adapter = _adapter()
+    runner = _wired_runner(adapter)
+    runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(extra={})})
+    source = adapter.build_source(chat_id="-101", chat_type="group")
+    tr = _turn_runner(runner, source, loop=None)  # no loop: safe_schedule_threadsafe returns None
+
+    result = {"interrupted": False}
+    await asyncio.to_thread(tr._maybe_recompose_telegram_group_title_after_turn, result)
+
+    assert adapter._bot.renames == []

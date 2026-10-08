@@ -890,6 +890,59 @@ class TurnRunner:
         except Exception:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
+    def _maybe_recompose_telegram_group_title_after_turn(self, result: dict) -> None:
+        """Fire the existing switch-notify door at turn end, so a session title the AGENT renamed
+        mid-turn (``hermes sessions rename`` from the terminal tool) reaches the Telegram group
+        name without a new rename path.
+
+        Mirrors ``_attach_session_title_callback``'s guard: only Telegram group/forum sources.
+        The door itself no-ops elsewhere, but skipping pointless schedules keeps the gateway
+        loop clean on every other lane. Interrupted turns are excluded: that is exactly when a
+        ``/new`` reset may be racing session state, and a recompose reading the store at that
+        moment could publish a name for a session the reset is about to discard.
+
+        run_sync's body runs in an executor thread, where ``get_running_loop`` raises and the
+        door's sync-caller contract is a silent no-op — so hop onto the gateway loop first
+        (``ctx._loop_for_step``, the seam every other thread->loop hop here uses) and fire the
+        door from there: it then creates the recompose task through the SAME scheduler the
+        slash-command callers use and retains it via ``_retain_background_task``. The hop
+        future is observed through a done callback, the fire-and-forget shape of the sibling
+        rename lanes. Never raises and never blocks the turn result: a recompose is
+        best-effort by contract.
+        """
+        try:
+            source = self._ctx.source
+            if result.get("interrupted"):
+                return
+            if getattr(source, "platform", None) != Platform.TELEGRAM or \
+                    getattr(source, "chat_type", None) not in {"group", "forum"}:
+                return
+            runner = self._runner
+            session_key = str(self._ctx.session_key or "")
+
+            async def _notify_on_loop() -> None:
+                # On the gateway loop the door's get_running_loop() probe succeeds, so the
+                # recompose task is created and retained by the door itself — the exact
+                # semantics the slash-command callers already rely on.
+                runner._notify_telegram_group_title_of_switch(source, session_key)
+
+            from gateway.run import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(
+                _notify_on_loop(), self._ctx._loop_for_step, logger=logger,
+                log_message="Telegram group title turn-end recompose failed to schedule",
+            )
+
+            def _log_recompose_failure(fut_) -> None:
+                try:
+                    fut_.result()
+                except Exception:
+                    logger.debug("Telegram group title turn-end recompose failed", exc_info=True)
+
+            if fut is not None:
+                fut.add_done_callback(_log_recompose_failure)
+        except Exception:
+            logger.debug("Telegram group title turn-end recompose failed", exc_info=True)
+
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         from gateway.warning_notifications import is_warning_status, render_notification
@@ -1982,6 +2035,10 @@ class TurnRunner:
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
         }
+        # Turn-end group-title recompose: AFTER _sync_session_after_run so effective_session_id
+        # reflects any in-turn compression rotation, and before either return path below. The
+        # hook is fire-and-forget on the gateway loop; it never blocks the result dict.
+        self._maybe_recompose_telegram_group_title_after_turn(common)
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)

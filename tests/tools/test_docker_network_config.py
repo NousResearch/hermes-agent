@@ -6,8 +6,29 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
+import json
+import pytest
+
 import tools.terminal_tool as terminal_tool
 from tools.environments import docker as docker_env
+
+
+@pytest.fixture(autouse=True)
+def isolated_skill_snapshots(monkeypatch, tmp_path):
+    """Use real staged snapshots while keeping tests outside the production data root."""
+    monkeypatch.setenv("HERMES_DOCKER_DATA_ROOT", str(tmp_path / "docker-data"))
+    original = docker_env._skill_mount_plan
+    monkeypatch.setattr(docker_env, "_test_skill_mounts", [], raising=False)
+    def plan(profile):
+        args, digest = original(profile)
+        mounts = []
+        for spec in args:
+            parsed = docker_env._split_volume_spec(spec)
+            if parsed and any(p == "skills" or p.endswith("_skills") for p in parsed[1].split("/")):
+                mounts.append({"Source": parsed[0], "Destination": parsed[1], "RW": False})
+        docker_env._test_skill_mounts = mounts
+        return args, digest
+    monkeypatch.setattr(docker_env, "_skill_mount_plan", plan)
 
 
 def test_terminal_env_config_reads_docker_network_toggle(monkeypatch):
@@ -82,13 +103,14 @@ def _reuse_guard_harness(
             stdout = ""
 
         if len(cmd) > 1 and cmd[1] == "ps":
-            # Matches the egress-aware reuse probe: with egress off the
-            # format string is ID\tState\tEgressLabel and docker renders a
-            # missing label as "<no value>".
-            Result.stdout = "existing-container-id\trunning\t<no value>\n"
+            # Reuse uses the portable ID/State format; labels are filters.
+            Result.stdout = "existing-container-id\trunning\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
             # Two probes share `inspect`: image identity (must match for reuse) and network mode.
-            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
+            if "{{json .Mounts}}" in cmd:
+                Result.stdout = json.dumps(docker_env._test_skill_mounts)
+            else:
+                Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
         elif len(cmd) > 2 and cmd[1:3] == ["image", "inspect"]:
             Result.returncode = 1  # never in the local store: the replacement must go through `pull`
         elif len(cmd) > 1 and cmd[1] == "pull":

@@ -219,6 +219,14 @@ class ProviderProfile:
         """
         return None
 
+    def codex_app_server_runtime_options(self, *, model_config: dict[str, Any]) -> dict[str, Any]:
+        """Optional Codex app-server launch/thread settings for this provider.
+
+        Providers own backend-specific discovery. The shared runtime only forwards
+        ``codex_home`` and ``thread_config``; it does not inspect local router files.
+        """
+        return {}
+
     def build_api_kwargs_extras(
         self,
         *,

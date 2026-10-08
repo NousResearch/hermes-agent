@@ -12,6 +12,7 @@ scrubbing, interpreter/cwd), tools/code_execution_rpc.py (RPC servers).
 """
 
 import json
+import keyword
 import logging
 import os
 import re
@@ -151,7 +152,7 @@ def _missing_hermes_tools_import_hint(m, enabled_tools) -> str:
                 "If that import failed, the generated module may be stale or another "
                 "hermes_tools may be first on sys.path. Check hermes_tools.__file__ "
                 "and retry with reset=true.")
-    available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+    available = sorted(_sandbox_tools_for(enabled_tools))
     return (f"'{missing}' is not available inside the execute_code sandbox. "
             f"Importable tools here: {', '.join(available)}. For anything "
             "else, use the normal tool call instead of execute_code.")
@@ -196,9 +197,13 @@ def generate_hermes_tools_module(enabled_tools: List[str],
     """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
     ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
     header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
+    allowed = _sandbox_tools_for(enabled_tools)
+    stubs = dict(_TOOL_STUBS)
+    for name in allowed - SANDBOX_ALLOWED_TOOLS:
+        stubs[name] = ("**kwargs", '"""Call an enabled tool through the host policy and registry."""', "kwargs")
     return header + "\n".join(
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
-        for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
+        for name, (sig, doc, args_expr) in sorted(stubs.items()) if name in allowed
     )
 
 
@@ -587,8 +592,20 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
 
 
 def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Expose built-ins and only registered tools explicitly opting into code RPC."""
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    enabled = set(enabled_tools)
+    allowed = set(SANDBOX_ALLOWED_TOOLS & enabled)
+    for name in enabled - SANDBOX_ALLOWED_TOOLS:
+        if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name):
+            continue
+        if name == "execute_code":
+            continue
+        entry = registry.get_entry(name)
+        if entry is not None and entry.allow_code_execution is True:
+            allowed.add(name)
+    return frozenset(allowed)
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
@@ -624,6 +641,15 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             env, sandbox_dir, "sandbox.env", "exec python3 script.py",
             rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token)
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
+        from tools.write_boundary import guard_command
+        guarded = guard_command(launch_cmd, env_type=env_type)
+        if guarded is None:
+            return _error_result(
+                "Authority write boundary is unavailable. The code was not run.",
+                tool_calls_made=tool_call_counter[0],
+                duration=round(time.monotonic() - exec_start, 2),
+            )
+        launch_cmd = guarded
         script_result = env.execute(launch_cmd, timeout=timeout)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
@@ -726,6 +752,8 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
+    from tools.write_boundary import wrap_code
+    code = wrap_code(code)
     # Hard-block gateway-lifecycle commands (mirrors the terminal_tool guard — otherwise
     # `os.system("launchctl bootout ...")` here bypasses it and SIGTERMs the gateway mid-task).
     # Gated on PID-file ownership, not the inherited env marker.
@@ -883,6 +911,23 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if mode is None:
         mode = _get_execution_mode()
     tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
+    documented = {name for name, _ in _TOOL_DOC_LINES}
+    # User plugins may opt into the authenticated code RPC. Keep their names
+    # visible to the model without trusting plugin-provided prompt text here.
+    plugin_names = []
+    for name in sorted(enabled_sandbox_tools - documented):
+        if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name):
+            continue
+        entry = registry.get_entry(name)
+        if entry is not None and entry.allow_code_execution is True:
+            plugin_names.append(name)
+    if plugin_names:
+        shown = plugin_names[:32]
+        tool_lines += "\n" + "\n".join(
+            f"  {name}(**kwargs) -> dict  # registered plugin tool" for name in shown
+        )
+        if len(plugin_names) > len(shown):
+            tool_lines += f"\n  ... and {len(plugin_names) - len(shown)} more plugin tools"
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     import_examples = import_examples or sorted(enabled_sandbox_tools)[:2]
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
@@ -957,8 +1002,10 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
     if code is not None and not isinstance(code, str):
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
-    return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+    from tools.code_execution_rpc import rpc_session
+    with rpc_session(kwargs.get("session_id")):
+        return execute_code(code=code or "", task_id=kwargs.get("task_id"),
+                            enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
 
 
 registry.register(

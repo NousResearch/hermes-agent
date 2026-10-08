@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
@@ -49,7 +49,9 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
-    live_home: Any = None  # explicit profile home for transcripts/manifest (#91996); None = ambient resolve
+    # task_index -> child slot id. Keyed by index so a grouped subset stays aligned.
+    child_slots: Dict[int, str] = field(default_factory=dict)
+    live_home: Any = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -59,8 +61,15 @@ class _Batch:
         }
 
     def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
+        from tools.async_delegation import mark_child_running, release_child_slot
         from tools.delegate_tool import _run_single_child
-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        slot_id = self.child_slots.get(i)
+        mark_child_running(slot_id)
+        try:
+            return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        finally:
+            # This child frees its slot even when a sibling in the same unit is still running.
+            release_child_slot(slot_id)
 
 
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
@@ -226,10 +235,9 @@ _SYNC_FALLBACK_NOTES = {
         "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
-    "at_capacity": (
-        "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
-        "SYNCHRONOUSLY and the result is included above. Raise "
-        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
+    "schedule": (
+        "The background executor could not accept this unit, so the subagent(s) ran "
+        "SYNCHRONOUSLY on the child slots already reserved for this call. The result is included above."
     ),
 }
 
@@ -405,7 +413,8 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
                           and unit.live_writers[i].path is not None},
-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        progress_fn=lambda: _batch_progress_token(child_agents),
+        adopted_slots=_unit_slot_ids(unit), **routing,
     )
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
@@ -414,22 +423,66 @@ def _restore_parent_cancellation(unit: _Batch) -> None:
     for _, _, child in unit.children:
         _attach_child(unit.parent_agent, child)
 
+def _unit_slot_ids(unit: _Batch) -> List[str]:
+    return [unit.child_slots[i] for (i, _, _) in unit.children if i in unit.child_slots]
+
+
+def _ensure_child_slots(batch: _Batch, max_children: int) -> Optional[str]:
+    """Reserve every child of this call, or reject the whole call. Slots already on the batch are kept."""
+    if batch.child_slots or not batch.children:
+        return None
+    from tools.async_delegation import capacity_message, try_reserve_children
+    reserved = try_reserve_children(len(batch.children), max_children)
+    if not reserved["ok"]:
+        logger.info("delegate_task: refusing %d child(ren); %s", len(batch.children), reserved)
+        return json.dumps({
+            "status": "rejected", "reason": "capacity",
+            "error": capacity_message(max_children, reserved),
+            "active_children": reserved["active_children"],
+            "reserved_children": reserved["reserved_children"],
+            "available_slots": reserved["available_slots"],
+        }, ensure_ascii=False)
+    indexes = [i for (i, _, _) in batch.children]
+    batch.child_slots = {index: slot_id for index, slot_id in zip(indexes, reserved["slot_ids"])}
+    return None
+
+
+def _rejection_payload(dispatch: dict) -> str:
+    return json.dumps({
+        "status": "rejected", "reason": dispatch.get("reason") or "rejected",
+        "error": dispatch.get("error", ""),
+        "active_children": dispatch.get("active_children"),
+        "reserved_children": dispatch.get("reserved_children"),
+        "available_slots": dispatch.get("available_slots"),
+    }, ensure_ascii=False)
+
+
 def _dispatch_background(batch: _Batch) -> str:
-    """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
-    of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
-    running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
-    async pool is at capacity."""
+    """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON.
+
+    Every child occupies its own slot, reserved before any child is detached. A shortfall rejects
+    the whole call and starts nothing. A session that cannot receive a detached result still runs
+    synchronously, but only after that reservation succeeds. An executor submit failure runs the
+    affected unit inline on the slots it already holds; a capacity rejection never does."""
+    from tools.async_delegation import release_child_slots
     from tools.delegate_tool import _get_max_async_children
+    max_children = _get_max_async_children()
+    rejection = _ensure_child_slots(batch, max_children)
+    if rejection:
+        return rejection
     wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
-        return _run_sync_with_note(batch, "no_async")
+        try:
+            return _run_sync_with_note(batch, "no_async")
+        finally:
+            release_child_slots(_unit_slot_ids(batch))
 
     parent_agent = batch.parent_agent
     session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
     routing = dict(
         session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
-        parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
+        parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=max_children,
     )
 
     units = _units_of(batch)
@@ -451,16 +504,30 @@ def _dispatch_background(batch: _Batch) -> str:
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
         _restore_parent_cancellation(unit)
+        if dispatch.get("reason") == "schedule":
+            if not dispatched:
+                logger.warning(
+                    "delegate_task: executor rejected the first unit (%s); running the reserved batch inline.",
+                    dispatch.get("error"))
+                try:
+                    return _run_sync_with_note(batch, "schedule")
+                finally:
+                    release_child_slots(_unit_slot_ids(batch))
+            # A later unit already holds its slots. Run it inline so the task is not dropped.
+            logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
+            try:
+                inline_results.extend(_execute_and_aggregate(unit)["results"])
+            finally:
+                release_child_slots(_unit_slot_ids(unit))
+            continue
+        # Capacity, retirement, or any other rejection: never turn a shortfall into inline work.
+        release_child_slots(_unit_slot_ids(unit))
         if not dispatched:
-            logger.info(
-                "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
-                dispatch.get("error", "rejected"),
-            )
-            return _run_sync_with_note(batch, "at_capacity")
-        # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
-        # the unit inline so no task is silently dropped.
-        logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit)["results"])
+            return _rejection_payload(dispatch)
+        logger.warning(
+            "delegate_task: unit %d/%d refused after earlier units started: %s",
+            k + 1, len(units), dispatch.get("error"))
+        break
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results
@@ -468,7 +535,6 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
-    # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )

@@ -11,6 +11,7 @@ import logging
 import os
 import posixpath
 import stat
+import threading
 import time
 from contextvars import ContextVar
 from pathlib import Path
@@ -34,8 +35,10 @@ _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_file
 
 # Cache for config-based file list, one entry per profile home (tests reset it).
 _config_files: Dict[str, List[Dict[str, str]]] = {}
-# Reused across calls so sanitized skill copies don't accumulate.
-_safe_skills_tempdir: Path | None = None
+# Keep every sanitized root in one mount batch alive together. A later batch may
+# replace them only after all of its roots have been prepared.
+_safe_skills_tempdirs: list[Path] = []
+_safe_skills_mount_lock = threading.RLock()
 
 
 def _get_registered() -> Dict[str, str]:
@@ -164,6 +167,11 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 # --- Skills directory mounts ---
 
+def iter_skill_directories(container_base: str = "/root/.hermes") -> Iterator[Tuple[Path, str]]:
+    """Public skill roots for persistent Docker snapshots; no temporary copies."""
+    return _skill_dir_roots(container_base)
+
+
 def _skill_dir_roots(container_base: str) -> Iterator[Tuple[Path, str]]:
     """Yield ``(host_dir, container_root)`` for every existing skills directory.
 
@@ -203,13 +211,43 @@ def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[Di
     Bind mounts follow symlinks, so a dir containing any symlink is replaced by a sanitized
     temp copy (regular files only); symlink-free dirs are returned directly, zero overhead.
     """
-    return [_mount(_safe_skills_path(d), cp) for d, cp in _skill_dir_roots(container_base)]
+    global _safe_skills_tempdirs
+    with _safe_skills_mount_lock:
+        prepared: list[Path] = []
+        mounts: list[Dict[str, str]] = []
+        try:
+            for directory, container_path in _skill_dir_roots(container_base):
+                host_path = _safe_skills_path(directory)
+                if host_path != str(directory):
+                    prepared.append(Path(host_path))
+                mounts.append(_mount(host_path, container_path))
+        except Exception:
+            for path in prepared:
+                _delete_safe_skills_copy(path)
+            raise
+        previous = _safe_skills_tempdirs
+        _safe_skills_tempdirs = prepared
+        for path in previous:
+            _delete_safe_skills_copy(path)
+        return mounts
+
+
+def _delete_safe_skills_copy(path: Path) -> None:
+    import shutil
+
+    try:
+        from tools.environments.skill_snapshot import safe_to_delete
+        if not safe_to_delete(path):
+            logger.warning("credential_files: leaving mounted or unverified skills copy %s", path)
+            return
+    except Exception:
+        logger.warning("credential_files: mount check failed; leaving %s", path)
+        return
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
     """Return *skills_dir* if symlink-free, else a sanitized temp copy (same exclusions as sync)."""
-    global _safe_skills_tempdir
-
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
         return str(skills_dir)
@@ -220,16 +258,17 @@ def _safe_skills_path(skills_dir: Path) -> str:
     import shutil
     import tempfile
 
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
-    safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
+    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
+    try:
+        for base, files in _walk_skill_tree(skills_dir):
+            (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
+            for item in files:
+                shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
+    except Exception:
+        _delete_safe_skills_copy(safe_dir)
+        raise
 
-    for base, files in _walk_skill_tree(skills_dir):
-        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
-        for item in files:
-            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
-
-    atexit.register(lambda: safe_dir.is_dir() and shutil.rmtree(safe_dir, ignore_errors=True))
+    atexit.register(lambda path=safe_dir: _delete_safe_skills_copy(path))
     logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
     return str(safe_dir)
 

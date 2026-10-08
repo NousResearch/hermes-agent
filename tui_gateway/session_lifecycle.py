@@ -6,6 +6,7 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 from __future__ import annotations
 
 import logging
+import threading
 
 import contextlib
 
@@ -231,13 +232,31 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
         _release_active_session_slot(session)
 
 
+# API runs share this process and registry, but have no TUI session record.
+# Include their live leases in the orphan sweep until the actual worker exits.
+_api_run_lease_ids: set[str] = set()
+_api_run_lease_lock = threading.Lock()
+
+
+def note_api_run_lease(lease_id: str, *, active: bool) -> None:
+    if not lease_id:
+        return
+    with _api_run_lease_lock:
+        if active:
+            _api_run_lease_ids.add(str(lease_id))
+        else:
+            _api_run_lease_ids.discard(str(lease_id))
+
+
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
     """Snapshot leases still backed by this process's live session records (plus leases deferred past a
     close for an unsettled isolated turn — still ours until the child settles)."""
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
-                } | set(_deferred_active_session_leases)
+        live = {str(lease.lease_id) for session in _sessions.values()
+                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        with _api_run_lease_lock:
+            api_ids = set(_api_run_lease_ids)
+        return live | set(_deferred_active_session_leases) | api_ids
 
 
 @contextlib.contextmanager
@@ -707,6 +726,7 @@ def _interrupt_session_turn(
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        session["_delegation_hold"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1

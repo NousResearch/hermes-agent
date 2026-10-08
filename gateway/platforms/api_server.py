@@ -2343,7 +2343,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        run_limits: Optional[Dict[str, Any]] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2382,6 +2383,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
             enabled_toolsets = list(policy.enabled_toolsets)
             max_iterations = policy.max_iterations
+        from gateway.platforms.api_server_run_limits import (
+            shrink_iterations, shrink_run_budget, shrink_toolsets)
+        limits = run_limits if isinstance(run_limits, dict) else {}
+        enabled_toolsets = shrink_toolsets(enabled_toolsets, limits)
+        max_iterations = shrink_iterations(max_iterations, limits)
+        from agent.agent_init import _normalize_run_budget_seconds
+        agent_section = user_config.get("agent") if isinstance(user_config, dict) else None
+        profile_budget = _normalize_run_budget_seconds(
+            agent_section.get("run_budget_seconds") if isinstance(agent_section, dict) else None)
+        request_budget = shrink_run_budget(profile_budget, limits)
         # Reasoning resolves against the model that actually runs (per-model overrides), so only
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:
@@ -2407,6 +2418,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # The session's provider from the previous request, so its queued recall reaches this turn
             # (#120116); checked back in by the turn's finally.
             "memory_manager": self._memory_sessions.checkout(session_id)}
+        if request_budget is not None:
+            agent_kwargs["run_budget_seconds"] = request_budget
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)

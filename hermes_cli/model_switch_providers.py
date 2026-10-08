@@ -11,6 +11,7 @@ import http.client
 import os
 import time
 import threading as _threading
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
@@ -1302,7 +1303,87 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    rows = _finalize_picker_rows(b.results, user_providers, current_model)
+    _apply_plugin_picker_catalogs(rows, user_providers, non_blocking=non_blocking_catalogs)
+    rows.sort(key=lambda row: (not row["is_current"], -row["total_models"]))
+    return rows
+
+
+def _picker_catalog_base_url(entry: dict) -> str:
+    """Expose endpoint identity to catalog plugins without URL credentials or query secrets."""
+    raw = _entry_base_url(entry, ("base_url", "api", "url"))
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname
+        if parts.scheme not in {"http", "https"} or not host:
+            return ""
+        port = parts.port
+        netloc = f"[{host}]" if ":" in host else host
+        if port is not None:
+            netloc += f":{port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, "", "")).rstrip("/")
+    except ValueError:
+        return ""
+
+
+def _picker_catalog_row(rows: list[dict], provider_key: str) -> dict | None:
+    accepted = {provider_key.strip().lower(), f"custom:{provider_key.strip().lower()}"}
+    for row in rows:
+        identities = {str(row.get("slug") or "").strip().lower()}
+        aliases = row.get("aliases")
+        if isinstance(aliases, (list, tuple, set, frozenset)):
+            identities.update(str(alias).strip().lower() for alias in aliases)
+        if identities & accepted:
+            return row
+    return None
+
+
+def _apply_plugin_picker_catalogs(
+    rows: list[dict], user_providers: dict, *, non_blocking: bool,
+) -> None:
+    """Let opted-in plugins replace a provider's picker models, including with [].
+
+    Plugin options are non-secret data. The hook never receives inline API keys,
+    URL userinfo/query, or full config. A missing/failed plugin leaves the normal
+    Hermes catalog intact; a successful empty list is authoritative.
+    """
+    from hermes_cli.plugins import invoke_hook
+    from hermes_cli.model_switch import _declared_model_ids
+
+    for provider_key, entry in user_providers.items():
+        if not isinstance(entry, dict) or not (
+            isinstance(entry.get("plugin_options"), dict)
+            or isinstance(entry.get("runtime"), dict)  # pre-plugin local catalog configs
+        ):
+            continue
+        row = _picker_catalog_row(rows, str(provider_key))
+        if row is None:
+            continue
+        provider_config = {
+            "plugin_options": entry.get("plugin_options") if isinstance(entry.get("plugin_options"), dict) else {},
+            "runtime": entry.get("runtime") if isinstance(entry.get("runtime"), dict) else {},
+            "discover_models": entry.get("discover_models", True),
+            "models_discovered": entry.get("models_discovered") is True,
+            "saved_models": _declared_model_ids(entry.get("models")),
+            "key_env": str(entry.get("key_env") or entry.get("api_key_env") or ""),
+        }
+        results = invoke_hook(
+            "picker_model_catalog", provider_key=str(provider_key),
+            base_url=_picker_catalog_base_url(entry), provider_config=provider_config,
+            row_models=list(row.get("models") or []), non_blocking=non_blocking,
+        )
+        for result in results:
+            if not isinstance(result, dict) or result.get("provider_key") != str(provider_key):
+                continue
+            models = result.get("models")
+            if not isinstance(models, list) or len(models) > 10_000 or any(
+                not isinstance(model, str) or not model.strip() for model in models
+            ):
+                continue
+            row["models"] = list(dict.fromkeys(models))
+            row["total_models"] = len(row["models"])
+            row["native_catalog_empty"] = not row["models"]
+            break
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:

@@ -164,6 +164,18 @@ def test_rejected_background_child_stops_with_parent(
         )
         assert accepted["status"] == "dispatched"
         assert occupied.wait(5)
+        # A shortfall returns before admission. The previous contract ran the
+        # rejected batch synchronously on the parent's turn.
+        result = json.loads(_dispatch_background(batch))
+        assert result["status"] == "rejected" and result["reason"] == "capacity"
+        assert "capacity reached" in result["error"]
+        assert "SYNCHRONOUSLY" not in json.dumps(result)
+        assert child.started.is_set() is False
+        assert child.close_count == 0
+        release_occupier.set()
+        completion = registry_state.get(timeout=5)
+        assert completion["delegation_id"] == accepted["delegation_id"]
+        return
     elif rejection == "schedule_failure":
         class RejectingExecutor:
             def submit(self, *_args, **_kwargs):

@@ -129,6 +129,11 @@ class TestDrainWaitsForApiWork:
         allow_task = asyncio.Event()
 
         def delayed_create_task(coro):
+            # Delay the run worker, not the new registry-lease acquisition
+            # task that must finish before HTTP admission can return.
+            if getattr(coro, "__name__", "") != "_execute_run":
+                return original_create_task(coro)
+
             async def delayed():
                 task_started.set()
                 await allow_task.wait()

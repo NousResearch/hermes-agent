@@ -515,11 +515,11 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
     return anthropic_kwargs
 
 
-def _estimate_chunk_bytes(chunk: Any) -> int:
+def _estimate_chunk_bytes(chunk: Any, *, include_frame: bool = True) -> int:
     """Cheap per-chunk size estimate for the stream diagnostic counters: delta
     string lengths plus a framing floor (~3x cheaper than ``len(repr(chunk))``
     in the agent's hottest loop). Unknown shapes just keep the floor."""
-    size = 40  # SSE/JSON framing floor per chunk
+    size = 40 if include_frame else 0  # framing is transport activity, not model progress
 
     def _add(obj, *attrs):
         nonlocal size
@@ -527,19 +527,26 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
             v = getattr(obj, attr, None)
             if isinstance(v, str):
                 size += len(v)
+            elif isinstance(v, list) and attr == "content":
+                size += len(flatten_message_text(v, sep=""))
 
     with contextlib.suppress(Exception):
         choices = getattr(chunk, "choices", None)
         if choices:
             delta = getattr(choices[0], "delta", None)
             if delta is not None:
-                _add(delta, "content", "reasoning_content", "reasoning")
+                _add(delta, "content", "reasoning_content", "reasoning", "refusal")
+                details = getattr(delta, "reasoning_details", None)
+                if details is None and isinstance(getattr(delta, "model_extra", None), dict):
+                    details = delta.model_extra.get("reasoning_details")
+                for detail in details or ():
+                    size += len(streamed_reasoning_detail_text(detail))
                 for tc in getattr(delta, "tool_calls", None) or ():
                     fn = getattr(tc, "function", None)
                     if fn is not None:
                         _add(fn, "arguments", "name")
         else:
-            _add(getattr(chunk, "delta", None), "text", "partial_json")
+            _add(getattr(chunk, "delta", None), "text", "thinking", "partial_json")
     return size
 
 
@@ -1493,6 +1500,10 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     with contextlib.suppress(Exception):
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
+        # A named local OpenAI-compatible endpoint may use an operator-chosen
+        # provider id. It still needs the generic local/custom reasoning wire.
+        if _profile is None and is_local_endpoint(agent.base_url):
+            _profile = get_provider_profile("custom")
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered
@@ -2938,14 +2949,20 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
-        self.last_chunk_time["t"] = time.time()
-        self.agent._touch_activity("receiving stream response")
+        now = time.time()
+        payload_size = _estimate_chunk_bytes(chunk, include_frame=False)
+        if payload_size > 0:
+            self.last_chunk_time["t"] = now
+            self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
+            diag["last_transport_chunk_at"] = now
+            diag["payload_chunks"] = int(diag.get("payload_chunks", 0)) + int(payload_size > 0)
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
-            if diag.get("first_chunk_at") is None:
+            if payload_size > 0 and diag.get("first_chunk_at") is None:
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
+            diag["payload_bytes"] = int(diag.get("payload_bytes", 0)) + payload_size
 
     @staticmethod
     def _mark_finish_seen(diag, finish_reason) -> None:
@@ -3063,9 +3080,10 @@ class _StreamingCall(StreamingWaitMonitor):
             return False
         if not self._writer_still_current("Streaming"):
             return False
-        # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
-        # a live stream mid-interceptor.
-        self.last_chunk_time["t"] = time.time()
+        # Stamp payload before Relay interception, while role/empty heartbeats
+        # cannot keep a stalled model alive indefinitely.
+        if _estimate_chunk_bytes(chunk, include_frame=False) > 0:
+            self.last_chunk_time["t"] = time.time()
         return True
 
     def _writer_still_current(self, label: str) -> bool:

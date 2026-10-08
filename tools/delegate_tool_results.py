@@ -342,13 +342,31 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
         except Exception:
             pass
 
-def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
+def _child_result_fields(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Generic child-result fields a profile plugin may record. No domain rules."""
+    fields: Dict[str, Any] = {}
+    if "api_calls" in entry:
+        fields["api_calls"] = entry.get("api_calls")
+    if entry.get("error"):
+        fields["error"] = entry.get("error")
+    for key in ("verified_input_sha256", "facts_sha256"):
+        if entry.get(key):
+            fields[key] = entry.get(key)
+    return fields
+
+
+def _fire_subagent_stop_hooks(results, child_by_index, parent_agent, task_list=None) -> float:
     """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
-    entry, fire ``subagent_stop`` per child, and return the summed child cost."""
+    entry, fire ``subagent_stop`` per child, and return the summed child cost.
+
+    ``task_list`` is optional so existing callers keep working. When present, the
+    child's goal and generic result fields ride the hook for profile plugins.
+    """
     try:
         from hermes_cli.plugins import invoke_hook as invoke_hook
     except Exception:
         invoke_hook = None
+    tasks = task_list or []
     children_cost_total = 0.0
     for entry in results:
         child_role = entry.pop("_child_role", None)
@@ -361,12 +379,27 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
         if invoke_hook is None:
             continue
         try:
-            child = child_by_index.get(entry.get("task_index", -1))
+            task_index = entry.get("task_index", -1)
+            child = child_by_index.get(task_index)
+            goal = ""
+            if isinstance(task_index, int) and 0 <= task_index < len(tasks) and isinstance(tasks[task_index], dict):
+                goal = str(tasks[task_index].get("goal") or "")
+            from tools.delegate_tool import _parent_live_home
+            hermes_home = _parent_live_home(parent_agent) or getattr(parent_agent, "_hermes_home", None)
+            if not hermes_home:
+                try:
+                    from hermes_constants import get_hermes_home
+                    hermes_home = str(get_hermes_home())
+                except Exception:
+                    hermes_home = ""
             invoke_hook(
                 "subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),
+                hermes_home=str(hermes_home or ""),
                 parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                 child_session_id=getattr(child, "session_id", None), child_role=child_role,
                 child_summary=entry.get("summary"), child_status=entry.get("status"),
+                child_goal=goal or None,
+                child_result_fields=_child_result_fields(entry),
                 tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
             )
@@ -398,7 +431,8 @@ def _finalize_child_results(
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
-        _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(
+            results, child_by_index, parent_agent, task_list=task_list))
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

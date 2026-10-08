@@ -1124,6 +1124,19 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    # Notifications, heartbeats, and loop ticks are synthetic. A user stop sets
+    # _delegation_hold under the same lock as cancel; lock-in clears cancel first,
+    # so the hold is what still blocks them. Check before admission: admit calls
+    # clear_interrupt, which would erase the stop.
+    synthetic = display_kind is not None or str(rid).startswith("__")
+    if synthetic:
+        from tools.delegate_resume_policy import session_blocks_synthetic_turn
+        if session_blocks_synthetic_turn(session):
+            thread = session.get("_run_thread")
+            if thread is None or not thread.is_alive():
+                with session["history_lock"]:
+                    session["running"] = False
+            return False
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1136,6 +1149,17 @@ def _run_prompt_submit(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:
         return False
+    if not synthetic:
+        from tools.delegate_resume_policy import release_delegation_hold
+        held_events = release_delegation_hold(session)
+        if held_events:
+            try:
+                from tools.process_registry import process_registry
+                for held in held_events:
+                    process_registry.completion_queue.put(held)
+            except Exception:
+                session["_delegation_hold"] = True
+                session["_delegation_held_events"] = held_events
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot

@@ -72,3 +72,24 @@ def test_plugin_discovery_runs_for_plain_chat(monkeypatch):
     calls = _install_discover_spy(monkeypatch)
     main_mod._prepare_agent_startup(_args(tui=False, command="chat"))
     assert calls == ["discover"]
+
+
+def test_gateway_run_discovers_plugins_before_importing_gateway(monkeypatch):
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: calls.append("inline"),
+            start_background_plugin_discovery=lambda: calls.append("background"),
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda **_kw: None
+    )
+
+    main_mod._prepare_agent_startup(
+        _args(tui=False, command="gateway", gateway_command="run")
+    )
+
+    assert calls == ["inline"]

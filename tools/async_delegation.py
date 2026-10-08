@@ -36,6 +36,9 @@ _executor_max_workers: int = 0
 _records_lock = threading.Lock()
 # delegation_id -> record dict; kept for the run plus a short completed tail.
 _records: Dict[str, Dict[str, Any]] = {}
+# slot_id -> {"state": "reserved"|"running", "delegation_id": Optional[str]}.
+# One child, one slot. ``slot_key`` is only a label and does not divide this ledger.
+_child_occupancy: Dict[str, Dict[str, Any]] = {}
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # Completed records retained (in memory and in the ledger) for status queries.
@@ -534,6 +537,11 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
     return_completion_offer(evt)
 
 
+def defer_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+    """Return a claim to pending without marking it delivered or spending an attempt."""
+    _event_delivery(defer_completion_delivery, evt, claim_id)
+
+
 def return_completion_offer(evt: Dict[str, Any]) -> None:
     """Hand an offered completion back to the orphan sweep after its in-memory copy was discarded while
     the durable row stays pending, e.g. a TUI session that cannot prove it owns the event drops it (every
@@ -649,6 +657,103 @@ def active_task_count() -> int:
             for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
+def _capacity_snapshot_locked(max_children: int) -> Dict[str, int]:
+    """Caller holds ``_records_lock``. ``available_slots`` is what a new request can still take."""
+    active = sum(1 for slot in _child_occupancy.values() if slot.get("state") == "running")
+    reserved = sum(1 for slot in _child_occupancy.values() if slot.get("state") == "reserved")
+    return {
+        "active_children": active,
+        "reserved_children": reserved,
+        "available_slots": max(0, int(max_children) - active - reserved),
+    }
+
+
+def capacity_snapshot(max_children: int) -> Dict[str, int]:
+    with _records_lock:
+        return _capacity_snapshot_locked(max_children)
+
+
+def capacity_message(max_children: int, snap: Dict[str, int]) -> str:
+    """Rejection text. Keeps the ``capacity reached`` marker and forbids a sync retry."""
+    return (
+        f"Async delegation capacity reached ({snap['active_children']} running, "
+        f"{snap['reserved_children']} reserved, cap {max_children}). "
+        f"available_slots={snap['available_slots']}. The whole request was refused. "
+        f"Do not run it synchronously. Dispatch at most {snap['available_slots']} child(ren) "
+        f"after a slot frees."
+    )
+
+
+def _child_demand(goals: Optional[List[str]], task_indexes: Optional[List[int]]) -> int:
+    """How many child slots one dispatch occupies. ``slot_key`` is not a divisor."""
+    if task_indexes is not None:
+        return len(task_indexes)
+    if goals:
+        return len(goals)
+    return 1
+
+
+def _reserve_locked(n: int, max_children: int, delegation_id: Optional[str]) -> tuple:
+    """Insert ``n`` reserved slots or none. Caller holds ``_records_lock``.
+    Returns ``(slot_ids, snapshot, ok)``."""
+    snap = _capacity_snapshot_locked(max_children)
+    if n > snap["available_slots"]:
+        return [], snap, False
+    slot_ids = []
+    for _ in range(n):
+        slot_id = f"cslot_{uuid.uuid4().hex[:12]}"
+        _child_occupancy[slot_id] = {"state": "reserved", "delegation_id": delegation_id}
+        slot_ids.append(slot_id)
+    return slot_ids, _capacity_snapshot_locked(max_children), True
+
+
+def try_reserve_children(n: int, max_children: int) -> Dict[str, Any]:
+    """Atomically reserve ``n`` child slots or reject with zero inserts."""
+    with _records_lock:
+        slot_ids, snap, ok = _reserve_locked(max(0, n), max_children, None)
+    return {"ok": ok, "slot_ids": slot_ids, **snap}
+
+
+def _adopt_slots_locked(slot_ids: List[str], delegation_id: str) -> None:
+    for slot_id in slot_ids:
+        slot = _child_occupancy.get(slot_id)
+        if slot is not None:
+            slot["delegation_id"] = delegation_id
+
+
+def mark_child_running(slot_id: Optional[str]) -> None:
+    """Reserved → running when that child actually starts."""
+    if not slot_id:
+        return
+    with _records_lock:
+        slot = _child_occupancy.get(slot_id)
+        if slot is not None and slot.get("state") == "reserved":
+            slot["state"] = "running"
+
+
+def release_child_slot(slot_id: Optional[str]) -> None:
+    """Drop one slot. A second call, or a release after cancel, is a no-op."""
+    if not slot_id:
+        return
+    with _records_lock:
+        _child_occupancy.pop(slot_id, None)
+
+
+def release_child_slots(slot_ids: List[str]) -> None:
+    with _records_lock:
+        for slot_id in slot_ids:
+            _child_occupancy.pop(slot_id, None)
+
+
+def release_unadopted_slots(slot_ids: List[str]) -> None:
+    """Drop slots a dispatch never adopted. Adopted slots belong to the worker."""
+    with _records_lock:
+        for slot_id in slot_ids:
+            slot = _child_occupancy.get(slot_id)
+            if slot is not None and not slot.get("delegation_id"):
+                _child_occupancy.pop(slot_id, None)
+
+
 def _session_records(statuses, session_key: str, origin_ui_session_id: str, parent_session_id: str) -> list:
     """Records in ``statuses`` owned by a session: any non-empty selector claims the
     record — ``origin_ui_session_id`` (TUI tab), ``session_key`` (routing key at
@@ -730,13 +835,19 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    adopted_slots: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
-    record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
-    and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
-    can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
-    (default: its own id); the units of one delegate_task call share the first unit's id so
-    splitting a call into per-group completions never consumes more capacity than the call did."""
+    """Shared dispatch core for single (``goals is None``) and batch units.
+
+    Capacity is one process-wide child ledger. The check and the reserve happen
+    under the same lock hold. Demand is ``len(task_indexes)`` else ``len(goals)``
+    else 1. ``adopted_slots`` are slots the caller already reserved for these
+    children; this function does not reserve them again. ``slot_key`` is only a
+    label — it does not let extra children share a slot. A full pool rejects the
+    dispatch (``reason="capacity"``). A submit failure (``reason="schedule"``)
+    leaves caller-adopted slots in place so the caller can run that unit inline
+    without taking a new slot. ``capacity_error`` is retained for callers; the
+    returned text is ``capacity_message``."""
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -759,15 +870,23 @@ def _dispatch_admitted(
         "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
+    caller_adopted = adopted_slots is not None
     with _records_lock:
-        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
-        if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
-            return {"status": "rejected", "error": capacity_error}
+        if not caller_adopted:
+            demand = _child_demand(goals, task_indexes)
+            adopted_slots, snap, ok = _reserve_locked(demand, max_async_children, delegation_id)
+            if not ok:
+                return {
+                    "status": "rejected", "reason": "capacity",
+                    "error": capacity_message(max_async_children, snap), **snap}
+        else:
+            _adopt_slots_locked(list(adopted_slots), delegation_id)
+        record["_slot_ids"] = list(adopted_slots or [])
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)
-    # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
-    # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
+    # Size by live units as well as the child cap: a unit can sit queued behind a pool that was
+    # pinned smaller than the cap, and the stall clock must not start until its runner does.
     executor = _get_executor(max(max_async_children, live_units))
 
     def _worker() -> None:
@@ -778,6 +897,11 @@ def _dispatch_admitted(
             if rec is not None:
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
+                if not caller_adopted:
+                    for slot_id in rec.get("_slot_ids") or []:
+                        slot = _child_occupancy.get(slot_id)
+                        if slot is not None:
+                            slot["state"] = "running"
         try:
             result = runner() or {}
             status = classify(result)
@@ -785,7 +909,13 @@ def _dispatch_admitted(
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
             result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
         finally:
-            _finalize(delegation_id, result, status)
+            try:
+                _finalize(delegation_id, result, status)
+            finally:
+                # The stale monitor may have published a synthetic terminal
+                # result while this worker was still alive. Its child slots
+                # remain occupied until the real worker exits here.
+                release_child_slots(list(adopted_slots or []))
 
     from hermes_cli.backend_retirement import retirement
 
@@ -798,10 +928,19 @@ def _dispatch_admitted(
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
         with _records_lock:
-            _records.pop(delegation_id, None)
+            failed = _records.pop(delegation_id, None)
+            slot_ids = list((failed or {}).get("_slot_ids") or [])
+            # Internally reserved slots have no inline owner. Caller-adopted slots stay
+            # occupied so the caller can run the unit inline without taking a new one.
+            if not caller_adopted:
+                for slot_id in slot_ids:
+                    _child_occupancy.pop(slot_id, None)
+            snap = _capacity_snapshot_locked(max_async_children)
         with _DB_LOCK, _transaction() as conn:
             conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
-        return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
+        return {
+            "status": "rejected", "reason": "schedule",
+            "error": f"Failed to schedule async delegation{label}: {exc}", **snap}
     if progress_fn is not None:
         _ensure_stale_monitor()
     return {"status": "dispatched", "delegation_id": delegation_id}
@@ -812,12 +951,14 @@ def dispatch_async_delegation(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, progress_fn: Optional[Callable[[], tuple]] = None,
+    adopted_slots: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
     no contextvars) and route the completion back to the spawning session.
     ``progress_fn() -> (token, in_tool)`` enables stale monitoring; omitted = unmonitored.
-    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``."""
+    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``.
+    One call reserves one child slot unless ``adopted_slots`` names slots already held."""
     delegation_id = _new_delegation_id()
     handle = _dispatch(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,
@@ -825,9 +966,10 @@ def dispatch_async_delegation(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        adopted_slots=adopted_slots,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
-            "(its result will re-enter the chat), or run this task synchronously (background=false). "
+            "(its result will re-enter the chat). Do not retry synchronously. "
             "Raise delegation.max_concurrent_children in config.yaml to allow more concurrent background subagents."))
     if handle["status"] == "dispatched":
         logger.info("Dispatched async delegation %s (session_key=%s): %s",
@@ -843,12 +985,14 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
+    adopted_slots: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
-    "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
-    by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
-    event carrying per-task ``results``."""
+    "total_duration_seconds": N}`` dict. The unit produces a SINGLE completion event.
+    Each child occupies its own slot (``adopted_slots`` when the caller already reserved
+    them). ``slot_key`` is a label only and does not reduce that count. ``adopted_slots`` is
+    optional so cron and other callers keep the previous required signature."""
     delegation_id = delegation_id or _new_delegation_id()
     # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
     unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
@@ -860,7 +1004,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_indexes=task_indexes, task_transcripts=task_transcripts, adopted_slots=adopted_slots,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -872,7 +1016,7 @@ def dispatch_async_delegation_batch(
 
 
 # ── Finalization + completion events ────────────────────────────────────────
-def _finalize(delegation_id: str, result: Any, status: str) -> None:
+def _finalize(delegation_id: str, result: Any, status: str, *, release_slots: bool = True) -> None:
     """Atomically claim terminal delivery, push the completion event, then mark ``status``.
     ``result`` is a dict or a callable receiving the record snapshot (stall path). The record
     stays active ("finalizing") until durable persistence and queue publication finish; otherwise
@@ -882,6 +1026,11 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record = _records.get(delegation_id)
         if record is None or record.get("status") not in _ACTIVE_STATES:
             return
+        # Real worker completion releases any leftover slots now. A synthetic
+        # stall only ends delivery; a still-running child retains its slot.
+        if release_slots:
+            for slot_id in list(record.get("_slot_ids") or []):
+                _child_occupancy.pop(slot_id, None)
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
@@ -1064,7 +1213,8 @@ def _stale_monitor_loop() -> None:
         for delegation_id in expired:
             with _records_lock:
                 ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
-            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec),
+                    "stalled", release_slots=False)
         if not any_monitorable:
             return
 
@@ -1206,6 +1356,7 @@ def _reset_for_tests() -> None:
         thread.join(timeout=2)
     with _records_lock:
         _records.clear()
+        _child_occupancy.clear()
     with _orphan_lock:
         _offered.clear()
         _last_orphan_sweep.clear()

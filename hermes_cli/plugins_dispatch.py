@@ -40,6 +40,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "picker_model_catalog",
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
@@ -48,7 +49,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "write_boundary_provider"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.

@@ -592,6 +592,34 @@ def _codex_turn_service_tier(agent) -> str | None:
     return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
+def _codex_app_server_runtime_options(agent, config: dict) -> dict[str, Any]:
+    """Ask the selected provider for optional app-server launch/thread settings."""
+    try:
+        from providers import get_provider_profile
+        from providers.base import ProviderProfile
+        profile = get_provider_profile(str(getattr(agent, "provider", "") or ""))
+        # Codex itself is the runtime even when its thread uses a named custom
+        # model provider. Let that provider override the options; otherwise the
+        # Codex runtime plugin still owns its local home/router settings.
+        if (profile is None or type(profile).codex_app_server_runtime_options
+                is ProviderProfile.codex_app_server_runtime_options):
+            profile = get_provider_profile("openai-codex")
+        if profile is None:
+            return {}
+        model_config = config.get("model") if isinstance(config, dict) else None
+        options = profile.codex_app_server_runtime_options(
+            model_config=model_config if isinstance(model_config, dict) else {})
+        if not isinstance(options, dict):
+            raise TypeError("provider runtime options must be a mapping")
+        return {
+            "codex_home": options.get("codex_home") if isinstance(options.get("codex_home"), str) else None,
+            "thread_config": options.get("thread_config") if isinstance(options.get("thread_config"), dict) else None,
+        }
+    except Exception as exc:
+        logger.warning("Codex provider runtime options unavailable: %s", exc)
+        return {}
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -648,9 +676,12 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     history_seed = render_history_seed(messages) or None
     # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
     # so omitting it ran codex's own default instead of the selection.
+    config = load_config()
+    runtime_options = _codex_app_server_runtime_options(agent, config)
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
-        codex_bin=get_configured_codex_binary(load_config()),
+        codex_bin=get_configured_codex_binary(config),
+        codex_home=runtime_options.get("codex_home"), thread_config=runtime_options.get("thread_config"),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
@@ -732,10 +763,19 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
+        turn_kwargs: dict[str, Any] = {}
+        run_budget = getattr(agent, "run_budget_seconds", None)
+        if run_budget is not None and not isinstance(run_budget, bool):
+            try:
+                budget = float(run_budget)
+            except (TypeError, ValueError):
+                budget = None
+            if budget is not None and budget > 0:
+                turn_kwargs["turn_timeout"] = budget
         turn = agent._codex_session.run_turn(
             user_input=user_message,
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
-            service_tier=_codex_turn_service_tier(agent))
+            service_tier=_codex_turn_service_tier(agent), **turn_kwargs)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

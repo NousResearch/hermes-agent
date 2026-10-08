@@ -296,8 +296,20 @@ def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
         # Interrupt was requested BEFORE force-finalization (grace window).
         assert interrupted["count"] >= 1
         assert ad.active_count() == 0
+        assert ad.capacity_snapshot(1)["active_children"] == 1
+        rejected = ad.dispatch_async_delegation(
+            goal="must wait for the stalled child to exit", context=None, toolsets=None,
+            role="leaf", model="m", session_key="", runner=lambda: {},
+            max_async_children=1,
+        )
+        assert rejected["status"] == "rejected" and rejected["reason"] == "capacity"
     finally:
         gate.set()
+
+    deadline = time.monotonic() + 3
+    while ad.capacity_snapshot(1)["active_children"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ad.capacity_snapshot(1)["active_children"] == 0
 
     # If the ignored runner eventually returns, it must not enqueue a second
     # completion for a delegation the monitor already finalized.
@@ -922,7 +934,7 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
 
 # ---------------------------------------------------------------------------
 # Per-group completion units: ungrouped tasks return alone, a `group` returns
-# together, and the units of one call share ONE capacity slot.
+# together. Each child occupies its own capacity slot; slot_key is only a label.
 # ---------------------------------------------------------------------------
 
 def _grouped_fanout(monkeypatch, tasks, gates):
@@ -989,7 +1001,9 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
 
 
 def test_units_of_one_call_share_a_single_capacity_slot():
-    """Splitting a call into per-task completions must not consume more pool capacity than the call did."""
+    """One child is one slot. A shared slot_key does not admit a second unit at max=1.
+    Two units that both fit (max=2) still count as 2 in active_task_count — that figure
+    is observability, not the admission cap."""
     gate = threading.Event()
 
     def blocker():
@@ -1002,7 +1016,16 @@ def test_units_of_one_call_share_a_single_capacity_slot():
     second = ad.dispatch_async_delegation_batch(delegation_id="deleg_call-2", task_indexes=[1],
                                                 slot_key="deleg_call-1", **common)
     other = ad.dispatch_async_delegation_batch(delegation_id="deleg_other", **common)
-    assert (first["status"], second["status"], other["status"]) == ("dispatched", "dispatched", "rejected")
+    assert first["status"] == "dispatched"
+    assert second["status"] == "rejected" and second["reason"] == "capacity"
+    assert "capacity reached" in second["error"]
+    assert other["status"] == "rejected" and other["reason"] == "capacity"
+    assert ad.active_task_count() == 1  # only the admitted child; the rejected unit never started
+    third = ad.dispatch_async_delegation_batch(
+        delegation_id="deleg_call-2b", task_indexes=[1], slot_key="deleg_call-1",
+        **{**common, "max_async_children": 2},
+    )
+    assert third["status"] == "dispatched"
     assert ad.active_task_count() == 2
     gate.set()
 
@@ -1026,8 +1049,8 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
 
 
 def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(monkeypatch):
-    """Units of one call share a slot, so live units can exceed the slot cap; every unit must still get a worker,
-    and a unit must not be judged stalled for time it spent waiting to start."""
+    """A second child is its own slot, so max=1 rejects it and does not start it.
+    A unit admitted behind a full worker pool must not be judged stalled for time it spent queued."""
     _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
     started, release = [], threading.Event()
     frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
@@ -1040,12 +1063,15 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
         return run
 
     common = dict(goals=["x"], context=None, toolsets=None, role="leaf", model="m", session_key="", max_async_children=1)
-    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-1", runner=blocker("c-1"), progress_fn=frozen, **common)
-    ad.dispatch_async_delegation_batch(delegation_id="deleg_c-2", runner=blocker("c-2"), slot_key="deleg_c-1", **common)
+    first = ad.dispatch_async_delegation_batch(delegation_id="deleg_c-1", runner=blocker("c-1"), progress_fn=frozen, **common)
+    second = ad.dispatch_async_delegation_batch(delegation_id="deleg_c-2", runner=blocker("c-2"), slot_key="deleg_c-1", **common)
+    assert first["status"] == "dispatched"
+    assert second["status"] == "rejected" and second["reason"] == "capacity"
+    assert "capacity reached" in second["error"]
     deadline = time.monotonic() + 2.0
-    while len(started) < 2 and time.monotonic() < deadline:
+    while "c-1" not in started and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert sorted(started) == ["c-1", "c-2"]  # second unit started despite a 1-slot pool
+    assert started == ["c-1"]  # shared slot_key does not start the second child at max=1
 
     # A unit whose runner has NOT started yet must not accrue stall time: pin the pool so it stays queued.
     monkeypatch.setattr(ad, "_get_executor", lambda n: ad._executor)
@@ -1204,6 +1230,8 @@ def test_persist_failure_still_delivers_result_and_frees_slot(monkeypatch):
     assert ad.active_count() == 0
     with ad._records_lock:
         assert ad._records[res["delegation_id"]]["status"] == "completed"
+    snap = ad.capacity_snapshot(1)
+    assert snap["active_children"] == 0 and snap["reserved_children"] == 0
 
 
 def test_prune_never_evicts_live_records():
@@ -1222,3 +1250,101 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_try_reserve_children_is_all_or_nothing():
+    """A shortfall inserts nothing. Adopted slots survive release_unadopted_slots; a second release is a no-op."""
+    short = ad.try_reserve_children(2, 1)
+    assert short["ok"] is False and short["slot_ids"] == []
+    assert ad.capacity_snapshot(1)["reserved_children"] == 0
+
+    ok = ad.try_reserve_children(1, 1)
+    assert ok["ok"] is True and len(ok["slot_ids"]) == 1
+    again = ad.try_reserve_children(1, 1)
+    assert again["ok"] is False and again["slot_ids"] == []
+    assert ad.capacity_snapshot(1) == {
+        "active_children": 0, "reserved_children": 1, "available_slots": 0,
+    }
+
+    slot = ok["slot_ids"][0]
+    ad.mark_child_running(slot)
+    running = ad.capacity_snapshot(1)
+    assert running["active_children"] == 1 and running["reserved_children"] == 0
+    with ad._records_lock:
+        ad._adopt_slots_locked([slot], "deleg_adopted")
+    ad.release_unadopted_slots([slot])
+    assert slot in ad._child_occupancy
+    ad.release_child_slot(slot)
+    ad.release_child_slot(slot)
+    assert slot not in ad._child_occupancy
+    assert ad.capacity_snapshot(1)["active_children"] == 0
+
+    fresh = ad.try_reserve_children(1, 2)
+    assert fresh["ok"] is True
+    ad.release_unadopted_slots(fresh["slot_ids"])
+    assert ad.capacity_snapshot(2)["reserved_children"] == 0
+    assert ad.try_reserve_children(0, 1)["slot_ids"] == []
+
+
+def test_delegate_task_at_capacity_is_a_tool_error_without_sync_fallback(monkeypatch):
+    """Insufficient child slots refuse the call before any child is built. No synchronous fallback."""
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_get_max_concurrent_children", lambda: 1)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    })
+    built = []
+    monkeypatch.setattr(dt, "_build_children", lambda **kw: built.append(kw) or ([], "should not build"))
+    held = ad.try_reserve_children(1, 1)
+    assert held["ok"] is True
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    try:
+        out = dt.delegate_task(
+            tasks=[{"goal": "review the capacity refusal path thoroughly"}],
+            background=True, parent_agent=parent,
+        )
+    finally:
+        ad.release_child_slots(held["slot_ids"])
+    payload = json.loads(out)
+    assert payload["status"] == "rejected" and payload["reason"] == "capacity"
+    assert "capacity reached" in payload["error"]
+    assert "SYNCHRONOUSLY" not in out
+    assert built == []
+
+
+def test_defer_completion_delivery_keeps_the_row_pending():
+    """defer nulls the claim, gives the attempt back, and leaves the row pending."""
+    delegation_id = "deleg_defer_pending"
+    ad._persist_dispatch({
+        "delegation_id": delegation_id, "session_key": "parent", "origin_ui_session_id": "",
+        "parent_session_id": None, "dispatched_at": time.time(), "goal": "hold this",
+        "origin_session_id": "",
+    })
+    ad._persist_completion(
+        {"delegation_id": delegation_id, "status": "completed", "type": "async_delegation"},
+        {"status": "completed", "summary": "done"},
+    )
+    evt = {"type": "async_delegation", "delegation_id": delegation_id, "status": "completed"}
+    claim = ad.claim_event_delivery(evt, "tui-test")
+    assert claim
+    assert ad.get_durable_delegation(delegation_id)["delivery_attempts"] == 1
+    assert ad.defer_completion_delivery(delegation_id, claim) is True
+    row = ad.get_durable_delegation(delegation_id)
+    assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
+    with ad._DB_LOCK, ad._transaction() as conn:
+        claim_cell = conn.execute(
+            "SELECT delivery_claim FROM async_delegations WHERE delegation_id=?", (delegation_id,),
+        ).fetchone()[0]
+    assert claim_cell is None
+
+    claim = ad.claim_event_delivery(evt, "tui-test")
+    assert claim
+    ad.defer_event_delivery(evt, claim)
+    row = ad.get_durable_delegation(delegation_id)
+    assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)

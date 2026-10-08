@@ -547,41 +547,45 @@ def delegate_task(
     if err:
         return tool_error(err)
 
-    overall_start = time.monotonic()
-    # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
-    # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
-    #
-    # The transcripts' profile home is resolved from stable parent-owned
-    # state (the parent's per-profile SessionDB path), NOT ambient
-    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
-    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
-    # and process-wide HERMES_HOME is unstable under concurrent
-    # multi-profile workers — either way transcripts could land in the
-    # wrong profile (#91996). state.db sits directly under the home, so
-    # its parent IS the home; None falls back to today's ambient resolve
-    # (with a warning — that fallback is exactly the #91996 failure mode).
-    _live_home = _parent_live_home(parent_agent)
+    # Reserve every child of this call before building any of them. A shortfall
+    # starts nothing, including no synchronous fallback.
+    from tools.async_delegation import capacity_message, release_unadopted_slots, try_reserve_children
+    reservation = try_reserve_children(len(task_list), max_children)
+    if not reservation["ok"]:
+        return tool_error(
+            capacity_message(max_children, reservation),
+            status="rejected", reason="capacity",
+            active_children=reservation["active_children"],
+            reserved_children=reservation["reserved_children"],
+            available_slots=reservation["available_slots"],
+        )
+    slot_ids = list(reservation["slot_ids"])
+    try:
+        overall_start = time.monotonic()
+        # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
+        # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+        _live_home = _parent_live_home(parent_agent)
+        from tools.delegation_live_log import create_live_transcripts
+        live_deleg_id, live_writers, live_paths = create_live_transcripts(
+            task_list, context, model=creds.get("model"), provider=creds.get("provider"), home=_live_home
+        )
+        _announce_batch(parent_agent, len(task_list), live_deleg_id)
+        origin = _capture_origin()
 
-    from tools.delegation_live_log import create_live_transcripts
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home,
-    )
-    _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
-
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
-    if err:
-        return tool_error(err)
-    batch = _Batch(
-        task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
-        live_home=_live_home,
-    )
-    return _run_batch(batch, background)
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        )
+        if err:
+            return tool_error(err)
+        batch = _Batch(
+            task_list, children, parent_agent, creds, context, top_role, max_children,
+            live_deleg_id, live_writers, live_paths, *origin, overall_start, live_home=_live_home,
+        )
+        batch.child_slots = {index: slot_ids[index] for index in range(len(slot_ids))}
+        return _run_batch(batch, background)
+    finally:
+        release_unadopted_slots(slot_ids)
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────

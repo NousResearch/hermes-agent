@@ -48,6 +48,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
+_SKILLS_LABEL_KEY = "hermes-skills-fingerprint"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -528,6 +529,46 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
+def _skill_mount_plan(profile_name: str) -> tuple[list[str], str]:
+    """Credential and cache mounts plus a persistent skill snapshot.
+
+    Skill directories are staged outside ``HERMES_HOME`` and addressed by a
+    content fingerprint. The fingerprint is part of the container reuse label.
+    Staging failure refuses the container instead of mounting a partial tree.
+    """
+    args: list[str] = []
+    skill_entries: list[tuple[str, str]] = []
+    try:
+        import tools.credential_files as cf
+        from tools.environments.skill_snapshot import stage_skills
+        for entry in cf.get_credential_file_mounts():
+            src = Path(entry["host_path"])
+            if not src.is_file():
+                logger.warning("Docker: skipping credential mount — source not found: %s", src)
+                continue
+            args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
+        for host_dir, container_path in cf.iter_skill_directories():
+            staged, digest = stage_skills(Path(host_dir), profile_name, container_path)
+            args.extend(["-v", f"{staged}:{container_path}:ro"])
+            skill_entries.append((container_path, digest))
+            logger.info("Docker: mounting staged skills %s -> %s", staged, container_path)
+        for entry in cf.get_cache_directory_mounts():
+            src = Path(entry["host_path"])
+            if not src.is_dir():
+                logger.warning("Docker: skipping cache dir mount — source is not a directory: %s", src)
+                continue
+            args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
+    except Exception as exc:
+        raise RuntimeError("Docker skill snapshot staging failed; refusing incomplete mounts") from exc
+    combined = hashlib.sha256()
+    for container_path, tree_hash in sorted(skill_entries):
+        combined.update(container_path.encode("utf-8"))
+        combined.update(b"\0")
+        combined.update(tree_hash.encode("ascii"))
+        combined.update(b"\0")
+    return args, combined.hexdigest()
+
+
 def _readonly_skill_mount_args() -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
@@ -687,7 +728,10 @@ class DockerEnvironment(BaseEnvironment):
                 mount, cwd)
             cwd = mount
             self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
+        profile_name = _container_identity(shared_container_key)
+        skill_mount_args, skills_fingerprint = _skill_mount_plan(profile_name)
+        volume_args.extend(skill_mount_args)
+        self._skills_fingerprint = skills_fingerprint
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
@@ -726,13 +770,13 @@ class DockerEnvironment(BaseEnvironment):
         # is captured at start and never changes for the container's lifetime.
         # Egress posture gets its own label: env/CA mounts are immutable after
         # creation, so reusing a pre-egress container would bypass the firewall.
-        profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _SKILLS_LABEL_KEY: skills_fingerprint}
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
@@ -1211,6 +1255,47 @@ class DockerEnvironment(BaseEnvironment):
             fail="docker inspect NetworkMode failed: %s", nonzero="docker inspect NetworkMode returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
 
+    def _skills_mount_ok(self, container_id: str, skills_fingerprint: str) -> bool:
+        """A reusable container's skill mount must still match the staged snapshot."""
+        from tools.environments.skill_snapshot import snapshot_usable
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format", "{{json .Mounts}}", container_id], timeout=10,
+            fail="docker inspect mounts failed: %s", nonzero="docker inspect mounts returned %d: %s")
+        if result is None:
+            return False
+        try:
+            mounts = json.loads(result.stdout or "[]")
+        except ValueError:
+            return False
+        if not isinstance(mounts, list):
+            return False
+        skill_entries = []
+        for mount in mounts:
+            if not isinstance(mount, dict):
+                continue
+            destination = str(mount.get("Destination") or "").rstrip("/")
+            parts = [part for part in destination.split("/") if part]
+            if not any(part == "skills" or part.endswith("_skills") for part in parts):
+                continue
+            if not skills_fingerprint:
+                return False
+            if mount.get("RW") is not False:
+                return False
+            source = Path(str(mount.get("Source") or ""))
+            expected = source.name if re.fullmatch(r"[0-9a-f]{64}", source.name) else ""
+            if not expected or snapshot_usable(source, expected) is not None:
+                logger.warning(
+                    "Refusing skill mount %s on %s: snapshot is not reusable", source, container_id[:12])
+                return False
+            skill_entries.append((destination, expected))
+        combined = hashlib.sha256()
+        for destination, expected in sorted(skill_entries):
+            combined.update(destination.encode("utf-8"))
+            combined.update(b"\0")
+            combined.update(expected.encode("ascii"))
+            combined.update(b"\0")
+        return combined.hexdigest() == skills_fingerprint
+
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
@@ -1225,6 +1310,8 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
             "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+        skills_fingerprint = self._labels.get(_SKILLS_LABEL_KEY, "")
+        filters.extend(["--filter", f"label={_SKILLS_LABEL_KEY}={skills_fingerprint}"])
         if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
             filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
@@ -1241,6 +1328,8 @@ class DockerEnvironment(BaseEnvironment):
             if len(parts) != 2:
                 continue
             cid, state = parts[0], parts[1].strip().lower()
+            if not self._skills_mount_ok(cid, skills_fingerprint):
+                continue
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

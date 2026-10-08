@@ -70,7 +70,7 @@ _PREAUTH_FETCH = (
     f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
-_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf|auth)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 _MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
@@ -86,8 +86,11 @@ _MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_i
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
-_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
-                           r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
+_AUTH_PROP_RE = re.compile(
+    r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from|smtp\.auth)\s*=\s*((?:%s|[^\s";])+)'
+    r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED),
+    re.IGNORECASE,
+)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -368,8 +371,9 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
     FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
-    (opt out via ``EmailAdapter._require_authenticated_sender``)."""
+    True on DMARC pass, aligned SPF pass, aligned DKIM (``header.d``) pass, or a single ``auth`` pass
+    (RFC 7005 SMTP AUTH) whose ``smtp.auth`` identity equals ``From:`` exactly. No header, no pin, or no
+    identity to tie the login to → fail-closed (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
@@ -386,7 +390,12 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
-    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {
+        "dmarc": [],
+        "spf": [],
+        "dkim": [],
+        "auth": [],
+    }
     for clause in clauses:
         if m := _AUTH_METHOD_RE.match(clause):
             results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
@@ -408,6 +417,20 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
+    # RFC 7005 ``auth`` (SMTP AUTH) verdict. One verdict per transaction, like spf: a second auth clause
+    # means the signal is not trusted. SMTP AUTH proves an account logged in, not that the account
+    # owns ``From:`` — on a receiver that lets an account send under a different From, a bare pass would
+    # let any account spoof an allowlisted sender. The login is therefore tied to the claimed sender: one
+    # pass whose ``smtp.auth`` identity equals From exactly (an aligned domain alone would still let
+    # same-domain accounts swap identities). A bare pass carries no identity to tie and stays fail-closed;
+    # receivers that stamp none (e.g. PurelyMail) keep the ``require_authenticated_sender`` opt-out.
+    if (
+        len(results["auth"]) == 1
+        and (auth := results["auth"][0])[0] == "pass"
+        and (identities := [v for p, v in auth[1] if p == "smtp.auth"])
+        and all(i.lower().rstrip(".") == from_addr.lower().rstrip(".") for i in identities)
+    ):
+        return True, "auth=pass smtp.auth match"
     return False, f"authentication failed ({trusted[:120]})"
 
 

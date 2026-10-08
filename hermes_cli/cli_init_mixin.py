@@ -49,6 +49,10 @@ class CLIInitMixin:
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
+        # Mid-turn model commentary (Codex phase=commentary) → interim callback. Same gate as the
+        # TUI/gateway (display.interim_assistant_messages), so the CLI stops looking silent on
+        # providers whose narration rides the interim path instead of content deltas.
+        self.interim_assistant_messages = bool(display.get("interim_assistant_messages", True))
         _configure_output_history(
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),

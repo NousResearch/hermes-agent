@@ -248,6 +248,27 @@ def build_write_approval_paths(home: str) -> set[str]:
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
+# Snap-confined browsers keep their real-profile snapshot (copied Cookies / Login Data) in
+# ~/snap/<pkg>/common/hermes-browser-profile instead of <HERMES_HOME>/browser-profile (#128514).
+# Same credential class, so both guards below cover those stores too.
+_SNAP_PROFILE_COPY_DIR_NAME = "hermes-browser-profile"
+
+
+def _snap_profile_copy_stores() -> list[Path]:
+    """Every existing ``~/snap/<pkg>/common/hermes-browser-profile`` store (#128514).
+
+    The package name is derived from the resolved snap binary at launch time (e.g.
+    ``/snap/bin/brave-browser`` -> ``brave-browser``), so the guard enumerates the layout
+    itself rather than a hardcoded package table. Read at check time so stores created after
+    import count; empty where ``~/snap`` doesn't exist (non-Linux hosts).
+    """
+    snap_root = Path(os.path.expanduser("~")) / "snap"
+    try:
+        return [p / "common" / _SNAP_PROFILE_COPY_DIR_NAME
+                for p in snap_root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
@@ -296,6 +317,10 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
+
+    for store in _resolve_each(_snap_profile_copy_stores()):
+        if _is_under(resolved, str(store)):
+            return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -363,6 +388,8 @@ _READ_DENIED_DIRS = (
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
      "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
 )
+# The browser-profile entry, reused for the snap stores outside HERMES_HOME (#128514).
+_BROWSER_PROFILE_READ_DENY = _READ_DENIED_DIRS[1]
 
 
 def get_read_block_error(path: str) -> Optional[str]:
@@ -406,6 +433,14 @@ def get_read_block_error(path: str) -> Optional[str]:
                     break
             if reason:
                 break
+        if reason is None:
+            # Snap-confined browsers keep the same cookie/login copies outside HERMES_HOME
+            # (#128514); reuse the browser-profile messages for those stores.
+            for blocked_dir in _resolve_each(_snap_profile_copy_stores()):
+                if _is_under(resolved, blocked_dir):
+                    reason = (_BROWSER_PROFILE_READ_DENY[1] if resolved == blocked_dir
+                              else _BROWSER_PROFILE_READ_DENY[2]) + _DID_SUFFIX
+                    break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
             reason = (
                 "is a secret-bearing environment file and cannot be read to prevent credential "

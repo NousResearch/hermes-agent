@@ -75,7 +75,7 @@ _BROWSERS = (
         (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
         ("Chromium", "User Data"),
         ("chromium-browser", "chromium"),
-        ("/usr/bin/chromium-browser", "/usr/bin/chromium"),
+        ("/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"),
         "chromium"),
     _Browser(
         "brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -382,8 +382,29 @@ _AUTH_REFRESH_PROFILE_FILES = (
     "Cookies", "Network/Cookies", "Login Data", "Login Data For Account", "Web Data", "Preferences")
 
 
-def real_profile_copy_dir(browser: str) -> str:
-    """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
+def _snap_binary_name(executable: str) -> str | None:
+    """Snap package that owns ``executable`` (None for a non-snap binary). Covers both
+    ``/snap/bin/<name>`` (the PATH symlink chromium_executable resolves) and the revisioned
+    ``/snap/<name>/<revision>/...`` layout behind it."""
+    parts = executable.strip("/").split("/")
+    if parts[0] != "snap" or len(parts) < 3:
+        return None
+    return parts[2] if parts[1] == "bin" else parts[1]
+
+
+# Snapshot dir inside a snap's writable data dir; NOT a hidden directory — snap's ``home``
+# interface denies dot-dirs under $HOME, so ~/.hermes is unwritable for those binaries (#128514).
+_SNAP_COPY_DIR_NAME = "hermes-browser-profile"
+
+
+def real_profile_copy_dir(browser: str, executable: str | None = None) -> str:
+    """Return the hermes-owned snapshot dir for ``browser``'s real profile. A snap-confined
+    binary cannot launch on a profile copy under a hidden $HOME dir, so its snapshot goes to
+    the snap's own writable data dir instead."""
+    exe = executable if executable is not None else chromium_executable(browser)
+    snap = _snap_binary_name(exe) if exe else None
+    if snap:
+        return posixpath.join(os.path.expanduser("~"), "snap", snap, "common", _SNAP_COPY_DIR_NAME)
     return str(get_hermes_home() / "browser-profile" / browser)
 
 
@@ -710,7 +731,9 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     source_profile, resolve_err = _resolve_source_profile(src)
     if resolve_err or not source_profile:
         return None, resolve_err
-    dst = real_profile_copy_dir(browser)
+    real_binary = chromium_executable(browser)
+    snap_snapshot = bool(real_binary and _snap_binary_name(real_binary))
+    dst = real_profile_copy_dir(browser, real_binary)
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
     # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
     # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
@@ -723,8 +746,9 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     try:
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
-        # first attempt or an older-build dir still converges to owner-only perms.
-        for path in filter(None, (os.path.dirname(dst), dst)):
+        # first attempt or an older-build dir still converges to owner-only perms. A snap
+        # snapshot's parent is the snap-owned ~/snap/<name>/common — not ours to chmod/chown.
+        for path in filter(None, (dst,) if snap_snapshot else (os.path.dirname(dst), dst)):
             _secure_snapshot(path)
         _sync_local_state(src, dst, source_profile)
         if not populated:
@@ -751,11 +775,25 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
 
 
 def cleanup_real_profile_snapshots() -> None:
-    """Delete the whole real-profile snapshot store when consent is OFF (idempotent)."""
-    root = str(get_hermes_home() / "browser-profile")
-    if os.path.isdir(root):
-        shutil.rmtree(root, ignore_errors=True)
-        logger.info("real-profile: removed snapshot store %s (consent off)", root)
+    """Delete the whole real-profile snapshot store when consent is OFF (idempotent). Snap
+    snapshots live outside HERMES_HOME (~/snap/<name>/common) yet hold the same cookie copies,
+    so they are swept too (#128514)."""
+    roots = [str(get_hermes_home() / "browser-profile")]
+    # The snap package name is derived from the resolved binary at launch time
+    # (/snap/bin/brave-browser -> brave-browser), NOT from _LINUX_SNAP_PROFILE_PARTS (which
+    # maps browser keys to their SOURCE profile dirs), so enumerate the store layout itself:
+    # every ~/snap/<pkg>/common/hermes-browser-profile this build can create gets swept.
+    snap_root = posixpath.join(os.path.expanduser("~"), "snap")
+    try:
+        packages = [p for p in os.listdir(snap_root)
+                    if os.path.isdir(posixpath.join(snap_root, p))]
+    except OSError:
+        packages = []
+    roots += [posixpath.join(snap_root, pkg, "common", _SNAP_COPY_DIR_NAME) for pkg in packages]
+    for root in roots:
+        if os.path.isdir(root):
+            shutil.rmtree(root, ignore_errors=True)
+            logger.info("real-profile: removed snapshot store %s (consent off)", root)
 
 
 def _debug_candidate_paths(system: str):

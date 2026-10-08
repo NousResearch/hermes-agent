@@ -94,3 +94,38 @@ class TestProfileHomeProcessHome:
             assert fs.is_write_denied(str(benign)) is False, benign
             assert fs.is_write_approval_required(str(benign)) is False, benign
         assert fs.is_write_denied("~nosuchuser-hopefully/.ssh/authorized_keys") is False
+
+
+class TestSnapBrowserProfileStore:
+    """Snap-confined browsers keep the copied Cookies / Login Data in
+    ~/snap/<pkg>/common/hermes-browser-profile — outside HERMES_HOME (#128514/#128518).
+    The relocated store must stay inside every credential guard, and only that
+    layout (not the whole ~/snap tree) may be blocked."""
+
+    @pytest.fixture()
+    def snap_home(self, tmp_path, monkeypatch):
+        # Only the "~" lookup is redirected: an unconditional stub would also fold the
+        # path-under-test (``realpath(expanduser(path))``) down to the tmp root.
+        monkeypatch.setattr(fs.os.path, "expanduser",
+                            lambda p: str(tmp_path) if p == "~" else p)
+        return tmp_path
+
+    def test_snap_store_is_read_and_write_denied(self, snap_home):
+        # brave-browser: the snap package the /snap/bin/brave-browser launcher resolves to —
+        # NOT the "brave" key, so a hardcoded package table would miss it.
+        cookies = _touch(snap_home, Path("snap") / "brave-browser" / "common"
+                         / "hermes-browser-profile" / "Default" / "Cookies")
+        assert fs.is_write_denied(str(cookies)), "write guard lost on the snap store"
+        assert fs.get_read_block_error(str(cookies)), "read guard lost on the snap store"
+
+    def test_snap_store_dir_itself_is_denied(self, snap_home):
+        store = snap_home / "snap" / "chromium" / "common" / "hermes-browser-profile"
+        store.mkdir(parents=True)
+        assert fs.get_read_block_error(str(store)).startswith(f"Access denied: {store}")
+        assert fs.is_write_denied(str(store))
+
+    def test_other_snap_common_dirs_stay_accessible(self, snap_home):
+        unrelated = _touch(snap_home, Path("snap") / "chromium" / "common" / "chromium"
+                           / "Default" / "Preferences")
+        assert fs.is_write_denied(str(unrelated)) is False
+        assert fs.get_read_block_error(str(unrelated)) is None

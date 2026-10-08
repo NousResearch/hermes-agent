@@ -1,6 +1,6 @@
 name: redline
 repo: https://github.com/silentpr0/hermes-redline
-sha: 5fc46459d7e52a41856a9775501d38a12f27fa06
+sha: 6fbb0f934b8fc16049f83d3ca02455edde25798b
 subdir: ""
 description: "Guided Markdown review in Hermes Desktop — annotate passages in a docked pane and send comment/question/change-request batches back to the agent; cards are offered automatically on delivered Markdown. Disclosure — reads any user-selected local .md/.markdown path up to 1 MB (symlink-resolved), writes only the <document>.md.redline.json sidecar beside it, and the transform_llm_output hook appends a ::redline directive line to qualifying final agent responses; no network beyond the local gateway, no credentials, no telemetry, no subprocesses; the pane polls the local backend every 3 s while open."
 maintainer: silentpr0

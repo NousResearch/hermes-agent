@@ -43,7 +43,7 @@ def _cmd_list(_args) -> None:
     if not specs:
         print("No shell hooks configured in ~/.hermes/config.yaml.")
     else:
-        by_event: Dict[str, List] = {}
+        by_event: dict[str, list] = {}
         for spec in specs:
             by_event.setdefault(spec.event, []).append(spec)
         approved = {
@@ -225,7 +225,7 @@ def _cmd_test(args) -> None:
         print()
 
 
-def _print_run_result(result: Dict[str, Any]) -> None:
+def _print_run_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
     elif result.get("timed_out"):

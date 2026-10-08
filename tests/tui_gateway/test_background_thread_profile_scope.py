@@ -68,7 +68,7 @@ def test_auto_title_thread_runs_in_the_turns_profile_scope(served_home, monkeypa
 def test_ws_orphan_reap_tears_down_under_the_sessions_profile(served_home, monkeypatch):
     """The reap Timer (empty context) → ``_teardown_popped_session``: memory commit + ``agent.close`` run
     under ``session['profile_home']``, so the provider reads B's config/credentials, not the launch's."""
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     a, b = served_home
     seen_commit, seen_close = {}, {}

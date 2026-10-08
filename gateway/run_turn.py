@@ -42,8 +42,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -115,7 +115,7 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
 _HYGIENE_SETUP_ROLES = ("system", "session_meta")
 
 
-def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[Any]:
+def bound_model_input_without_hygiene(history: list[Any], limit: int) -> list[Any]:
     """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
 
     Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
@@ -2071,7 +2071,7 @@ class GatewayTurnMixin:
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: List[str] = []
+        turn_sidecar_notes: list[str] = []
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 
@@ -2375,8 +2375,8 @@ class GatewayTurnMixin:
 
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str,
-        event_message_id: Optional[str] = None, media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None,
+        event_message_id: Optional[str] = None, media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task (mirrors ``_run_agent``)."""
         with self._profile_scope_for_source(source):
@@ -2411,8 +2411,8 @@ class GatewayTurnMixin:
 
     async def _run_background_task_inner(
         self, prompt: str, source: "SessionSource", task_id: str,
-        event_message_id: Optional[str] = None, media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None,
+        event_message_id: Optional[str] = None, media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from gateway.run import (
@@ -2713,7 +2713,7 @@ class GatewayTurnMixin:
         return _run_still_current
 
     @staticmethod
-    def _proxy_error_result(text: str) -> Dict[str, Any]:
+    def _proxy_error_result(text: str) -> dict[str, Any]:
         return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
 
     def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
@@ -2751,11 +2751,11 @@ class GatewayTurnMixin:
             return None
 
     async def _run_agent_via_proxy(
-        self, message: str, context_prompt: str, history: List[Dict[str, Any]],
+        self, message: str, context_prompt: str, history: list[dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
         Lets a Docker container handle Matrix E2EE while the agent runs on the host with full
@@ -2783,7 +2783,7 @@ class GatewayTurnMixin:
 
         _run_still_current = self._run_still_current_fn(session_key, run_generation)
 
-        def _stale_result(what: str) -> Dict[str, Any]:
+        def _stale_result(what: str) -> dict[str, Any]:
             logger.info(
                 "Discarding stale proxy %s for %s — generation %d is no longer current",
                 what, session_key or "?", run_generation or 0,
@@ -2795,21 +2795,21 @@ class GatewayTurnMixin:
 
         # OpenAI chat format. The remote keeps continuity via X-Hermes-Session-Id; send the current
         # message plus a compact text-only history for a remote that has none yet.
-        api_messages: List[Dict[str, str]] = [{"role": "system", "content": context_prompt}] if context_prompt else []
+        api_messages: list[dict[str, str]] = [{"role": "system", "content": context_prompt}] if context_prompt else []
         api_messages += [
             {"role": msg.get("role"), "content": msg.get("content")}
             for msg in history if msg.get("role") in {"user", "assistant"} and msg.get("content")
         ]
         api_messages.append({"role": "user", "content": message})
 
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if proxy_key:
             headers["Authorization"] = f"Bearer {proxy_key}"
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = (
             None if scheduled_heartbeat
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
@@ -2926,9 +2926,9 @@ class GatewayTurnMixin:
         }
 
     async def _run_agent(
-        self, message: str, context_prompt: str, history: List[Dict[str, Any]],
+        self, message: str, context_prompt: str, history: list[dict[str, Any]],
         source: SessionSource, session_id: str, **turn_kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
         with self._profile_scope_for_source(source):
@@ -2965,7 +2965,7 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        _generic_status_recent: List[str] = []
+        _generic_status_recent: list[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
         def _display_surface_mode(
@@ -3061,14 +3061,14 @@ class GatewayTurnMixin:
     def _run_agent_build_turn_context(
         self, disp: "GatewayRunner._RunAgentDisplay", AIAgent: Any, *, message: str, source: SessionSource,
         session_key: Optional[str], run_generation: Optional[int], **turn_params,
-    ) -> Tuple[TurnContext, TurnRunner, Any]:
+    ) -> tuple[TurnContext, TurnRunner, Any]:
         """Build the ``TurnContext`` and its ``TurnRunner``; ``turn_params`` (history, context_prompt,
         session_id, persist_user_*, …) are stored verbatim. Returns ``(turn_ctx, turn_runner,
         cleanup_adapter)``."""
         from gateway.run_turn_runner import TurnRunner
         # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx.enabled): resolve the
         # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
-        _voice_ack_guild: List[Optional[int]] = [None]
+        _voice_ack_guild: list[Optional[int]] = [None]
         if source.platform == Platform.DISCORD:
             _va = self.adapters.get(Platform.DISCORD)
             _vtc = getattr(_va, "_voice_text_channels", None)
@@ -3112,7 +3112,7 @@ class GatewayTurnMixin:
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
         _relay_prospective_thread_id: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Thread metadata for a progress-lane send; relay Discord auto-thread lane falls back to the reply anchor.
 
         The connector will auto-thread on the reply anchor (thread is born on its FIRST send), so
@@ -3132,7 +3132,7 @@ class GatewayTurnMixin:
 
     def _run_agent_progress_threading(
         self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool
-    ) -> Tuple[Optional[dict], Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[dict], Optional[str], Optional[dict]]:
         """Resolve where progress bubbles are threaded (platform-specific).
 
         Returns ``(progress_metadata, progress_reply_to, status_thread_metadata)``; the latter is
@@ -3226,7 +3226,7 @@ class GatewayTurnMixin:
 
     def _run_agent_start_streaming_tts(
         self, source: SessionSource, message_type: Optional[str],
-        _status_thread_metadata: Optional[Dict[str, Any]], streaming_tts_consumer_holder: list,
+        _status_thread_metadata: Optional[dict[str, Any]], streaming_tts_consumer_holder: list,
     ) -> None:
         """Start the streaming-TTS consumer for a voice-input turn on an auto-TTS chat.
 
@@ -3627,7 +3627,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_drain_pending(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
-    ) -> Tuple[Any, Optional[str]]:
+    ) -> tuple[Any, Optional[str]]:
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
         Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
@@ -4169,7 +4169,7 @@ class GatewayTurnMixin:
     def _run_agent_bind_turn_wiring(
         self, turn_ctx: TurnContext, turn_runner: TurnRunner, source: SessionSource,
         event_message_id: Optional[str], _native_slack_task_cards: bool,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Resolve progress threading, then publish progress metadata and the sync→async bridges onto
         ``turn_ctx`` (the one-slot holders shared with run_sync's executor thread are TurnContext
         defaults). Returns ``_status_thread_metadata``."""
@@ -4263,7 +4263,7 @@ class GatewayTurnMixin:
                 logger.debug("Long-running notification error: %s", _ne)
 
     async def _run_agent_inner(
-        self, message: str, context_prompt: str, history: List[Dict[str, Any]],
+        self, message: str, context_prompt: str, history: list[dict[str, Any]],
         source: SessionSource, session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
@@ -4274,7 +4274,7 @@ class GatewayTurnMixin:
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""

@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_cli import env_loader  # noqa: E402
-import agent.credential_pool as credential_pool  # noqa: E402
+from hermes_cli import env_loader
+from agent import credential_pool
 
 
 @pytest.fixture(autouse=True)

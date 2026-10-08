@@ -224,7 +224,7 @@ class PtySessionRegistry:
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
-        self._sessions: Dict[str, PtySession] = {}
+        self._sessions: dict[str, PtySession] = {}
         # The get-or-spawn decision spans awaits (reap_idle, the spawn thread,
         # session.start), so two connections racing one attach token both saw
         # "no session" and forked a PTY each: the token then mapped to whichever
@@ -239,7 +239,7 @@ class PtySessionRegistry:
         # awaits them too, and holding the tasks keeps them from being garbage-collected.
         self._background_closes: set[asyncio.Task] = set()
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None) -> tuple[PtySession, bool]:
         await self.reap_idle()
         async with self._attach_lock:
             existing = self._sessions.get(key)

@@ -249,7 +249,7 @@ def _fs_git_branch(cwd: str) -> str:
     try:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
-        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
+        run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
                                       "errors": "replace", "timeout": 2, "check": False}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()

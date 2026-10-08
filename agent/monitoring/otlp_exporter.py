@@ -28,7 +28,7 @@ class OTLPUnavailable(RuntimeError):
 
 
 # ── SDK loading ──────────────────────────────────────────────────────────────
-_SDK_MODULES: Dict[str, tuple[str, ...]] = {
+_SDK_MODULES: dict[str, tuple[str, ...]] = {
     "opentelemetry.sdk.trace": ("TracerProvider",),
     "opentelemetry.sdk.trace.export": ("BatchSpanProcessor",),
     "opentelemetry.sdk.resources": ("Resource",),
@@ -44,11 +44,11 @@ _SDK_MODULES: Dict[str, tuple[str, ...]] = {
     "opentelemetry.sdk.metrics": ("MeterProvider",),
     "opentelemetry.sdk.metrics.export": ("PeriodicExportingMetricReader",),
 }
-_SDK_SYMBOLS: Dict[str, str] = {name: module for module, names in _SDK_MODULES.items() for name in names}
+_SDK_SYMBOLS: dict[str, str] = {name: module for module, names in _SDK_MODULES.items() for name in names}
 _SPAN_SDK = ("TracerProvider", "BatchSpanProcessor", "Resource", "OTLPSpanExporter", "SpanKind")
 
 
-def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True) -> Dict[str, Any]:
+def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True) -> dict[str, Any]:
     """Import the named OTel SDK symbols, lazily installing the extra on first use.
 
     Routes through pm.ensure_import('otlp') so a missing SDK triggers the
@@ -73,20 +73,20 @@ def _require_sdk(names: Iterable[str] = _SPAN_SDK, *, auto_install: bool = True)
 
 
 # ── config + connection plumbing ─────────────────────────────────────────────
-def _monitoring_section(config: Dict[str, Any], *path: str) -> Dict[str, Any]:
+def _monitoring_section(config: dict[str, Any], *path: str) -> dict[str, Any]:
     node: Any = (config or {}).get("monitoring") or {}
     for key in path:
         node = node.get(key) or {}
     return node
 
 
-def _otlp_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def _otlp_config(config: dict[str, Any]) -> dict[str, Any]:
     return _monitoring_section(config, "export", "otlp")
 
 
-def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+def _resolve_headers(headers_env: Optional[dict[str, str]]) -> dict[str, str]:
     """Resolve {header_name: ENV_VAR_NAME} -> {header_name: value}; missing vars skipped."""
-    resolved: Dict[str, str] = {}
+    resolved: dict[str, str] = {}
     for header_name, env_name in (headers_env or {}).items():
         val = os.environ.get(str(env_name))
         if val:
@@ -115,7 +115,7 @@ _RESOURCE_ATTRIBUTE_KEYS = frozenset({
 _SAFE_RESOURCE_VALUE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 
 
-def _install_id(config: Dict[str, Any]) -> str:
+def _install_id(config: dict[str, Any]) -> str:
     try:
         from agent.monitoring.policy import ensure_install_id
         return str(ensure_install_id(config))
@@ -123,9 +123,9 @@ def _install_id(config: Dict[str, Any]) -> str:
         return "unknown"
 
 
-def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
+def _safe_resource_attributes(raw: Any) -> dict[str, str]:
     """Allowlist bounded resource labels and reject values changed by redaction."""
-    attrs: Dict[str, str] = {}
+    attrs: dict[str, str] = {}
     for key, value in (raw.items() if isinstance(raw, dict) else ()):
         key = str(key)
         if key not in _RESOURCE_ATTRIBUTE_KEYS or value is None:
@@ -138,7 +138,7 @@ def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
     return attrs
 
 
-def _runtime_resource_attributes(config: Dict[str, Any], *, telemetry_scope: str) -> Dict[str, str]:
+def _runtime_resource_attributes(config: dict[str, Any], *, telemetry_scope: str) -> dict[str, str]:
     """Build the safe OTLP resource shared by spans, metrics and diagnostic logs."""
     attrs = _safe_resource_attributes(_monitoring_section(config, "gateway_health_export").get("resource_attributes"))
     attrs["service.name"] = "hermes-gateway"
@@ -147,7 +147,7 @@ def _runtime_resource_attributes(config: Dict[str, Any], *, telemetry_scope: str
     return attrs
 
 
-def build_exporter(config: Dict[str, Any]):
+def build_exporter(config: dict[str, Any]):
     """Construct an OTLP span exporter from config. Raises OTLPUnavailable if no SDK."""
     sdk = _require_sdk()
     otlp = _otlp_config(config)
@@ -157,11 +157,11 @@ def build_exporter(config: Dict[str, Any]):
     return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=_resolve_headers(otlp.get("headers_env")) or None)
 
 
-def _resource_attributes(config: Dict[str, Any]) -> Dict[str, str]:
+def _resource_attributes(config: dict[str, Any]) -> dict[str, str]:
     return _runtime_resource_attributes(config, telemetry_scope="gateway_monitoring")
 
 
-def _make_provider(config: Dict[str, Any]):
+def _make_provider(config: dict[str, Any]):
     sdk = _require_sdk()
     provider = sdk["TracerProvider"](resource=sdk["Resource"].create(_resource_attributes(config)))
     processor = sdk["BatchSpanProcessor"](build_exporter(config))
@@ -171,7 +171,7 @@ def _make_provider(config: Dict[str, Any]):
 
 # ── event -> span attribute mapping ──────────────────────────────────────────
 # Per-kind attribute allowlists: everything else (profile, install_id, ...) never egresses.
-_KEEP_BY_KIND: Dict[str, tuple[str, ...]] = {
+_KEEP_BY_KIND: dict[str, tuple[str, ...]] = {
     "gateway_health": (
         "name", "gateway_state", "old_state", "new_state", "exit_reason", "restart_requested", "active_agents",
         "gateway_busy", "gateway_drainable", "platform_count", "fatal_platform_count", "version", "supervision_mode", "pid",
@@ -181,9 +181,9 @@ _KEEP_BY_KIND: Dict[str, tuple[str, ...]] = {
 }
 
 
-def _allowlisted_attrs(ev: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
+def _allowlisted_attrs(ev: dict[str, Any], keys: Iterable[str]) -> dict[str, Any]:
     """``hermes.<key>`` attributes for present keys; string values are redacted and bounded."""
-    attrs: Dict[str, Any] = {}
+    attrs: dict[str, Any] = {}
     for col in keys:
         v = ev.get(col)
         if v is not None:
@@ -191,15 +191,15 @@ def _allowlisted_attrs(ev: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any
     return attrs
 
 
-def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
+def _span_attrs(ev: dict[str, Any]) -> dict[str, Any]:
     """Span attributes for a monitoring event (content-free by construction)."""
     kind = ev.get("event")
-    attrs: Dict[str, Any] = {"hermes.event": kind or "unknown"}
+    attrs: dict[str, Any] = {"hermes.event": kind or "unknown"}
     attrs.update(_allowlisted_attrs(ev, _KEEP_BY_KIND.get(kind, ())))  # type: ignore[arg-type]
     return attrs
 
 
-def export_batch(provider, batch: List[Dict[str, Any]]) -> int:
+def export_batch(provider, batch: list[dict[str, Any]]) -> int:
     """Map a batch of events to OTel spans. Returns spans created."""
     tracer = provider.get_tracer("hermes.monitoring")
     n = 0
@@ -232,12 +232,12 @@ class EmitterStreamer:
 class OTLPStreamer(EmitterStreamer):
     """A live subscriber that pushes each emitter batch to OTLP as spans."""
 
-    def __init__(self, config: Dict[str, Any], *, event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None):
+    def __init__(self, config: dict[str, Any], *, event_filter: Optional[Callable[[dict[str, Any]], bool]] = None):
         self._provider, self._processor = _make_provider(config)
         self._event_filter = event_filter
         self.exported = 0
 
-    def __call__(self, batch: List[Dict[str, Any]]) -> None:
+    def __call__(self, batch: list[dict[str, Any]]) -> None:
         if self._event_filter is not None:
             batch = [ev for ev in batch if self._event_filter(ev)]
         if not batch:
@@ -254,13 +254,13 @@ def is_available() -> bool:
         return False
 
 
-def is_enabled(config: Dict[str, Any]) -> bool:
+def is_enabled(config: dict[str, Any]) -> bool:
     otlp = _otlp_config(config)
     return bool(otlp.get("enabled") and otlp.get("endpoint"))
 
 
 def start_streaming(
-    config: Dict[str, Any], *, event_filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    config: dict[str, Any], *, event_filter: Optional[Callable[[dict[str, Any]], bool]] = None,
 ) -> Optional[OTLPStreamer]:
     """If OTLP is enabled, attach a streamer to the singleton emitter.
 

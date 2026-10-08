@@ -78,17 +78,17 @@ _DOCKER_KWARGS = (
 )
 
 
-def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+def _ssh_config_from_config(config: dict[str, Any]) -> dict:
     """``ssh_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {out: config.get(key, default) for out, key, default in _SSH_KEYS}
 
 
-def _container_config_from_config(config: Dict[str, Any]) -> dict:
+def _container_config_from_config(config: dict[str, Any]) -> dict:
     """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
 
 
-def _resources(cc: Dict[str, Any]) -> dict:
+def _resources(cc: dict[str, Any]) -> dict:
     """Common sandbox resource kwargs (cpu/memory in MB/disk in MB/persistence)."""
     return {out: cc.get(key, default) for out, key, default in _RESOURCE_KEYS}
 
@@ -97,13 +97,13 @@ def _is_supported_vercel_runtime(runtime: str) -> bool:
     return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
 
 
-def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+def _get_modal_backend_state(modal_mode: object | None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
     return resolve_modal_backend_state(modal_mode, has_direct=has_direct_modal_credentials(),
                                        managed_ready=is_managed_tool_gateway_ready("modal"))
 
 
-def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
+def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
     """(log message, ValueError message) for a modal_state with no selected backend.
     Single decision shared by the requirements checker and the env builder."""
     gateway = nous_tool_gateway_unavailable_message("managed Modal execution")
@@ -263,7 +263,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 #   pre(config) -> True (satisfied) / False (rejected, already logged) / None (continue);
 #   binary=(finder, version_arg, missing_log_or_None) runs ``<binary> <arg>``, ok iff rc == 0;
 #   module=(find_spec name, log message when absent);  post(config) -> bool.
-def _check_vercel(config: Dict[str, Any]) -> bool:
+def _check_vercel(config: dict[str, Any]) -> bool:
     """Runtime -> disk -> SDK -> auth (OIDC token, else the full TOKEN/PROJECT_ID/TEAM_ID tuple)."""
     runtime = (config.get("vercel_runtime") or "").strip()
     disk = config.get("container_disk", 51200)
@@ -289,7 +289,7 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
     return _reject(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
 
 
-def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
+def _modal_pre(config: dict[str, Any]) -> Optional[bool]:
     modal_state = _get_modal_backend_state(config.get("modal_mode"))
     if modal_state["selected_backend"] == "managed":
         return True
@@ -298,20 +298,20 @@ def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
-def _ssh_pre(config: Dict[str, Any]) -> bool:
+def _ssh_pre(config: dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
     return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
                    "run `hermes setup terminal` to enter them or pick the 'local' backend")
 
 
-def _daytona_post(config: Dict[str, Any]) -> bool:
-    from daytona import Daytona  # noqa: F401 — SDK presence check (ImportError propagates)
+def _daytona_post(config: dict[str, Any]) -> bool:
+    from daytona import Daytona
     from agent.secret_scope import get_secret
     return get_secret("DAYTONA_API_KEY") is not None
 
 
-_BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
+_BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},
@@ -330,7 +330,7 @@ _PROBE_FAILED_REASONS = {
 }
 
 
-def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
+def _check_requirements(env_type: str, config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     spec = _BACKEND_SPECS[env_type]
     verdict = spec["pre"](config) if "pre" in spec else None
@@ -352,7 +352,7 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
     return True
 
 
-def _check_plugin_requirements(config: Dict[str, Any]) -> bool:
+def _check_plugin_requirements(config: dict[str, Any]) -> bool:
     _record_unavailable_reason(None)
     env_type = config["env_type"]
     provider = _get_plugin_env_provider(env_type)

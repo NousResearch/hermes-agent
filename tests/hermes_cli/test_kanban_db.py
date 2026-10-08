@@ -559,7 +559,7 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     never parks the card as a bare ``blocked``, the run is tagged
     ``infrastructure`` and the guard spaces the retries. A control spawn
     failure on the same card still counts."""
-    import tools.process_registry as process_registry
+    from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")

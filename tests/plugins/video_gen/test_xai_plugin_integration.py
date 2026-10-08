@@ -24,7 +24,7 @@ def _reset_registry():
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: Optional[Dict[str, Any]] = None):
+    def __init__(self, status: int = 200, payload: Optional[dict[str, Any]] = None):
         self.status_code = status
         self._payload = payload or {}
         self.text = json.dumps(self._payload)
@@ -40,7 +40,7 @@ class _FakeResponse:
 
 class _FakeAsyncClient:
     def __init__(self):
-        self.posts: List[Dict[str, Any]] = []
+        self.posts: list[dict[str, Any]] = []
 
     async def __aenter__(self):
         return self
@@ -66,7 +66,7 @@ def xai_provider(monkeypatch):
 
     import plugins.video_gen.xai as xai_plugin
 
-    captured: Dict[str, _FakeAsyncClient] = {}
+    captured: dict[str, _FakeAsyncClient] = {}
 
     def _client_factory():
         captured["client"] = _FakeAsyncClient()
@@ -83,7 +83,7 @@ def xai_provider(monkeypatch):
     return provider, captured
 
 
-def _last_post(captured) -> Dict[str, Any]:
+def _last_post(captured) -> dict[str, Any]:
     return captured["client"].posts[-1]
 
 

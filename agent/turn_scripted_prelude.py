@@ -21,7 +21,7 @@ from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
-Prelude = Generator[Tuple[str, str, dict], Optional[str], None]
+Prelude = Generator[tuple[str, str, dict], Optional[str]]
 
 
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
@@ -50,7 +50,7 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
     return verdict
 
 
-def play_prelude(agent: Any, s: Any, prelude: Optional[Prelude]) -> Tuple[str, Any]:
+def play_prelude(agent: Any, s: Any, prelude: Optional[Prelude]) -> tuple[str, Any]:
     """``("return", result)`` ends the turn now, ``("break", None)`` skips the model call, ``("run", None)`` runs
     the loop as usual (also when there is no prelude)."""
     verdict = run_scripted_prelude(agent, s, prelude) if prelude is not None else None

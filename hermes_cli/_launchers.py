@@ -252,8 +252,8 @@ def mint_launcher(
         with ZipFile(existing) as archive:
             if archive.namelist() == ["__main__.py"]:
                 prefix = existing.read_bytes()[:archive.infolist()[0].header_offset]
-                shebangs = (f"#!{python_exe} -I\n".encode("utf-8"),
-                            f'#!"{python_exe}" -I\n'.encode("utf-8"))
+                shebangs = (f"#!{python_exe} -I\n".encode(),
+                            f'#!"{python_exe}" -I\n'.encode())
                 # Vendored distlib trails the shebang with an extra CRLF
                 # before the zip; compare the shebang line itself.
                 tail = prefix.rstrip(b"\r\n")
@@ -808,7 +808,7 @@ def _broadcast_environment_change() -> None:
 
     try:
         ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 0x0002, 5000, None)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - never fail an update over the broadcast
+    except Exception:
         pass
 
 

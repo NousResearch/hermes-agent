@@ -161,31 +161,31 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
         toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
 
 
-def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
+def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:
     """Function names of a tool-defs list (``""`` for a nameless def)."""
     return (_fn(td).get("name", "") for td in tool_defs)
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
-                   ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
     after classification)."""
-    visible: List[Dict[str, Any]] = []
-    deferrable: List[Dict[str, Any]] = []
+    visible: list[dict[str, Any]] = []
+    deferrable: list[dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
             (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
     return visible, deferrable
 
 
-def _deferrable_in(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deferrable subset of pre-assembly ``tool_defs`` under the read-only user config."""
     return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
 
 
-def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
+def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
     """Token cost via the chars/4 rule (order-of-magnitude precision suffices)."""
-    def _chars(td: Dict[str, Any]) -> int:
+    def _chars(td: dict[str, Any]) -> int:
         try:
             return len(json.dumps(td, ensure_ascii=False, separators=(",", ":")))
         except (TypeError, ValueError):
@@ -213,8 +213,8 @@ def listing_token_budget(config: ToolSearchConfig, context_length: Optional[int]
     return max(0, min(config.listing_max_tokens, pct_leg))
 
 
-def _bridge_schema(name: str, description: str, properties: Dict[str, Any],
-                   required: List[str]) -> Dict[str, Any]:
+def _bridge_schema(name: str, description: str, properties: dict[str, Any],
+                   required: list[str]) -> dict[str, Any]:
     """One OpenAI-style function schema (key order is part of the frozen bytes)."""
     return {"type": "function", "function": {
         "name": name, "description": description,
@@ -271,7 +271,7 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
 
 
 def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
-                        listing_form: str = "", connections_granted: bool = False) -> List[Dict[str, Any]]:
+                        listing_form: str = "", connections_granted: bool = False) -> list[dict[str, Any]]:
     """Bridge tool schemas injected in place of deferred tools; kept short — every byte is paid
     every turn. ``listing`` is embedded in the tool_search description; per-tool forms say
     "skip search when you see the exact name", "groups" says search is mandatory."""
@@ -337,7 +337,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
 @dataclass
 class AssemblyResult:
     """Outcome of one assembly (tests and observability)."""
-    tool_defs: List[Dict[str, Any]]
+    tool_defs: list[dict[str, Any]]
     activated: bool
     deferred_count: int = 0
     deferred_tokens: int = 0
@@ -347,7 +347,7 @@ class AssemblyResult:
     listing_form: str = "none"  # "full" | "names" | "mixed" | "groups" | "none"
 
 
-def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optional[int] = None,
+def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optional[int] = None,
                        config: Optional[ToolSearchConfig] = None) -> AssemblyResult:
     """Tool-defs the model should see: passthrough when inactive, else deferrable tools
     replaced by the three bridge tools. Idempotent — existing bridge tools are stripped first."""
@@ -400,7 +400,7 @@ def _clip_description(text: str, cap: int = 500) -> str:
     return text if len(text) <= cap else text[:cap] + "…"
 
 
-def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
+def _shared_tool_record(entry: CatalogEntry) -> dict[str, Any]:
     """One record for the shared ``tools`` map (per-query groups carry names only);
     ``required`` lets the model attempt a trivial call without a ``tool_describe`` round-trip."""
     try:
@@ -413,7 +413,7 @@ def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
                          if isinstance(r, str)][:32]}
 
 
-def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
+def _available_source_summary(catalog: list[CatalogEntry]) -> list[dict[str, Any]]:
     """Deterministic summaries of connected and declared unavailable sources."""
     from tools.tool_search_catalog import hidden_declared_sources
 
@@ -422,15 +422,15 @@ def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any
     return sorted(rows + hidden_declared_sources(), key=lambda row: row["name"])
 
 
-def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items: int,
-                     retry_hint: str) -> Tuple[Optional[List[str]], Optional[str]]:
+def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items: int,
+                     retry_hint: str) -> tuple[Optional[list[str]], Optional[str]]:
     """Read a list-of-strings bridge argument -> ``(items, error_json)``. A bare string (a
     common model slip) is a one-item list; rejects non-lists, all-blank lists, > ``max_items``."""
     raw = args.get(key)
     raw = [raw] if isinstance(raw, str) else raw
     if not isinstance(raw, list):
         return None, tool_error(f"{key} is required and must be an array of strings")
-    out: List[str] = []
+    out: list[str] = []
     for item in raw:
         text = str(item or "").strip()
         if text and (not dedupe or text not in out):
@@ -442,7 +442,7 @@ def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items:
     return out, None
 
 
-def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
+def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None) -> str:
     config = config or load_config()
@@ -454,13 +454,13 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
     catalog = build_catalog(_deferrable_in(current_tool_defs))
-    remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
+    remote_entries: list[list[CatalogEntry]] = [[] for _ in queries]
     hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
         remote_entries, hosted_failure = connector_entries_by_group(
             queries, connector_search=connector_search)
-    results: List[Dict[str, Any]] = []
-    tools_map: Dict[str, Dict[str, Any]] = {}
+    results: list[dict[str, Any]] = []
+    tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
     for position, query in enumerate(queries):
         corpus = catalog + remote_entries[position]
@@ -468,7 +468,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]
-        group: Dict[str, Any] = {"query": query, "matches": matches}
+        group: dict[str, Any] = {"query": query, "matches": matches}
         if not matches and available_sources:
             group["available_sources"] = available_sources
             group["hint"] = (
@@ -478,14 +478,14 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
                 "object before concluding the capability is unavailable.")
         results.append(group)
     remote_count = sum(1 for name in tools_map if is_connector_name(name))
-    payload: Dict[str, Any] = {"queries": queries, "total_available": len(catalog) + remote_count,
+    payload: dict[str, Any] = {"queries": queries, "total_available": len(catalog) + remote_count,
                                "results": results, "tools": tools_map}
     if hosted_failure:
         payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
     return json.dumps(payload, ensure_ascii=False)
 
 
-def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
+def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None) -> str:
     config = config or load_config_readonly()
@@ -498,10 +498,10 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
     remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
 
-    tools: Dict[str, Dict[str, Any]] = {}
-    not_found: List[str] = []
-    undescribed: List[str] = []
-    errors: Dict[str, str] = {}
+    tools: dict[str, dict[str, Any]] = {}
+    not_found: list[str] = []
+    undescribed: list[str] = []
+    errors: dict[str, str] = {}
     for name in names:
         fn = by_name.get(name)
         remote_fn = remote_schemas.get(name)
@@ -519,7 +519,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
             errors[name] = not_deferrable_error(name)
         else:
             not_found.append(name)
-    result: Dict[str, Any] = {"tools": tools}
+    result: dict[str, Any] = {"tools": tools}
     if not_found:
         result["not_found"] = not_found
         result["hint"] = "Names in not_found are not currently available. Re-run tool_search to refresh."
@@ -530,7 +530,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
     return json.dumps(result, ensure_ascii=False)
 
 
-def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
     universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
@@ -554,7 +554,7 @@ def out_of_scope_reason(name: str) -> Optional[str]:
     return None
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:

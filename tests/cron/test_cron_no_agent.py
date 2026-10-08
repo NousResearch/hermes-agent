@@ -100,7 +100,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     vars in its environment, and the agent path's per-run dotenv reload never
     executes for no_agent jobs — delivery home channels stayed unresolved.
     run_job must load .env at the top of the no_agent branch."""
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     from cron.jobs import create_job
     from cron.scheduler import run_job
 

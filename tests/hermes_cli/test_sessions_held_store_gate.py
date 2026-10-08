@@ -13,7 +13,7 @@ from argparse import Namespace
 
 import pytest
 
-import hermes_cli.sessions_cmd as sessions_cmd
+from hermes_cli import sessions_cmd
 
 pytestmark = pytest.mark.platforms("posix")  # holder scan is unavailable on Windows
 

@@ -14,10 +14,12 @@
 name: frihet
 repo: https://github.com/Frihet-io/hermes-frihet
 # Pinned SHA — Frihet-io/hermes-frihet @ v0.1.0
-# (ci: rename hermes-validate to manifest-validate; add live-hermes-validate).
+# (fix(security): canonical Frihet externalSideEffects drives classification).
 #
 # This SHA supersedes ``f331208`` (the older doctor that read the OAuth
-# token cache) AND ``24a9612`` (the first privacy-only fix). It pins:
+# token cache), ``24a9612`` (first privacy fix), ``3c8325a`` (CI rename
+# + first default_enabled), AND ``b9a8067`` (slash-command + redact
+# per-line + first connector safety net). It pins:
 #   * Hook dispatcher that passes the FULL tool name to the gate (no
 #     more silent bypass of the approval gate).
 #   * Doctor that derives auth evidence from ``ctx.call_mcp`` — the
@@ -31,15 +33,22 @@ repo: https://github.com/Frihet-io/hermes-frihet
 #   * redact() per-line masking: every Authorization: line is masked
 #     independently, including mislabelled secrets (token=, secret:,
 #     api_key:, password=).
-#   * Connector manifest tools.default_enabled with 50 read+create-draft
-#     operations, no pre-checked mutating ops. Users opt in to
-#     write tools via 'hermes mcp configure frihet'.
+#   * tools.default_enabled reduced to 39 read-only operations —
+#     every create_* was removed because the canonical Frihet MCP
+#     contract declares them under externalSideEffects (webhooks or
+#     fiscal). Users opt in to mutating ops via 'hermes mcp configure
+#     frihet'.
+#   * Plugin classifier reads vendor/frihet-mcp-onboarding.json —
+#     a frozen copy of Frihet-io/frihet-mcp/docs/agent-onboarding.json
+#     — and treats the humanAuthority.externalSideEffects table as
+#     the source of truth. Local pattern lists stay as a fallback
+#     for tools the contract has not yet named.
 #   * CI renamed to manifest-validate (schema-only) plus a manual
 #     live-hermes-validate (workflow_dispatch) for maintainers.
 #
-# Tests: 79 pass + 3 pre-existing skips. hermes plugins validate
+# Tests: 84 pass + 3 pre-existing skips. hermes plugins validate
 # --install-deps 15/15 with security scan "safe".
-sha: b9a806710511f6193f7eefa1819a2beb3d295387
+sha: b77f5df4b269ada5296ee07fc9c03d118933cbc0
 description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp."
 maintainer: Frihet-io
 tier: community

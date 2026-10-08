@@ -1,0 +1,21 @@
+name: openviking
+repo: https://github.com/volcengine/OpenViking
+sha: 3b65218eef43aba7a680cf143278ad4c153b0e9f
+subdir: examples/hermes-plugin
+version: "2.0.1"
+description: OpenViking context-database memory provider — session-managed memory with automatic
+  extraction, tiered retrieval and filesystem-style knowledge browsing. Maintained by Volcengine; the
+  same provider that shipped in-tree. Disclosure — conversation turns, tool results and MEMORY.md /
+  USER.md edits are sent to the configured OpenViking server (local 127.0.0.1 by default; setup offers
+  a Volcengine cloud endpoint); when the local server is down it starts `openviking-server` from PATH
+  in the background, and at this pin that child inherits the full Hermes environment.
+maintainer: volcengine
+tier: community
+category: memory
+docs_url: https://github.com/volcengine/OpenViking/tree/main/examples/hermes-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_session_end
+  provides_middleware: []
+  requires_env: []

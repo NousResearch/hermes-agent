@@ -1,6 +1,6 @@
 """Shared harness for the native-Windows end-to-end suite.
 
-Every test drives REAL Hermes processes (``hermes.exe`` / ``python -m
+Every test drives REAL Hermes processes (the source launcher / ``python -m
 hermes_cli.main``) on a real Windows host against the recording loopback
 provider (``tests/fakes/fake_llm_provider.py``). Nothing in Hermes is mocked;
 verdicts come from what reached the provider wire, what landed in ``state.db``
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import yaml
+import hermes_yaml as yaml
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, write_hermes_home
 
@@ -112,11 +112,22 @@ def hermes_argv(*args: str) -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main", *args]
 
 
-def hermes_exe() -> Path:
-    """The console-script shim users actually launch (``<venv>\\Scripts\\hermes.exe``)."""
-    exe = Path(sys.executable).with_name("hermes.exe")
-    assert exe.is_file(), f"hermes.exe console script missing next to {sys.executable}"
-    return exe
+def hermes_exe(home: WinHome) -> Path:
+    """Publish a real source launcher in the isolated user's bin directory.
+
+    PM's side test environment has dependencies but no console script. The
+    production launcher writer binds this checkout to that selected interpreter;
+    a scratch home keeps its dependencies in that interpreter, not PM install
+    facts for the runner's real home.
+    """
+    from hermes_cli._launchers import mint_launcher
+
+    bin_dir = home.profile / "AppData" / "Local" / "hermes" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    launcher = mint_launcher("hermes", REPO_ROOT, bin_dir, Path(sys.executable), None)
+    assert launcher is not None and launcher.suffix.lower() == ".exe" and launcher.is_file(), (
+        f"could not publish source hermes.exe in {bin_dir}: {launcher}")
+    return launcher
 
 
 @dataclass

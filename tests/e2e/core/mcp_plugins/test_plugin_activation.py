@@ -32,10 +32,13 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pm_dependencies import select_test_dependencies
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    REPO_ROOT,
+    E2EHome,
     KnownSymptom,
-    build_home,
+    build_home as _build_home,
     calls_received,
     inbound,
     provider,
@@ -79,6 +82,13 @@ KNOWN: dict[str, tuple[str, str]] = {
 }
 
 
+def build_home(root: Path, base_url: str, *, extra: dict[str, Any] | None = None) -> E2EHome:
+    eh = _build_home(root, base_url, extra=extra)
+    select_test_dependencies(eh.hermes_home, REPO_ROOT)
+    eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    return eh
+
+
 PLUGIN = "e2eplug"
 SERVER = "plug"
 PLUG_TOOL = tool_name(SERVER, "ro_probe")
@@ -119,6 +129,16 @@ def _toggle_on(host, key: str) -> list[dict[str, Any]]:
     result = host.rpc.call("plugins.manage", {"action": "toggle", "key": key, "enable": True}, timeout=180)
     assert result.get("ok") and not result.get("unchanged"), result
     return ((result.get("activation") or {}).get("live_now") or {}).get("mcp_servers") or []
+
+
+def test_plugin_sandbox_selects_real_pm_tools_offline(tmp_path: Path) -> None:
+    """The same isolated home used by activation can resolve PM's pinned toolchain without downloads."""
+    eh = build_home(tmp_path, "http://127.0.0.1:1")
+    child = subprocess.run([sys.executable, "-c",
+                            "from pm._uv import _toolchain; assert _toolchain(realize=False) is not None"],
+                           env=eh.env({"HERMES_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
+                           capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
 
 
 # 1. live activation in an open chat ------------------------------------------------------------
@@ -304,3 +324,30 @@ def test_same_name_plugin_collision_is_reported(name_collision: dict[str, Any], 
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom(named_both, f"two user plugin dirs declare the same name 'foo' ({live} and {backup}) but no "
                             f"user-visible surface names both: {', '.join(surfaces)}")
+
+
+# A portable package's own trust request ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("trust", ["untrusted", None])
+def test_portable_package_trust_request_gates_write_tools_before_the_rpc(tmp_path: Path, trust: str | None) -> None:
+    """A package that marks its server ``trust: untrusted`` (plugin.json Hermes extension) gets the same gate as a
+    config.yaml server: a destructive tool is refused BEFORE the RPC in an unattended ``chat -q`` turn, while a
+    read-only one still runs. Without the request the destructive call reaches the server (default trust)."""
+    servers_ext = {"com.nousresearch.hermes": {"servers": {"pkg": {"trust": trust}}}} if trust else None
+    log = tmp_path / "pkg.jsonl"
+    with provider(script((tool_name("pkg", "ro_probe"), {"nonce": "r"}),
+                         (tool_name("pkg", "rw_probe"), {"nonce": "w"}))) as srv:
+        eh = _build_home(tmp_path, srv.base_url, extra={"plugins": {"enabled": ["trusty"]}})
+        write_portable_plugin(eh, "trusty", {"pkg": portable_stdio(log, eh.tag, MCPE2E_CANARY="CANARY-T")},
+                              extensions=servers_ext)
+        try:
+            proc = run_chat_q(eh, "Use both pkg tools.")
+        finally:
+            reap_tagged(eh)
+        assert proc.returncode == 0 and FINAL in proc.stdout, (proc.returncode, proc.stdout[-800:], proc.stderr[-2000:])
+    assert calls_received(log, "ro_probe"), "the read-only tool never reached the package's server"
+    if trust:
+        assert not calls_received(log, "rw_probe"), "a destructive tool on a package marked untrusted ran unapproved"
+    else:
+        assert calls_received(log, "rw_probe"), "default-trust package server never received the destructive call"

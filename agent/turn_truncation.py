@@ -76,8 +76,15 @@ def collapse_continuation_trail(
         return ""
     messages[turn_start:] = retained
     from agent.conversation_loop import _join_truncated_parts
+    raw = fragment_parts if parts is None else parts
+    join_parts = []
+    for item in raw:
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+            join_parts.append(item)
+        elif isinstance(item, str) and item:
+            join_parts.append((item, False))
     partial = agent._strip_think_blocks(
-        _join_truncated_parts(fragment_parts if parts is None else parts)
+        _join_truncated_parts(join_parts)
     ).strip()
     if partial:
         append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})
@@ -111,6 +118,11 @@ _REPETITION_DOMINATED = repetition_copy(
     "instead of continuing a degenerate response",
     "so continuing would only produce more repeated text. The partial response was discarded.",
     " and was truncated mid-loop; refusing to continue a",
+)
+_REPETITION_STREAM_CUT = repetition_copy(
+    "the stream mid-loop",
+    "so the stream was stopped instead of running on. The partial response was discarded.",
+    " and the stream was cut mid-loop; discarding the",
 )
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
@@ -402,7 +414,17 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         )
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
-    if st.is_stub:
+    _failure = FailoverReason.timeout.value if st.is_stub else "truncated"
+    if st.is_stub and getattr(st.response, "_clean_eof", False):
+        # #102766: no transport error — the server (or a proxy) closed the stream cleanly
+        # without a finish_reason, so "check your network" copy / a timeout stamp would mislead.
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Server kept closing the stream mid tool-call after 4 retries — the action was not executed.",
+            force=True, diagnostic=True,
+        )
+        _final_response = site_copy("stream_closed_tool_call", label=provider_label_for(agent.provider))
+        _failure = "truncated"
+    elif st.is_stub:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
             force=True, diagnostic=True,
@@ -419,7 +441,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     close_interrupted_tool_sequence(st.messages, _final_response)
     return st.end_turn(
         _final_response, cleanup=False,
-        failure=(FailoverReason.timeout.value if st.is_stub else "truncated", True),
+        failure=(_failure, True),
     )
 
 
@@ -443,16 +465,24 @@ def recover_from_truncation(
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts,
     )
+    if getattr(response, "_runaway_repetition", False):
+        # The streaming call cut a live repetition loop: a continuation would only re-enter it,
+        # whatever the partial or its tool calls look like.
+        line, user_response, error = _REPETITION_STREAM_CUT
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+        return st.end_turn(user_response, error)
     st.window_filled = _prompt_filled_window(agent, response)
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  Response truncated — stream ended before completion"
-        if st.is_stub else
-        f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - the prompt filled the "
-        f"context window ({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)"
-        if st.window_filled else
-        f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens",
-        force=True, diagnostic=True,
-    )
+    if st.is_stub and getattr(response, "_clean_eof", False):
+        _banner = ("Response truncated — server ended the stream without ever sending finish_reason "
+                   "(no transport error — the server or a proxy closed the stream cleanly)")
+    elif st.is_stub:
+        _banner = "Response truncated — stream ended before completion"
+    elif st.window_filled:
+        _banner = (f"Response truncated (finish_reason='length') - the prompt filled the context window "
+                   f"({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)")
+    else:
+        _banner = "Response truncated (finish_reason='length') - model hit max output tokens"
+    agent._vprint(f"{agent.log_prefix}⚠️  {_banner}", force=True, diagnostic=True)
 
     # #106260: a context-overflow error after partial delivery must not seed a
     # continuation. _partial_stream_stub marks such stubs _overflow_terminal and

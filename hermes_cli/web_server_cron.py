@@ -2,6 +2,7 @@
 gateway forwarding.
 """
 
+import asyncio
 import contextlib
 import logging
 import inspect
@@ -248,6 +249,17 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         context_from = _cron_string_list(body.context_from)
         _validate_dashboard_cron_context_from(context_from, profile_name)
         no_agent = bool(body.no_agent)
+        # Finite repeat: non-positive counts are a client error (the core chokepoint
+        # would silently make them unlimited — indistinguishable from omission);
+        # everything else (int, 'forever'/'once'/'3') coerces through the shared
+        # normalize_repeat_value, the same validation the CLI uses.
+        repeat = body.repeat
+        if repeat is not None:
+            if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat < 1:
+                raise HTTPException(
+                    status_code=400, detail="repeat must be a positive integer")
+            from cron.jobs import normalize_repeat_value
+            repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
         return _mutate_cron_for_profile(
@@ -256,6 +268,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),
@@ -386,7 +399,7 @@ async def _forward_cron_fire_to_gateway(
     drops the fire with 200: retrying into an operator-stopped gateway can never succeed.
     """
     _profile_name, home = _cron_profile_home(profile)
-    url = _gateway_fire_endpoint(_profile_name, home)
+    url = await asyncio.to_thread(_gateway_fire_endpoint, _profile_name, home)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -415,7 +428,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

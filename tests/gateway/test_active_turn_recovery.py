@@ -523,11 +523,13 @@ _WAKE = {"display_kind": "internal_notification"}
     ("disk is 91% full", {**_WAKE, "display_metadata": {"notification_category": "diagnostic"}}, []),
     ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
                       "Try again or rephrase."]),
+    ("NO_REPLY", {"display_metadata": {"reply_expected": False}}, []),
 ])
 async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(tmp_path, reply, prompt, owed):
     """A crash-left reply is owed exactly what live delivery would have sent: nothing for a silence
-    marker on a machinery turn or a muted diagnostic wake (and the finished turn is not resumed), the
-    unexpected-silence notice for a human turn, never the raw marker."""
+    marker on a machinery turn, a muted diagnostic wake or a message the adapter reported as not
+    addressed to the bot (and the finished turn is not resumed), the unexpected-silence notice for
+    any other human turn, never the raw marker."""
     from gateway.delivery_ledger import sweep_recoverable
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")

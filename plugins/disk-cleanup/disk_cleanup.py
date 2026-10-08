@@ -30,12 +30,30 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*`` (rejects /mnt/c etc.)."""
-    with contextlib.suppress(ValueError, OSError):
-        path.resolve().relative_to(get_hermes_home())
+    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*``.
+
+    Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
+    """
+    hermes_home = get_hermes_home()
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        resolved.relative_to(hermes_home)
         return True
-    parts = path.parts
-    return len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-")
+    except ValueError:
+        pass
+
+    # Allow /tmp/hermes-* explicitly. Compare resolved roots rather than raw
+    # path parts because macOS resolves /tmp to /private/tmp.
+    try:
+        # Deliberate /tmp alias detection (#98854): we resolve the POSIX root
+        # itself so the same directory matches under /private/tmp.
+        relative_tmp = resolved.relative_to(Path("/tmp").resolve())  # no-tmp: ok — alias detection, not a scratch path
+    except (ValueError, OSError):
+        return False
+    return bool(relative_tmp.parts and relative_tmp.parts[0].startswith("hermes-"))
 
 
 def _log(message: str) -> None:
@@ -54,16 +72,20 @@ def load_tracked() -> List[Dict[str, Any]]:
     tf.parent.mkdir(parents=True, exist_ok=True)
     if not tf.exists():
         return []
-    with contextlib.suppress(ValueError):
-        return json.loads(tf.read_text(encoding="utf-8"))
-    bak = tf.with_suffix(".json.bak")
-    if bak.exists():
-        with contextlib.suppress(Exception):
-            data = json.loads(bak.read_text(encoding="utf-8"))
-            _log("WARN: tracked.json corrupted — restored from .bak")
-            return data
-    _log("WARN: tracked.json corrupted, no backup — starting fresh")
-    return []
+
+    try:
+        return json.loads(tf.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, ValueError):
+        bak = tf.with_suffix(".json.bak")
+        if bak.exists():
+            try:
+                data = json.loads(bak.read_text(encoding="utf-8-sig"))
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
+            except Exception:
+                pass
+        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+        return []
 
 
 def save_tracked(tracked: List[Dict[str, Any]]) -> None:
@@ -150,7 +172,13 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
-    path = Path(path_str).resolve()
+
+    try:
+        path = Path(path_str).resolve()
+    except (OSError, RuntimeError):
+        _log(f"REJECT: {path_str} (could not resolve path)")
+        return False
+
     if not path.exists():
         _log(f"SKIP: {path} (does not exist)")
         return False
@@ -336,18 +364,46 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
-def _inside_git_worktree(path: Path) -> bool:
-    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
-    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
-    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
-    regression test, not session scratch (#115295).
+def _git_tracks(path: Path) -> bool:
+    """True when the git repo enclosing *path* (at any depth) tracks it.
 
-    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
-    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
-    parents = list(path.resolve().parents)
+    Asked per candidate: ``guess_category`` only reaches this for ``test_*``/``tmp_*``
+    names, so one ``ls-files --error-unmatch`` is cheap, needs no cache that could outlive
+    the index (a file committed after first classification is seen immediately), and covers
+    both a HERMES_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
+    dotfiles repo tracking ``~/.hermes/scripts/test_x.py``). Unlike a bare ``.git`` probe
+    above HERMES_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
+    ``:(literal)`` stops git globbing the name (``test_[1].py`` must not match ``test_1.py``).
+    Git missing / not a repo / file untracked all mean "not tracked".
+    """
+    from hermes_cli.source_check import _git_ok
+
+    return _git_ok(["-C", str(path.parent), "ls-files", "--error-unmatch", "--",
+                    ":(literal)" + path.name], timeout=5)
+
+
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* is Git-owned: a ``.git`` entry (a directory in a normal checkout, a
+    pointer FILE in a linked worktree) exists on the directory chain below HERMES_HOME, or
+    an enclosing repo (HERMES_HOME itself, or one above it) actually TRACKS the file.
+
+    Files whose repo tracks them are Git-owned — a ``test_*`` file in a worktree is typically
+    a committed regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for the parent-chain probe: a
+    home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
+    Git-owned. Git is only asked when a ``.git`` exists at or above HERMES_HOME; otherwise no
+    repo can track the file and the spawn is skipped.
+    """
+    resolved = path.resolve()
+    parents = list(resolved.parents)
+    above: List[Path] = []
     with contextlib.suppress(ValueError):
-        parents = parents[: parents.index(get_hermes_home())]
-    return any((parent / ".git").exists() for parent in parents)
+        i = parents.index(get_hermes_home())
+        parents, above = parents[:i], parents[i:]
+    if any((parent / ".git").exists() for parent in parents):
+        return True
+    return any((parent / ".git").exists() for parent in above) and _git_tracks(resolved)
 
 
 def guess_category(path: Path) -> Optional[str]:

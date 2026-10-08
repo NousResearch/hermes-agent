@@ -27,7 +27,7 @@ import pytest
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
-# cannot collide with sibling platform-plugin tests in the same xdist worker.
+# cannot collide with sibling platform-plugin tests in the same process.
 _line = load_plugin_adapter("line")
 
 verify_line_signature = _line.verify_line_signature
@@ -341,9 +341,9 @@ class TestStandaloneSend:
     def test_missing_token_returns_error(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={})
-        result = asyncio.run(_standalone_send(cfg, "Uchat", "hi"))
-        assert "error" in result
+        for extra in ({}, {"channel_access_token": "   "}):  # a blank token never reaches the push API
+            result = asyncio.run(_standalone_send(PlatformConfig(enabled=True, extra=extra), "Uchat", "hi"))
+            assert "missing token" in result["error"]
 
 
 class TestPostbackButtonShape:
@@ -366,6 +366,8 @@ class TestCheckRequirements:
     def test_rejects_without_secret(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        assert not check_requirements()
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "   ")
         assert not check_requirements()
 
 
@@ -415,6 +417,13 @@ class TestAdapterInit:
         ad = LineAdapter(cfg)
         assert ad.channel_access_token == "tok"
         assert ad.channel_secret == "sec"
+        # A whitespace-only secret reads as unset, so connect fails closed instead of keying HMAC with blanks.
+        # So do null and other non-strings, which must not become guessable keys like "None" or "True".
+        for blank in ("   ", None, True, 0):
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
+                                                                   "channel_secret": blank})).channel_secret == ""
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": blank,
+                                                                   "channel_secret": "sec"})).channel_access_token == ""
         assert ad.webhook_port == 7777
         assert ad.public_base_url == "https://x.example.com"
         assert ad.allowed_users == {"U1", "U2"}

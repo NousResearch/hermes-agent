@@ -13,6 +13,7 @@ import os
 import pytest
 
 import hermes_cli.update_cmd_fleet as fleet_mod
+import hermes_cli.update_cmd_fleet_verify as fleet_verify
 import hermes_cli.update_receipt as ur
 
 OLD = "a" * 40
@@ -30,7 +31,7 @@ def _fleet_homes(monkeypatch, tmp_path, records: dict[str, dict]) -> None:
         homes[profile] = home
         (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     by_home = {str(home): rec["pid"] for profile, home in homes.items() for rec in [records[profile]]}
-    monkeypatch.setattr("hermes_cli.build_info.get_code_identity", lambda refresh=False: {"sha": HEAD, "version": "1.0"})
+    monkeypatch.setattr("hermes_cli.version_info.get_code_identity", lambda refresh=False: {"sha": HEAD, "version": "1.0"})
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root)
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
@@ -77,8 +78,8 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     assert pending == {ancestor}
 
     _fleet_homes(monkeypatch, tmp_path, {"default": {"pid": ancestor, "gateway_state": "running", "code_sha": OLD}})
-    monkeypatch.setattr(fleet_mod, "_print_legacy_units_warning", lambda: None)
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_mod._time, "sleep", lambda s: None)
     cleared = []
@@ -90,15 +91,18 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
         self_restart_pending_pids=pending,
     )
     with contextlib.redirect_stdout(io.StringIO()) as out:
-        fleet_mod._verify_fleet_after_update(
-            restart, _pre_update_plan=None, _windows_gateway_resume=None, node_failures=[], update_complete=True,
+        fleet_verify._verify_fleet_after_update(
+            restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )  # a SystemExit(1) here is the #119597 symptom
     assert "restart pending" in out.getvalue()
     assert "Update not complete" not in out.getvalue()
     assert cleared == [True]
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
-        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE, exit 1
-        fleet_mod._verify_fleet_after_update(
-            restart, _pre_update_plan=None, _windows_gateway_resume=None, node_failures=[], update_complete=True,
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE
+        fleet_verify._verify_fleet_after_update(
+            restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
-    assert exc.value.code == 1
+    # Contract C3: STALE is an owed restart (was SystemExit(1)): flagged, follow-up, marker kept.
+    assert restart.incomplete
+    assert "follow-up 'gateway_restart'" in out.getvalue()
+    assert cleared == [True]

@@ -303,3 +303,23 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
     finally:
         _unregister_subagent("child")
         db.close()
+
+
+def test_list_surfaces_failed_delegations_that_outlived_the_live_roster(runtime):
+    """A failed child is gone from the live roster (ended, or a renderer reload dropped it); the
+    durable row still reaches ``delegations`` for its own session only (#97202)."""
+    import time
+
+    from tools import async_delegation as bg
+
+    _server, _owner, _transport, call = runtime
+    for did, ui in (("d-mine", "ui-owner"), ("d-foreign", "other")):
+        bg._persist_dispatch({"delegation_id": did, "session_key": "", "origin_ui_session_id": ui,
+                              "parent_session_id": None, "dispatched_at": time.time(), "goal": f"{did} goal"})
+        bg._persist_completion({"delegation_id": did, "status": "error", "completed_at": time.time()},
+                               {"status": "error", "error": "interrupted: waiting for model response"})
+
+    snapshot = call("subagent.list")["result"]
+    assert snapshot["subagents"] == []
+    assert [(d["delegation_id"], d["goal"], d["status"]) for d in snapshot["delegations"]] == [
+        ("d-mine", "d-mine goal", "error")]

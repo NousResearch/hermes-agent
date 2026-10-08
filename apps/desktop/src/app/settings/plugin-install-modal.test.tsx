@@ -18,6 +18,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getProfiles: async () => ({ profiles: [] })
 }))
 
+import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import {
   $pluginInstallRequest,
@@ -148,7 +149,8 @@ describe('Install from Git entry flow', () => {
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith(
         'plugins.manage',
-        expect.objectContaining({ action: 'install', catalog_name: 'plugin', profile: 'research' })
+        expect.objectContaining({ action: 'install', catalog_name: 'plugin', profile: 'research' }),
+        expect.any(Number)
       )
     )
   })
@@ -171,7 +173,8 @@ describe('Install from Git entry flow', () => {
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith(
         'plugins.manage',
-        expect.objectContaining({ action: 'install', ref: sha.toLowerCase() })
+        expect.objectContaining({ action: 'install', ref: sha.toLowerCase() }),
+        expect.any(Number)
       )
     )
   })
@@ -185,7 +188,9 @@ describe('Unified package desktop half on a local backend', () => {
     $connection.set({ mode } as NonNullable<ReturnType<typeof $connection.get>>)
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
     requestGateway.mockImplementation(async (method, params) =>
-      method === 'plugins.manage' && params?.action === 'install' ? { ok: false, error: alreadyExists } : { plugins: [] }
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: false, error: alreadyExists }
+        : { plugins: [] }
     )
     installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
@@ -194,7 +199,11 @@ describe('Unified package desktop half on a local backend', () => {
     expect(await screen.findByText('This package includes')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'install' }),
+        expect.any(Number)
+      )
     )
     expect(await screen.findByText(alreadyExists)).toBeTruthy()
   }
@@ -217,5 +226,55 @@ describe('Unified package desktop half on a local backend', () => {
 
     expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
+  })
+
+  it('turns the desktop half on with the agent half: one "Enable after install" covers the package', async () => {
+    // The half lands opt-in (marker => defaultEnabled false). Before, the
+    // dialog enabled only the agent half and the Desktop switch stayed off.
+    $connection.set({ mode: 'local' } as NonNullable<ReturnType<typeof $connection.get>>)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, agentName: 'pkg', desktop: true, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'install'
+        ? { ok: true, plugin_name: 'pkg', enabled: true }
+        : { plugins: [] }
+    )
+    reconcileDesktopPlugins.mockImplementation(async () => {
+      publishPlugin(
+        { id: 'pkg-ui', name: 'Pkg', kind: 'disk', status: 'disabled', packageName: 'pkg' },
+        { activate: () => patchPlugin('pkg-ui', { status: 'loaded' }), deactivate: () => undefined }
+      )
+
+      return ['/app/desktop-plugins/pkg']
+    })
+    vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+
+    await waitFor(() => expect($pluginRecords.get()['pkg-ui']?.status).toBe('loaded'))
+    expect($pluginDecisions.get()['pkg-ui']).toBe(true)
+    dropPlugin('pkg-ui')
+    $pluginDecisions.set({})
+  })
+
+  it('does not start the desktop half or offer a retry when the agent install outcome is unknown', async () => {
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    requestGateway.mockImplementation(async (method, params) => {
+      if (method === 'plugins.manage' && params?.action === 'install') {
+        throw new Error('request timed out after 120s: plugins.manage')
+      }
+
+      return { plugins: [] }
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('may still be installing')
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

@@ -55,6 +55,14 @@ def sample_ogg(tmp_path):
     return str(ogg_path)
 
 @pytest.fixture
+def sample_silk(tmp_path):
+    """Create a fake WeChat .silk file for preprocessing tests."""
+    silk_path = tmp_path / "voice.silk"
+    silk_path.write_bytes(b"\x02#!SILK_V3fake")
+    return str(silk_path)
+
+
+@pytest.fixture
 def oversized_wav(tmp_path):
     """Create a sparse WAV-shaped file just above the remote upload cap."""
     from tools.transcription_common import MAX_FILE_SIZE
@@ -925,6 +933,24 @@ class TestTranscribeXAI:
         data = call_kwargs.kwargs.get("data", call_kwargs[1].get("data", {}))
         assert data.get("language") == "fr"
         assert data.get("format") == "true"
+        assert data.get("model") == "grok-voice-transcribe-2.0"
+
+    def test_omitted_model_pins_transcribe_2(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        """xAI still defaults an omitted model to transcribe-1.0. Always send one."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "")
+
+        data = mock_post.call_args.kwargs["data"]
+        assert data.get("model") == "grok-voice-transcribe-2.0"
 
     def test_oauth_credentials_ignore_stt_base_url_override(
         self,
@@ -983,6 +1009,39 @@ class TestGetProviderXAI:
 # transcribe_audio — xAI dispatch
 # ============================================================================
 
+class TestTranscribeAudioXAIDispatch:
+    def test_model_default_is_voice_transcribe_2(self, sample_ogg, monkeypatch):
+        monkeypatch.delenv("STT_XAI_MODEL", raising=False)
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
+
+    def test_config_model_overrides_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-voice-transcribe-1.0"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-1.0"
+
+    def test_legacy_grok_stt_alias_uses_current_default(self, sample_ogg):
+        config = {"provider": "xai", "xai": {"model": "grok-stt"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
 
 # ============================================================================
 # _transcribe_elevenlabs
@@ -1079,6 +1138,131 @@ class TestExtractTranscriptText:
 
         assert result == "The user literally said <asr_text> while reading markup."
 
+    def test_structured_error_object_raises_instead_of_repr(self):
+        """#78098: a provider error object must not be stringified into its repr."""
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        transcription = types.SimpleNamespace(
+            text=None, logprobs=None, usage=None, error="Transcription failed",
+        )
+
+        with pytest.raises(STTResponseError, match="Transcription failed") as excinfo:
+            _extract_transcript_text(transcription)
+
+        assert "text=None" not in str(excinfo.value)
+
+    def test_structured_error_body_raises_instead_of_repr(self):
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        with pytest.raises(STTResponseError, match="Transcription failed"):
+            _extract_transcript_text({"text": None, "error": "Transcription failed"})
+
+    def test_structured_response_without_text_or_error_raises(self):
+        """Neither text nor a provider error: still an error, never ``str(obj)``."""
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        with pytest.raises(STTResponseError, match="no text"):
+            _extract_transcript_text(types.SimpleNamespace(text=None, error=None))
+        with pytest.raises(STTResponseError, match="no text"):
+            _extract_transcript_text({"text": None})
+
+    def test_text_bearing_responses_still_normalize(self):
+        from tools.transcription_cloud import _extract_transcript_text
+
+        assert _extract_transcript_text(types.SimpleNamespace(text=" hello ")) == "hello"
+        assert _extract_transcript_text({"text": " hello "}) == "hello"
+        # Silence stays non-fatal: an empty *string* text is a valid empty transcript.
+        assert _extract_transcript_text(types.SimpleNamespace(text="", error=None)) == ""
+        assert _extract_transcript_text({"text": ""}) == ""
+
+
+class TestStructuredTranscriptionErrors:
+    """#78098: every provider path surfaces a structured error as a failure envelope
+    instead of reporting the response's repr as a successful transcript."""
+
+    @staticmethod
+    def _error_object():
+        return types.SimpleNamespace(
+            text=None, logprobs=None, usage=None, error="Transcription failed",
+        )
+
+    def test_openai_error_object_returns_failure_envelope(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = self._error_object()
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+        assert "text=None" not in result["error"]
+
+    def test_openai_text_object_still_succeeds(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = types.SimpleNamespace(
+            text="hello world", logprobs=None, usage=None, error=None,
+        )
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello world"
+
+    def test_groq_error_object_returns_failure_envelope(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = self._error_object()
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+
+    def test_mistral_error_object_returns_failure_envelope(
+        self, monkeypatch, sample_ogg, mock_mistral_module
+    ):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_result = MagicMock()
+        mock_result.text = None
+        mock_result.error = "Transcription failed"
+        mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
+
+        from tools.transcription_tools import _transcribe_mistral
+        result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+        assert "text=None" not in result["error"]
+
+    def test_elevenlabs_error_body_returns_failure_envelope(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": None, "error": "Transcription failed"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+
 
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================
@@ -1166,6 +1350,50 @@ class TestShellSafety:
         ]
         assert invocation["kwargs"].get("env") is not None
         assert not invocation["kwargs"].get("shell")
+
+    @pytest.mark.parametrize(
+        ("language", "expected"),
+        [("ZH", "zh"), ("zh-Hant", "zh"), ("繁體中文", "zh"), ("not-a-language", "en")],
+    )
+    def test_local_command_normalizes_language_or_uses_default(
+        self, monkeypatch, sample_wav, tmp_path, language, expected
+    ):
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+
+        output_dir = tmp_path / "transcript-output"
+        output_dir.mkdir()
+        monkeypatch.setenv(
+            LOCAL_STT_COMMAND_ENV,
+            "whisper {input_path} --language {language} --output_dir {output_dir}",
+        )
+
+        class _TempDir:
+            def __enter__(self):
+                return str(output_dir)
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        invocation = {}
+
+        def fake_run(command, **kwargs):
+            invocation["command"] = command
+            (output_dir / "transcript.txt").write_text("safe", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(
+            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+        )
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.transcription_tools._resolve_stt_language", lambda provider: language
+        )
+
+        result = _transcribe_local_command(sample_wav, "base")
+
+        assert result["transcript"] == "safe"
+        language_index = invocation["command"].index("--language") + 1
+        assert invocation["command"][language_index] == expected
 
 
 class TestLocalModelLock:
@@ -1359,50 +1587,35 @@ class TestTranscribeCredentialReadGuard:
         assert result["error"] == expected
 
 
-class TestRunCommandSttIdleTimeout:
-    """_run_command_stt uses a progress-based idle timeout (mirrors TTS runner)."""
+@pytest.mark.platforms("posix", "windows")
+@pytest.mark.parametrize("progress", [True, False])
+def test_command_stt_idle_timeout_preserves_transcription_contract(tmp_path, progress):
+    import shlex
+    from tools.transcription_command import _transcribe_command_stt
 
-    @staticmethod
-    def _shell_command(*args):
-        import shlex
-        if os.name == "nt":
-            return subprocess.list2cmdline(list(args))
-        return " ".join(shlex.quote(str(arg)) for arg in args)
-
-    def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
-        """A slow-but-alive command that keeps emitting output survives an
-        idle timeout shorter than its total runtime."""
-        from tools.transcription_command import _run_command_stt
-
-        script = tmp_path / "progress_then_exit.py"
-        # The de-flake is budget, not ordering: the first tick was always
-        # printed before the first sleep. What changed is the idle window
-        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
-        # under loaded CI or on Windows can no longer eat the whole window
-        # before the first stderr chunk is read, plus a longer heartbeat
-        # sequence whose ~400ms runtime still exceeds the idle window, so a
-        # pass still proves the progress extension.
-        script.write_text(
-            "\n".join([
-                "import sys, time",
-                "print('tick 0', file=sys.stderr, flush=True)",
-                "for idx in range(1, 9):",
-                "    time.sleep(0.05)",
-                "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "print('done', flush=True)",
-            ]),
-            encoding="utf-8",
-        )
-
-        result = _run_command_stt(
-            self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.25,
-        )
-
-        assert result.returncode == 0
-        assert "tick 8" in result.stderr
-        assert "done" in result.stdout
-
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fixture audio")
+    script = tmp_path / "transcribe.py"
+    script.write_text(
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "assert Path(sys.argv[1]).read_bytes() == b'fixture audio'\n"
+        + ("for i in range(6):\n    print('progress', file=sys.stderr, flush=True)\n    time.sleep(.6)\n"
+           if progress else "time.sleep(30)\n")
+        + "Path(sys.argv[2]).write_text('actual transcript', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    args = [sys.executable, "-u", str(script)]
+    command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    result = _transcribe_command_stt(str(audio), "probe", {
+        "command": command + " {input_path} {output_path}", "timeout": 2,
+    }, {})
+    assert result["success"] is progress
+    assert result["provider"] == "probe"
+    if progress:
+        assert result["transcript"] == "actual transcript"
+    else:
+        assert "STT command provider 'probe' timed out after 2s" in result["error"]
 
 
 # ============================================================================

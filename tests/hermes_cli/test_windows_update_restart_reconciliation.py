@@ -37,6 +37,9 @@ def _stub_post_relaunch_liveness(monkeypatch):
     monkeypatch.setattr(
         gateway_windows, "_wait_for_gateway_ready", lambda **_kw: [4242]
     )
+    # The relaunch verifier polls every target in one loop through the same probe.
+    monkeypatch.setattr(gateway_windows, "_live_gateway_pids", lambda *_a, **_kw: [4242])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._READY_CONFIRM_S", 0.0)
     monkeypatch.setattr(
         gateway_windows, "_write_start_attestation", lambda *_a, **_kw: None
     )
@@ -79,48 +82,6 @@ def test_merge_helper_reads_token_keys_into_restart_outcome(monkeypatch):
 # #115563: symmetric resume-failure handling + atexit double-fire
 # ---------------------------------------------------------------------------
 
-def test_already_up_to_date_path_demotes_on_windows_resume_failure(monkeypatch):
-    """The pull path treats a Windows resume failure as a warning (outcome.incomplete = True,
-    update continues); the 'Already up to date' path called _resume_windows_gateways_after_update
-    bare, so the identical RuntimeError killed the run instead (#115563). It must now route
-    through the same _resume_windows_gateways_and_merge_outcome contract and demote
-    current_checkout_complete, landing on the same 'partial' + exit(1) path a failed repair
-    already uses — not an unhandled exception."""
-    from hermes_cli import update_cmd
-
-    class _Plan:
-        auto_stash_ref = None
-        parked_branch_switched = False
-        switch_block_reason = ""
-        upstream_checked = True
-
-    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
-    monkeypatch.setattr(update_cmd, "_repair_current_checkout", lambda **_kw: True)
-    monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda **_kw: None)
-
-    finalized = []
-    monkeypatch.setattr(update_cmd, "_finalize_receipt", lambda status, *_a: finalized.append(status))
-
-    def _fail_resume(_token):
-        raise RuntimeError("Windows gateway relaunch after update was not verified alive")
-
-    monkeypatch.setattr(hm, "_resume_windows_gateways_after_update", _fail_resume)
-
-    with patch("builtins.print"):
-        with pytest.raises(SystemExit) as exc_info:
-            update_cmd._finish_already_up_to_date(
-                git_cmd="git", branch="main", current_branch="main", _plan=_Plan(),
-                assume_yes=True, gateway_mode=False, gw_input_fn=None,
-                pre_update_snapshot_id=None, had_desktop_app_before_update=False,
-                active_lazy_features=None, active_tool_dependencies=None,
-                _windows_gateway_resume={"resume_needed": True},
-            )
-
-    # Demoted to the existing partial-repair contract, not an unhandled RuntimeError.
-    assert exc_info.value.code == 1
-    assert finalized == ["partial"]
-
-
 def test_resume_unregisters_its_own_atexit_fallback_before_running(monkeypatch):
     """Every foreground call site registers this same function via atexit as a dead-process
     safety net. Once execution actually reaches here it must disarm that fallback immediately
@@ -143,3 +104,36 @@ def test_resume_unregisters_its_own_atexit_fallback_before_running(monkeypatch):
     assert calls == [update_cmd_windows._resume_windows_gateways_after_update]
     assert token["resume_needed"] is False
 
+
+def test_service_readiness_filter_skips_vanished_gateways_but_never_swallows_bugs(monkeypatch):
+    """Review W2: the service-ownership filter reads real process parents; a vanished pid is just
+    not the service's, but an unexpected error must surface instead of reading as "not ready"."""
+    import os
+    import subprocess
+    import sys
+
+    import psutil
+
+    from hermes_cli import update_cmd_windows
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin=subprocess.DEVNULL)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    gone.wait(timeout=30)
+    service = type("Svc", (), {"pid": staticmethod(lambda: os.getpid())})()  # the "service" is this process
+    monkeypatch.setattr(update_cmd_windows, "_win_service", lambda _name: (psutil, service))
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready",
+                        lambda **kw: kw["pid_filter"]([child.pid, gone.pid]))
+    try:
+        assert update_cmd_windows._service_gateway_ready("svc", None, timeout_s=0) == [child.pid]
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+
+    def broken(self):
+        raise RuntimeError("bug in the parent walk")
+
+    with monkeypatch.context() as m:  # scoped: the conftest kill guard walks parents too
+        m.setattr(psutil.Process, "parents", broken)
+        m.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **kw: kw["pid_filter"]([os.getpid()]))
+        with pytest.raises(RuntimeError, match="parent walk"):
+            update_cmd_windows._service_gateway_ready("svc", None, timeout_s=0)

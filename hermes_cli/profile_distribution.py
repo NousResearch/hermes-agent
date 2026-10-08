@@ -15,12 +15,17 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.profiles import (
+    DEFAULT_EXPORT_EXCLUDE_ROOT, SETUP_PROFILE_MARKER, profile_path_contains_private_store,
+    profile_path_is_private,
+)
 from utils import rmtree_readonly
 
 
@@ -32,27 +37,9 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
 DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
 
-# Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
-# ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
-USER_OWNED_EXCLUDE: frozenset = frozenset({
-    # Credentials & runtime secrets
-    "auth.json", ".env",
-    # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
-    "hermes_state.db", "response_store.db",
-    "response_store.db-shm", "response_store.db-wal",
-    "gateway.pid", "gateway_state.json", "processes.json",
-    "auth.lock", "active_profile", ".update_check",
-    "errors.log", ".hermes_history",
-    # User data
-    "memories", "sessions", "logs", "plans", "workspace", "home",
-    "image_cache", "audio_cache", "document_cache",
-    "browser_screenshots", "checkpoints", "sandboxes",
-    "backups", "cache",
-    # Infrastructure
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
-    # User customization namespace
-    "local",
+# Distribution-specific user data extends the shared profile/runtime exclusions.
+USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
+    "memories", "sessions", "plans", "workspace", "home", "backups", "cache", "local",
 })
 
 # Profile distributions own cron definitions, not scheduler state. The runtime has
@@ -60,8 +47,11 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
 _CRON_STORE_REL = ("cron", "jobs.json")
 
 
-def _is_distribution_runtime_path(parts: Tuple[str, ...]) -> bool:
-    """Runtime-owned entries nested under otherwise distribution-owned roots."""
+def _is_installer_owned_path(parts: Tuple[str, ...]) -> bool:
+    """Entries a distribution never writes: credential stores (and Hermes' copies of them) at any
+    depth, and runtime-owned entries nested under otherwise distribution-owned roots."""
+    if profile_path_is_private(parts):
+        return True
     if len(parts) < 2:
         return False
     if parts[0] == "cron":
@@ -166,7 +156,7 @@ def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     if not mf_path.is_file():
         return None
     try:
-        data = yaml.safe_load(mf_path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(mf_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise DistributionError(f"Failed to parse {mf_path}: {exc}") from exc
     return DistributionManifest.from_dict(data or {})
@@ -324,7 +314,7 @@ def _has_cron_jobs(staged: Path) -> bool:
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
     from hermes_cli.profiles import _canon_valid, get_profile_dir
-    from hermes_cli import __version__ as hermes_version
+    from hermes_cli.version_info import get_version_info
     staged, provenance = _stage_source(source, workdir)
     _reject_distribution_symlinks(staged)
     manifest = read_manifest(staged)
@@ -332,7 +322,7 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
         raise DistributionError(
             f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
         )
-    check_hermes_requires(manifest.hermes_requires, hermes_version)  # fail fast
+    check_hermes_requires(manifest.hermes_requires, get_version_info().base_version)  # fail fast
     canon = _canon_valid(override_name or manifest.name)
     if canon == "default":
         raise DistributionError(
@@ -359,15 +349,16 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         # Do NOT narrow to DEFAULT_DIST_OWNED — existing distributions ship arbitrary extra
         # top-level paths without declaring them.
         for entry in staged.iterdir():
-            if entry.name not in USER_OWNED_EXCLUDE:
+            if entry.name not in USER_OWNED_EXCLUDE and not _is_installer_owned_path((entry.name,)):
                 yield entry, (entry.name,)
         return
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
-        rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE or _is_distribution_runtime_path(rel_parts):
+        try:
+            rel_parts = tuple(normalize_archive_parts(rel))
+        except ValueError:
             continue
-        if ".." in rel_parts or PurePosixPath(rel).is_absolute():
+        if rel_parts[0] in USER_OWNED_EXCLUDE or _is_installer_owned_path(rel_parts):
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():
@@ -456,21 +447,29 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
-def _is_container(path: Path) -> bool:
-    """A shipped directory holding no files (a skills category) is a container of roots,
-    not a root itself; a skill dir always holds at least SKILL.md."""
-    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
+    """A container of roots, not a root itself. Under ``skills/`` that is a dir with no
+    SKILL.md in it or above it (a category, whatever metadata it ships: DESCRIPTION.md,
+    README.md, LICENSE; a dir inside a skill, like its ``scripts/``, belongs to that skill);
+    elsewhere, a dir holding no files other than DESCRIPTION.md and dotfiles."""
+    if not path.is_dir():
+        return False
+    if rel[0] == "skills":
+        return not any((p / "SKILL.md").is_file() for p in (path, *path.parents[: len(rel) - 1]))
+    return not any(
+        p.is_file() and p.name != "DESCRIPTION.md" and not p.name.startswith(".") for p in path.iterdir()
+    )
 
 
 def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child):
+        if _merges_per_root(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -479,11 +478,37 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
 def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if _is_installer_owned_path(parts):
             continue
-        if _is_container(child):
+        if _merges_per_root(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
+        else:
+            _refuse_store_ancestor_replacement(dest / child.name, parts)
+
+
+def _refuse_store_ancestor_replacement(dest: Path, rel_parts: Tuple[str, ...]) -> None:
+    """A payload file where the profile has a directory that holds credential stores
+    (``platforms`` shipped as a file over ``platforms/``) would be a whole-directory replace,
+    taking ``platforms/pairing`` with it. Refused before the first write. Only called for entries
+    ``_merges_per_root`` rejected, so a store ancestor reaching here is a file."""
+    if profile_path_contains_private_store(rel_parts) and dest.is_dir() and not dest.is_symlink():
+        raise DistributionError(
+            f"{dest} is a directory that holds credential stores, and the distribution ships a "
+            f"file named {'/'.join(rel_parts)}; refusing to replace it"
+        )
+
+
+def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
+    """An owned top-level dir, or an owned container (``skills/research/``, see
+    ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
+    added to it (``hermes skills install`` and agent-created skills land in
+    ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
+    use this, so the guard covers exactly what the copy merges. An ancestor of a credential
+    store (``platforms`` of ``platforms/pairing``) is merged too, so replacing it whole can
+    neither delete the installer's store nor plant the author's."""
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts)
+                             or profile_path_contains_private_store(rel_parts))
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
@@ -498,8 +523,10 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
-        if src.is_dir() and len(rel_parts) == 1:
+        if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
+        else:
+            _refuse_store_ancestor_replacement(path / rel_parts[-1], rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -509,9 +536,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
 
-    A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
-    special: it is one multi-record runtime store, so shipped definitions merge by job id
-    instead of replacing the file."""
+    A top-level owned directory, and an owned container (``_is_container``), is merged per
+    authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
+    shipped definitions merge by job id instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -534,9 +561,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-            if src.is_dir():
-                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
-                continue
+        if _merges_per_root(src, rel_parts):
+            _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
+            continue
         _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
@@ -545,10 +572,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
-    # A shipped profile.yaml must not carry a backend-assigned role.
-    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
-        from hermes_cli.profiles import drop_profile_role
-        drop_profile_role(target)
+    from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
+    shipped_marker = any(rel_parts == (SETUP_PROFILE_MARKER,) for _, rel_parts in entries)
+    release_setup_copy(target, setup_state=setup_marker_state(target) if shipped_marker else None)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:
@@ -617,25 +643,3 @@ def describe_distribution(profile_name: str) -> Dict[str, Any]:
     """Return a structured view of a profile's distribution metadata ({} if not a distribution)."""
     manifest = read_manifest(_existing_profile(profile_name)[1])
     return {} if manifest is None else manifest.to_dict()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'is_excluded_skill_path': ('agent.skill_utils', 'is_excluded_skill_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

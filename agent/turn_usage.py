@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -25,8 +25,8 @@ logger = logging.getLogger("agent.conversation_loop")
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
-    from run_agent import _session_source_for_agent  # late: run_agent imports this module
-    return _session_source_for_agent(getattr(agent, "platform", None))
+    from agent.session_source import session_source_for
+    return session_source_for(getattr(agent, "platform", None))
 
 
 @dataclass
@@ -98,7 +98,8 @@ def record_response_usage(
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
-    canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
+    canonical_usage = with_served_service_tier(
+        normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode), response)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage
@@ -270,6 +271,7 @@ def record_response_usage(
                 if cost_result.status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
+                task=getattr(agent, "_turn_route_task", "") or "",
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

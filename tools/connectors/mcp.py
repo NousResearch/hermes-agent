@@ -94,7 +94,9 @@ def _catalog_entry(name: str):
 
     entry = get_entry(name)
     if entry is None:
-        raise ValueError(f"no catalog entry '{name}'")
+        missing = ValueError(f"no catalog entry '{name}'")
+        missing.failure_class = "config_invalid"  # type: ignore[attr-defined]
+        raise missing
     return entry
 
 
@@ -124,18 +126,37 @@ class _CatalogBackend:
     def start_install_oauth(self, name: str, env: Dict[str, str]) -> Any:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
-        from hermes_cli.mcp_catalog import card_install_config
+        from hermes_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
         from tools.connectors import mcp_oauth
 
-        entry = _catalog_entry(name)
-        _check_declared(name, entry, env)
-        return mcp_oauth.start(name, cfg=card_install_config(entry), env=env,
-                               on_commit=lambda: _save_env(env))
+        fresh = not is_installed(name)
+
+        def commit() -> None:
+            _save_env(env)
+            if fresh:
+                record_mcp_install("catalog", name, "success")
+
+        try:
+            entry = _catalog_entry(name)
+            _check_declared(name, entry, env)
+            return mcp_oauth.start(name, cfg=card_install_config(entry), env=env, on_commit=commit)
+        except Exception as exc:
+            # An abandoned browser authorization is a cancel, not a failed install: only a flow
+            # that cannot start is counted here.
+            if fresh:
+                record_mcp_install("catalog", name, "failed", error=exc)
+            raise
 
     def install(self, name: str, env: Dict[str, str]) -> List[str]:
         """Probe the entry's in-memory configuration with ephemeral credentials; save both only
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
-        previous configuration."""
+        previous configuration. A first install is recorded once as an extension install."""
+        from hermes_cli.mcp_catalog import recorded_catalog_install
+
+        with recorded_catalog_install(name):
+            return self._install(name, env)
+
+    def _install(self, name: str, env: Dict[str, str]) -> List[str]:
         from agent.secret_scope import (
             current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
         from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
@@ -160,7 +181,9 @@ class _CatalogBackend:
         finally:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
-            raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected = RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
+            rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
+            raise rejected
         _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
@@ -188,7 +211,9 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
     declared = {spec.name for spec in (entry.auth.env or [])}
     for key in env:
         if key not in declared:
-            raise ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared = ValueError(f"'{name}' does not declare the environment variable {key}")
+            undeclared.failure_class = "config_invalid"  # type: ignore[attr-defined]
+            raise undeclared
         validate_env_var_name_for_write(key)
 
 

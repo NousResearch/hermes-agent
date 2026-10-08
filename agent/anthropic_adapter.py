@@ -4,6 +4,7 @@ OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth set
 payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
 credentials}.py``; import them from there."""
 
+from pm import install_hint
 import logging
 import math
 import os
@@ -27,21 +28,26 @@ from agent.anthropic_message_convert import (
 )
 from agent.errors import EmptyStreamError
 
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
 # every usage site is a cold user-triggered path. ``...`` = not yet tried; None = tried, missing.
 _anthropic_sdk: Any = ...
+# Why the lazy install did not make the SDK importable. A completed install that needs a restart
+# (PM activates a new dependency environment only at boot) must not be reported as "install it".
+_anthropic_install_error: Optional[Exception] = None
 
 
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
-    global _anthropic_sdk
+    global _anthropic_sdk, _anthropic_install_error
     if _anthropic_sdk is ...:
-        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("provider.anthropic", prompt=False)
+        try:
+            from pm import ensure_import
+            ensure_import("anthropic")
+        except Exception as exc:  # the import below decides; exc explains a miss
+            _anthropic_install_error = exc
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -53,8 +59,12 @@ def _get_anthropic_sdk():
 def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
+    if sdk is None and _anthropic_install_error is not None:
+        raise ImportError(f"The 'anthropic' package is required for {purpose}: "
+                          f"{_anthropic_install_error}") from _anthropic_install_error
     if sdk is None:
-        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
+                          f"{install_hint('anthropic')}")
     return sdk
 
 
@@ -90,7 +100,10 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
+# Families whose documented "off" is ``thinking: {"type": "between_tools"}`` (no up-front thinking,
+# short notes between tool calls): ``disabled`` 400s there with a message pointing at it.
+_BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -180,7 +193,7 @@ def _accepts_thinking_disable(model: str) -> bool:
     return (
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)
-        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS + _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS)
     )
 
 
@@ -255,13 +268,26 @@ def _claude_code_candidates() -> List[str]:
     return list(seen)
 
 
+def find_claude_code_cli(command: str) -> Optional[str]:
+    """Path of a bare Claude Code command name on PATH, else in an install prefix; None for any other command.
+
+    Core's own presence checks (external-process providers, ``claude setup-token``) ask this so they
+    agree with version detection about whether the CLI is installed under a GUI/service PATH."""
+    if command not in _CLAUDE_CODE_NAMES:
+        return None
+    from hermes_platform.resolver import locate_command
+
+    found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
+    return found[0] if found else None
+
+
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
     for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
@@ -334,7 +360,7 @@ def _attribution_headers() -> Dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     }
 
 
@@ -487,7 +513,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
     # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
     # launch profile's process env); unscoped passes nothing and keeps the default chain.
     scoped = scoped_aws_session_kwargs()
@@ -580,6 +606,8 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
         # omission: a silently-ignored disable beats a dead turn.
+        if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
+            return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
     if "haiku" in model.lower():
         return {}
@@ -837,47 +865,3 @@ def create_anthropic_message(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import platform  # noqa: F401,E402
-import secrets  # noqa: F401,E402
-import stat  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CredentialPersistError': ('agent.anthropic_credentials', 'CredentialPersistError'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'claude_code_credentials_path': ('agent.anthropic_credentials', 'claude_code_credentials_path'),
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-    'is_claude_code_token_valid': ('agent.anthropic_credentials', 'is_claude_code_token_valid'),
-    'is_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'is_rotation_consumed_uncommitted'),
-    'mark_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'mark_rotation_consumed_uncommitted'),
-    'read_claude_code_credentials': ('agent.anthropic_credentials', 'read_claude_code_credentials'),
-    'read_hermes_oauth_credentials': ('agent.anthropic_credentials', 'read_hermes_oauth_credentials'),
-    'refresh_anthropic_oauth_pure': ('agent.anthropic_credentials', 'refresh_anthropic_oauth_pure'),
-    'resolve_anthropic_token': ('agent.anthropic_credentials', 'resolve_anthropic_token'),
-    'run_hermes_oauth_login_pure': ('agent.anthropic_credentials', 'run_hermes_oauth_login_pure'),
-    'run_oauth_setup_token': ('agent.anthropic_credentials', 'run_oauth_setup_token'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

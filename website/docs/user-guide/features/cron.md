@@ -350,6 +350,17 @@ hermes cron status
 
 For a named profile served by the default-profile multiplexer, `hermes cron status` names that scheduler host and reports the named profile's own heartbeat health. Missing or stale heartbeats point to `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when that heartbeat is missing or stale; `cron status` additionally checks the last successful tick and reports tick errors.
 
+#### Cron store not writable (full disk, read-only mount, permissions)
+
+When the cron store (`~/.hermes/cron/`, or the profile's own `cron/` directory) can't be written, for example because the disk is full (`ENOSPC`), the mount is read-only (`EROFS`) or the permissions are wrong (`EACCES`), the scheduler does not run a job whose run it can't record. That prevents double fires after recovery. The ticker keeps running. It stops attempting the doomed writes and re-checks the store about once a minute. The outage shows up in four places:
+
+- `hermes cron status` probes the store itself and leads with `⚠ Cron store is NOT writable — scheduled jobs are being skipped`. Below that it shows the store path, the OS error, the last successful write and how many due runs have not fired. `hermes cron list` prints a one-line banner.
+- `hermes doctor` warns when the store is not writable, or when its filesystem has less than 100 MB free.
+- The gateway posts one notice to the profile's home channels when the store becomes unwritable and one when it has stayed writable for an hour (a store that fails again within that hour posts nothing more, so the last notice always matches its state). Both respect `display.suppress_warning_notifications` and use the profile's `display.language`.
+- Monitoring exports `hermes.cron.store.writable` (0 while any profile's store served by this gateway is unwritable, else 1) and `hermes.cron.store.skipped_runs` (summed over those stores).
+
+To fix it, free disk space on the filesystem holding the store, remount it read-write, or fix the ownership and permissions of the store directory so the gateway user can write it. You don't need to restart anything. On the next tick that can write, each job that stayed due fires **once** under the normal [misfire catch-up](#misfire-catch-up) rules, not once per missed tick. A one-shot that came due during the outage fires once instead of expiring (unless the gateway restarts while the store is unwritable).
+
 ### Gateway scheduler behavior
 
 On each tick Hermes:
@@ -388,7 +399,12 @@ move through `claimed`, `running`, and one immutable terminal state:
 `hermes cron run` / `/cron run`, so a one-shot invocation with no scheduler
 running heals the ledger too — Hermes marks an abandoned attempt `unknown` only
 when the original PID and process-start fingerprint prove that its owner is
-gone. Unknown attempts are audit records and are never automatically rerun.
+gone, or when a live owner has been **silent** for longer than the derived
+stale bound (`max(3 × HERMES_CRON_TIMEOUT, script timeout, 2 h)`): the run
+monitor stamps `progress_at` on the attempt while the agent is still calling
+tools or streaming, so a healthy multi-hour job is never reclaimed mid-run, while
+a worker deadlocked on a lock stops stamping and is released once the bound
+passes. Unknown attempts are audit records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
@@ -432,7 +448,8 @@ computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
 out a whole period. The scheduler re-runs it automatically after **5, 15, and
 30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
 back to the normal schedule. Because zero API calls were made, the re-run is
-spend-neutral and cannot duplicate any side effect.
+spend-neutral and cannot duplicate any side effect. Re-runs also do not count
+toward a job's `repeat` limit: the occurrence they repeat already counted once.
 
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the
@@ -471,7 +488,8 @@ it. Any run that reaches the model clears the hold. One-shot jobs are not held.
 
 A recurring job that keeps failing with the *same* error alerts you **once**,
 not on every run. Each failure is recorded as a durable **incident**, keyed by
-the job plus a normalized signature of the error text, in the same per-profile
+the job plus a normalized signature of the error text (case, whitespace and
+measured durations such as `idle for 603s` are ignored), in the same per-profile
 ledger database as the execution history; the first failure of a signature is
 always delivered, and repeats are then withheld while the incident is `alerted`
 (the run is still recorded — `hermes cron runs` and the failure streak see it,
@@ -559,7 +577,7 @@ When scheduling jobs, you specify where the output goes:
 | `"mattermost"` | Mattermost home channel | |
 | `"email"` | Email | |
 | `"sms"` | SMS via Twilio | |
-| `"homeassistant"` | Home Assistant | |
+| `"homeassistant"` | Home Assistant (plugin) | Uses `HASS_HOME_CHANNEL`; requires the [`homeassistant` plugin](../messaging/homeassistant.md) |
 | `"dingtalk"` | DingTalk | |
 | `"feishu"` | Feishu/Lark | |
 | `"wecom"` | WeCom | |
@@ -904,7 +922,7 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python `script` or `monitor_script` can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized, so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
 #### Giving a script a credential
 
@@ -1253,7 +1271,7 @@ The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should
 **File-change gate** — only run when a watched file has new content since the last successful tick. The scheduler records each job's `last_run_at`; compare it against the file's mtime.
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
 STATE="$HOME/.hermes/scripts/.feed-changed.last"
@@ -1278,7 +1296,7 @@ cronjob(action="create", name="process-feed",
 **External-flag gate** — only run when some other process has signalled readiness (e.g. a deploy hook drops a file, a CI job sets a value in your state store).
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
 if test -f ~/.hermes/cache/scratch/new-data-ready; then
   rm -f ~/.hermes/cache/scratch/new-data-ready
@@ -1349,7 +1367,11 @@ Job definitions are plain JSON on disk: they survive `hermes update`, gateway re
 Ask the agent to manage jobs through the `cronjob_manage` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
 :::
 
+If a hand edit leaves `jobs.json` malformed, the scheduler repairs it on the next load instead of stopping: entries in the `jobs` list that are not JSON objects are dropped, and a `repeat.completed` that is not a non-negative integer is reset to a valid count (0 when it can't be read). Each repair is logged as a warning (value types only, never contents).
+
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+
+A per-job `base_url` override needs an explicit `provider`. For a provider with a stored key (a named custom provider or a built-in one), the override must have the same origin as that provider's configured endpoint: the same scheme, host and port. Another scheme, port or subdomain is refused, so the stored key is only ever sent where you configured it. A bare `provider: custom` takes any `base_url` that no stored key goes with. When a stored key matches the URL's hostname (for example `DEEPSEEK_API_KEY` for `api.deepseek.com`), the same rule applies: the `base_url` must have the origin of an endpoint you configured or of a built-in provider.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

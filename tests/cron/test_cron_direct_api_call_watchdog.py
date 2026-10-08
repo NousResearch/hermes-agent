@@ -32,6 +32,7 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
 
+import agent.chat_completion_helpers as chat_completion_helpers
 from agent.chat_completion_helpers import direct_api_call
 
 
@@ -51,7 +52,7 @@ def _make_agent(*, stale_timeout, platform="cron"):
     return agent
 
 
-def _stalling_client(agent, *, aborted, release_after=5.0):
+def _stalling_client(agent, *, aborted):
     """A client whose request blocks until the watchdog aborts its sockets."""
     fake_client = MagicMock()
     release_after_abort = threading.Event()
@@ -63,8 +64,7 @@ def _stalling_client(agent, *, aborted, release_after=5.0):
     def _stalled_request(**_kwargs):
         # The provider accepted the request and went silent. The socket
         # shutdown is what unblocks it, exactly as in production.
-        if not release_after_abort.wait(timeout=release_after):
-            raise AssertionError("watchdog never aborted the stalled request")
+        release_after_abort.wait()
         raise ConnectionError("socket shut down")
 
     fake_client.chat.completions.create.side_effect = _stalled_request
@@ -78,16 +78,45 @@ def test_stalled_inline_call_is_aborted_and_raises_retryable_timeout():
     aborted: list[str] = []
     _stalling_client(agent, aborted=aborted)
 
-    started = time.time()
     with pytest.raises(TimeoutError) as excinfo:
         direct_api_call(agent, {"model": "m", "messages": []})
-    elapsed = time.time() - started
 
     assert aborted == ["stale_call_kill"]
     assert "no response" in str(excinfo.value)
-    assert elapsed < 4.0, "watchdog did not bound the call"
 
 
+def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):
+    """#69734: cron Codex runs inline, so the inline stale budget must keep the
+    openai-codex large-context floor the worker path applied — else a healthy
+    >10k-token cron turn is killed at the 90s default."""
+    from agent.chat_completion_helpers import _resolve_direct_stale_timeout, should_use_direct_api_call
+
+    for key in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_STREAM_STALE_TIMEOUT", "HERMES_CODEX_HARD_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(key, raising=False)
+    agent = run_agent.AIAgent(
+        model="gpt-5.5", provider="openai-codex", api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex", api_key="x", quiet_mode=True,
+        skip_context_files=True, skip_memory=True, platform="cron",
+    )
+    api_kwargs = {"model": "gpt-5.5", "input": [{"role": "user", "content": "x " * 60000}]}
+    assert should_use_direct_api_call(agent) is True
+    assert _resolve_direct_stale_timeout(agent, api_kwargs) >= 600.0
+
+
+def test_inline_local_responses_endpoint_keeps_its_configured_stale_budget(monkeypatch):
+    """The hosted Codex floor/hard cap must not clamp a local Responses server's
+    configured stale budget on the inline path either (same rule as the worker path)."""
+    from agent.chat_completion_helpers import _resolve_direct_stale_timeout
+
+    monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "3000")
+    agent = run_agent.AIAgent(
+        model="local-model", provider="custom", api_mode="codex_responses",
+        base_url="http://127.0.0.1:8080/v1", api_key="x", quiet_mode=True,
+        skip_context_files=True, skip_memory=True, platform="cron",
+    )
+    api_kwargs = {"model": "local-model", "input": [{"role": "user", "content": "x " * 60000}]}
+    assert _resolve_direct_stale_timeout(agent, api_kwargs) == 3000.0
 
 
 def test_watchdog_kill_feeds_the_cross_turn_stale_circuit_breaker():
@@ -182,11 +211,12 @@ class _StallingWireClient:
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
         self.responses = SimpleNamespace()
         self.close_calls = 0
+        self.request_started = threading.Event()
         self.sockets_shut_down = threading.Event()
 
     def _create(self, **_kwargs):
-        if not self.sockets_shut_down.wait(timeout=5.0):
-            raise AssertionError("watchdog never shut the stalled request down")
+        self.request_started.set()
+        self.sockets_shut_down.wait()
         raise ConnectionError("socket shut down")
 
     def close(self):
@@ -223,6 +253,39 @@ def test_e2e_cron_turn_is_bounded_through_the_real_agent_routing(monkeypatch):
     wire = _StallingWireClient()
     agent = _build_cron_agent(monkeypatch)
     agent.client = wire
+    timer_intervals = []
+
+    class RequestStartedTimer:
+        """Run the real watchdog callback after dispatch reaches the wire.
+
+        CI process starvation can delay either side of a sub-second Timer by
+        tens of seconds. The event fixes their causal order without replacing
+        the routing, timeout resolver, watchdog callback, or abort lifecycle.
+        """
+
+        def __init__(self, interval, function):
+            timer_intervals.append(interval)
+            self._function = function
+            self._cancelled = threading.Event()
+            self.name = None
+            self.daemon = False
+
+        def _run(self):
+            wire.request_started.wait()
+            if not self._cancelled.is_set():
+                self._function()
+
+        def start(self):
+            threading.Thread(
+                target=self._run, name=self.name, daemon=self.daemon
+            ).start()
+
+        def cancel(self):
+            self._cancelled.set()
+
+    threading_proxy = SimpleNamespace(**vars(threading))
+    threading_proxy.Timer = RequestStartedTimer
+    monkeypatch.setattr(chat_completion_helpers, "threading", threading_proxy)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: wire)
     monkeypatch.setattr(
         run_agent.AIAgent,
@@ -230,12 +293,12 @@ def test_e2e_cron_turn_is_bounded_through_the_real_agent_routing(monkeypatch):
         lambda self, client: (client.sockets_shut_down.set(), 1)[1],
     )
 
-    started = time.time()
     with pytest.raises(TimeoutError):
         agent._interruptible_api_call({"model": agent.model, "messages": []})
-    elapsed = time.time() - started
 
-    assert elapsed < 4.0, "cron turn was not bounded by the watchdog"
+    assert timer_intervals == [pytest.approx(0.3)]
+    assert wire.request_started.is_set()
+    assert wire.sockets_shut_down.is_set()
     # The aborted pool is poisoned, so the killed client is really closed
     # instead of being cached for the retry.
     assert wire.close_calls == 1

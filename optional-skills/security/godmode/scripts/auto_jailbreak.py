@@ -18,8 +18,15 @@ Usage in execute_code:
 import os
 import json
 import time
-import yaml
+from ruamel.yaml import YAML
 from pathlib import Path
+
+yaml = YAML(typ="safe", pure=True)
+yaml.version = (1, 1)
+yaml.default_flow_style = False
+yaml.allow_unicode = True
+yaml.width = 120
+yaml.sort_base_mapping_type_on_output = False
 
 try:
     from openai import OpenAI
@@ -325,7 +332,7 @@ def _get_current_model() -> tuple:
         return None, None
     try:
         with open(CONFIG_PATH) as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = yaml.load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, "https://openrouter.ai/api/v1"
@@ -386,7 +393,7 @@ def _write_config(system_prompt: str = None, prefill_file: str = None):
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
-                cfg = yaml.safe_load(f) or {}
+                cfg = yaml.load(f) or {}
         except Exception:
             cfg = {}
 
@@ -401,8 +408,7 @@ def _write_config(system_prompt: str = None, prefill_file: str = None):
         cfg["agent"].pop("prefill_messages_file", None)
 
     with open(CONFIG_PATH, "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
-                  width=120, sort_keys=False)
+        yaml.dump(cfg, f)
 
     return str(CONFIG_PATH)
 
@@ -718,14 +724,13 @@ def undo_jailbreak(verbose=True):
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
-                cfg = yaml.safe_load(f) or {}
+                cfg = yaml.load(f) or {}
             if "agent" in cfg:
                 cfg["agent"].pop("system_prompt", None)
                 cfg["agent"].pop("prefill_messages_file", None)
             cfg.pop("prefill_messages_file", None)
             with open(CONFIG_PATH, "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True,
-                          width=120, sort_keys=False)
+                yaml.dump(cfg, f)
             if verbose:
                 print(f"[UNDO] Cleared system_prompt and prefill_messages_file from {CONFIG_PATH}")
         except Exception as e:

@@ -118,6 +118,10 @@ class MyBackendImageGenProvider(ImageGenProvider):
         # The tool layer surfaces this in the dynamic schema so the model
         # knows when `image_url` is honored. Default (if you omit this) is
         # text-only: {"modalities": ["text"], "max_reference_images": 0}.
+        # Optional keys: "supports_upscale" (bool) adds an `upscale` param, and
+        # "creative_controls" lists the controls you honor from `creativity`,
+        # `intensity`, `complexity`, `movement`. Only declared controls appear
+        # in the schema and reach generate() as kwargs.
         return {"modalities": ["text", "image"], "max_reference_images": 4}
 
     def generate(

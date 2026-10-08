@@ -683,32 +683,22 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
 
 
-_RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
+_TIRITH_PLUGIN_NOTICE = (
+    "Tirith is no longer bundled with Hermes, so your security.tirith_* settings are not used "
+    "(they are left in config.yaml). Tirith is now a plugin maintained by its author: "
+    "https://github.com/sheeki03/hermes-plugin-tirith (`hermes plugins install tirith` once it "
+    "is in the catalog).")
 
 
 def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
-    # 49 → 50: the bundled tirith scanner left Hermes. Nothing reads its keys now, so they are
-    # dropped; nothing replaces them.
-    config = read_raw_config()
-    security = config.get("security")
-    if not isinstance(security, dict):
+    # 49 → 50: the bundled tirith scanner left Hermes. Nothing reads security.tirith_* now, but the
+    # keys are the user's: leave them in config.yaml and point anyone who set them at the plugin.
+    security = read_raw_config().get("security")
+    if not isinstance(security, dict) or not any(str(key).startswith("tirith_") for key in security):
         return
-    present = [key for key in _RETIRED_TIRITH_KEYS if key in security]
-    if not present:
-        return
-    # A fail-closed setup was relying on tirith to block commands: tell that user where it went.
-    strict = security.get("tirith_fail_open") is False
-    for key in present:
-        del security[key]
-    _commit(config, results, quiet, "removed security.tirith_* (scanner no longer bundled)",
-            "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
-    if strict:
-        message = ("You had tirith set to block commands (tirith_fail_open: false). Tirith is now a plugin "
-                   "maintained by its author: https://github.com/sheeki03/hermes-plugin-tirith "
-                   "(`hermes plugins install tirith` once it is in the catalog).")
-        results["warnings"].append(message)
-        if not quiet:
-            print(f"  ⚠ {message}")
+    results["warnings"].append(_TIRITH_PLUGIN_NOTICE)
+    if not quiet:
+        print(f"  ⚠ {_TIRITH_PLUGIN_NOTICE}")
 
 
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
@@ -842,7 +832,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (48, _migrate_to_48),
     # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
     (49, _migrate_to_49),
-    # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
+    # 49 → 50: the bundled scanner is gone; security.tirith_* is kept and the user is pointed at the plugin.
     (50, _migrate_to_50),
 )
 

@@ -818,7 +818,9 @@ destructive-verb list misses:
 Both go through the normal approval flow like every other dangerous pattern.
 
 Earlier releases bundled the external tirith scanner here. It was removed;
-upgrading drops the `security.tirith_*` settings and enables nothing in its place.
+upgrading leaves the `security.tirith_*` settings in `config.yaml` but nothing reads
+them, and nothing is enabled in its place. Tirith is now a plugin maintained by its
+author: [sheeki03/hermes-plugin-tirith](https://github.com/sheeki03/hermes-plugin-tirith).
 
 ### Context File Injection Protection
 

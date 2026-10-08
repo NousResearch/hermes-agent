@@ -174,8 +174,9 @@ class PluginHost:
             return
         time.sleep(0.5 * len(self._deaths))
         manager = self._manager
+        plugins = dict(manager.snapshot_plugins())
         for key in keys:
-            loaded = manager._plugins.get(key)
+            loaded = plugins.get(key)
             if loaded is None or not loaded.enabled:
                 continue
             manager.unload(key)

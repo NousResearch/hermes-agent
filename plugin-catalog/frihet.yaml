@@ -1,24 +1,45 @@
-# Plugin-catalog entry for hermes-frihet v0.1.0.
+# Hermes plugin-catalog entry for hermes-frihet v0.1.0.
 #
-# Per the catalog admission rules (plugin-catalog/README.md in
-# NousResearch/hermes-agent):
-#  - The maintainer of the plugin repository (Frihet-io) is the only one
-#    authorised to submit this entry.
-#  - ``tier`` MUST be ``community`` — ``official`` in the catalog means
-#    "maintained by NousResearch". We describe ourselves as the
-#    "Official Hermes Agent integration for Frihet" in the description
-#    and README; the catalog's tier label is a Nous-internal trust
-#    signal, not a brand claim.
-#  - ``sha`` MUST be a 40-character full commit hash of a tagged,
-#    audited commit of Frihet-io/hermes-frihet. Update via a new PR
-#    whenever we ship a meaningful change (rule 4 of the admission
-#    policy).
+# Catalog: NousResearch/hermes-agent/plugin-catalog/frihet.yaml
+# Per the catalog rules (plugin-catalog/README.md):
+# - The maintainer of the plugin repository (Frihet-io) is the only one
+#   authorised to submit the entry.
+# - ``tier`` MUST be ``community`` — ``official`` in the catalog means
+#   "maintained by NousResearch". We describe ourselves as the "Official
+#   Hermes Agent integration for Frihet" in the description, not in the
+#   catalog's tier label.
+# - The SHA must be a 40-character full commit hash of a tagged, audited
+#   commit of Frihet-io/hermes-frihet. Update via a new PR whenever we
+#   ship a meaningful change (rule 4 of the catalog admission policy).
 name: frihet
 repo: https://github.com/Frihet-io/hermes-frihet
-# Pinned at v0.1.0 / Frihet-io/hermes-frihet @ f3312087a8acda01ee3a5b089017f2a2657d2d5c
-# (feat(doctor): honour the Hermes OAuth token cache when no API key is set).
-# 75 tests green, hermes plugins validate --install-deps 15/15, security scan safe.
-sha: f3312087a8acda01ee3a5b089017f2a2657d2d5c
+# Pinned SHA — Frihet-io/hermes-frihet @ v0.1.0
+# (ci: rename hermes-validate to manifest-validate; add live-hermes-validate).
+#
+# This SHA supersedes ``f331208`` (the older doctor that read the OAuth
+# token cache) AND ``24a9612`` (the first privacy-only fix). It pins:
+#   * Hook dispatcher that passes the FULL tool name to the gate (no
+#     more silent bypass of the approval gate).
+#   * Doctor that derives auth evidence from ``ctx.call_mcp`` — the
+#     plugin never reads ~/.hermes/mcp-tokens.
+#   * Doctor that drops the list_invoices envelope from its output
+#     (no invoice/customer data leaks through /frihet doctor).
+#   * Setup that does NOT accept credentials as slash-command
+#     arguments (no transcript leak).
+#   * Slash-command rejection of unknown subcommands and unexpected
+#     positional arguments — neither branch echoes user input back.
+#   * redact() per-line masking: every Authorization: line is masked
+#     independently, including mislabelled secrets (token=, secret:,
+#     api_key:, password=).
+#   * Connector manifest tools.default_enabled with 50 read+create-draft
+#     operations, no pre-checked mutating ops. Users opt in to
+#     write tools via 'hermes mcp configure frihet'.
+#   * CI renamed to manifest-validate (schema-only) plus a manual
+#     live-hermes-validate (workflow_dispatch) for maintainers.
+#
+# Tests: 79 pass + 3 pre-existing skips. hermes plugins validate
+# --install-deps 15/15 with security scan "safe".
+sha: b9a806710511f6193f7eefa1819a2beb3d295387
 description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp."
 maintainer: Frihet-io
 tier: community
@@ -26,14 +47,20 @@ category: tools
 docs_url: https://github.com/Frihet-io/hermes-frihet#readme
 requires_hermes: ">=0.21.5"
 version: "0.1.0"
-# Capabilities mirror plugin.yaml exactly. Zero Python tools on purpose:
-# the canonical Frihet surface (158 ops) lives in @frihet/mcp-server and
-# is reached via the native Hermes MCP client. The plugin adds a skill,
-# a /frihet slash command, and a pre_tool_call hook that escalates
-# irreversible Frihet operations to the human approval gate.
+# Capabilities mirror plugin.yaml exactly.
+# Provides zero Python tools on purpose: the canonical Frihet surface
+# (158 operations) lives in @frihet/mcp-server and is reached via the
+# native Hermes MCP client. The plugin adds:
+#   - a skill (skills/frihet/SKILL.md) that encodes the operating contract
+#   - a pre_tool_call hook that escalates irreversible Frihet operations
+#     to the human approval gate
+#   - a /frihet slash command for setup/status/doctor
 capabilities:
   provides_tools: []
   provides_hooks:
     - pre_tool_call
   provides_middleware: []
+  # No env vars required. Credentials (Bearer API key or OAuth 2.0+PKCE)
+  # live on the ``mcp_servers.frihet`` block in the user's config.yaml,
+  # not on the plugin itself.
   requires_env: []

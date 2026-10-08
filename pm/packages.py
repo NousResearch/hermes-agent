@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from pm.filesystem import long_root, native
 from pm.package import (
     DebPackage,
     InstallError,
@@ -101,16 +102,16 @@ class BinaryPackage(Package):
             return ""
         try:
             proc = subprocess.run(
-                [str(binary), *self.probe_args],
+                [native(binary), *self.probe_args],
                 capture_output=True,
                 timeout=60,
-                cwd=str(binary.parent) if self.probe_cwd else None,
+                cwd=native(binary.parent) if self.probe_cwd else None,
                 env=self._probe_env(),
             )
         except OSError as e:
-            return f"could not exec {binary} {' '.join(self.probe_args)}: {e}"
+            return f"could not exec {native(binary)} {' '.join(self.probe_args)}: {e}"
         except subprocess.TimeoutExpired:
-            return f"{binary} {' '.join(self.probe_args)} timed out after 60s"
+            return f"{native(binary)} {' '.join(self.probe_args)} timed out after 60s"
         if proc.returncode != 0:
             return _probe_reason(binary, proc)
         return ""
@@ -323,13 +324,16 @@ def uv_cache_dir() -> Path:
         try:
             from pm.paths import store_root
 
-            payload_cache = store_root().parent / "uv-cache"
+            # uv's cache trees run deep; both roots get the long spelling so
+            # the copy is not cut at MAX_PATH. The returned path stays ordinary.
+            payload_cache = long_root(store_root().parent / "uv-cache")
             if payload_cache.is_dir():
-                machine_cache.mkdir(parents=True, exist_ok=True)
+                seeded = long_root(machine_cache)
+                seeded.mkdir(parents=True, exist_ok=True)
                 for entry in payload_cache.iterdir():
                     if entry.name == ".seeded":
                         continue
-                    dest = machine_cache / entry.name
+                    dest = seeded / entry.name
                     if not dest.exists():
                         (
                             shutil.copytree(entry, dest)
@@ -440,8 +444,10 @@ class Venv(StatePackage):
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check()
             if repair:
+                from pm.environments import venv_command
                 from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+                validate_environment(venv_command(project, candidate, ("-I",)),
+                                     env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise
@@ -614,9 +620,9 @@ class Npm(BinaryPackage):
         with tempfile.TemporaryDirectory(prefix="hermes-npm-cache-", ignore_cleanup_errors=True) as cache:
             proc = subprocess.run(
                 [
-                    str(node_bin), str(bundled_cli), "install", "--global",
-                    "--prefix", str(staged), "--offline", "--ignore-scripts",
-                    "--no-audit", "--no-fund", str(archive),
+                    native(node_bin), native(bundled_cli), "install", "--global",
+                    "--prefix", native(staged), "--offline", "--ignore-scripts",
+                    "--no-audit", "--no-fund", native(archive),
                 ],
                 capture_output=True,
                 text=True,
@@ -699,7 +705,7 @@ class Git(BinaryPackage):
             # open past the stub's exit. Under -y the stub prints nothing anyway.
             try:
                 proc = subprocess.run(
-                    [str(exe), f"-o{staged}", "-y"],
+                    [native(exe), f"-o{native(staged)}", "-y"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -1040,16 +1046,16 @@ class Chromium(Package):
     def verify(self, entry: Path, target: str) -> str:
         marker = entry / "INSTALLATION_COMPLETE"
         if not marker.is_file():
-            return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+            return f"INSTALLATION_COMPLETE missing under {native(entry)}; {_entry_listing(entry)}"
         binary = self.binary(entry, target)
         if binary is None:
-            return f"Chromium executable missing under {entry}"
+            return f"Chromium executable missing under {native(entry)}"
         return self._binary_reason(binary, entry, target)
 
     def env(self, entry: Path, target: str) -> dict:
         binary = self.binary(entry, target)
         if binary is None:
-            raise InstallError(self.name, f"Chromium executable missing under {entry}")
+            raise InstallError(self.name, f"Chromium executable missing under {native(entry)}")
         return {
             "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
             "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),

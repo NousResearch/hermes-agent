@@ -73,7 +73,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     from hermes_cli.local_runtime.bootstrap import (
         _launch_budget, get_supervisor, refresh_local_runtime, staged_models)
     from hermes_cli.local_runtime.context_policy import growth_decision
-    from hermes_cli.local_runtime.estimator import profile_from_gguf
+    from hermes_cli.local_runtime.estimator import as_loaded, profile_from_gguf
     from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
     from hermes_cli.local_runtime.hardware import probe_budget
     from hermes_cli.local_runtime.presets import (
@@ -103,7 +103,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         # Capacity budget, not live-free: growth executes via a server bounce, so the grown
         # instance loads onto a freed card. Live-free is distorted by the very model being grown
         # — it reads its own residency as unavailable and vetoes rungs that fit.
-        profile, budget,
+        as_loaded(profile, budget), budget,
         current_window=current_window,
         session_tokens=session_tokens,
         measured_decode_tok_s=measured_decode_tok_s,

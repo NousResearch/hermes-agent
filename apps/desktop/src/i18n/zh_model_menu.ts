@@ -13,6 +13,11 @@ export const zhModelMenu = {
   cacheRead: '缓存读取',
   priceTitle: (input: string, output: string, cache: string) =>
     `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : ''),
+  localSetup: {
+    title: '本地运行 · 免费、私密',
+    text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,
+    action: '设置'
+  },
   limited: '已限额',
   limitedUntil: (time: string) => `限额至 ${time}`,
   limitedTip: (provider: string, time: null | string) =>
@@ -22,6 +27,11 @@ export const zhModelMenu = {
   modelResets: (time: string) => `${time} 恢复`,
   modelLimitedTip: (time: string) => `该模型已达到自身上限，将于 ${time} 恢复。这里的其他模型仍可使用。`,
   usageLeft: (percent: number, time: null | string) => (time ? `剩余 ${percent}% · ${time} 重置` : `剩余 ${percent}%`),
+  poolAccounts: (count: number) => `${count} 个账户`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} 个账户已限额`,
+  poolAccount: (number: number) => `账户 ${number}`,
+  poolUnknown: '用量暂不可用',
+  poolUnavailable: '请重新登录',
   usageTip: (provider: string) => `${provider} 即将达到用量上限。`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}：剩余 ${percent}%，${time} 重置` : `${label}：剩余 ${percent}%`

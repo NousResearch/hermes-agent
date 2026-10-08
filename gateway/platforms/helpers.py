@@ -80,14 +80,15 @@ def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
             current.absorb(previous)
 
 
-def hand_over_held_inbound(predecessor: Any, adapter: Any) -> None:
-    """Move inbound the retired instance is holding to its now-published replacement (#132829).
+def hand_over_held_inbound(source: Any, target: Any) -> None:
+    """Move inbound ``source`` is holding to ``target`` (#132829, #133399).
 
-    Runs at publish time, not before connect: a candidate that fails to connect never owns the
-    queue, and the predecessor keeps holding until a replacement is registered."""
-    adopt = getattr(adapter, "adopt_held_inbound", None)
-    if predecessor is not None and callable(adopt):
-        adopt(predecessor)
+    The runner calls it at publish time (retired instance -> replacement) and after disposing a
+    failed reconnect candidate (candidate -> retained predecessor): a candidate that fails connect
+    can hold acked updates and salvage pending batches in disconnect(), which must not die with it."""
+    adopt = getattr(target, "adopt_held_inbound", None)
+    if source is not None and callable(adopt):
+        adopt(source)
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute

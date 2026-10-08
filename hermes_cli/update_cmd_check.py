@@ -18,8 +18,10 @@ def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subp
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
-    return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    from hermes_cli.update_custody import run_git
+
+    return run_git(
+        git_cmd, args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
         **kwargs,
     )
 

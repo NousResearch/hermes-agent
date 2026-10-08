@@ -141,7 +141,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         # Outside the config mutation lock: a cold first metric call costs imports + catalog loads.
         with _profile_scope(body.profile or profile):
             record_mcp_install("url" if server_config.get("url") else "local", None,
-                               "success" if saved else "failed")
+                               "success" if saved else "failed", failure_class=None if saved else "config_rejected")
         if not saved:
             raise HTTPException(
                 status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
@@ -437,10 +437,9 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
 
 
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
+async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``. Opt-in app
-    signals describe this backend machine, never the client or terminal sandbox."""
+    entry annotated with installed/enabled state for ``profile``."""
     with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
         from hermes_cli import mcp_catalog
 
@@ -466,36 +465,7 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
         diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
     except Exception:
         pass
-    result = {"entries": entries, "diagnostics": diagnostics}
-    if detect_apps:
-        import sys
-
-        try:
-            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
-
-            applications = {}
-            for entry in entries:
-                labels = (entry["suggest"] or {}).get("applications") or [
-                    entry["name"].replace("-", " ").replace("_", " ")
-                ]
-                try:
-                    applications[entry["name"]] = validate_applications(labels)
-                except ValueError:
-                    # Catalog identifiers allow more than app labels; one unusable
-                    # inference must not suppress valid observations for other entries.
-                    applications[entry["name"]] = []
-
-            # Keep backend-local filesystem work off the event loop and profile lock.
-            detected = await asyncio.to_thread(discover_catalog_apps, applications)
-        except Exception:
-            _log.warning("Backend application discovery unavailable")
-            detected = {"matches": {}, "discovery": {
-                "scope": "backend", "status": "unavailable", "platform": sys.platform,
-            }}
-        for entry in entries:
-            entry["detected_apps"] = detected["matches"].get(entry["name"], [])
-        result["discovery"] = detected["discovery"]
-    return result
+    return {"entries": entries, "diagnostics": diagnostics}
 
 
 @router.post("/api/mcp/catalog/install")

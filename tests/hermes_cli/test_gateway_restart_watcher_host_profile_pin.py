@@ -88,17 +88,19 @@ def test_windows_update_relaunch_keeps_the_host_after_its_record_is_gone(sticky_
     record = _HostRecord(monkeypatch, ("default", "worker"))
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({}, [], set(), [_OLD_PID]))
-    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({}, [], []))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a, **_kw: ({}, [], []))
     monkeypatch.setattr(update_cmd_windows, "_record_attested_cold_start_profiles", lambda token, running: None)
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
     monkeypatch.setattr(gateway, "_capture_gateway_argv", lambda pid: list(_HOST_ARGV))
     monkeypatch.setattr(gateway_status, "get_process_start_time", lambda pid: None)
     monkeypatch.setattr(gateway_status, "terminate_pid", lambda pid, **_kw: None)
+    # The pause proves each unmapped gateway's home before any stop; the host runs on the default root.
+    monkeypatch.setattr("hermes_cli.update_fleet_scope.gateway_pid_home", lambda pid: str(sticky_named_profile))
 
     token = update_cmd_windows._pause_windows_gateways_for_update()
     record.alive = False  # the update runs; the host and its rendezvous record are gone
     spawned = _capture_spawns(monkeypatch)
-    update_cmd_windows._relaunch_paused_gateways(token, {}, token["unmapped"])
+    update_cmd_windows._relaunch_paused_gateways({}, token["unmapped"])
 
     assert _respawned_home(monkeypatch, sticky_named_profile, spawned[0]) == sticky_named_profile.resolve()

@@ -53,6 +53,8 @@ def _make_args(**kwargs):
         "auth": None,
         "preset": None,
         "env": None,
+        "tools": None,
+        "all": False,
         "mcp_action": None,
     }
     defaults.update(kwargs)
@@ -348,6 +350,151 @@ class TestMcpTest:
         assert captured["inner_timeout"] == 300.0
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: cmd_mcp_configure
+# ---------------------------------------------------------------------------
+
+class TestMcpConfigure:
+    @staticmethod
+    def _non_tty(monkeypatch):
+        import sys
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: False))
+
+    @staticmethod
+    def _tools(monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda _name, _cfg: [
+                ("search", "Search documents"),
+                ("read", "Read a document"),
+                ("write", "Write a document"),
+            ],
+        )
+
+    def test_tools_flag_updates_config_without_tty(self, tmp_path, monkeypatch):
+        _seed_config(tmp_path, {
+            "docs": {
+                "url": "https://example.com/mcp",
+                "tools": {"exclude": ["write"]},
+            },
+        })
+        self._non_tty(monkeypatch)
+        self._tools(monkeypatch)
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="docs", tools=" write,search,write "))
+
+        server = load_config()["mcp_servers"]["docs"]
+        assert server["tools"] == {"include": ["search", "write"]}
+
+    def test_all_flag_removes_tool_filters_without_tty(self, tmp_path, monkeypatch):
+        _seed_config(tmp_path, {
+            "docs": {
+                "url": "https://example.com/mcp",
+                "tools": {"include": ["read"], "prompts": False},
+            },
+        })
+        self._non_tty(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *_args, **_kwargs: pytest.fail("--all must not probe the server"),
+        )
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="docs", all=True))
+
+        assert load_config()["mcp_servers"]["docs"]["tools"] == {
+            "prompts": False,
+        }
+
+    def test_tools_flag_probe_failure_is_nonzero_and_atomic(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        original = {
+            "docs": {
+                "url": "https://example.com/mcp",
+                "tools": {"include": ["read"]},
+            },
+        }
+        _seed_config(tmp_path, original)
+        self._non_tty(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+        )
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_configure(_make_args(name="docs", tools="search"))
+
+        assert exc.value.code == 1
+        assert "Failed to connect: offline" in capsys.readouterr().err
+        assert load_config()["mcp_servers"] == original
+
+    def test_empty_tools_flag_is_rejected_without_writing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        original = {"docs": {"url": "https://example.com/mcp"}}
+        _seed_config(tmp_path, original)
+        self._non_tty(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *_args, **_kwargs: pytest.fail("empty --tools must not probe"),
+        )
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_configure(_make_args(name="docs", tools=" , "))
+
+        assert exc.value.code == 2
+        assert "requires at least one tool name" in capsys.readouterr().err
+        assert load_config()["mcp_servers"] == original
+
+    def test_unknown_tool_is_a_nonzero_error(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "docs": {"url": "https://example.com/mcp"},
+        })
+        self._non_tty(monkeypatch)
+        self._tools(monkeypatch)
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_configure(_make_args(name="docs", tools="search,missing"))
+
+        assert exc.value.code == 1
+        assert "Unknown tool(s) for 'docs': missing" in capsys.readouterr().err
+        assert "tools" not in load_config()["mcp_servers"]["docs"]
+
+    def test_no_flags_still_requires_tty(self, tmp_path, monkeypatch):
+        _seed_config(tmp_path, {
+            "docs": {"url": "https://example.com/mcp"},
+        })
+        self._non_tty(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *_args, **_kwargs: pytest.fail("must not probe without a selection"),
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_configure(_make_args(name="docs"))
+
+        assert exc.value.code == 1
 
 
 # ---------------------------------------------------------------------------

@@ -481,3 +481,135 @@ def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]
+
+
+def test_published_env_ignores_stale_marker_from_different_backend(monkeypatch, tmp_path):
+    """A stale marker from Docker must not route to sandbox probes when backend is LocalEnvironment."""
+    from tools.bot_desktop import sandbox_host
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+
+    class DummyLocalEnv:
+        pass
+
+    local_env = DummyLocalEnv()
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: local_env)
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(sandbox_host, "published_env", lambda env, prof: pytest.fail("Must not call sandbox published_env"))
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 1234)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    (tmp_path / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+
+    assert runtime.published_env() == {"DISPLAY": ":42"}
+
+
+def test_published_env_honors_matching_marker(monkeypatch):
+    """When the environment matches the marker identity, route to sandbox published_env."""
+    from tools.bot_desktop import sandbox_host
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+
+    class DummyDockerEnv:
+        pass
+
+    docker_env = DummyDockerEnv()
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: docker_env)
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "DockerEnvironment", "container": "c123"})
+    monkeypatch.setattr(sandbox_host, "published_env", lambda env, prof: {"DISPLAY": ":20", "USER": "hermes"})
+
+    assert runtime.published_env() == {"DISPLAY": ":20", "USER": "hermes"}
+
+
+def test_rfb_socket_path_not_suppressed_by_stale_marker(monkeypatch, tmp_path):
+    """A stale marker from a different backend must not hide the host's rfb.sock."""
+    from tools.bot_desktop import sandbox_host
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+
+    class DummyLocalEnv:
+        pass
+
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: DummyLocalEnv())
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 1234)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    sock = tmp_path / "rfb.sock"
+    sock.touch()
+
+    assert runtime.rfb_socket_path() == sock
+
+
+def test_sandbox_host_published_env_and_stop_safe_on_local_env():
+    """sandbox_host.published_env and stop must gracefully return empty/False if given an env without exec_prefix."""
+    from tools.bot_desktop import sandbox_host
+
+    class DummyLocalEnv:
+        pass
+
+    assert sandbox_host.published_env(None, "default") == {}
+    assert sandbox_host.published_env(DummyLocalEnv(), "default") == {}
+    assert sandbox_host.stop(None, "default") is False
+    assert sandbox_host.stop(DummyLocalEnv(), "default") is False
+
+
+def test_sandbox_screen_running_false_for_stale_marker(monkeypatch):
+    """A marker naming a Docker container is not running when the current env is Local, even when that
+    container is still alive elsewhere: ownership wins over liveness."""
+    from tools.bot_desktop import sandbox_host
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+
+    class DummyLocalEnv:
+        pass
+
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: DummyLocalEnv())
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(sandbox_host, "marker_sandbox_alive", lambda m: True)
+
+    assert runtime.sandbox_screen_running() is False
+
+
+def test_status_ignores_stale_marker_from_different_backend(monkeypatch, tmp_path):
+    """status() with a stale Docker marker + Local backend must report the live host screen, never probe
+    the sandbox (missing_binaries would raise LocalEnvironment-cannot-exec)."""
+    from tools.bot_desktop import placement, sandbox_host
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+
+    class DummyLocalEnv:
+        pass
+
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: DummyLocalEnv())
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(placement, "resolve", lambda: placement.Placement(placement.GATEWAY, "local"))
+    monkeypatch.setattr(sandbox_host, "missing_binaries",
+                        lambda env: pytest.fail("Must not probe sandbox missing_binaries for a stale marker"))
+    monkeypatch.setattr(sandbox_host, "published_env",
+                        lambda env, prof: pytest.fail("Must not probe sandbox published_env for a stale marker"))
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: 1234)
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "geometry", lambda: "1440x900")
+    (tmp_path / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+
+    st = runtime.status()
+    assert st.running is True and st.display == ":42" and st.placement == "gateway"
+
+
+def test_open_rfb_stream_not_running_for_stale_marker(monkeypatch):
+    """open_rfb_stream() with a stale marker must raise not-running, never LocalEnvironment-cannot-exec."""
+    from tools.bot_desktop import sandbox_host
+
+    class DummyLocalEnv:
+        pass
+
+    marker = {"backend": "DockerEnvironment", "container": "c123"}
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: marker)
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=False: DummyLocalEnv())
+    monkeypatch.setattr(sandbox_host, "_owner_identity", lambda env: {"backend": "LocalEnvironment"})
+    monkeypatch.setattr(sandbox_host, "marker_sandbox_alive", lambda m: False)
+    monkeypatch.setattr(sandbox_host, "open_rfb_stream",
+                        lambda env, prof: pytest.fail("Must not exec into a stale backend"))
+
+    with pytest.raises(RuntimeError, match="not running"):
+        runtime.open_rfb_stream()

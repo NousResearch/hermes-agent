@@ -74,6 +74,18 @@ def _owner_identity(env: Any) -> Dict[str, Any]:
     return ident
 
 
+def marker_owned_by_env(marker: Dict[str, Any], env: Any) -> bool:
+    """Whether ``marker`` names ``env``'s sandbox. A stale marker from a previous terminal backend must not
+    route Local probes into sandbox exec: the container is the identity when either side names one (the
+    backend name differs for test stand-ins, so it is ignored there); otherwise the backend must match."""
+    if not marker or env is None:
+        return False
+    ident = _owner_identity(env)
+    if "container" in marker or "container" in ident:
+        return ident.get("container") == marker.get("container")
+    return ident.get("backend") == marker.get("backend")
+
+
 _ALIVE_CACHE: Dict[str, tuple[float, bool]] = {}
 
 
@@ -207,6 +219,9 @@ def _published(env: Any, rdir: str) -> Dict[str, str]:
 
 
 def published_env(env: Any, profile: str) -> Dict[str, str]:
+    from tools.environments import streams
+    if env is None or streams.exec_prefix(env) is None:
+        return {}
     return _published(env, _remote_dir(env, profile))
 
 
@@ -281,6 +296,9 @@ def stop(env: Any, profile: str) -> bool:
     """Kill the launcher's session (Xvnc, dbus, Xfce, anything the desktop spawned) and, as a backstop, every
     process still holding this profile's rfb.sock or Xauthority path (a launcher that lost its pid file left
     an Xvnc that 'Server is already active for display 20' on the next start). True when something was live."""
+    from tools.environments import streams
+    if env is None or streams.exec_prefix(env) is None:
+        return False
     rdir = _remote_dir(env, profile)
     q = shlex.quote(rdir)
     script = f"""

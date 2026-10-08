@@ -222,6 +222,29 @@ def test_connector_intent_is_not_starved_by_local_tools_sharing_one_word():
             registry.deregister(n)
 
 
+def test_search_skips_hosted_leg_when_local_results_fill_every_query_limit():
+    """A fully satisfied local search must not pay the connector gateway latency."""
+    from tools.registry import registry
+
+    defs, names = _registered_local_defs()
+    sent = []
+    try:
+        out = json.loads(dispatch_tool_search(
+            {"queries": ["tracker create issue", "tracker list issues"], "limit": 1},
+            current_tool_defs=defs,
+            connector_search=lambda queries: sent.append(queries) or ConnectorLeg(),
+        ))
+    finally:
+        for name in names:
+            registry.deregister(name)
+
+    assert sent == []
+    assert [group["matches"] for group in out["results"]] == [
+        ["mcp__tracker__create_issue"],
+        ["mcp__tracker__list_issues"],
+    ]
+
+
 def test_both_sources_answer_within_one_limit():
     """When a local MCP server and a connector both serve the same service, both surface,
     ranked by the same BM25 pass, and `limit` caps the group as a whole."""

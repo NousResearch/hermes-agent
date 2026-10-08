@@ -4375,21 +4375,6 @@ def test_config_sync_treats_auto_provider_as_unset(monkeypatch):
     assert calls == ["new/model"]
 
 
-def test_config_sync_skips_session_pinned_by_model_command(monkeypatch):
-    _patch_config_model(monkeypatch, "new/model")
-    session = _sync_test_session(
-        config_model_seen=("old/model", ""),
-        model_override={"model": "pinned/model"},
-    )
-    monkeypatch.setattr(
-        server,
-        "_apply_model_switch",
-        lambda *a, **k: pytest.fail("pinned session must not be switched"),
-    )
-
-    server._sync_agent_model_with_config("sid", session)
-
-
 def test_config_sync_noop_when_config_unchanged(monkeypatch):
     _patch_config_model(monkeypatch, "old/model")
     session = _sync_test_session(config_model_seen=("old/model", ""))
@@ -10598,6 +10583,8 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
                     "base_url": profile_url,
                     "api_mode": "chat_completions",
                     "reasoning_config": reasoning,
+                    # The session-scoped pick records the OWNING profile's config model it diverged from.
+                    "composer_override_profile": {"model": "old/model", "provider": "custom:new-provider"},
                 },
             }
         ]

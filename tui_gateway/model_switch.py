@@ -341,9 +341,10 @@ def _apply_model_switch(
         confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
+    # Every explicit chat-scoped pick records the config model it diverged from, so resume and the
+    # per-turn sync can tell a user pick from config routing and drop the pick once config moves.
     records_composer_override = (
-        pin_session_override and isinstance(session, dict) and not one_turn
-        and not persist_global and session.get("follow_profile_config"))
+        pin_session_override and isinstance(session, dict) and not one_turn and not persist_global)
     had_composer_profile = "composer_override_profile" in session
     previous_composer_profile = session.get("composer_override_profile")
     if records_composer_override:
@@ -448,8 +449,10 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
 
 
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
-    """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
-    pinned with /model keep their choice; a failed switch keeps the current model."""
+    """Adopt a config.yaml model change at turn start (like gateways do per message), so config-driven
+    routing (e.g. a quota router avoiding overages) reaches open chats. A ``/model`` pick holds only while
+    config still names the model it diverged from; a failed switch keeps the current model and is
+    retried on later turns."""
     agent = session.get("agent")
     if agent is None:
         return
@@ -465,19 +468,20 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         pinned_profile = (
             str(composer_profile.get("model") or "").strip(),
             str(composer_profile.get("provider") or "").strip(),
-        ) if isinstance(composer_profile, dict) else None
+        ) if isinstance(composer_profile, dict) else seen
+        # No marker and no baseline = no evidence config moved since the pick; keep it.
         if pinned_profile is None or pinned_profile == target:
             return
-        # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
-        # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.
+        # A later config edit supersedes the explicit pick. Clearing both fields lets the normal
+        # config-sync path switch now and prevents the old pick resurfacing on rebuild or resume.
         superseded_pin = session.pop("model_override"), composer_profile
         session["composer_override_profile"] = None
-    # Record first so a broken config gets one attempt per edit, not per turn.
-    session["config_model_seen"] = target
     model, provider = target
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
     if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        session["config_model_seen"] = target
+        session.pop("config_model_failed", None)
         if superseded_pin is not None:
             _persist_live_session_runtime(session)
         return
@@ -489,11 +493,21 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False, count_switch=False)
     except Exception as e:
+        # Leave config_model_seen untouched so the next turn retries: a transient failure (a provider
+        # package not yet installed, an auth refresh) must not strand the chat on the old model. The
+        # user is told once per config target, not every turn.
+        if session.get("config_model_failed") == target:
+            logger.debug("Configured model %s still not adoptable for session %s: %s", model, sid, e)
+            return
+        session["config_model_failed"] = target
         logger.warning("Configured model %s could not be adopted for session %s: %s", model, sid, e)
         from gateway.warning_notifications import render_notification
         render_notification(
             lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
+        return
+    session["config_model_seen"] = target
+    session.pop("config_model_failed", None)
 
 
 def _pending_switch_selection_warning(model: str, provider: str, agent: Any = None) -> str | None:

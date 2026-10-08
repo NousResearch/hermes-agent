@@ -148,7 +148,9 @@ sources:
 The mark needs no setting because Relay exporters are configured separately.
 Other history and request rewrites emit no mark yet: OpenAI Responses native
 compaction and its pre-checkpoint item pruning, image shrinking after a
-provider rejection, and request-only truncation.
+provider rejection, request-only truncation, and the gateway's automatic
+session reset after a turn ends with `compression_exhausted`, which replaces
+the session with a new, empty one instead of compacting it.
 
 | Mark | When | Relay effect |
 |---|---|---|

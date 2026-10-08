@@ -185,6 +185,20 @@ def test_every_family_has_required_metadata():
         assert meta.get("text_endpoint") or meta.get("image_endpoint"), fid
 
 
+def test_seedance_model_advertises_reference_capabilities():
+    from plugins.video_gen.fal import FALVideoGenProvider
+
+    seedance = next(
+        model
+        for model in FALVideoGenProvider().list_models()
+        if model["id"] == "seedance-2.0"
+    )
+    assert seedance["max_reference_videos"] == 3
+    assert seedance["max_reference_audios"] == 3
+    assert seedance["supports_first_frame"] is True
+    assert seedance["supports_last_frame"] is True
+
+
 class TestFamilyRouting:
     """The headline behavior: image_url presence picks the endpoint."""
 
@@ -245,6 +259,52 @@ class TestFamilyRouting:
         assert with_fake_fal["endpoint"] == "fal-ai/pixverse/v6/image-to-video"
         assert result["modality"] == "image"
         assert with_fake_fal["arguments"]["image_url"] == "https://example.com/dog.png"
+
+    def test_seedance_reference_media_routes_to_reference_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "follow @Video1 with the rhythm from @Audio1",
+            model="seedance-2.0",
+            reference_image_urls=["https://example.com/style.png"],
+            reference_video_urls=["https://example.com/motion.mp4"],
+            reference_audio_urls=["https://example.com/rhythm.wav"],
+        )
+
+        assert result["success"] is True
+        assert result["modality"] == "reference"
+        assert (
+            with_fake_fal["endpoint"]
+            == "bytedance/seedance-2.0/reference-to-video"
+        )
+        assert with_fake_fal["arguments"]["image_urls"] == [
+            "https://example.com/style.png"
+        ]
+        assert with_fake_fal["arguments"]["video_urls"] == [
+            "https://example.com/motion.mp4"
+        ]
+        assert with_fake_fal["arguments"]["audio_urls"] == [
+            "https://example.com/rhythm.wav"
+        ]
+
+    def test_seedance_first_last_frames_reach_image_payload(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "transition between these frames",
+            model="seedance-2.0",
+            first_frame_url="https://example.com/start.png",
+            last_frame_url="https://example.com/end.png",
+        )
+
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "bytedance/seedance-2.0/image-to-video"
+        assert with_fake_fal["arguments"]["image_url"] == (
+            "https://example.com/start.png"
+        )
+        assert with_fake_fal["arguments"]["end_image_url"] == (
+            "https://example.com/end.png"
+        )
 
     def test_default_family_text_routing(self, with_fake_fal):
         """No model arg → DEFAULT_MODEL → text-to-video endpoint."""

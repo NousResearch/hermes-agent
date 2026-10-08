@@ -917,8 +917,10 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
 
 
 def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
-    """Add/remove a plugin's toolset in ``platform_toolsets`` for all platforms (no-op when the
-    plugin provides no tools)."""
+    """Add/remove a plugin's toolset in every SAVED ``platform_toolsets`` list (no-op when the plugin
+    provides no tools). Platforms with no saved list are left alone: a plugin toolset is already on
+    there by default, and seeding ``[<plugin_ts>]`` would replace the core composite and strip every
+    built-in tool."""
     toolset_key = _get_plugin_toolset_key(name)
     if not toolset_key:
         return
@@ -935,10 +937,6 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
             (ts_list.append if enable else ts_list.remove)(toolset_key)
             platform_toolsets[platform] = ts_list
             changed = True
-    # Enabling with no platform lists yet: seed "cli" at minimum.
-    if enable and not changed and not platform_toolsets:
-        platform_toolsets["cli"] = [toolset_key]
-        changed = True
     if changed:
         save_config(config)
 

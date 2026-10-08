@@ -68,6 +68,14 @@ class TestBuildSessionContextPromptRedaction:
         assert "user-123" not in prompt
 
 
+    def test_telegram_chat_id_hashed_when_redact_pii(self):
+        """Numeric Telegram chat ids are route identity; hash them with the flag."""
+        ctx = _make_context(chat_id="-1009998887776")
+        prompt = build_session_context_prompt(ctx, redact_pii=True)
+        assert "-1009998887776" not in prompt
+        hashed = _hash_chat_id("-1009998887776")
+        assert f"**Telegram Chat ID:** {hashed}" in prompt
+
     def test_home_channel_id_preserved_without_redaction(self):
         hc = {
             Platform.TELEGRAM: HomeChannel(

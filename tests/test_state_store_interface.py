@@ -62,6 +62,71 @@ def test_protocol_face_members_exist_on_session_db():
         assert hasattr(SessionDB, member), member
 
 
+def test_search_without_fts_reads_canonical_messages(db):
+    db.create_session("s1", source="cli")
+    hit_id = db.append_message("s1", role="user", content="distinctive fallback needle")
+    db.append_message("s1", role="assistant", content="unrelated text")
+    db._fts_enabled = False
+
+    rows = db.search_messages("needle", source_filter=["cli"], role_filter=["user"],
+                              sort="oldest", limit=1, offset=0, fields=["id", "role", "snippet"])
+    assert len(rows) == 1
+    assert rows[0]["id"] == hit_id
+    assert rows[0]["role"] == "user"
+    assert "needle" in rows[0]["snippet"].lower()
+    assert set(rows[0]) == {"id", "role", "snippet"}
+    assert db.search_messages("unfindable") == []
+
+
+@pytest.mark.parametrize("route", ["fts", "disabled", "operational_error"])
+def test_standalone_near_search_survives_fts_fallback(db, monkeypatch, route):
+    db.create_session("s1", source="cli")
+    hit_id = db.append_message("s1", role="user", content="standalone NEAR token")
+    db.append_message("s1", role="assistant", content="unrelated text")
+    assert db._fts_enabled
+    faults = []
+
+    if route == "disabled":
+        db._fts_enabled = False
+    elif route == "operational_error":
+        real_read_all = db._read_all
+
+        def read_with_fts_fault(sql, params):
+            if "messages_fts MATCH ?" in sql:
+                faults.append(params[0])
+                raise sqlite3.OperationalError("injected FTS MATCH fault")
+            return real_read_all(sql, params)
+
+        monkeypatch.setattr(db, "_read_all", read_with_fts_fault)
+
+    assert db.search_messages("NEAR", fields=["id"]) == [{"id": hit_id}]
+    assert db.search_messages("trulyabsentword", fields=["id"]) == []
+    if route == "operational_error":
+        assert faults == ["NEAR", "trulyabsentword"]
+
+
+def test_fts_match_operational_error_uses_canonical_read_and_surfaces_its_failure(db, monkeypatch):
+    db.create_session("s1", source="cli")
+    hit_id = db.append_message("s1", role="user", content="distinctive fallback needle")
+    assert db.search_messages("needle", fields=["id"]) == [{"id": hit_id}]
+
+    real_read_all = db._read_all
+    fail_canonical = False
+
+    def read_with_fts_fault(sql, params):
+        if "messages_fts MATCH ?" in sql:
+            raise sqlite3.OperationalError("injected FTS MATCH fault")
+        if fail_canonical and "FROM messages m" in sql:
+            raise sqlite3.OperationalError("injected canonical read failure")
+        return real_read_all(sql, params)
+
+    monkeypatch.setattr(db, "_read_all", read_with_fts_fault)
+    assert db.search_messages("needle", fields=["id"]) == [{"id": hit_id}]
+    fail_canonical = True
+    with pytest.raises(sqlite3.OperationalError, match="injected canonical read failure"):
+        db.search_messages("needle", fields=["id"])
+
+
 def test_sanitize_title_is_the_contracted_normalizer(db):
     assert SessionDB.sanitize_title("  hello \x00world\t ") == "hello world"
     assert SessionDB.sanitize_title("   ") is None

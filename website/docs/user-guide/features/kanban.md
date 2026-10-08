@@ -815,7 +815,7 @@ active tenant passed by tools) wins. Boards remain the hard isolation boundary.
 
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
-**Important boundary:** Manual mode disables only the built-in Triage decomposer. It does not prevent a profile from calling `kanban_create`, and it does not disable creator-session wake-ups. With `kanban.auto_subscribe_on_create: true`, a task's terminal event resumes the originating agent with a synthetic status turn so it can inspect the handoff and decide whether genuinely new follow-up work is needed. Set `auto_subscribe_on_create: false` when task completion should remain passive. For provenance, built-in decomposer children use `created_by=auto-decomposer`; tasks created by a resumed profile carry that profile name instead.
+**Important boundary:** Manual mode disables only the built-in Triage decomposer. It does not prevent a profile from calling `kanban_create`, and it does not disable creator-session wake-ups. With `kanban.auto_subscribe_on_create: true` and the default `kanban.auto_subscribe_delivery_mode: notify+wake`, a task's terminal event resumes the originating agent with a synthetic status turn so it can inspect the handoff and decide whether genuinely new follow-up work is needed. Set `auto_subscribe_delivery_mode: notify` for passive chat notifications, or `auto_subscribe_on_create: false` to disable automatic subscriptions. For provenance, built-in decomposer children use `created_by=auto-decomposer`; tasks created by a resumed profile carry that profile name instead.
 
 Flip between the two modes from the **Orchestration: Auto/Manual** pill at the top of the kanban page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` — that's still available as a single-task spec rewrite when you don't want fan-out.
 
@@ -831,7 +831,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = the root task keeps its own assignee, else the active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to the root task's assignee, else the active default. |
-| `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `auto_subscribe_on_create` | `true` | Subscribe the persistent gateway/TUI session when `kanban_create` runs. Set to `false` to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `auto_subscribe_delivery_mode` | `notify+wake` | Delivery mode for new chat subscriptions from `kanban_create`, `/kanban create`, and `/kanban subscribe`: `notify` (passive message), `notify+wake` (message and agent turn), or `wake` (agent turn only). Invalid or unreadable values warn and fall back to `notify+wake`. TUI subscriptions and existing subscriptions are unchanged. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
@@ -1131,7 +1132,7 @@ Built-in decomposition also inherits its root's durable session. Session lineage
 `session_id` does not replace existing subscriptions; use `notify-subscribe` and
 `notify-unsubscribe` to change where events are delivered.
 
-A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
+A chat-originated auto-subscribe defaults to `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. Set `kanban.auto_subscribe_delivery_mode` in the originating profile's config to `notify`, `notify+wake`, or `wake` to control new auto-subscriptions. This does not change existing subscriptions or TUI delivery. See [Delivery modes](#delivery-modes) below.
 
 ### Output truncation in messaging
 

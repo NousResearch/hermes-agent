@@ -1796,7 +1796,6 @@ DEFAULT_CONFIG = {
         # the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
     },
-
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
@@ -1888,6 +1887,7 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        "auto_subscribe_delivery_mode": "notify+wake",
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,

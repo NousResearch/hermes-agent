@@ -36,7 +36,8 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Google Chat | — | ✅ | ✅ | ✅ | — | ✅ | — |
-| WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| [WhatsApp (Baileys)](whatsapp.md#two-modes) | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| [WhatsApp Agent Platform (plugin)](whatsapp-agent-platform.md) | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | WhatsApp Cloud API | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Signal | — | ✅ | ✅ | — | — | ✅ | — |
 | SMS | — | — | — | — | — | — | — |
@@ -62,6 +63,8 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | SimpleX | ✅ | ✅ | ✅ | — | — | ✅ | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+
+For WhatsApp, choose by credentials: an **Agent API key** uses the community Agent Platform plugin; **Linked Devices QR** uses Baileys; **Business API credentials plus a webhook** use Cloud API. Agent Platform currently replies only to its creator, sends audio as attachments, and cannot edit messages or send reactions. See the [WhatsApp integration chooser](whatsapp.md#choose-your-integration) and [terminal/Desktop Agent setup](whatsapp-agent-platform.md).
 
 :::note Hermes Relay
 [Hermes Relay](./relay.md) (experimental) is not a chat platform itself — it is a connector system that fronts platforms like Discord, Telegram, Slack, and WhatsApp through an external connector that owns the platform credentials. Capabilities (media, native approval/clarify prompts, reactions, threads, typing, streaming) are negotiated per connector at handshake rather than fixed in the table above.
@@ -971,6 +974,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Agent Platform Setup](whatsapp-agent-platform.md)
 - [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)

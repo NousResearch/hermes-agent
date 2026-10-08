@@ -283,6 +283,25 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+### WhatsApp in Desktop
+
+First choose the integration matching your account: [WhatsApp Agent Platform](./messaging/whatsapp-agent-platform.md), [WhatsApp phone linking (Baileys)](./messaging/whatsapp.md), or [Business Cloud API](./messaging/whatsapp-cloud.md). Their credentials and setup steps are different.
+
+For **WhatsApp Agent Platform**:
+
+1. Select the backend and profile that will own the connection. In WhatsApp, create/open the intended agent through **Settings → Agents**, then copy its key from the agent chat's **Chat info → API key**.
+2. Open **Capabilities → Plugins**, install **WhatsApp Agent Platform** from the catalog, and enable its **Agent** switch for that profile.
+3. Open **Messaging → WhatsApp Agent Platform**, enter the required API key, click **Save changes**, and enable the platform.
+4. Use **Restart now** when requested and wait for **Connected**. Send a **fresh message in that agent's WhatsApp chat** and confirm a reply.
+
+The plugin needs Hermes 0.21.4 or newer and a WhatsApp account with Agents available. It uses Meta's official Agent API through an independent community plugin; it does not need a Linked Devices QR, business phone number, or public webhook. If its Messaging entry is missing, check installation and the Agent switch on the selected backend/profile. The [full setup guide](./messaging/whatsapp-agent-platform.md) covers the terminal fallback, sender scope, limits, and errors.
+
+For **Baileys**, complete `hermes whatsapp` in a terminal on the selected backend, using `hermes -p <profile> whatsapp` for a named profile. The current Desktop Messaging form does not show the WhatsApp Linked Devices QR. After pairing, save/check the **WhatsApp** settings in Messaging, enable it, restart the gateway, then message the dedicated bot number or **Message Yourself**, according to your chosen mode. [Baileys walkthrough](./messaging/whatsapp.md#set-up-from-hermes-desktop).
+
+For **Business Cloud API**, follow the [business account and webhook walkthrough](./messaging/whatsapp-cloud.md), then save its credentials and enable its platform on the same backend/profile. An Agent Platform key cannot replace Business Cloud credentials.
+
+**Saved**, **enabled**, and **Connected** describe different states. The Desktop chat backend and messaging gateway are separate processes; a working Desktop chat alone does not prove WhatsApp connectivity. Restart the gateway that owns the connection, and avoid a second poller for the same Agent API key.
+
 ### Bot Mode (built in)
 
 **Bot Mode** ships with the app and is on by default: a "one chat per agent"

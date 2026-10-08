@@ -387,6 +387,37 @@ def _cmd_backup(args) -> int:
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first), or compact the file in place."""
     from tools import skill_ledger
+    show_raw = getattr(args, "show", None)
+    if show_raw is not None:
+        show_id = str(show_raw).strip()
+        if not show_id:
+            print("curator: --show requires an entry id (see `hermes curator ledger`)",
+                  file=sys.stderr)
+            return 2
+        if getattr(args, "compact", False):
+            print("curator: --show and --compact given together; showing the read-only "
+                  "diff and ignoring --compact")
+        entry = skill_ledger.get_entry(show_id)
+        if entry is None:
+            print(f"curator: no ledger entry with id '{show_id}'", file=sys.stderr)
+            return 1
+        print(f"curator: entry {entry.get('id')}  {_fmt_ts(entry.get('ts'))}  "
+              f"actor={entry.get('actor')}  action={entry.get('action')}  skill={entry.get('skill')}")
+        evidence = entry.get("evidence")
+        for key, value in sorted(evidence.items()) if isinstance(evidence, dict) else []:
+            if isinstance(value, (str, int, float, bool)):
+                print(f"  {key}: {value}")
+            else:
+                print(f"  {key}: <omitted {type(value).__name__}>")
+        if entry.get("action") == "pre-rollback":
+            # Deliberately records before == after (current state): a safety capture,
+            # not a content change — saying "no recoverable content changes" would mislead.
+            print(f"(safety capture for rollback: before == after; "
+                  f"{len(entry.get('before') or [])} path(s) snapshotted)")
+            return 0
+        diff = skill_ledger.entry_diff(entry)
+        print("\n".join(diff) if diff else "(no recoverable content changes)")
+        return 0
     if getattr(args, "compact", False):
         entries, before, after = skill_ledger.compact_ledger()
         blobs, freed = skill_ledger.gc_blobs()
@@ -693,6 +724,9 @@ _SUBCOMMANDS = (
         _cmd_ledger,
         _arg("--skill", default=None, help="Only show entries for this skill"),
         _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)"),
+        _arg("--show", dest="show", default=None, metavar="ID",
+             help="Print one entry in full with a unified diff reconstructed from its "
+                  "before/after content blobs, instead of listing"),
         _arg("--compact", **_STORE_TRUE,
              help="Rewrite the ledger dropping unchanged paths from every entry (ids and rollback preserved)")),
     (

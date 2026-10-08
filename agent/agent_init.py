@@ -924,8 +924,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # configured" setup message even though the config default was fine (#94785). Prefer a billing
     # verdict (402 / classifier "billing") and fall back to the existing cooldown wording (which
     # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
-    # 402 is never described as a missing key or a transient rate limit. The cooldown verdict
-    # takes the session's model so a model-scoped bench is named, not "no API key" (#128995).
+    # 402 is never described as a missing key or a transient rate limit; the model-scoped bench is named via #128995.
     if _pool_exhausted:
         from agent.auxiliary_unavailable import (
             ProviderCredentialsExhaustedError,

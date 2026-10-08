@@ -64,6 +64,7 @@ def _probe_primary_billing_recovery(agent) -> bool:
                 for e in p.entries()
             )
         except Exception:
+            logger.debug("billing bench check failed", exc_info=True)
             return False
 
     pool = getattr(agent, "_credential_pool", None)
@@ -78,6 +79,7 @@ def _probe_primary_billing_recovery(agent) -> bool:
             if has_billing_bench:
                 pool = disk_pool
         except Exception:
+            logger.debug("disk pool billing bench check failed", exc_info=True)
             has_billing_bench = False
     if not has_billing_bench:
         return False

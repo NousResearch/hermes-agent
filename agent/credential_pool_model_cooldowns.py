@@ -8,11 +8,14 @@ auth, billing and payment failures keep benching the whole credential with.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
+
+logger = logging.getLogger(__name__)
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until a bounded cooldown expires or an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
@@ -119,6 +122,7 @@ class CredentialPoolModelCooldownMixin:
             )
             cleared_at = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
         except Exception:
+            logger.debug("model cooldown resync read failed", exc_info=True)
             return entry
         if not cleared_at:
             return entry

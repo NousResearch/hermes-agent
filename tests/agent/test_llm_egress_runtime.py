@@ -484,36 +484,54 @@ def test_real_read_file_wire_result_keeps_exact_source_provenance(
         source_provenance_activation,
     )
     from agent.tool_dispatch_helpers import make_tool_result_message
-    from tools.file_tools import read_file_tool
+    from tools import file_tools, terminal_tool
+    from tools.registry import registry
+    from tools.terminal_tool_lifecycle import _evict_environment_for_task
 
     monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     source = tmp_path / "source.py"
     source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
     agent = _agent(tmp_path / "egress")
-    agent._current_api_request_id = "turn-1:api:1"
+    task_id = f"egress-real-read-{tmp_path.name}"
+    environment = None
 
-    with source_provenance_activation(agent, "read_file"):
-        result = read_file_tool(str(source), task_id="egress-real-read")
-    metadata = attach_trusted_source_provenance_metadata(
-        agent, "read_file", content=result
-    )
-    message = make_tool_result_message(
-        "read_file",
-        result,
-        "call_read_1",
-        source_provenance=metadata,
-    )
-    agent._current_api_request_id = "turn-1:api:2"
+    for offset in (1, 2):
+        agent._current_api_request_id = f"turn-1:api:{2 * offset - 1}"
+        with source_provenance_activation(agent, "read_file"):
+            result = registry.dispatch(
+                "read_file", {"path": str(source), "offset": offset, "limit": 1},
+                task_id=task_id,
+            )
+        assert json.loads(result)["content"] == (
+            "1|first = 1\n2|" if offset == 1 else "2|second = 2\n3|"
+        )
+        effective_task_id = terminal_tool._resolve_container_task_id(task_id)
+        current_env = terminal_tool._active_environments[effective_task_id]
+        if environment is None:
+            environment = current_env
+        else:
+            assert current_env is environment
+        metadata = attach_trusted_source_provenance_metadata(
+            agent, "read_file", content=result
+        )
+        message = make_tool_result_message(
+            "read_file", result, f"call_read_{offset}", source_provenance=metadata
+        )
+        agent._current_api_request_id = f"turn-1:api:{2 * offset}"
 
-    authorized, receipt = authorize_agent_sdk_kwargs(
-        agent,
-        {"model": "test-model", "messages": [message]},
-    )
+        authorized, receipt = authorize_agent_sdk_kwargs(
+            agent, {"model": "test-model", "messages": [message]}
+        )
 
-    assert authorized["messages"][0]["content"] == result
-    assert "_source_provenance" not in authorized["messages"][0]
-    assert receipt.decision.source_grant_count == 1
-    assert receipt.decision.source_segment_count == 1
+        assert authorized["messages"][0]["content"] == result
+        assert "_source_provenance" not in authorized["messages"][0]
+        assert receipt.decision.source_grant_count == 1
+        assert receipt.decision.source_segment_count == 1
+
+    file_tools.clear_file_ops_cache(effective_task_id)
+    _evict_environment_for_task(effective_task_id)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "stale", "forged"])

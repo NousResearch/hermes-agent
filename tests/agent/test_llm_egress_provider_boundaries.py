@@ -63,6 +63,119 @@ def test_local_main_provider_keeps_zero_firewall_overhead(tmp_path):
     callback.assert_called_once_with(request)
 
 
+def test_loopback_provider_receives_only_sdk_fields(tmp_path):
+    agent = _agent(tmp_path)
+    agent.base_url = "http://127.0.0.1:11434/v1"
+    request = {
+        "messages": [{"role": "user", "content": "/Users/private/file.py"}],
+        "_hermes_source_provenance": [{"message_index": 0}],
+        "timeout": 2,
+    }
+    callback = MagicMock(return_value="local")
+    assert _dispatch_provider_request(agent, request, callback) == "local"
+    callback.assert_called_once_with(
+        {"messages": request["messages"], "timeout": 2}
+    )
+    assert "_hermes_source_provenance" in request
+
+
+@pytest.mark.parametrize("local_auxiliary", [False, True])
+def test_auxiliary_sdk_url_binds_its_own_route(
+    tmp_path, monkeypatch, local_auxiliary
+):
+    from openai import OpenAI
+    from agent import auxiliary_client
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = (
+        "http://127.0.0.1:11434/v1" if local_auxiliary
+        else "https://inference-api.nousresearch.com/v1"
+    )
+    request = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "token=synthetic-secret"}],
+    }
+    with OpenAI(api_key="synthetic-key", base_url=endpoint) as client:
+        callback = MagicMock(return_value="local")
+        monkeypatch.setattr(client.chat.completions, "create", callback)
+        with auxiliary_client.scoped_runtime_main(
+            {"provider": "nous", "base_url": "http://127.0.0.1:11434/v1"}
+        ):
+            if local_auxiliary:
+                assert auxiliary_client._relay_sync_completion(
+                    client, request, provider="nous"
+                ) == "local"
+                callback.assert_called_once_with(**request)
+            else:
+                with pytest.raises(EgressBlocked):
+                    auxiliary_client._relay_sync_completion(
+                        client, request, provider="nous"
+                    )
+                callback.assert_not_called()
+
+
+@pytest.mark.parametrize("local_candidate", [False, True])
+def test_policy_fallback_does_not_resolve_remote_candidates(
+    tmp_path, monkeypatch, local_candidate
+):
+    import yaml
+    from agent import auxiliary_client
+
+    chain = [{
+        "provider": "custom", "model": "remote-model",
+        "base_url": "https://remote.example.test/v1",
+    }]
+    if local_candidate:
+        chain.append({
+            "provider": "custom", "model": "local-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        })
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+        {"auxiliary": {"title_generation": {"fallback_chain": chain}}}
+    ))
+    resolved = []
+    main_reads = []
+
+    def resolve(provider, *, model, explicit_base_url, **kwargs):
+        assert explicit_base_url == "http://127.0.0.1:11434/v1"
+        resolved.append((provider, model, explicit_base_url))
+        return SimpleNamespace(base_url=explicit_base_url), model
+
+    monkeypatch.setattr(auxiliary_client, "resolve_provider_client", resolve)
+    monkeypatch.setattr(auxiliary_client, "_read_main_provider", lambda: main_reads.append(True) or "nous")
+    monkeypatch.setattr(auxiliary_client, "_read_main_model", lambda: "main-remote")
+    monkeypatch.setattr(auxiliary_client, "_is_provider_unhealthy", lambda provider: False)
+    with pytest.raises(EgressBlocked) as blocked:
+        _dispatch_provider_request(
+            _agent(tmp_path),
+            {"messages": [{"role": "user", "content": "token=synthetic-secret"}]},
+            lambda request: pytest.fail("unsafe primary payload was dispatched"),
+        )
+    ladder = auxiliary_client._aux_recovery_ladder(
+        blocked.value, client=SimpleNamespace(),
+        kwargs={"messages": [{"role": "user", "content": "token=synthetic-secret"}]},
+        task="title_generation", async_mode=False, base_info="",
+        resolved_provider="nous", resolved_model="unsafe-model",
+        resolved_base_url=None, resolved_api_key=None, resolved_api_mode=None,
+        final_model="unsafe-model", max_tokens=None, main_runtime=None, route_info={},
+    )
+    if local_candidate:
+        step = next(ladder)
+        assert step.kind == "fallback"
+        assert resolved == [("custom", "local-model", "http://127.0.0.1:11434/v1")]
+        with pytest.raises(StopIteration) as finished:
+            ladder.send("recovered")
+        assert finished.value.value == "recovered"
+        assert main_reads == []
+    else:
+        with pytest.raises(StopIteration) as finished:
+            next(ladder)
+        assert finished.value.value is auxiliary_client._RERAISE_ORIGINAL
+        assert resolved == []
+        assert main_reads == [True]
+
+
 @pytest.mark.parametrize(
     "provider", ["openai-codex", "nous", "nous-portal", "nousresearch", "anthropic"]
 )

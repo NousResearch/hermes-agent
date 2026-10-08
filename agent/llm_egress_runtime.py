@@ -704,7 +704,10 @@ def dispatch_authorized_agent_request(
         getattr(resolved_route, "api_mode", None),
     )
     if destination in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
-        return callback(dict(kwargs))
+        return callback({
+            key: value for key, value in kwargs.items()
+            if key not in _INTERNAL_EGRESS_KEYS
+        })
     authorized, receipt = authorize_agent_sdk_kwargs(
         agent,
         kwargs,

@@ -87,6 +87,40 @@ def _records(caplog, needle):
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
 
 
+def test_abandoned_expansion_cannot_supply_a_later_turn(turn_env, monkeypatch, tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry
+
+    source = tmp_path / "source.py"
+    source.write_text("value = 3\n")
+    registry = SourceProvenanceRegistry()
+    agent = types.SimpleNamespace(
+        session_id="agent-source-session",
+        model="test-model",
+        provider="nous",
+        base_url="https://inference-api.nousresearch.com/v1",
+        _source_provenance_registry=registry,
+        run_conversation=lambda *a, **k: pytest.fail("abandoned turn reached provider"),
+        clear_interrupt=lambda: None,
+    )
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 32000)
+    request_ids = []
+    pre_abort_grants = []
+
+    def abort_after_expansion(*args):
+        pending = agent._source_provenance_pending_turn_id
+        request_ids.append(f"{pending}:api:1")
+        pre_abort_grants.append(registry.grants_for_request(request_ids[-1]))
+        raise RuntimeError("synthetic image routing failure")
+
+    monkeypatch.setattr(server, "_route_turn_images", abort_after_expansion)
+    session = _session(agent, attached_images=["synthetic.png"])
+    server._run_prompt_submit("rid", "ui-sid", session, "Review @file:source.py:1")
+    assert len(pre_abort_grants) == 1 and pre_abort_grants[0]
+    assert agent._source_provenance_pending_turn_id is None
+    assert len(request_ids) == 1
+    assert registry.grants_for_request(request_ids[0]) == ()
+
+
 def test_accepted_and_finished_records_on_success(turn_env, caplog):
     agent = types.SimpleNamespace(
         session_id="agent-sid-1",

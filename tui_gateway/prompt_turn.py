@@ -485,9 +485,18 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             api_key=getattr(agent, "api_key", "") or "",
             provider=getattr(agent, "provider", "") or "",
             config_context_length=getattr(agent, "_config_context_length", None))
-        ctx = preprocess_context_references(
-            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
+        from agent.source_provenance import (
+            clear_agent_source_provenance, provenance_kwargs_for_agent,
+        )
+        try:
+            ctx = preprocess_context_references(
+                prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len,
+                **provenance_kwargs_for_agent(agent, establish_turn=True))
+        except Exception:
+            clear_agent_source_provenance(agent)
+            raise
         if ctx.blocked:
+            clear_agent_source_provenance(agent)
             _emit(
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
             return None
@@ -710,6 +719,9 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
 
 def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     """Finally-path of the turn: release everything, then the "tui turn finished" bookend."""
+    from agent.source_provenance import clear_agent_source_provenance
+
+    clear_agent_source_provenance(st.agent)
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs

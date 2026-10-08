@@ -124,6 +124,10 @@ class CLIChatTurnMixin:
         from cli import _DIM, _RST, _cprint
         if "@" not in message:
             return message, None
+        from agent.source_provenance import (
+            clear_agent_source_provenance, provenance_kwargs_for_agent,
+        )
+        agent = self.agent
         try:
             from agent.context_references import preprocess_context_references
             from agent.model_metadata import get_model_context_length
@@ -131,7 +135,10 @@ class CLIChatTurnMixin:
                 self.model, base_url=self.base_url or "", api_key=self.api_key or "",
                 provider=self.provider or "",
                 config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
-            _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
+            _ctx_result = preprocess_context_references(
+                message, cwd=os.getcwd(), context_length=_ctx_len,
+                **provenance_kwargs_for_agent(agent, establish_turn=True),
+            )
             if _ctx_result.expanded or _ctx_result.blocked:
                 if _ctx_result.references:
                     _cprint(f"  {_DIM}[@ context: {len(_ctx_result.references)} ref(s), "
@@ -139,9 +146,11 @@ class CLIChatTurnMixin:
                 for w in _ctx_result.warnings:
                     _cprint(f"  {_DIM}⚠ {w}{_RST}")
                 if _ctx_result.blocked:
+                    clear_agent_source_provenance(agent)
                     return message, ("\n".join(_ctx_result.warnings) or "Context injection refused.")
                 message = _ctx_result.message
         except Exception as e:
+            clear_agent_source_provenance(agent)
             logging.debug("@ context reference expansion failed: %s", e)
         return message, None
 

@@ -324,14 +324,22 @@ def test_blocked_remote_aux_call_is_fallback_eligible_without_retry(monkeypatch,
         "agent.auxiliary_client._get_cached_client",
         lambda provider, *args, **kwargs: (primary, "gpt-5.4"),
     )
-    monkeypatch.setattr(
-        "agent.auxiliary_client._try_configured_fallback_chain",
-        lambda *args, **kwargs: (None, None, ""),
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  compression:\n"
+        "    fallback_chain:\n"
+        "      - provider: custom\n"
+        "        model: local-model\n"
+        "        base_url: http://127.0.0.1:11434/v1\n"
     )
+    # Keep the real config chain and central resolver; only the physical SDK
+    # constructor is replaced. Context capacity is outside this scan invariant.
     monkeypatch.setattr(
-        "agent.auxiliary_client._try_main_agent_model_fallback",
-        lambda *args, **kwargs: (fallback, "local-model", "custom"),
+        "agent.auxiliary_client._create_openai_client",
+        lambda **kwargs: fallback,
     )
+    monkeypatch.setattr("agent.auxiliary_client.get_model_context_length", lambda *args, **kwargs: 1_048_576)
     monkeypatch.setattr(
         "agent.auxiliary_client._transient_retry_count",
         lambda: (_ for _ in ()).throw(AssertionError("blocked request must not retry")),
@@ -3043,7 +3051,9 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(
+        self, monkeypatch, tmp_path
+    ):
         stale_client = MagicMock()
         cache_key = ("anthropic", False, None, None, None)
 
@@ -3056,6 +3066,10 @@ class TestAuxiliaryAuthRefreshRetry:
             # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
             # patch it at that definition site so both the direct call here and
             # the re-read inside ``_refresh_oauth_token`` see the same stub.
+            patch(
+                "agent.anthropic_credentials.claude_code_credentials_path",
+                return_value=tmp_path / ".claude" / ".credentials.json",
+            ),
             patch("agent.anthropic_credentials.read_claude_code_credentials", return_value={
                 "accessToken": "expired-token",
                 "refreshToken": "refresh-token",

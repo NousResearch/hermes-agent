@@ -1,6 +1,6 @@
 name: salesforce-chatter
 repo: https://github.com/zenplace-system/hermes-plugin-salesforce-chatter
-sha: f5ca6eae182b7b0d5b0aecde52c5f6f0ee1e7b07
+sha: b7e5f073a86efe3627cdfbb49e146110edc14385
 subdir: salesforce_chatter
 title: Salesforce Chatter
 description: "Talk to Hermes from Salesforce Chatter: @mention the bot user in a post or comment, it Likes the message as an acknowledgement and replies in the same thread, keeping the thread as one session. Images and files on the post are passed to the model; MEDIA files are attached back. Community plugin, not affiliated with Salesforce. Disclosure: authenticates as a dedicated bot user with the OAuth 2.0 JWT bearer flow, reading the private key file at SF_CHATTER_PRIVATE_KEY_PATH; talks to the configured Salesforce login host and the org instance (attachment downloads follow Salesforce redirects); polls the To Me feed every 60 s and, for allowlisted groups, runs a SOQL CollaborationGroupFeed probe every 5 s by default, which counts against the org's API quota; writes Likes, comments, file uploads to the bot user's Files and optional home-channel posts; stores its handled-message ledger in <HERMES_HOME>/plugin-data/salesforce-chatter/inbox.sqlite. dry_run defaults to true (no Salesforce writes); while SF_CHATTER_ALLOWED_USERS is unset nobody is answered and /approve /deny never reach the agent. Optional, off by default: html_preview renders model-generated HTML to PNG with Chromium inside a network-isolated Docker container. No telemetry."
@@ -8,7 +8,7 @@ maintainer: zenplace-system
 tier: community
 category: platform
 docs_url: https://github.com/zenplace-system/hermes-plugin-salesforce-chatter#readme
-version: "0.1.0"
+version: "0.2.0"
 requires_hermes: ">=0.21.3"
 platforms: []
 capabilities:

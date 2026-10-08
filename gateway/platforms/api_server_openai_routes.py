@@ -825,7 +825,7 @@ class OpenAICompatRoutesMixin:
             # API key (or another profile) reusing a client key is a new principal, not a retry.
             run_kwargs.update(
                 request_id=f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None,
-                history_from_session=bool(provided_session_id))
+                history_from_session=bool(provided_session_id), run_owner_scope=self._run_idempotency_scope(request))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":

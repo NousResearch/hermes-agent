@@ -425,3 +425,59 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+def test_explicit_adopter_reload_relists_owner_without_teardown_and_reports_failure(two_profiles, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from mcp.types import Tool
+    from tools import mcp_tool as core, mcp_tool_discovery as disc, mcp_tool_registration as reg, mcp_tool_lifecycle as lifecycle, mcp_schema_cache as cache
+    from tools.registry import registry
+    cfg = {"url": "https://example.invalid/mcp", "headers": {"Authorization": "Bearer shared-test"}}
+    scope_a = two_profiles("a")
+    server = core.MCPServerTask("x"); server._config = cfg
+    server._resolved_identity = reg._adopter_identity_digest("x", cfg)
+    server._tools = [Tool(name="same", inputSchema={"type": "object"}), Tool(name="removed", inputSchema={"type": "object"})]
+    server.session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[Tool(name="same", inputSchema={"type": "object", "required": ["new_field"], "properties": {"new_field": {"type": "string"}}}), Tool(name="added", inputSchema={"type": "object"})])))
+    disc._adopt_server("x", server)
+    server._registered_tool_names = reg._register_server_tools("x", server, cfg)
+    owner_session = server.session
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg}) == 1
+    monkeypatch.setattr(core, "_mcp_loop", None)
+    monkeypatch.setattr(disc._loop, "_stop_mcp_loop", lambda **kw: False)
+    monkeypatch.setattr(disc._loop, "_run_on_mcp_loop", lambda factory, **kw: asyncio.run(factory()))
+    lifecycle.shutdown_mcp_servers(scope=scope_b)
+    assert core._servers[(scope_a, "x")] is server
+    disc.register_mcp_servers({"x": cfg}, force_refresh=True)
+    assert server.session is owner_session and owner_session.list_tools.await_count == 1
+    assert "mcp__x__removed" not in registry.get_all_tool_names()
+    assert "mcp__x__added" in registry.get_all_tool_names()
+    assert registry.get_schema("mcp__x__same")["parameters"]["required"] == ["new_field"]
+    two_profiles("a")
+    assert registry.get_schema("mcp__x__same")["parameters"]["required"] == ["new_field"]
+    owner_before = cache._cache_path().read_bytes()
+    two_profiles("b")
+    owner_session.list_tools.side_effect = RuntimeError("synthetic failed tools/list")
+    with pytest.raises(RuntimeError, match="live metadata refresh failed"):
+        disc.register_mcp_servers({"x": cfg}, force_refresh=True)
+    assert server.session is owner_session
+    two_profiles("a")
+    assert cache._cache_path().read_bytes() == owner_before
+    two_profiles("b")
+    # Successful total removal empties both overlays and the owner disk manifest;
+    # this is distinct from the failed list above, which preserved its last-good cache.
+    owner_session.list_tools.side_effect = None
+    owner_session.list_tools.return_value = SimpleNamespace(tools=[])
+    disc.register_mcp_servers({"x": cfg}, force_refresh=True)
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    two_profiles("a")
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert cache.get_cached_entry("x", cache.config_fingerprint(cfg))["tools"] == []
+    two_profiles("b")
+    # Different credentials cannot cause a metadata request on the shared owner session.
+    own_calls = owner_session.list_tools.await_count
+    other = dict(cfg, headers={"Authorization": "Bearer different-test"})
+    reg.register_connected_into_current_scope({"x": other})
+    disc._refresh_visible_servers({"x": other})
+    assert owner_session.list_tools.await_count == own_calls

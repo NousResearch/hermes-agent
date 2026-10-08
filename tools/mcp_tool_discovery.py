@@ -395,13 +395,17 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return new_servers
 
 
-def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, dict], int, int]:
+def _register_lazy_from_cache(new_servers: Dict[str, dict], *, force_refresh: bool = False) -> Tuple[Dict[str, dict], int, int]:
     """Register ``lazy: true`` servers from a valid schema-cache entry without connecting
     (missing/stale entry or failed registration -> eager). Returns (eager servers, lazy tool
     count, lazy server count)."""
     # A missing or stale cache entry falls back to the normal eager connect below (which write-through
     # refreshes the cache for next time). See #56832.
     eager_servers: Dict[str, dict] = dict(new_servers)
+    # An approved explicit reload must confirm the served manifest, including servers
+    # whose cached tools/list result carries no TTL. Keep the last-good disk entry intact.
+    if force_refresh:
+        return eager_servers, 0, 0
     lazy_registered = 0
     lazy_server_count = 0
     try:
@@ -532,7 +536,7 @@ def _log_summary(prefix: str, names, **lazy) -> None:
         logger.info(summary)
 
 
-def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = False) -> List[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
     if not _core._ensure_mcp_sdk():
@@ -540,15 +544,64 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         return []
     servers = _config._filter_suspicious_mcp_servers(servers)
     try:
-        return _register_mcp_servers(servers)
+        return _register_mcp_servers(servers, force_refresh=force_refresh)
     finally:
         # An owner's scoped reload orphaned adopters of its shared connections: now that this
         # pass (its rediscovery) is done, give them their tools back under their own scope.
         _lifecycle._reregister_orphaned_adopters()
 
 
-def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+def _refresh_visible_servers(servers: Dict[str, dict]) -> None:
+    """Confirm metadata on identity-validated current-scope connections without owner teardown."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    scope = _core._mcp_registry_scope()
+    for name, config in servers.items():
+        if not mcp_server_enabled(config):
+            continue
+        with _core._lock:
+            key = _resolve_server_key(name, scope, current=False)
+            lazy = key in _core._lazy_server_configs
+            server = _core._servers.get(key)
+        if lazy:
+            # A config edit may have changed endpoint/auth/filters since lazy startup.
+            # Connect with this reload's current owning configuration, never the saved one.
+            with _core._lock:
+                _core._lazy_server_configs[key] = dict(config)
+            # Reuse the canonical first-use path: live discovery plus phantom-name removal.
+            if not _ensure_lazy_server_connected(name):
+                raise RuntimeError(f"MCP live metadata refresh failed for '{name}'")
+            continue
+        if server is None:
+            continue  # a new connection is acquired by the normal discovery pass below
+        if server.session is None:
+            raise RuntimeError(f"MCP live metadata refresh unavailable for '{name}'")
+
+        async def refresh_owned(server=server, key=key):
+            # Registration/cache write-through belongs to the connection owner. No credential
+            # resolution or resource call occurs here; the shared identity was validated above.
+            owner = _core._server_registry_scope(key)
+            token = set_hermes_home_override(Path(owner) if owner is not None else None)
+            try:
+                await server._refresh_tools()
+                if server.session is None:
+                    raise RuntimeError("connection disappeared during metadata refresh")
+            finally:
+                reset_hermes_home_override(token)
+        try:
+            _loop._run_on_mcp_loop(refresh_owned, timeout=float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)) + 30.0)
+        except Exception as exc:
+            raise RuntimeError(f"MCP live metadata refresh failed for '{name}'") from exc
+        if scope is not None and _key_scope(key) != scope:
+            # Owner refresh updates its own registry. Rebuild only the adopter's allowed overlay
+            # from the confirmed manifest, even when the same tool name changed schema.
+            _registration._remove_server_scope(key, scope)
+    _registration.register_connected_into_current_scope(servers)
+
+
+def _register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = False) -> List[str]:
     scoped_healed = _registration.register_connected_into_current_scope(servers)
+    if force_refresh:
+        _refresh_visible_servers(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return _registration._existing_tool_names() if _core._mcp_registry_scope() is not None else []
@@ -557,7 +610,7 @@ def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.info("MCP: registered %d already-connected server(s) into this profile scope", scoped_healed)
     if not new_servers:
         return _registration._existing_tool_names()
-    new_servers, lazy_registered, lazy_server_count = _register_lazy_from_cache(new_servers)
+    new_servers, lazy_registered, lazy_server_count = _register_lazy_from_cache(new_servers, force_refresh=force_refresh)
     if not new_servers:
         if lazy_registered:
             logger.info("MCP: registered %d lazy tool(s) from schema cache (no processes spawned)",
@@ -565,6 +618,12 @@ def _register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         return _registration._existing_tool_names()
     _loop._ensure_mcp_loop()
     _run_discovery_pass(new_servers)
+    if force_refresh:
+        with _core._lock:
+            failed = [name for name in new_servers
+                      if getattr(_core._servers.get(_resolve_server_key(name)), "session", None) is None]
+        if failed:
+            raise RuntimeError("MCP live metadata refresh failed for: " + ", ".join(sorted(failed)))
     _log_summary("MCP: registered", new_servers, lazy_tools=lazy_registered, lazy_servers=lazy_server_count)
     return _registration._existing_tool_names()
 
@@ -592,9 +651,13 @@ def _acquire_discovery_lock_with_retry():
     return cookie
 
 
-def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[str]:
+def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None, *, force_refresh: bool = False) -> List[str]:
     """Entry point: load config, connect servers, register tools. [] without the ``mcp``
     package; idempotent (only servers missing from a previous call are retried).
+
+    ``force_refresh``: confirm visible live sessions and bypass persistent lazy schema entries.
+    Shared owners remain connected; normal discovery remains lazy and idempotent.
+    A failed live connect leaves the last-good disk cache unchanged, not reported as refreshed.
 
     ``allowed_mcp_names``: spawn only the MCP servers named in it (built-in toolset names in the
     list simply don't match); ``None`` spawns every configured server. Used by
@@ -628,7 +691,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
                                 and mcp_server_enabled(cfg)]
             prior_lazy = set(_core._lazy_server_configs)
-        tool_names = register_mcp_servers(servers)
+        tool_names = register_mcp_servers(servers, force_refresh=force_refresh)
         if new_server_names:
             # A lazily registered server never connected, so it must not be counted as failed
             # (the old summary read "N failed" for a healthy all-lazy config, #111717). Reporting

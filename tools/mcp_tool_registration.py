@@ -409,8 +409,9 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     registered = _register_candidates(
         name, _resolve_name_collisions(name, candidates),
         check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
-    if registered:
-        _write_schema_cache(name, server, config, should_register)
+    # A successful empty manifest must replace the previous disk manifest too, or lazy
+    # startup resurrects removed tools. Failed tools/list never reaches registration.
+    _write_schema_cache(name, server, config, should_register)
     return registered
 
 

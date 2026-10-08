@@ -36,7 +36,7 @@ def reload_env(monkeypatch):
     rev_box = {"rev": "rev-a"}
 
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
-    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: calls.__setitem__("discover", calls["discover"] + 1))
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda **kw: calls.__setitem__("discover", calls["discover"] + 1))
     monkeypatch.setattr(srv, "_compute_mcp_rev", lambda: rev_box["rev"])
 
     saved = (srv._mcp_reload_gen, srv._mcp_reload_loaded_rev)
@@ -142,7 +142,8 @@ def _run_leader_follower(reload_env, monkeypatch, follower_rev):
     leader_in_discovery = threading.Event()
     release_leader = threading.Event()
 
-    def _slow_discover():
+    def _slow_discover(*, force_refresh=False):
+        assert force_refresh is True
         calls["discover"] += 1
         if calls["discover"] == 1:
             leader_in_discovery.set()

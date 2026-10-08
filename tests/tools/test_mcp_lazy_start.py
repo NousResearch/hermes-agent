@@ -369,3 +369,56 @@ class TestLazyMcpStatus:
                 status["playwright"]["connected"]) == ("lazy", len(cached), False)
         assert status["eager"]["status"] == "configured" and status["eager"]["tools"] == 0
         assert status["live"]["status"] == "connected" and status["live"]["tools"] == 2
+
+
+def test_explicit_reload_connects_existing_no_ttl_lazy_cache_after_real_shutdown(tmp_path, monkeypatch):
+    import asyncio
+    from mcp.types import Tool
+    from tools import mcp_schema_cache as cache, mcp_tool_lifecycle as lifecycle
+    from tools.registry import ToolRegistry
+    cfg = {"probe": {"url": "https://example.invalid/mcp", "lazy": True}}
+    registry = ToolRegistry()
+    monkeypatch.setattr("tools.registry.registry", registry)
+    for name in ("_servers", "_server_scope_keys", "_server_tool_scopes", "_lazy_server_configs", "_lazy_server_fingerprints", "_lazy_server_tool_names", "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures"):
+        monkeypatch.setattr(mcp, name, {})
+    monkeypatch.setattr(mcp, "_server_connecting", set())
+    monkeypatch.setattr(mcp, "_mcp_loop", None)
+    monkeypatch.setattr(mcp, "_ensure_mcp_sdk", lambda: True)
+    monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+    monkeypatch.setattr(_mcp_loop, "_stop_mcp_loop", lambda **kw: False)
+    monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", lambda factory, **kw: asyncio.run(factory()))
+    fp = cache.config_fingerprint(cfg["probe"])
+    cache.write_cache_entry("probe", fp, tools=[{"name": "same", "description": "old", "inputSchema": {}}, {"name": "removed", "inputSchema": {}}])
+    listed = []
+    connected_configs = []
+    fail = False
+    async def start(server, config):
+        if fail:
+            raise RuntimeError("synthetic unavailable metadata transport")
+        connected_configs.append(config)
+        server._config = config
+        async def list_tools():
+            listed.append(server.name)
+            return SimpleNamespace(tools=[Tool(name="same", inputSchema={"type": "object", "required": ["new_field"], "properties": {"new_field": {"type": "string"}}}), Tool(name="added", inputSchema={"type": "object"})])
+        server.session = SimpleNamespace(list_tools=list_tools)
+        server._tools = await mcp._paginate_full_list(server.session.list_tools, "tools", server.name)
+    monkeypatch.setattr(mcp.MCPServerTask, "start", start)
+    _mcp_discovery.register_mcp_servers(cfg)
+    assert listed == [] and mcp._lazy_server_configs
+    lifecycle.shutdown_mcp_servers()
+    assert mcp._lazy_server_configs  # shutdown deliberately preserves lazy registrations
+    cfg = {"probe": {"url": "https://new.example.invalid/mcp", "headers": {"X-Test": "new-config"}, "lazy": True}}
+    _mcp_discovery.register_mcp_servers(cfg, force_refresh=True)
+    assert listed == ["probe"]
+    assert connected_configs == [cfg["probe"]]
+    assert "mcp__probe__removed" not in registry.get_all_tool_names()
+    assert registry.get_schema("mcp__probe__same")["parameters"]["required"] == ["new_field"]
+    assert "mcp__probe__added" in registry.get_all_tool_names()
+    saved = cache._cache_path().read_bytes()
+    # A fresh explicit reload with failed connection must not return success or overwrite cache.
+    mcp._servers.clear(); mcp._server_tool_scopes.clear(); mcp._server_scope_keys.clear()
+    lifecycle.shutdown_mcp_servers()
+    fail = True
+    with pytest.raises(RuntimeError, match="live metadata refresh failed"):
+        _mcp_discovery.register_mcp_servers(cfg, force_refresh=True)
+    assert cache._cache_path().read_bytes() == saved

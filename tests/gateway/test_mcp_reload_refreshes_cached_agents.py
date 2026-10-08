@@ -128,6 +128,22 @@ async def test_reload_mcp_refreshes_cached_agent_tools():
         # Sanity check that the swap actually changed something.
         assert agent.tools != pre_reload_tools[key]
 
+    # A metadata failure from discovery must not become a successful reload message or
+    # publish stale schemas into cached agents. The core failure path is exercised in
+    # the actual lazy/shared discovery tests; this checks the user-facing caller boundary.
+    failed_runner = _make_runner_with_cached_agents(num_agents=1)
+    with (
+        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("tools.mcp_tool_discovery.discover_mcp_tools", side_effect=RuntimeError("MCP live metadata refresh failed for 'probe'")) as discover,
+        patch("model_tools.get_tool_definitions") as build,
+    ):
+        failure = await failed_runner._execute_mcp_reload(_make_event())
+    discover.assert_called_once_with(force_refresh=True)
+    build.assert_not_called()
+    assert "failed" in failure.lower()
+    assert "servers have been reloaded" not in failure.lower()
+    assert next(iter(failed_runner._agent_cache.values()))[0].valid_tool_names == {"stale_tool_0"}
+
 
 @pytest.mark.asyncio
 async def test_reload_mcp_handles_empty_agent_cache():

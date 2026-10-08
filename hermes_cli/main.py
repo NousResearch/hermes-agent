@@ -753,18 +753,17 @@ try:
             else "cli"
         )
     )
-except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
 
-# Replay provider-plugin discovery failures buffered before setup_logging()
-# (raw stderr stays clean for the fullscreen TUI pre-logging; every command —
-# not just the TUI console replay — surfaces them here, including agent.log).
-try:
+    # Replay provider-plugin discovery failures buffered before setup_logging()
+    # (raw stderr stays clean for the fullscreen TUI pre-logging; every command —
+    # not just the TUI console replay — surfaces them here, including agent.log).
+    # Inside this boundary so a failed logging setup keeps the failures buffered
+    # for the dispatch replay instead of warning to raw stderr via lastResort.
     from providers import replay_provider_load_failures as _replay_provider_failures
 
     _replay_provider_failures()
 except Exception:
-    pass  # best-effort — buffer replay must not crash startup
+    pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
@@ -878,6 +877,7 @@ from hermes_cli.old_updater_main import (
 from hermes_cli.main_install_repair import _cleanup_quarantined_exes, _recover_update_debts_on_startup
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _UPDATE_REEXEC_ENV,
+    _clear_bytecode_cache,
     _clear_lazy_refresh_incomplete_marker,
     _clear_marker_file,
     _clear_update_incomplete_marker,
@@ -2298,28 +2298,6 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
-def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
-
-    Returns the number of directories removed.
-    """
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
-        if os.path.basename(dirpath) == "__pycache__":
-            try:
-                shutil.rmtree(dirpath)
-                removed += 1
-            except OSError:
-                pass
-            dirnames.clear()  # nothing left to recurse into
-    return removed
-
-
 def _finalize_update_receipt(code: int, reason: str) -> None:
     """Best-effort receipt close at the command boundary; no-op if already finalized."""
     try:
@@ -3632,7 +3610,7 @@ def main():
     try:
         _replay_provider_failures()
     except Exception:
-        pass  # best-effort — buffer replay must not crash startup
+        logger.exception("buffered provider-failure replay failed")
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)

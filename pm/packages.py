@@ -970,7 +970,7 @@ class CuaDriver(BinaryPackage):
         except Exception:
             # The screen is an optimization for the probe: a broken or
             # unavailable Bot Desktop must not stop cua-driver from verifying.
-            pass
+            LOG.debug("cua-driver probe: Bot Desktop env unavailable", exc_info=True)
         env[self.CUA_DRIVER_TELEMETRY_ENV_VAR] = "0"
         return env
 

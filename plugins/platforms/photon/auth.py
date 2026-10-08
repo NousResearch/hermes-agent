@@ -96,9 +96,13 @@ def _save_auth(data: Dict[str, Any]) -> None:
 
 
 def _pool_first(auth: Dict[str, Any], key: str) -> Any:
-    """First entry of ``credential_pool.<key>`` (a list), or None."""
+    """First object entry of ``credential_pool.<key>`` (a list), or None.
+
+    A non-object row (hand edit, truncated write) is not a record; returning it crashed every
+    caller that reads fields off the entry.
+    """
     pool = auth.get("credential_pool", {}).get(key) or []
-    return pool[0] if isinstance(pool, list) and pool else None
+    return next((e for e in pool if isinstance(e, dict)), None) if isinstance(pool, list) else None
 
 
 def _store_pool_record(key: str, record: Dict[str, Any]) -> None:

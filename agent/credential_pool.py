@@ -874,7 +874,7 @@ def _update_root_pool_rows(
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
     A borrower may refresh the root's rows (rotation, cooldown state) but
-    never add or delete them — the root owns their lifecycle. In particular a
+    never add or delete credential rows — the root owns their lifecycle. In particular a
     profile's singleton-prune (it has no ``.anthropic_oauth.json`` of its own)
     must not delete the root grant, so ``removed_ids`` is ignored by callers.
     """
@@ -892,7 +892,11 @@ def _update_root_pool_rows(
         merged: List[Dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
-            did = disk_entry.get("id") if isinstance(disk_entry, dict) else None
+            if not isinstance(disk_entry, dict):
+                # Not a credential (load_pool ignores it); the owner's save drops it the same way.
+                changed = True
+                continue
+            did = disk_entry.get("id")
             incoming = incoming_by_id.get(did) if did else None
             if incoming is None:
                 merged.append(disk_entry)
@@ -3063,6 +3067,9 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     return seed.result
 
 
+_WARNED_NON_OBJECT_ROWS: set[str] = set()  # providers already warned about, once per process
+
+
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
@@ -3077,7 +3084,16 @@ def load_pool(provider: str) -> CredentialPool:
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
     )
-    entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    # A non-object row (hand edit, truncated write) cannot be a credential. Building it raised
+    # before any healthy row was served, and runtime callers swallow that as "no pool", so one
+    # junk row silently disabled the provider's whole pool on every turn.
+    junk_types = sorted({type(payload).__name__ for payload in raw_entries if not isinstance(payload, dict)})
+    if junk_types and provider not in _WARNED_NON_OBJECT_ROWS:
+        _WARNED_NON_OBJECT_ROWS.add(provider)
+        # Types only: a bare string row may be a pasted secret.
+        logger.warning("credential_pool[%s] in auth.json: ignoring non-object row(s) of type %s "
+                       "(dropped the next time the pool is saved)", provider, ", ".join(junk_types))
+    entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries if isinstance(payload, dict)]
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(

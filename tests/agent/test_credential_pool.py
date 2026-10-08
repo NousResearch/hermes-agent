@@ -579,6 +579,49 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
 
 
 
+def test_load_pool_serves_healthy_rows_beside_non_object_rows(tmp_path, monkeypatch, caplog):
+    """A non-object row in auth.json cannot take the provider's other pooled credentials down."""
+    pasted = "sk-or-v1-PASTED-AS-A-BARE-STRING"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    pasted,
+                    None,
+                    7,
+                    {
+                        "id": "healthy",
+                        "label": "manual key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-healthy",
+                    },
+                ],
+                # Plugin readers of the same namespace hold the same contract.
+                "photon": [pasted, {"access_token": "photon-healthy"}],
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool
+    from plugins.platforms.photon import auth as photon_auth
+
+    monkeypatch.setattr(credential_pool, "_WARNED_NON_OBJECT_ROWS", set())
+    with caplog.at_level("DEBUG"):
+        entry = credential_pool.load_pool("openrouter").select()
+
+    assert entry is not None and entry.id == "healthy"
+    assert entry.runtime_api_key == "sk-or-healthy"
+    assert "non-object row(s) of type NoneType, int, str" in caplog.text
+    assert pasted not in caplog.text
+    assert photon_auth.load_photon_token() == "photon-healthy"
+
+
 def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):
     """Runtime env keys may be used in memory but must not land in auth.json."""
     sentinel = "S3NTINEL_DO_NOT_PERSIST_OPENROUTER"

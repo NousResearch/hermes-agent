@@ -20,7 +20,7 @@ só o busto.
 | Barramento por perfil (`$HERMES_HOME/nyx/eventos.jsonl`) | `barramento.py` | teste do leitor depois do arquivo encurtado; E2E com evento vindo de OUTRO processo aparecendo no painel |
 | API do painel: SSE `/eventos` + `POST /ensaio` | `dashboard/plugin_api.py` | dashboard real (`hermes dashboard`), aba "ao vivo", ensaio percorre todos os estados |
 | Aba "Nyx" no dashboard | `dashboard/manifest.json`, `dist/index.js`, `dist/style.css` | screenshot no dashboard real, sem erro de console |
-| Cena 3D: busto em pontilhismo (~3 milhões de pontos, opaco, contorno só por pontos), galáxia de 3 braços, satélite, cometas por ferramenta (âmbar no erro), dourado pulsando ao falar | `dashboard/dist/nyx.js` | harness com eventos injetados: repouso → pensando → ferramentas → falando → pronto; contorno comparado com a foto linha a linha (erro médio ~2,5 px) |
+| Cena 3D: busto em pontilhismo (opaco, contorno só por pontos) em dois modos, partículas (~3 milhões) e preenchimento por shader (contorno que se desfaz, abre em ~0,4 s), galáxia de 3 braços, satélite, cometas por ferramenta (âmbar no erro), dourado pulsando ao falar | `dashboard/dist/nyx.js`, `dashboard/dist/preenchimento.js` | harness com eventos injetados: repouso → pensando → ferramentas → falando → pronto; contorno comparado com a foto linha a linha (erro médio ~2,5 px) |
 | Three.js r181 vendorizado (MIT), imports reescritos pra caminhos relativos | `dashboard/dist/vendor/` | carrega no dashboard sem npm nem CDN |
 
 Detalhes que já estão no código:

@@ -220,6 +220,14 @@ _oauth_port: int | None = None
 _oauth_interactive_enabled = contextvars.ContextVar("_oauth_interactive_enabled", default=True)
 _oauth_interactive_forced = contextvars.ContextVar("_oauth_interactive_forced", default=False)
 
+# A profile-wide cross-process lease for the human browser step. Without this, a catalog install that
+# writes an OAuth MCP into config can make every already-open interactive Hermes process rediscover the
+# server and call ``webbrowser.open`` for the same authorization URL. The lease is held from URL
+# announcement until the callback waiter exits, so sibling sessions fail fast instead of spawning their
+# own tabs/prompts.
+_interactive_oauth_lock_fd: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_interactive_oauth_lock_fd", default=None)
+
 # Paste-prompt tokens that exit OAuth without auth; the waiter maps the sentinel to
 # OAuthNonInteractiveError("user_skipped") so MCP setup continues without this server.
 _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
@@ -381,6 +389,72 @@ def _can_open_browser() -> bool:
     if os.name == "nt" or (hasattr(os, "uname") and os.uname().sysname == "Darwin"):
         return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _interactive_oauth_lock_path() -> Path:
+    """Profile-local advisory lock path for one in-progress interactive MCP OAuth browser flow."""
+    from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+
+    lock_path = Path(get_hermes_home()) / "mcp-tokens" / ".interactive-oauth.lock"
+    mkdir_under_hermes_home(lock_path.parent)
+    secure_parent_dir(lock_path)
+    return lock_path
+
+
+def _try_acquire_interactive_oauth_lock() -> int | None:
+    """Return a locked fd, or None when another Hermes process owns the browser OAuth step."""
+    lock_path = _interactive_oauth_lock_path()
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:  # pragma: no cover - Windows-only
+            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+        else:  # pragma: no cover - no advisory locking primitive
+            return fd  # fail open rather than disabling OAuth on unsupported platforms
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in _FENCE_CONTENTION_ERRNOS:
+            return None
+        raise
+    return fd
+
+
+def _release_interactive_oauth_lock(fd: int | None) -> None:
+    """Release a descriptor returned by _try_acquire_interactive_oauth_lock(). Never raises."""
+    if fd is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:  # pragma: no cover - Windows-only
+            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _claim_interactive_oauth_browser_step() -> None:
+    """Own the browser/paste UI for this OAuth flow, or fail fast when another session owns it."""
+    if _interactive_oauth_lock_fd.get() is not None:
+        return
+    fd = _try_acquire_interactive_oauth_lock()
+    if fd is None:
+        raise OAuthNonInteractiveError(
+            "Another Hermes session is already running an MCP OAuth browser authorization for this profile. "
+            "Finish that browser flow, then reload or retry this MCP server."
+        )
+    _interactive_oauth_lock_fd.set(fd)
+
+
+def _release_claimed_interactive_oauth_browser_step() -> None:
+    fd = _interactive_oauth_lock_fd.get()
+    if fd is None:
+        return
+    _interactive_oauth_lock_fd.set(None)
+    _release_interactive_oauth_lock(fd)
 
 
 def _read_json(path: Path) -> dict | None:
@@ -807,6 +881,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
+        _claim_interactive_oauth_browser_step()
         _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
 
     return _redirect_handler
@@ -882,30 +957,33 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         _raise_if_non_interactive(
             "OAuth callback requires an interactive session but none is available (non-interactive/background "
             "context); skipping browser authorization without binding a callback listener.")
-        handler_cls, result = _make_callback_handler()
-        server = _start_callback_server(port, handler_cls)
-        # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
-        # select() keeps the listening socket alive past server_close() (the kernel holds the file for
-        # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
-        # left the port bound and the retry on the same pinned/cached port died with EADDRINUSE (#113771).
-        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
-        # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
-        # under a dashboard flow — the gateway's stdin is not the user's).
-        if _is_interactive() and dashboard_flow is None:
-            print(
-                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
-                "Type ``skip`` + Enter to continue without this server:",
-                file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
-        elapsed = 0.0
+        server = None
         try:
+            handler_cls, result = _make_callback_handler()
+            server = _start_callback_server(port, handler_cls)
+            # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
+            # select() keeps the listening socket alive past server_close() (the kernel holds the file for
+            # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
+            # left the port bound and the retry on the same pinned/cached port died with EADDRINUSE (#113771).
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
+            # Paste fallback races the HTTP listener; whichever fills result first wins (no stdin reader
+            # under a dashboard flow — the gateway's stdin is not the user's).
+            if _is_interactive() and dashboard_flow is None:
+                print(
+                    "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
+                    "Type ``skip`` + Enter to continue without this server:",
+                    file=sys.stderr, flush=True)
+                threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
+            elapsed = 0.0
             while elapsed < timeout and not _result_taken(result):
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
+            return _callback_outcome(result, cimd_url)
         finally:
-            server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
-            server.server_close()
-        return _callback_outcome(result, cimd_url)
+            if server is not None:
+                server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
+                server.server_close()
+            _release_claimed_interactive_oauth_browser_step()
 
     return _wait
 

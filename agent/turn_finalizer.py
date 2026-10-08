@@ -490,7 +490,8 @@ def apply_llm_output_transform(
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
+    # First hook to return a string wins; None leaves the text unchanged.
+    # Empty is a valid stripping result (e.g. a model-forged footer-only reply).
     for _hook_result in _invoke_hook_safely(
         "transform_llm_output", logger,
         response_text=final_response,
@@ -500,7 +501,7 @@ def apply_llm_output_transform(
         turn_id=turn_id,  # per-turn identity for the hook callback gate
         **context_usage_kwargs(agent),
     ):
-        if isinstance(_hook_result, str) and _hook_result:
+        if isinstance(_hook_result, str):
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
     agent._llm_output_transform = (turn_id, transformed, pre_transform)

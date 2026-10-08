@@ -264,6 +264,145 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_compacted_tool_output_requires_tool_role_and_full_detail(self, db):
+        """Recovery discovery must be able to return an archived tool row.
+
+        The normal discovery default intentionally excludes tool output, so a
+        compaction-era recovery pointer must opt into the tool role. The
+        current-session guard still permits the archived row because it has
+        left live context; passing ``session_id`` instead would select READ
+        mode and is not a substitute for discovery.
+        """
+        session_id = "s_compacted_tool"
+        marker = "EXACT_TOOL_RECOVERY_MARKER /tmp/output.txt"
+        db.create_session(session_id, source="cli")
+        db.append_message(session_id, role="user", content="Run the command")
+        db.append_message(
+            session_id,
+            role="tool",
+            content=marker,
+            tool_name="terminal",
+        )
+        db.archive_and_compact(
+            session_id,
+            [
+                {"role": "user", "content": "[CONTEXT COMPACTION] command summary"},
+                {"role": "assistant", "content": "The command was compacted."},
+            ],
+        )
+        archived_tool = next(
+            message
+            for message in db.get_messages(session_id, include_inactive=True)
+            if message["content"] == marker
+        )
+        assert archived_tool["active"] == 0
+        assert archived_tool["compacted"] == 1
+
+        default = json.loads(
+            session_search(
+                query="EXACT_TOOL_RECOVERY_MARKER",
+                db=db,
+                current_session_id=session_id,
+            )
+        )
+        assert default["count"] == 0
+
+        recovered = json.loads(
+            session_search(
+                query="EXACT_TOOL_RECOVERY_MARKER",
+                role_filter="tool",
+                detail="full",
+                db=db,
+                current_session_id=session_id,
+            )
+        )
+        assert recovered["count"] == 1
+        hit = recovered["results"][0]
+        assert hit["session_id"] == session_id
+        assert hit["matched_role"] == "tool"
+        assert hit["detail"] == "full"
+        assert any(
+            message["role"] == "tool" and marker in message["content"]
+            for message in hit["messages"]
+        )
+
+
+def _emitted_session_search_kwargs(pointer: str, query: str) -> dict:
+    """The keyword arguments of the ``session_search(...)`` call a recovery pointer tells the model to
+    make, with its placeholder query (``'<keywords>'`` or ``...``) filled in."""
+    import ast
+
+    start = pointer.index("session_search(")
+    depth, end = 0, None
+    for i, ch in enumerate(pointer[start:], start):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == ")" and depth == 0:
+            end = i + 1
+            break
+    call = ast.parse(pointer[start:end], mode="eval").body
+    kwargs = {kw.arg: kw.value.value for kw in call.keywords}
+    if kwargs.get("query") in (Ellipsis, "<keywords>"):
+        kwargs["query"] = query
+    return kwargs
+
+
+class TestCompactionRecoveryPointersRecover:
+    """The call each compaction recovery pointer emits must actually return the compacted detail when the
+    model makes it verbatim, under the runtime's own ``current_session_id`` (#99568). Asserting on the
+    pointer text alone let a pointer that selects READ mode, which ignores the query, pass review.
+    Newer sessions matching the same keywords compete for the default ``limit``: the pointer is not
+    session-scoped, so a lone compacted session would win by default and prove nothing."""
+
+    def _compacted_session(self, db):
+        sid = "s_recover"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, role="user", content="Remember the port: PORTMARK_7741")
+        db.append_message(sid, role="assistant", content="Noted the port.")
+        db.append_message(sid, role="tool", content="build log\n" * 200 + "fatal: TOOLMARK_0923",
+                          tool_name="terminal")
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": "[CONTEXT COMPACTION] earlier turns summarized"},
+            {"role": "assistant", "content": "Summary: a port was noted and a build failed."},
+        ])
+        for i in range(6):
+            other = f"s_other{i}"
+            db.create_session(other, source="cli")
+            db.append_message(other, role="user", content="PORTMARK_7741 " * 20)
+            db.append_message(other, role="tool", content="TOOLMARK_0923 " * 20, tool_name="terminal")
+        return sid
+
+    @staticmethod
+    def _recovered(result: dict, sid: str, marker: str) -> bool:
+        return any(hit["session_id"] == sid and marker in json.dumps(hit) for hit in result.get("results", []))
+
+    def test_the_summary_footer_call_recovers_a_compacted_turn(self, db):
+        from agent.context_compressor import _build_recovery_footer
+
+        sid = self._compacted_session(db)
+        kwargs = _emitted_session_search_kwargs(_build_recovery_footer(sid, region_len=10), "PORTMARK_7741")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert self._recovered(result, sid, "Remember the port: PORTMARK_7741"), result
+
+    def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db):
+        """Lean demotion stubs a CARRIED-TAIL tool result: the live copy is the stub (same message_uid) and the
+        only full text is the superseded original (active=0, compacted=0), not a compacted=1 row."""
+        from agent.context_compressor import _lean_recovery_stub, _rewritten
+
+        sid = self._compacted_session(db)
+        db.append_message(sid, role="tool", content="deploy log\n" * 200 + "fatal: TAILMARK_3141",
+                          tool_name="terminal")
+        live = db.get_messages_as_conversation(sid)
+        stub = _lean_recovery_stub("terminal", 3200, sid)
+        db.archive_and_compact(sid, [*live[:-1], _rewritten(live[-1], stub)], tail_count=len(live))
+        kwargs = _emitted_session_search_kwargs(stub, "TAILMARK_3141")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+        assert "_own_archive" not in json.dumps(result)
+        kwargs = _emitted_session_search_kwargs(stub, "TOOLMARK_0923")
+        result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
+        assert self._recovered(result, sid, "fatal: TOOLMARK_0923"), result
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

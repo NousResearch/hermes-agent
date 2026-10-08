@@ -2,7 +2,7 @@ name: tinyfish
 repo: https://github.com/tinyfish-io/tinyfish-web-agent-integrations
 sha: e868225fb706abed7aa2ca27d03bc66e4df8865e
 subdir: hermes
-description: "First-party TinyFish plugin: free Search and Fetch as a web provider, plus credit-gated remote Browser sessions and the tinyfish_agent web agent. Disclosure — sends search queries, URLs and agent goals to the TinyFish API (*.tinyfish.ai) with your TINYFISH_API_KEY; Browser and tinyfish_agent calls spend TinyFish credits and ask for approval via pre_tool_call first."
+description: "First-party TinyFish plugin: free Search and Fetch as a web provider, plus credit-gated remote Browser sessions and the tinyfish_agent web agent. Disclosure — sends search queries, URLs to fetch and tinyfish_agent goals with your TINYFISH_API_KEY to the TinyFish API (*.tinyfish.ai). Browser sessions and tinyfish_agent runs spend TinyFish credits. Under the default `request` policy each one goes through Hermes's approval prompt first (a session/always answer covers every later call; cron and unattended runs are denied unless you allow them). Setting `tinyfish.credit_policy.<feature>: allow` or YOLO skips the prompt. `hermes tinyfish setup` / `browser enable` (run by you) save the key to Hermes .env, set web.search_backend/extract_backend and browser.cloud_provider in config.yaml, enable the web/browser toolsets, and can install the agent-browser CLI after asking."
 maintainer: tinyfish-io
 title: TinyFish
 version: "0.2.1"

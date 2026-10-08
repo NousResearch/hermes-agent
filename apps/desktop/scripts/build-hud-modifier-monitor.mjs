@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
-import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { retryHeld } from '../../../scripts/build/frontend-common.mjs'
@@ -69,11 +69,36 @@ export function buildHudModifierMonitor({
         { stdio: 'pipe', timeout: 120_000 }
       )
     } else if (platform === 'win32') {
-      execFileSync(resolveWindowsFrameworkCompiler(), [
+      const args = [
         '/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/warnaserror+',
         '/reference:System.Windows.Forms.dll', `/out:${staging}`,
         nativeSource('hud-modifier-monitor-win.cs'), nativeSource('hud-modifier-gesture.cs')
-      ], { stdio: 'pipe', timeout: 120_000 })
+      ]
+      // This process may be barred from creating child processes directly
+      // (execFileSync fails with EBUSY). Writing a batch file and handing it to
+      // the shell avoids both the spawn restriction and command-line quoting.
+      if (process.env.HERMES_HUD_COMPILE_VIA_SHELL === '1') {
+        const batchPath = `${staging}.build.cmd`
+        writeFileSync(
+          batchPath,
+          ['@echo off', 'chcp 65001 >nul', [resolveWindowsFrameworkCompiler(), ...args]
+            .map(a => `"${String(a).replace(/"/g, '""')}"`).join(' '), 'exit /b %ERRORLEVEL%', ''].join('\r\n'),
+          'utf8'
+        )
+        try {
+          const result = spawnSync(process.env.COMSPEC || 'cmd.exe', ['/d', '/s', '/c', batchPath], {
+            stdio: 'pipe', timeout: 120_000, encoding: 'utf8'
+          })
+          if (result.error) throw result.error
+          if (result.status !== 0) {
+            throw new Error(`hud-modifier compile failed (${result.status}): ${result.stderr || ''}`)
+          }
+        } finally {
+          try { rmSync(batchPath, { force: true }) } catch { /* best effort */ }
+        }
+      } else {
+        execFileSync(resolveWindowsFrameworkCompiler(), args, { stdio: 'pipe', timeout: 120_000 })
+      }
     } else {
       execFileSync(
         process.env.CC || 'cc',

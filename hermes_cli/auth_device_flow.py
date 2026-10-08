@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import logging
 import os
 import ssl
@@ -109,6 +110,649 @@ def _pkce_code_challenge(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
+_FAVICON_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAARGVYSWZNTQAqAAAACAABh2kABAAAAAEAAAAaAAAAAAADoAEAAwAAAAEAAQAAoAIABAAAAAEAAABAoAMABAAAAAEAAABAAAAAAEZRQrAAAAHLaVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJYTVAgQ29yZSA2LjAuMCI+CiAgIDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+CiAgICAgIDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiCiAgICAgICAgICAgIHhtbG5zOmV4aWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20vZXhpZi8xLjAvIj4KICAgICAgICAgPGV4aWY6Q29sb3JTcGFjZT4xPC9leGlmOkNvbG9yU3BhY2U+CiAgICAgICAgIDxleGlmOlBpeGVsWERpbWVuc2lvbj40MDA8L2V4aWY6UGl4ZWxYRGltZW5zaW9uPgogICAgICAgICA8ZXhpZjpQaXhlbFlEaW1lbnNpb24+NDAwPC9leGlmOlBpeGVsWURpbWVuc2lvbj4KICAgICAgPC9yZGY6RGVzY3JpcHRpb24+CiAgIDwvcmRmOlJERj4KPC94OnhtcG1ldGE+ClLygeQAABA9SURBVGgFtdoFjF1FFwBgSou7OxR3d4eiwd3dPYTgEEKQ4u7u7u7u7g7F3d3p/23P5uzsfe/e3RT+m/R17syZ4zZzt89555232WabDR48eJj/9OnTp08F3/+DBOb7VcgM9WuFY+z+9NNPv/32G4QjjDDCqKOOOuywwyby/1CYfytA8v3jjz9+9tlnb7311tNPP/3ss8++++6733777e+//47pkUceefzxx5922mnnnnvuBRdccLbZZjNj/j8RY+gFCNax+OWXX+IeN//8888EE0ywyCKLTD311M8999w999zz/PPPh9bfe++9J5988pJLLunbt+8MM8ywwgorrLPOOvPMM8+/F6PPUMRAsP72228/9thjr776Kj/p16/f2GOPPeWUU9IxTQfTf/zxx913333YYYc9/PDDMVP+8iti7LHHHmwydGJgA/PD+BfKo78eH5Cexx9/fIMNNsBxyVCMRxpppGWWWeamm24KSL+//vrrgQceSMJWYDMjjjjirrvu+t1334HskXoFwJZzzz23twIEQ2+88cYmm2xCeW25KSc32mijTz/9NHb5paaGXYzw2muvAauw2PwKvrcCAKXIo48+etxxxy25bB7PPPPMojnY8nvmmWcKgLotU0wxxSOPPBLAzXznKuBeCQCOejhGHe3W+cyYE0888VNPPQVDPHvvvXcrMO8K48wyyywvvfQSyGSxeQCyBwGC6o033jjppJOWhOsUGXxbHX744ccbbzyD0UYbrX///oMGDQpUzLjYYouVqGwBBr/EJX4OPvjgcLxm1mM1BOgqLiVe40g1p5122qabbvrVV195jRklabjhhotxucWM+Wmmmebvv/8ec8wx8bTVVlsdeeSRSy+99JZbbvnnn3+iJ2SPOeaYUUYZxca0kmQA//TTTz/ddNONMcYY0lpUjxJ5w7jvaqutNsccc7RCYOjkk08+4ogjUEKe0GyNwOSTT05JtBVbsJV7Aay00kq4f/PNN8866yzpRaa38frrryfbvPPOC3iSSSb55JNP+BW+xxprrB9++AF+ziP/7rzzzgZSM9KoJNq6AbCOOtM2jaJ0zTXXKEkLLbQQpU444YRYH3300SlVTR1nnHG8zjrrrIGaXg14AgACiEVgMHjoEt9bbLEFO+A1Jl9//XWQpFUEwjlXWWWVWCItyI033thGM+Eqdb8AxECb9EwyhfO+++5D+/7770dDbE000UTcFOEvvvhCqfr888/XXntt6U/7oGDdddddApHfy57zzTffzz//rBJ7tfGvv/4yPv/889955x2mRpWrDBw4kOIZX0jIEKuuuiqr6i9oVFFXZzbffPMll1yyTvflfBsBSCz9MSjPWXbZZQ866CCEP/744+22246aPdx00UUXXXjhheecc05u8Msvv2y//fYrrrgim8w444ywzzTTTAsssAArffPNN9gSxDvssAN1zD777FYpCAAriWnF+6STTsK3CqM4GrCMLvCyyy4jG1oELtltM664kA1wcQOqNRaRDz744FFHHSUXUUyUTAo2uOKK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"
+_PORTAL_ART_CACHE: Optional[bytes] = None
+_FAVICON_CACHE: Optional[bytes] = None
+
+
+def _load_portal_art_svg() -> Optional[bytes]:
+    """Load the Nous Portal illustration SVG from local assets, caching in-memory."""
+    global _PORTAL_ART_CACHE
+    if _PORTAL_ART_CACHE is not None:
+        return _PORTAL_ART_CACHE
+
+    candidates = [
+        Path(__file__).resolve().parent.parent / "assets" / "portal-art.svg",
+        Path(__file__).resolve().parent / "assets" / "portal-art.svg",
+        Path.home() / ".hermes" / "hermes-agent" / "assets" / "portal-art.svg",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                _PORTAL_ART_CACHE = candidate.read_bytes()
+                return _PORTAL_ART_CACHE
+            except OSError:
+                pass
+    return None
+
+
+def _load_favicon_png() -> Optional[bytes]:
+    """Load the Nous Girl favicon PNG from local assets, caching in-memory."""
+    global _FAVICON_CACHE
+    if _FAVICON_CACHE is not None:
+        return _FAVICON_CACHE
+
+    candidates = [
+        Path(__file__).resolve().parent.parent / "assets" / "favicon.png",
+        Path(__file__).resolve().parent / "assets" / "favicon.png",
+        Path.home() / ".hermes" / "hermes-agent" / "assets" / "favicon.png",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                _FAVICON_CACHE = candidate.read_bytes()
+                return _FAVICON_CACHE
+            except OSError:
+                pass
+    return None
+
+
+def _render_loopback_callback_html(
+    display_name: str,
+    outcome: str,
+    *,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+) -> bytes:
+    is_success = outcome != "failed" and not error
+    safe_name = html.escape(display_name)
+    title = f"{safe_name} authorization {outcome}."
+    status_text = f"{safe_name} authorization {outcome}."
+
+    if is_success:
+        status_label = "STATUS: 200 OK"
+        dot_color = "var(--color-hermes-accent)"
+        tag_text = "// AUTHENTICATION COMPLETE"
+        headline_lead = (
+            f"Successfully authenticated with <strong>{safe_name}</strong>. "
+            "Your session access tokens and refresh grants have been securely registered to your local credential pool."
+        )
+        terminal_flow_html = f"""
+        <div class="cli-terminal-block">
+          <div class="cli-terminal-header">
+            <div class="terminal-mac-dots" title="macOS Window Controls">
+              <span class="mac-dot mac-dot-red"><svg viewBox="0 0 10 10"><path d="M2.5 2.5l5 5m0-5l-5 5" fill="none" stroke="rgba(0,0,0,0.65)" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+              <span class="mac-dot mac-dot-yellow"><svg viewBox="0 0 10 10"><path d="M2 5h6" fill="none" stroke="rgba(0,0,0,0.65)" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+              <span class="mac-dot mac-dot-green"><svg viewBox="0 0 10 10"><path d="M2.2 2.2H6.2L2.2 6.2ZM7.8 7.8H3.8L7.8 3.8Z" fill="rgba(0,0,0,0.65)"/></svg></span>
+            </div>
+            <span>hermes-cli &bull; auth receiver</span>
+            <span>PORT :1455</span>
+          </div>
+
+          <div class="cli-terminal-body">
+            <div class="cli-line-cmd">
+              <span class="cli-prompt">%</span>
+              <span>hermes auth add {safe_name.lower().replace(' ', '-')} --browser</span>
+            </div>
+            <div class="cli-line-log">
+              Waiting for callback on http://127.0.0.1:1455/auth/callback...
+            </div>
+            <div class="cli-line-log">
+              Exchanging authorization code for {safe_name} tokens...
+            </div>
+            <div class="cli-line-success">
+              <svg class="pixel-check-icon" viewBox="0 0 24 24">
+                <path d="M10 18H8v-2h2v2Zm-2-2H6v-2h2v2Zm4-2v2h-2v-2h2Zm-6 0H4v-2h2v2Zm8 0h-2v-2h2v2Zm2-2h-2v-2h2v2Zm2-2h-2V8h2v2Zm2-2h-2V6h2v2Z"/>
+              </svg>
+              <span>Added credential to ~/.hermes/auth.json (credential_pool)</span>
+            </div>
+            <div class="cli-line-footer">
+              You can close this tab and return to your terminal to continue your session. You can close this tab and return to your terminal.
+            </div>
+          </div>
+        </div>"""
+        btn_text = "Close This Tab"
+    else:
+        status_label = "STATUS: FAILED"
+        dot_color = "#f87171"
+        tag_text = "// AUTHENTICATION FAILED"
+        err_msg = html.escape(error_description or error or "Authorization was denied or expired.")
+        headline_lead = (
+            f"Failed to authenticate with <strong>{safe_name}</strong>.<br>"
+            f'<div style="margin-top:14px;padding:12px 16px;background:rgba(239,68,68,0.15);'
+            f'border:1px solid rgba(239,68,68,0.3);border-radius:4px;font-size:13px;color:#fca5a5;'
+            f'word-break:break-word;font-family:var(--font-mono);">'
+            f'ERROR: {err_msg}</div>'
+        )
+        terminal_flow_html = f"""
+        <div class="cli-terminal-block" style="border-color:rgba(239,68,68,0.3);background:rgba(80,0,0,0.3);">
+          <div class="cli-terminal-header">
+            <div class="terminal-mac-dots" title="macOS Window Controls">
+              <span class="mac-dot mac-dot-red"><svg viewBox="0 0 10 10"><path d="M2.5 2.5l5 5m0-5l-5 5" fill="none" stroke="rgba(0,0,0,0.65)" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+              <span class="mac-dot mac-dot-yellow"><svg viewBox="0 0 10 10"><path d="M2 5h6" fill="none" stroke="rgba(0,0,0,0.65)" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+              <span class="mac-dot mac-dot-green"><svg viewBox="0 0 10 10"><path d="M2.2 2.2H6.2L2.2 6.2ZM7.8 7.8H3.8L7.8 3.8Z" fill="rgba(0,0,0,0.65)"/></svg></span>
+            </div>
+            <span>hermes-cli &bull; auth receiver</span>
+            <span style="color:#f87171;">FAILED</span>
+          </div>
+
+          <div class="cli-terminal-body">
+            <div class="cli-line-cmd">
+              <span class="cli-prompt">%</span>
+              <span>hermes auth add {safe_name.lower().replace(' ', '-')} --browser</span>
+            </div>
+            <div class="cli-line-log">
+              Waiting for callback on http://127.0.0.1:1455/auth/callback...
+            </div>
+            <div class="cli-line-log" style="color:#fca5a5;">
+              [&#x2717;] Error: {err_msg}
+            </div>
+            <div class="cli-line-footer" style="color:#fca5a5;">
+              Please return to your terminal and try signing in again.
+            </div>
+          </div>
+        </div>"""
+        btn_text = "Close This Tab"
+
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hermes Agent &mdash; {title}</title>
+  <link rel="icon" type="image/png" href="{_FAVICON_DATA_URI}">
+  <link rel="shortcut icon" href="/favicon.png">
+  <style>
+    /* ==========================================================================
+       NOUS RESEARCH // HERMES AGENT OFFICIAL SYSTEM
+       Authentic Editorial & Architectural Identity
+       ========================================================================== */
+    :root {{
+      --color-hermes: #0000f2;
+      --color-hermes-dark: #0000b8;
+      --color-hermes-terminal: rgba(0, 0, 70, 0.55);
+      --color-hermes-fg: #f5f5f5;
+      --color-hermes-muted: rgba(245, 245, 245, 0.75);
+      --color-hermes-dim: rgba(245, 245, 245, 0.45);
+      --color-hermes-paper: #f5f5f5;
+      --color-hermes-ink: #000000;
+      --color-hermes-accent: #edff45;
+      --color-hermes-green: #34d399;
+      --font-display: "Times New Roman", "Sigurd", Georgia, serif;
+      --font-mono: ui-monospace, "SF Mono", "Aeonik Fono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }}
+
+    * {{
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }}
+
+    html, body {{
+      background-color: var(--color-hermes);
+      color: var(--color-hermes-fg);
+      min-height: 100vh;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }}
+
+    body {{
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    }}
+
+    .hermes-shell {{
+      width: 100%;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 36px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }}
+
+    @media (max-width: 768px) {{
+      .hermes-shell {{
+        padding: 0 20px;
+      }}
+    }}
+
+    .hermes-nav {{
+      display: grid;
+      grid-template-columns: 1fr 1fr auto 1fr 1fr;
+      align-items: center;
+      padding-top: 36px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+
+    .nav-item-left {{
+      text-align: left;
+    }}
+
+    .nav-item-mid-left {{
+      text-align: center;
+    }}
+
+    .nav-item-mid-right {{
+      text-align: center;
+    }}
+
+    .nav-item-right {{
+      text-align: right;
+    }}
+
+    .nav-item-left a,
+    .nav-item-mid-left a,
+    .nav-item-mid-right a,
+    .nav-item-right a {{
+      color: var(--color-hermes-fg);
+      text-decoration: none;
+      font-size: 16px;
+      font-weight: 500;
+      opacity: 0.85;
+      transition: opacity 0.15s ease;
+    }}
+
+    .nav-item-left a:hover,
+    .nav-item-mid-left a:hover,
+    .nav-item-mid-right a:hover,
+    .nav-item-right a:hover {{
+      opacity: 1;
+      text-decoration: underline;
+    }}
+
+    .nav-brand-group {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 0 24px;
+    }}
+
+    .nav-brand {{
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-decoration: none;
+      color: var(--color-hermes-fg);
+      line-height: 0.88;
+      text-align: center;
+      gap: 4px;
+    }}
+
+    .nav-brand-word-1, .nav-brand-word-2 {{
+      font-family: var(--font-sans);
+      font-weight: 800;
+      font-size: 38px;
+      letter-spacing: -0.02em;
+      text-transform: uppercase;
+      display: block;
+    }}
+
+    .nav-brand-socials {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }}
+
+    .social-icon {{
+      width: 18px;
+      height: 18px;
+      color: var(--color-hermes-fg);
+      opacity: 0.85;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      display: block;
+    }}
+
+    .nav-brand-socials a:hover .social-icon {{
+      opacity: 1;
+      transform: translateY(-1px);
+    }}
+
+    .hero-stage {{
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1.18fr 0.82fr;
+      gap: 56px;
+      align-items: center;
+      padding: 48px 0;
+    }}
+
+    @media (max-width: 960px) {{
+      .hero-stage {{
+        grid-template-columns: 1fr;
+        gap: 36px;
+        padding: 32px 0;
+      }}
+    }}
+
+    .hero-content {{
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      max-width: 660px;
+    }}
+
+    .hero-meta-label {{
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--color-hermes-accent);
+      margin-bottom: 18px;
+    }}
+
+    .hero-title {{
+      font-family: var(--font-display);
+      font-size: 52px;
+      font-weight: 400;
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      margin-bottom: 22px;
+    }}
+
+    @media (max-width: 640px) {{
+      .hero-title {{
+        font-size: 36px;
+      }}
+    }}
+
+    .hero-description {{
+      font-size: 16.5px;
+      line-height: 1.65;
+      color: var(--color-hermes-muted);
+      margin-bottom: 32px;
+    }}
+
+    .hero-description strong {{
+      color: #ffffff;
+      font-weight: 600;
+    }}
+
+    .cli-terminal-block {{
+      width: 100%;
+      background: var(--color-hermes-terminal);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      padding: 16px 20px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 36px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+    }}
+
+    .cli-terminal-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+      font-size: 11px;
+      color: var(--color-hermes-dim);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+
+    .terminal-mac-dots {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+
+    .mac-dot {{
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.25);
+    }}
+
+    .cli-terminal-body {{
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }}
+
+    .cli-line-cmd {{
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      color: #ffffff;
+      font-weight: 600;
+    }}
+
+    .cli-prompt {{
+      color: var(--color-hermes-accent);
+      font-weight: 700;
+      user-select: none;
+    }}
+
+    .cli-line-log {{
+      color: var(--color-hermes-dim);
+      font-size: 12px;
+      padding-left: 18px;
+    }}
+
+    .cli-line-success {{
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      color: var(--color-hermes-green);
+      font-weight: 500;
+      padding-left: 18px;
+    }}
+
+    .pixel-check-icon {{
+      width: 13px;
+      height: 13px;
+      fill: var(--color-hermes-green);
+      flex-shrink: 0;
+      position: relative;
+      top: 2px;
+    }}
+
+    .cli-line-footer {{
+      margin-top: 8px;
+      padding-top: 10px;
+      border-top: 1px dashed rgba(255, 255, 255, 0.1);
+      color: var(--color-hermes-muted);
+      font-size: 12px;
+    }}
+
+    .actions-box {{
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }}
+
+    .hermes-btn-primary {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      height: 48px;
+      padding: 0 32px;
+      background: var(--color-hermes-paper);
+      color: var(--color-hermes);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      border: none;
+      border-radius: 2px;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+      transition: all 0.15s ease-out;
+      text-decoration: none;
+    }}
+
+    .hermes-btn-primary:hover {{
+      background: #ffffff;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    }}
+
+    .hermes-btn-primary:active {{
+      transform: translateY(0);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }}
+
+    .kbd-shortcut {{
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--color-hermes-dim);
+      padding: 6px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 2px;
+    }}
+
+    .hero-art-col {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }}
+
+    .nous-girl-display {{
+      max-height: 580px;
+      width: 100%;
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.3));
+    }}
+
+    .hermes-footer {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 0 36px;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--color-hermes-dim);
+    }}
+
+    .footer-nav-links {{
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }}
+
+    .footer-nav-links a {{
+      color: var(--color-hermes-muted);
+      text-decoration: none;
+      transition: color 0.15s;
+    }}
+
+    .footer-nav-links a:hover {{
+      color: #ffffff;
+      text-decoration: underline;
+    }}
+  </style>
+</head>
+<body>
+  <div class="hermes-shell">
+    <header class="hermes-nav">
+      <div class="nav-item-left">
+        <a href="https://nousresearch.com" target="_blank" rel="noopener noreferrer">Nous</a>
+      </div>
+
+      <div class="nav-item-mid-left">
+        <a href="https://hermes-agent.nousresearch.com/" target="_blank">Hermes</a>
+      </div>
+
+      <div class="nav-brand-group">
+        <a href="https://hermes-agent.nousresearch.com/" target="_blank" class="nav-brand">
+          <span class="nav-brand-word-1">Hermes</span>
+          <span class="nav-brand-word-2">Agent</span>
+        </a>
+        <div class="nav-brand-socials">
+          <a href="https://discord.gg/nousresearch" target="_blank" rel="noopener noreferrer" aria-label="Discord">
+            <svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="-3.36 -3.36 30.72 30.72" class="social-icon">
+              <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"></path>
+            </svg>
+          </a>
+          <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+            <svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="-3.36 -3.36 30.72 30.72" class="social-icon">
+              <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
+            </svg>
+          </a>
+          <a href="https://x.com/NousResearch" target="_blank" rel="noopener noreferrer" aria-label="X">
+            <svg stroke="currentColor" fill="currentColor" stroke-width="0" role="img" viewBox="-3.36 -3.36 30.72 30.72" class="social-icon">
+              <path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"></path>
+            </svg>
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-item-mid-right">
+        <a href="https://hermes-agent.nousresearch.com/docs" target="_blank">Docs</a>
+      </div>
+
+      <div class="nav-item-right">
+        <a href="https://portal.nousresearch.com/" target="_blank">Portal</a>
+      </div>
+    </header>
+
+    <main class="hero-stage">
+      <section class="hero-content">
+        <div class="hero-meta-label">{tag_text}</div>
+        
+        <h1 class="hero-title">{status_text}</h1>
+        
+        <p class="hero-description">
+          {headline_lead}
+        </p>
+
+        {terminal_flow_html}
+
+        <div class="actions-box">
+          <button class="hermes-btn-primary" onclick="window.close()">
+            {btn_text}
+          </button>
+          <span class="kbd-shortcut">&#x2318;W / Ctrl+W</span>
+        </div>
+      </section>
+
+      <section class="hero-art-col">
+        <img class="nous-girl-display" src="/portal-art.svg" onerror="this.onerror=null;this.src='https://web-assets.nousresearch.com/nousnet-web/img/landing/portal-art.4fc19cfb0cdaa444.svg'" alt="Nous Girl Illustration">
+      </section>
+    </main>
+
+    <footer class="hermes-footer">
+      <div>&copy; 2026, Nous Research, Inc. &bull; Open Source under MIT License</div>
+      <div class="footer-nav-links">
+        <a href="https://hermes-agent.nousresearch.com/docs" target="_blank">Docs</a>
+        <a href="https://portal.nousresearch.com/" target="_blank">Nous Portal</a>
+        <a href="https://github.com/NousResearch/hermes-agent" target="_blank">GitHub</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    window.addEventListener('keydown', function(e) {{
+      if (e.key === 'Escape') {{
+        window.close();
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+    return page.encode("utf-8")
+
+
 def _make_loopback_callback_handler(
     expected_path: str, *, display_name: str,
 ) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
@@ -123,6 +767,34 @@ def _make_loopback_callback_handler(
     class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path in ("/favicon.png", "/favicon.ico"):
+                fav_data = _load_favicon_png()
+                if fav_data:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(fav_data)
+                    return
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Asset not found.")
+                return
+
+            if parsed.path in ("/portal-art.svg", "/assets/portal-art.svg"):
+                svg_data = _load_portal_art_svg()
+                if svg_data:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(svg_data)
+                    return
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Asset not found.")
+                return
+
             if parsed.path != expected_path:
                 self.send_response(404)
                 self.end_headers()
@@ -138,8 +810,13 @@ def _make_loopback_callback_handler(
             self.end_headers()
             outcome = "failed" if result["error"] else "received"
             self.wfile.write(
-                f"<html><body><h1>{display_name} authorization {outcome}.</h1>"
-                "You can close this tab.</body></html>".encode("utf-8"))
+                _render_loopback_callback_html(
+                    display_name,
+                    outcome,
+                    error=result.get("error"),
+                    error_description=result.get("error_description"),
+                )
+            )
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return

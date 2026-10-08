@@ -1,9 +1,24 @@
 # Hermes Agent — Coding Standards
 
-The code conventions that apply to every change, extracted from the root `AGENTS.md` hub, which
-points here before code work. Read the section that matches your task; each names the canonical
-source for the full policy, and the area `AGENTS.md` files (routing table in the hub) own
-area-specific rules.
+Repository-wide code conventions, reached from the root `AGENTS.md` hub. They also apply to
+root modules without an area guide. Use the task index to select common rules and applicable
+branches; area `AGENTS.md` files own area-specific details.
+
+## Task index
+
+**For code changes and code reviews, read these common sections:** [Code quality and the ratchet](#code-quality-and-the-ratchet) ·
+[Facades and siblings](#facades-and-siblings) ·
+[Paths, profiles and machine facts](#paths-profiles-and-machine-facts).
+
+**Branches — read only what your task touches:**
+
+- activating this checkout, `scripts/check`, the pre-push hook → [Environment and gates](#environment-and-gates)
+- moving an internal symbol — no re-export shims, fixing its docs → [Moving internal symbols](#moving-internal-symbols)
+- dependencies, lockfiles, Git URLs, GitHub Actions, PM environments → [Dependencies and PM environments](#dependencies-and-pm-environments)
+- TypeScript (desktop, TUI, website) → [TypeScript](#typescript)
+- running or writing tests → [Tests](#tests)
+- rebase and merge readiness, red-on-base invariant tests → [Commits and pull requests](#commits-and-pull-requests)
+- catalog admission-rule changes → [Catalog policy](#catalog-policy)
 
 ## Environment and gates
 
@@ -46,7 +61,7 @@ never a facade.
 
 - **No re-export shims for internal moves;** internal paths are not API.
 - Moving a symbol means fixing its docs in the same PR: grep `website/docs`, `skills/`, every
-  `AGENTS.md`.
+  `AGENTS.md`, and `CODING_STANDARDS.md`.
 
 ## Paths, profiles and machine facts
 
@@ -60,7 +75,7 @@ never a facade.
   (HX002/HX004/HX005/HX012, PS-P05/P06).
 - **Never infer process identity from argv substrings;** use
   `gateway.status.looks_like_gateway_command_line` / `hermes_cli.update_cmd._hermes_holder_subcommand`
-  (HX003; details `hermes_cli/AGENTS.md`).
+  (HX003; [rule and fix](scripts/code_health/config.py)).
 - **Machine facts and executable lookup go through `hermes_platform`**
   ([hermes_platform/AGENTS.md](hermes_platform/AGENTS.md)).
 - **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -101,3 +116,9 @@ Runner, placement, OS markers, `wine2e`, banned test shapes: [tests/AGENTS.md](t
 Process (PR/issue/review/salvage):
 [contributing.md § Pull Request Process](website/docs/developer-guide/contributing.md#pull-request-process)
 and the `hermes-agent-dev` skill.
+
+## Catalog policy
+
+[plugin-catalog/README.md](plugin-catalog/README.md) owns admission rules. When changing them,
+update the mirrored block in [catalog-submission.md](website/docs/developer-guide/plugins/catalog-submission.md)
+in the same PR and keep both identical.

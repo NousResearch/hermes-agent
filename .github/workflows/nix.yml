@@ -152,14 +152,17 @@ jobs:
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source', runner.temp) || '.' }}" --print-build-logs
+        # A path: flake has no git metadata, so the release source names its
+        # commit with ?rev=: without it self.rev is null, the install stamp
+        # carries no commit, and the packaged CLI reports "unknown".
+        run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source?rev={1}', runner.temp, github.sha) || '.' }}" --print-build-logs
 
       - name: Verify release package runtime identity
         if: inputs.release == true
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          source="path:$RUNNER_TEMP/release-source"
+          source="path:$RUNNER_TEMP/release-source?rev=$GITHUB_SHA"
           package="$(nix build "$source#default" --no-link --print-out-paths)"
           actual="$("$package/bin/hermes" --version)"
           ACTUAL_VERSION="$actual" python3 - <<'PY'

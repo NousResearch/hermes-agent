@@ -137,21 +137,34 @@ def test_a_chat_parked_on_the_profile_workspace_adopts_the_repo_it_worked_in(
     assert session["cwd_from_settle"] is True
 
 
-def test_a_session_started_in_a_project_keeps_that_repo(session, repo_with_worktree, tmp_path, monkeypatch):
-    """The follow-up to the file-it-itself case: a session started in a specific project stays in
-    that project's repo. Here the picked workspace IS the profile's own workspace (the project row
-    for the workspace root), and the other repo it visited is a visit, not a relocation.
+def test_a_session_started_in_a_project_keeps_that_repo(session, repo_with_worktree, tmp_path):
+    """The follow-up to the file-it-itself case: a session started in a specific project stays in that
+    project's repo. The client picked the workspace, so the other repo it visited is a visit.
     """
     repo, _ = repo_with_worktree
     other = tmp_path / "other"
     other.mkdir()
     _git(other, "init", "-b", "main")
-    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: str(repo))
+    session["cwd_chosen"] = True
     session["cwd"] = str(repo)
-    session["explicit_cwd"] = True
     terminal_tool.record_session_cwd(session["session_key"], str(other))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_resumed_chat_with_no_workspace_adopts_the_repo_it_worked_in(
+    session, repo_with_worktree, monkeypatch
+):
+    """The live case: a detached desktop chat the DB has no cwd for, resumed, that then worked in a
+    repo — it must file itself under that repo instead of sitting in Home forever.
+    """
+    repo, _ = repo_with_worktree
+    monkeypatch.setattr(server, "_profile_workspace_cwd", lambda _home: None)
+    session["cwd"] = None
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
     assert session["cwd"] == str(repo)
 
 

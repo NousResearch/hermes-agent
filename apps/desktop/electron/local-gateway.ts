@@ -14,16 +14,32 @@ export function runGatewayEnsure(
     const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
+    let expired: Error | undefined
+    let forceTimer: ReturnType<typeof setTimeout> | undefined
+
+    const expire = (message: string) => {
+      if (expired) { return }
+      expired = new Error(message)
+      child.kill()
+      forceTimer = setTimeout(() => { child.kill('SIGKILL'); reject(expired) }, 1000)
+    }
+
     // Only the bounded CLI client is ours. Never retain/kill its detached owner.
-    const timer = setTimeout(() => child.kill(), timeoutMs)
+    const timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
     child.stdout.on('data', data => { stdout += data.toString();
 
- if (stdout.length > 65536) {child.kill()} })
+ if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
-    child.on('error', () => { clearTimeout(timer); reject(new Error(`Could not run ${label}`)) })
-    child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? 7, stdout, stderr }) })
+    child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
+    child.on('close', code => {
+      clearTimeout(timer)
+      clearTimeout(forceTimer)
+
+      if (expired) { reject(expired) }
+      else { resolve({ code: code ?? 7, stdout, stderr }) }
+    })
   })
 }
 

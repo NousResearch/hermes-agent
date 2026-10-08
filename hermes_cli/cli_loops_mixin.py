@@ -260,8 +260,8 @@ class CLILoopsMixin:
         return not self._handle_update_command()
 
     def _cmd_version(self, cmd_original: str):
-        from hermes_cli.main import _print_version_info
-        _print_version_info(check_updates=True)
+        from hermes_cli._startup_fast import print_fast_version_info
+        print_fast_version_info(check_updates=True)
 
     def _cmd_reload(self, cmd_original: str):
         from hermes_cli.config import reload_env

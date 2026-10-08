@@ -370,6 +370,7 @@ from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.harness import build_harness_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -2238,14 +2239,9 @@ def cmd_backup(args):
         raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
-def _print_version_info(*, check_updates: bool = True) -> None:
-    # Shared with the `hermes --version` pre-import fast path.
-    _startup_fast.print_fast_version_info(check_updates=check_updates)
-
-
 def cmd_version(args):
     """Show version (--version/-V flag)."""
-    _print_version_info(check_updates=True)
+    _startup_fast.print_fast_version_info(check_updates=True)
 
 
 def cmd_uninstall(args):
@@ -3217,7 +3213,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return False
 
     if _startup_fast.is_global_fast_version_argv(argv):
-        _print_version_info(check_updates=True)
+        _startup_fast.print_fast_version_info(check_updates=True)
         return True
 
     first = _first_positional_argv()
@@ -3232,7 +3228,7 @@ def _try_termux_fast_cli_launch() -> bool:
     args = parser.parse_args(_coalesce_session_name_args(argv))
 
     if getattr(args, "version", False):
-        _print_version_info(check_updates=True)
+        _startup_fast.print_fast_version_info(check_updates=True)
         return True
 
     if getattr(args, "oneshot", None):
@@ -3431,6 +3427,8 @@ def _build_cli_parser():
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)
     build_config_parser(subparsers, cmd_config=cmd_config)
+    from hermes_cli.harness_commands import cmd_harness
+    build_harness_parser(subparsers, cmd_harness=cmd_harness)
     build_skin_parser(subparsers, cmd_skin=cmd_skin)
     build_console_parser(subparsers, cmd_console=cmd_console)
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)

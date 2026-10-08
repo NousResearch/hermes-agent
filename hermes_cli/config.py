@@ -162,8 +162,8 @@ def validate_env_var_name_for_write(key: str) -> None:
 # read_user_config_raw() + save_config()). save_config itself no longer re-enters via
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
-# path -> last successfully loaded (expanded) config; served after a parse failure so a
-# mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
+# path -> last successfully loaded user layer, before harness/managed overlays; recovered after
+# a parse failure without resurrecting obsolete overlays or dropping user overrides.
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
@@ -2202,67 +2202,6 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
-    """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
-    try:
-        st = config_path.stat()
-        user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
-    except FileNotFoundError:
-        user_sig = None
-    managed_dir = managed_scope.get_managed_dir()
-    try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None
-        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
-    except OSError:
-        managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
-        return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
-
-
-def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
-    """Warn about a parse failure and return the last-known-good config, or None (-> defaults).
-    A parse failure must not silently replace the effective config with defaults — that drops
-    EVERY user override, including security-critical ``approvals.deny`` rules, when a gateway
-    user mid-edits config.yaml into broken YAML. Keep serving the last good config until fixed."""
-    # Falling through to DEFAULT_CONFIG here drops EVERY user override — including security-critical
-    # ``approvals.deny`` rules, which are supposed to block commands even under yolo. Within a running
-    # process we still have the last successfully loaded config — keep serving it until the file is fixed.
-    # See #31188.
-    lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
-    fallback = "last-known-good"
-    if lkg is None:
-        # Fresh process (CLI restart, `hermes config get`): nothing loaded yet in this process, so
-        # fall back to the newest byte-exact copy the last successful parse left in backups/config/.
-        # It holds the raw file (``${VAR}`` templates intact), so it goes through the same
-        # canonicalize -> expand -> managed-overlay pipeline as a normal load.
-        from hermes_cli.config_backups import load_newest_good_backup
-        from hermes_cli.moa_config import apply_user_moa_presets
-        raw_good = load_newest_good_backup(config_path)
-        if raw_good is not None:
-            merged_good = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good)
-            apply_user_moa_presets(merged_good, raw_good)
-            normalized = _canonicalize_config(merged_good)
-            expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
-            lkg, _ = _merge_managed_overlay(expanded_good)
-            fallback = "last-known-good-backup"
-    _warn_config_parse_failure(
-        config_path, exc, fallback=fallback if lkg is not None else "defaults")
-    if lkg is None:
-        return None
-    # save_config() stores the pre-expansion dict (templates preserved); the load path stores the
-    # expanded one. Expand defensively — idempotent when already expanded.
-    lkg_copy = FailedConfigRead(_expand_env_vars(copy.deepcopy(lkg)), error=exc)
-    if cache_sig is not None:
-        # Cache under the failed file's signature (empty env snapshot: always valid) so repeated
-        # loads don't re-parse the fallback; fixing the file changes the signature and reloads
-        # normally, and a read error is re-probed on every hit (_load_config_cache_hit).
-        _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, lkg_copy, {})
-    return lkg_copy
-
-
 def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
     """Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.
     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow
@@ -2288,9 +2227,9 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    if cached is None or cache_sig is None or cached[:len(cache_sig)] != cache_sig:
         return None
-    hit = cached[8]
+    hit = cached[len(cache_sig)]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
@@ -2300,13 +2239,14 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
             return None
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+    env_snapshot = cached[len(cache_sig) + 1] if len(cached) > len(cache_sig) + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    from hermes_cli.config_load_sources import apply_runtime_sources, last_known_good_fallback, load_config_cache_signature
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
@@ -2315,7 +2255,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         config_path = get_config_path()
         path_key = str(config_path)
         if path_key in _LOAD_CONFIG_CACHE:
-            _, fast_sig = _load_config_cache_sig(config_path)
+            _, fast_sig = load_config_cache_signature(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
                 return copy.deepcopy(hit) if want_deepcopy else hit
@@ -2329,7 +2269,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         config_path = get_config_path()
         path_key = str(config_path)
 
-        user_sig, cache_sig = _load_config_cache_sig(config_path)
+        user_sig, cache_sig = load_config_cache_signature(config_path)
 
         hit = _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
@@ -2354,25 +2294,26 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 from hermes_cli.moa_config import apply_user_moa_presets
                 apply_user_moa_presets(config, user_config)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
-                # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
+                # next edit breaks the YAML (see last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
                 from hermes_cli.config_backups import backup_config
                 backup_config(config_path, "good")
             except Exception as e:
-                lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
+                lkg_copy = last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
                 # Defaults stand in for the unreadable file: never the next last-known-good,
                 # never saveable, and cached like the LKG path.
-                fallback = FailedConfigRead(
-                    _merge_managed_overlay(_expand_env_vars(_canonicalize_config(config)))[0], error=e)
+                fallback_config = _expand_env_vars(_canonicalize_config(config))
+                fallback = FailedConfigRead(apply_runtime_sources(fallback_config, config_path)[0], error=e)
                 if cache_sig is not None:
                     _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, fallback, {})
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        expanded, managed_config = apply_runtime_sources(expanded, config_path)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
             # load_config_readonly() callers all see the same stable object. The env snapshot

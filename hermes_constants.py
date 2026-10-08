@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import hashlib
 import os
 import re
 import shutil
@@ -965,6 +966,10 @@ _SCRATCH_SCOPE_SHARED_VALUES = frozenset({"shared", "flat", "off", "0", "false",
 # Component budget: session ids are already filesystem-safe, but an imported/custom id must
 # never escape the scratch root, and a deep home still has to leave room for AF_UNIX sockets.
 _SCRATCH_SESSION_COMPONENT_MAX = 64
+# Hex chars of a stable hash of the ORIGINAL session id, appended to the readable prefix so two
+# distinct ids can never sanitize onto the same lane (lossy separator replacement and truncation
+# used to fuse ``a/b`` with ``a_b``, and two long ids sharing the first 64 chars).
+_SCRATCH_SESSION_HASH_LENGTH = 10
 
 
 def scratch_scope_is_shared() -> bool:
@@ -988,9 +993,19 @@ def scratch_session_id() -> str | None:
 
 
 def _scratch_session_component(session_id: str) -> str:
-    """Filesystem-safe directory component for *session_id* (never empty, never a path)."""
+    """Filesystem-safe directory component for *session_id* (never empty, never a path).
+
+    Two distinct ids can never sanitize onto the same lane: the readable sanitized prefix is
+    kept, then a short stable hash of the *original* id is appended.  The hash is what defeats
+    the three lossy-sanitizer collisions -- ``a/b`` vs ``a_b`` fuse during separator
+    replacement, two long ids sharing the first 64 chars fuse under truncation, and ids that
+    sanitize to nothing all fell back to ``session``.  Total length stays inside
+    :data:`_SCRATCH_SESSION_COMPONENT_MAX` (``54 + 1 + 10`` for the longest prefix).
+    """
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("._-")
-    return cleaned[:_SCRATCH_SESSION_COMPONENT_MAX] or "session"
+    prefix = cleaned[:_SCRATCH_SESSION_COMPONENT_MAX - 1 - _SCRATCH_SESSION_HASH_LENGTH] or "session"
+    suffix = hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()[: _SCRATCH_SESSION_HASH_LENGTH]
+    return f"{prefix}-{suffix}"
 
 
 def session_scratch_dir(home: str | Path | None = None, session_id: str | None = None,
@@ -1035,10 +1050,14 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
-    profile's home gets that home's scratch dir rather than its parent's.  When the child env
-    carries a session id, the session's own lane is used (see :func:`session_scratch_dir`), so
-    everything a session's tools drop in ``$TMPDIR`` stays attributable and isolated.  Returns
-    True when the vars were (re)written.
+    profile's home gets that home's scratch dir rather than its parent's.  The session whose
+    lane is used is the task-local one (see :func:`scratch_session_id`): the gateway's
+    ``os.environ`` mirror is last-writer-wins and may belong to a concurrent session, so a
+    child env copied from it must not be trusted as the session source; only a plain
+    CLI/cron process with no bound session falls back to the child env's explicit
+    ``HERMES_SESSION_ID``.  Everything a session's tools drop in ``$TMPDIR`` therefore stays
+    on the same lane the prompt advertises (see :func:`session_scratch_dir`).  Returns True
+    when the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
@@ -1048,9 +1067,11 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     home = env.get("HERMES_HOME", "").strip()
     try:
         base = _expand_hermes_home(home) if home else get_process_hermes_home()
-        # The child env is the source of truth: a session id it does not carry means "no session"
-        # (the shared scratch dir), never the ambient one of the process building the env.
-        session = (env.get("HERMES_SESSION_ID", "") or "").strip()
+        # The task-local session (ContextVar-first, env mirror as CLI/cron fallback) is
+        # authoritative: the child env is usually a copy of os.environ, whose HERMES_SESSION_ID
+        # mirror is last-writer-wins and can belong to a concurrent gateway session.  Only when
+        # nothing is bound here does the child env's explicit id speak for itself.
+        session = scratch_session_id() or (env.get("HERMES_SESSION_ID", "") or "").strip()
         lane = session_scratch_dir(base, session) if session else None
         scratch = str(lane if lane is not None else get_scratch_dir(base))
     except (RuntimeError, OSError):

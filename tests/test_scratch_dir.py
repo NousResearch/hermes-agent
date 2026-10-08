@@ -10,7 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from hermes_constants import (apply_scratch_tmp_env, get_scratch_dir, is_scratch_path,
-                              prune_scratch_dir, session_scratch_dir)
+                              prune_scratch_dir, session_scratch_dir, _scratch_session_component,
+                              _SCRATCH_SESSION_COMPONENT_MAX, SCRATCH_SESSION_PREFIX)
 
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
@@ -64,7 +65,7 @@ def test_bootstrap_export_follows_the_bound_session(tmp_path):
             " capture_output=True, text=True).stdout.strip())")
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, encoding="utf-8",
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
-    expected = str(tmp_path / "cache" / "scratch" / "session-api_1_abc")
+    expected = str(_lane_dir(tmp_path, "api_1_abc"))
     assert out.stdout.split() == [expected, expected]
     assert os.path.isdir(expected)
 
@@ -311,18 +312,25 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
 
 # ── Session-scoped lanes ─────────────────────────────────────────────────────
 
+def _lane_dir(home, session_id: str):
+    """A session lane under *home*: ``<scratch>/session-<component>`` with the current
+    sanitizer (readable prefix + stable hash), so assertions stay in sync with the
+    component contract instead of hard-coding the hash value."""
+    return get_scratch_dir(home, prune=False) / (SCRATCH_SESSION_PREFIX + _scratch_session_component(session_id))
+
+
 def test_session_scratch_lane_is_per_session(tmp_path, monkeypatch):
     """A bound session gets its own lane, so a concurrent session's temp files never share one
     tree (and nothing has to guess which session left a file behind)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_SESSION_ID", "api_1_abc")
     lane_a = session_scratch_dir()
-    assert lane_a == get_scratch_dir(prune=False) / "session-api_1_abc"
+    assert lane_a == _lane_dir(tmp_path, "api_1_abc")
     assert lane_a.is_dir()
 
     monkeypatch.setenv("HERMES_SESSION_ID", "cli_2_def")
     lane_b = session_scratch_dir()
-    assert lane_b == get_scratch_dir(prune=False) / "session-cli_2_def"
+    assert lane_b == _lane_dir(tmp_path, "cli_2_def")
     assert lane_a != lane_b and lane_a.is_dir() and lane_b.is_dir()
 
 
@@ -331,13 +339,13 @@ def test_session_scratch_env_points_tmpdir_at_the_lane(tmp_path):
     user/OS-set TMPDIR still wins."""
     env = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "api_1_abc"}
     assert apply_scratch_tmp_env(env) is True
-    lane = str(tmp_path / "cache" / "scratch" / "session-api_1_abc")
+    lane = str(_lane_dir(tmp_path, "api_1_abc"))
     assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["HERMES_SCRATCH_DIR"] == lane
     assert os.path.isdir(lane)
 
     env["HERMES_SESSION_ID"] = "cli_2_def"
     assert apply_scratch_tmp_env(env) is True
-    assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch" / "session-cli_2_def")
+    assert env["TMPDIR"] == str(_lane_dir(tmp_path, "cli_2_def"))
 
     user_env = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "api_1_abc",
                 "TMPDIR": "/var/folders/zz"}
@@ -376,6 +384,34 @@ def test_session_lane_component_cannot_escape_the_scratch_root(tmp_path, monkeyp
     assert lane.parent == root and root in lane.parents
     # An id that sanitizes to nothing still gets a lane (never the bare root).
     assert session_scratch_dir(session_id="///").parent == root
+
+
+def test_lane_component_separator_collision_is_eliminated():
+    """``a/b`` and ``a_b`` sanitize to the same prefix but must not share one lane: the lossy
+    separator replacement used to fuse them onto ``session-a_b``, silently merging the scratch
+    trees of two different sessions."""
+    assert _scratch_session_component("a/b") != _scratch_session_component("a_b")
+    assert _scratch_session_component("api/1_abc") != _scratch_session_component("api_1_abc")
+
+
+def test_lane_component_truncation_collision_is_eliminated():
+    """Two distinct ids sharing their first 64 characters used to collapse onto one lane after
+    truncation (the old sanitizer kept ``cleaned[:64]``, so the tail never mattered); the
+    appended hash of the FULL id keeps them apart."""
+    long_id_a = "s" * 80 + "A"
+    long_id_b = "s" * 80 + "B"
+    # Both ids sanitize to a prefix > 64 chars, so the old code truncated both to the same
+    # 64-char string; today the hash suffix separates them.
+    assert _scratch_session_component(long_id_a) != _scratch_session_component(long_id_b)
+    # The readable prefix is still truncated to fit the component budget (64 = prefix + 1 + hash).
+    assert len(_scratch_session_component(long_id_a)) == _SCRATCH_SESSION_COMPONENT_MAX
+
+
+def test_lane_component_empty_sanitize_collision_is_eliminated():
+    """Ids that sanitize to nothing (``///``, ``___``) all used to fall back to the literal
+    ``session`` component, fusing every such id onto one lane; the hash now separates them."""
+    assert _scratch_session_component("///") != _scratch_session_component("___")
+    assert _scratch_session_component("///") != _scratch_session_component("!!!")
 
 
 def test_session_lanes_are_pruned_individually(tmp_path):

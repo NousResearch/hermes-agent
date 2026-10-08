@@ -869,6 +869,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     (unadvertised in the schema; the mirror rejection error teaches it — the
     cross-PROFILE guard it was named for no longer exists).
     """
+    from tools.write_boundary import authority_write_block
+    blocked = authority_write_block("write_file", [path])
+    if blocked:
+        return tool_error(blocked)
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)
            or _check_binary_document_write(path, task_id)
@@ -975,6 +979,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
         _entry_paths = collected[2]
+    from tools.write_boundary import authority_write_block
+    blocked = authority_write_block("patch", _paths_to_check)
+    if blocked:
+        return tool_error(blocked)
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
         return tool_error(precheck_err)

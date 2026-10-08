@@ -1325,6 +1325,10 @@ def _pre_exec_block(
     )
     if blocked:
         raise _Rejected(blocked)
+    from tools.write_boundary import refuse_command
+    protected = refuse_command(command)
+    if protected:
+        raise _Rejected(_error_json(protected, status="blocked"))
     if workdir:
         workdir_error = _validate_workdir(workdir)
         if workdir_error:
@@ -1455,6 +1459,14 @@ def terminal_tool(
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
+        from tools.write_boundary import guard_command
+        guarded = guard_command(command, env_type=env_type)
+        if guarded is None:
+            raise _Rejected(_error_json(
+                "Authority write boundary is unavailable for this terminal. The command was not run.",
+                status="blocked",
+            ))
+        command = guarded
         if plan.promoted_from_foreground_timeout is not None:
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.

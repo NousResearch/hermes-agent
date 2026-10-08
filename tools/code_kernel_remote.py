@@ -233,10 +233,16 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         # lifetime. runner.log is pre-created 600 so the launch redirect never
         # lands at the remote's default umask. The inner `&` stays inside the
         # subshell where `$!` resolves to the runner pid.
+        from tools.write_boundary import protected_basenames
+        names = protected_basenames()
+        runner = "python3 kernel_runner.py"
+        if names:
+            from tools.authority_os_guard import linux_argv_command
+            runner = linux_argv_command(["python3", "kernel_runner.py"], names)
         launch_cmd = _ship_env_file_and_launch(
             env, kernel_dir, "kernel.env",
             "rm -f ./kernel.env && touch runner.log && chmod 600 runner.log && "
-            '{ nohup python3 kernel_runner.py > runner.log 2>&1 & echo "PID:$!"; }',
+            f'{{ nohup {runner} > runner.log 2>&1 & echo "PID:$!"; }}',
             rpc_dir=f"{kernel_dir}/rpc", rpc_token=rpc_token,
             HERMES_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir)
         started = _sh(env, launch_cmd, timeout=20)

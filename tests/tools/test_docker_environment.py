@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import re
 from io import StringIO
@@ -9,6 +10,24 @@ import pytest
 
 from tools.environments import docker as docker_env
 from tools.environments.docker_egress import _extra_args_egress_collisions
+
+
+@pytest.fixture(autouse=True)
+def isolated_skill_snapshots(monkeypatch, tmp_path):
+    """Use real staged snapshots while keeping tests outside the production data root."""
+    monkeypatch.setenv("HERMES_DOCKER_DATA_ROOT", str(tmp_path / "docker-data"))
+    original = docker_env._skill_mount_plan
+    monkeypatch.setattr(docker_env, "_test_skill_mounts", [], raising=False)
+    def plan(profile):
+        args, digest = original(profile)
+        mounts = []
+        for spec in args:
+            parsed = docker_env._split_volume_spec(spec)
+            if parsed and any(p == "skills" or p.endswith("_skills") for p in parsed[1].split("/")):
+                mounts.append({"Source": parsed[0], "Destination": parsed[1], "RW": False})
+        docker_env._test_skill_mounts = mounts
+        return args, digest
+    monkeypatch.setattr(docker_env, "_skill_mount_plan", plan)
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -790,6 +809,8 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     labels = dict(env._labels)
     environment_label = labels.pop("hermes-environment")
+    skills_label = labels.pop("hermes-skills-fingerprint")
+    assert re.fullmatch(r"[0-9a-f]{64}", skills_label)
     assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
@@ -921,6 +942,8 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
         if isinstance(cmd, list) and len(cmd) >= 2:
             sub = cmd[1]
+            if sub == "inspect" and "{{json .Mounts}}" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(docker_env._test_skill_mounts), stderr="")
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
             if sub == "ps":
@@ -1034,6 +1057,8 @@ def test_reuse_probe_format_is_podman_compatible(monkeypatch):
         calls.append(list(cmd) if isinstance(cmd, list) else cmd)
         if isinstance(cmd, list) and len(cmd) >= 2:
             sub = cmd[1]
+            if sub == "inspect" and "{{json .Mounts}}" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(docker_env._test_skill_mounts), stderr="")
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="podman version", stderr="")
             if sub == "ps":

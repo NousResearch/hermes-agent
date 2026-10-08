@@ -164,6 +164,11 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 # --- Skills directory mounts ---
 
+def iter_skill_directories(container_base: str = "/root/.hermes") -> Iterator[Tuple[Path, str]]:
+    """Public skill roots for persistent Docker snapshots; no temporary copies."""
+    return _skill_dir_roots(container_base)
+
+
 def _skill_dir_roots(container_base: str) -> Iterator[Tuple[Path, str]]:
     """Yield ``(host_dir, container_root)`` for every existing skills directory.
 
@@ -220,8 +225,19 @@ def _safe_skills_path(skills_dir: Path) -> str:
     import shutil
     import tempfile
 
+    def _delete_if_unmounted(path: Path) -> None:
+        try:
+            from tools.environments.skill_snapshot import safe_to_delete
+            if not safe_to_delete(path):
+                logger.warning("credential_files: leaving mounted or unverified skills copy %s", path)
+                return
+        except Exception:
+            logger.warning("credential_files: mount check failed; leaving %s", path)
+            return
+        shutil.rmtree(path, ignore_errors=True)
+
     if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+        _delete_if_unmounted(_safe_skills_tempdir)
     safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
 
     for base, files in _walk_skill_tree(skills_dir):
@@ -229,7 +245,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
         for item in files:
             shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
 
-    atexit.register(lambda: safe_dir.is_dir() and shutil.rmtree(safe_dir, ignore_errors=True))
+    atexit.register(lambda path=safe_dir: _delete_if_unmounted(path))
     logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
     return str(safe_dir)
 

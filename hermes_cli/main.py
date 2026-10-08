@@ -2939,12 +2939,16 @@ def _prepare_agent_startup(args) -> None:
     if not _is_tui_chat_launch(args):
         # The TUI backend does its own discovery; the launcher only spawns Node.
         try:
-            from hermes_cli.plugins import start_background_plugin_discovery
+            from hermes_cli.plugins import discover_plugins, start_background_plugin_discovery
 
-            # Daemon thread: ~150ms of manifest scanning overlaps the rest of
-            # startup. Every synchronous reader goes through discover_plugins(),
-            # which joins this thread first (incl. model_tools at import time).
-            start_background_plugin_discovery()
+            if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
+                # Gateway module import bridges auxiliary config through the plugin registry.
+                # Complete discovery on this thread before that import: a discovery worker can
+                # import gateway.run while the main thread holds its import lock, deadlocking boot.
+                discover_plugins()
+            else:
+                # Daemon thread: manifest scanning overlaps other CLI startup.
+                start_background_plugin_discovery()
         except Exception:
             logger.warning(
                 "plugin discovery failed at CLI startup",

@@ -234,6 +234,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        from tools.write_boundary import guard_command, protected_basenames
+        if protected_basenames():
+            env_type = getattr(self.env, "env_type", None)
+            guarded = guard_command(command, env_type=env_type) if env_type else None
+            if guarded is None:
+                return ExecuteResult(
+                    stdout="Authority write boundary is unavailable. The file operation was not run.\n",
+                    exit_code=126,
+                )
+            command = guarded
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
         output = result.get("output", "")

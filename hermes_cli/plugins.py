@@ -457,6 +457,7 @@ class PluginContext:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        allow_code_execution: bool = False,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
@@ -483,7 +484,7 @@ class PluginContext:
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, allow_code_execution=allow_code_execution,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None
@@ -1530,6 +1531,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
         return self.get_platform_handler_factories("telegram")
 
+    def loaded_plugin_names(self) -> set[str]:
+        """Names of plugins whose ``register()`` finished without an error."""
+        names: set[str] = set()
+        for key, plugin in self._plugins.items():
+            if plugin.enabled and not plugin.error and not plugin.deferred and plugin.module is not None:
+                names.add(key)
+                if plugin.manifest.name:
+                    names.add(plugin.manifest.name)
+        return names
+
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""
         return [
@@ -1983,6 +1994,13 @@ def _get_pre_tool_call_directive_details(
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    from tools.required_plugin_gate import required_tool_block
+    try:
+        required_block = required_tool_block(tool_name)
+    except Exception:
+        required_block = f"Required plugin check failed; refusing {tool_name}."
+    if required_block:
+        return _PreToolCallDirective(action="block", message=required_block)
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},

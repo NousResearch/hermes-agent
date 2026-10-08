@@ -7,6 +7,8 @@ files via ``env.execute()``.
 """
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import logging
 import secrets
@@ -25,9 +27,26 @@ logger = logging.getLogger("tools.code_execution_tool")
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat", "persist_on_release"}
 
 
+_rpc_session = ContextVar("execute_code_host_session", default=None)
+
+
+@contextmanager
+def rpc_session(session_id):
+    """Bind host-provided session identity; sandbox arguments cannot replace it."""
+    token = _rpc_session.set(session_id)
+    try:
+        yield
+    finally:
+        _rpc_session.reset(token)
+
+
 def _default_dispatch(task_id):
     from model_tools import handle_function_call
-    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, task_id=task_id)
+    session_id = _rpc_session.get()
+    identity = {"task_id": task_id}
+    if session_id is not None:
+        identity["session_id"] = session_id
+    return lambda tool_name, tool_args: handle_function_call(tool_name, tool_args, **identity)
 
 
 def _private_dirs_cmd(root: str, *subdirs: str) -> str:

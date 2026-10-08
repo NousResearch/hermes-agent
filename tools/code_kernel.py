@@ -636,8 +636,18 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
     try:
+        child_argv = [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")]
+        if not _IS_WINDOWS:
+            from tools.write_boundary import protected_basenames
+            names = protected_basenames()
+            if names:
+                from tools.authority_os_guard import posix_spawn_argv
+                guarded_argv = posix_spawn_argv(child_argv, names)
+                if guarded_argv is None:
+                    raise OSError("Authority write boundary is unavailable. Refusing to start an unguarded execute_code kernel.")
+                child_argv = guarded_argv
         kernel.proc = subprocess.Popen(
-            [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
+            child_argv,
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,

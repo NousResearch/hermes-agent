@@ -52,7 +52,7 @@ def mock_sd(monkeypatch):
         return mock, real_np
 
     monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import_audio)
-    monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+    monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
     return mock
 
 
@@ -275,10 +275,26 @@ class TestNativeSttLabelSync:
 
 
 class TestCheckVoiceRequirements:
+    def test_status_probe_does_not_install_audio_extra(self, monkeypatch):
+        """Passive status checks must not rebuild the environment."""
+        from tools import voice_mode
+
+        calls = []
+
+        def fake_import_audio(*, allow_install=True):
+            calls.append(allow_install)
+            if allow_install:
+                raise AssertionError("status probe attempted an install")
+            raise ImportError("audio-io extra is not installed")
+
+        monkeypatch.setattr(voice_mode, "_import_audio", fake_import_audio)
+        assert voice_mode._audio_available(allow_install=False) is False
+        assert calls == [False]
+
     def test_all_requirements_met(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
-                            lambda: {"available": True, "warnings": []})
+                            lambda **kwargs: {"available": True, "warnings": []})
         monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
 
         from tools.voice_mode import check_voice_requirements
@@ -292,9 +308,9 @@ class TestCheckVoiceRequirements:
 
     def test_plugin_stt_provider(self, monkeypatch):
         """Plugin STT provider is recognized."""
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda **kwargs: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
-                            lambda: {"available": True, "warnings": []})
+                            lambda **kwargs: {"available": True, "warnings": []})
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config",
             lambda: {"enabled": True, "provider": "my-plugin-stt"},

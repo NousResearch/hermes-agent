@@ -42,7 +42,7 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # Never imported at module level: crashes headless environments (SSH, Docker,
 # WSL, no PortAudio).
 
-def _import_audio():
+def _import_audio(*, allow_install: bool = True):
     """Lazy-import (sounddevice, numpy), enabling the ``audio-io`` extra through PM first.
 
     Raises ImportError when the extra cannot be enabled here (lazy installs off, platform
@@ -52,6 +52,8 @@ def _import_audio():
     import pm
 
     if not pm.available("audio-io"):
+        if not allow_install:
+            raise ImportError("audio-io extra is not installed")
         try:
             pm.ensure_import("audio-io")
         except pm.InstallError as exc:
@@ -103,9 +105,9 @@ def _unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
-def _audio_unavailable_reason() -> str:
+def _audio_unavailable_reason(*, allow_install: bool = True) -> str:
     try:
-        _import_audio()
+        _import_audio(allow_install=allow_install)
     except ImportError as exc:
         return _voice_capture_install_hint(exc)
     except OSError:
@@ -113,9 +115,12 @@ def _audio_unavailable_reason() -> str:
     return ""
 
 
-def _audio_available() -> bool:
+def _audio_available(*, allow_install: bool = True) -> bool:
     try:
-        _import_audio()
+        if allow_install:
+            _import_audio()
+        else:
+            _import_audio(allow_install=False)
         return True
     except (ImportError, OSError):
         return False
@@ -249,6 +254,7 @@ def _pulse_socket_reachable() -> bool:
 
 
 def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwarded_audio: bool,
+                           allow_install: bool = True,
                            termux_mic_cmd: Optional[str], termux_app_installed: bool) -> None:
     """Import sounddevice and query devices; append the outcome to warnings/notices.
 
@@ -268,7 +274,7 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
             warnings.append(warning)
 
     try:
-        sd, _ = _import_audio()
+        sd, _ = (_import_audio() if allow_install else _import_audio(allow_install=False))
     except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
                        f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)
@@ -287,7 +293,7 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
                 forwarded_notice="Audio device query failed but host audio forwarding is configured -- continuing")
 
 
-def detect_audio_environment() -> dict:
+def detect_audio_environment(*, allow_install: bool = True) -> dict:
     """Return ``{'available', 'warnings' (hard-fail, block voice), 'notices' (informational)}``.
 
     SSH, containers and WSL normally have no audio devices, but a reachable sound
@@ -347,6 +353,7 @@ def detect_audio_environment() -> dict:
                 "  Then verify: arecord -d 3 test.wav && aplay test.wav")
 
     _probe_audio_libraries(warnings, notices, has_forwarded_audio=has_forwarded_audio,
+                           allow_install=allow_install,
                            termux_mic_cmd=termux_mic_cmd, termux_app_installed=termux_app_installed)
     return {"available": not warnings, "warnings": warnings, "notices": notices}
 
@@ -1515,8 +1522,8 @@ def check_voice_requirements() -> Dict[str, Any]:
     stt_available = stt_enabled and stt_label is not None
 
     termux_capture = _termux_voice_capture_available()
-    has_audio = _audio_available() or termux_capture
-    env_check = detect_audio_environment()
+    has_audio = _audio_available(allow_install=False) or termux_capture
+    env_check = detect_audio_environment(allow_install=False)
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio

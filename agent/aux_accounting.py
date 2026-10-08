@@ -44,7 +44,7 @@ def reset_accounting_context(token) -> None:
 
 def record_aux_usage(
     response: Any, task: Optional[str], *, provider: Optional[str] = None,
-    base_url: Optional[str] = None,
+    base_url: Optional[str] = None, api_mode: Optional[str] = None,
 ) -> None:
     """Record an auxiliary response's token usage against the ambient session.
 
@@ -66,7 +66,7 @@ def record_aux_usage(
 
         from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
+        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider, api_mode=api_mode), response)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens

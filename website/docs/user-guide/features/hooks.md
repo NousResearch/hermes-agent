@@ -2124,3 +2124,17 @@ Because `delivery_id` and `timestamp` live **inside the signed body**, a verifie
 - **No consent prompt.** Outbound targets execute no code on your machine — they receive data at a URL you configured. `HERMES_SAFE_MODE=1` still skips registration, same as plugins and shell hooks. Note that payloads include tool inputs and event metadata, so only point targets at endpoints you trust, and prefer `https://`.
 
 `hermes hooks list` shows configured outbound targets alongside shell hooks, including whether each target is signed.
+
+
+### Native auxiliary request observers
+
+`pre_auxiliary_native_request` and `post_auxiliary_native_request` report the
+exact native Responses body and terminal response for an auxiliary attempt.
+They keep the auxiliary logical id and retry count. These are read-only,
+fail-open events with separate copies for each subscriber. They include raw
+conversation and reasoning data; keep that data out of default logs. See
+[Native auxiliary requests](../../developer-guide/observer-hooks.md#native-auxiliary-requests)
+for fields and the signed in-memory route context.
+
+`pre_auxiliary_call.request_tools`, when present, is a raw copy of the full
+tool schemas. Use it when sanitized request previews omit schema fields.

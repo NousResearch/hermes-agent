@@ -121,7 +121,7 @@ VALID_HOOKS: Set[str] = {
     # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
     # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
     # ``*_api_request`` subscribers never receive auxiliary traffic (#79733). Observers; fail-open.
-    "pre_auxiliary_call", "post_auxiliary_call",
+    "pre_auxiliary_call", "post_auxiliary_call", "pre_auxiliary_native_request", "post_auxiliary_native_request",
     # transform_api_error_classification: once per failed API call BEFORE
     # agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
     # error_code, error_message, error_body, error, approx_tokens, context_length, num_messages.

@@ -2188,3 +2188,17 @@ def handler(args, **kwargs):
 # Good — model knows exactly when and how
 "description": "Evaluate a mathematical expression. Use for arithmetic, trig, logarithms. Supports: +, -, *, /, **, sqrt, sin, cos, log, pi, e."
 ```
+
+
+### Native auxiliary capture and completion
+
+Plugins can observe `pre_auxiliary_native_request` and
+`post_auxiliary_native_request` to get the exact native Responses request and
+terminal response. Each subscriber gets a separate copy. The events are
+read-only and keep credentials out of their payloads. See
+[Native auxiliary requests](../observer-hooks.md#native-auxiliary-requests).
+
+`ctx.llm.complete_native` sends a native body on a signed captured route with
+host-owned credentials. Task ownership and provider/model trust gates apply.
+It keeps the captured prefix and settings, sends once, and refuses changed
+route state. See [Native requests on a captured route](../plugin-llm-access.md#native-requests-on-a-captured-route).

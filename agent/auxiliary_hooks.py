@@ -13,6 +13,7 @@ callback is logged and the auxiliary call proceeds untouched.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -128,7 +129,8 @@ class _AuxCallHooks:
         total_chars = sum(len(str(_field(m, "content") or "")) for m in messages)
         _fire(
             PRE_AUXILIARY_CALL, **self.base,
-            request_messages=list(messages),
+            request_messages=deepcopy(messages),
+            **({"request_tools": deepcopy(kwargs["tools"])} if "tools" in kwargs else {}),
             system_prompt=_system_prompt(messages, kwargs),
             tool_count=len(kwargs.get("tools") or []),
             approx_input_tokens=total_chars // 4,
@@ -227,8 +229,11 @@ def run_with_aux_hooks(
     ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
     hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=streaming)
+    from agent.auxiliary_native import native_attempt_scope
+
     try:
-        response = call()
+        with native_attempt_scope(aux_task=aux_task, metadata=metadata, provider=provider):
+            response = call()
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise
@@ -243,10 +248,34 @@ async def arun_with_aux_hooks(
     """Async twin of :func:`run_with_aux_hooks`."""
     hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=False)
+    from agent.auxiliary_native import native_attempt_scope
+
     try:
-        response = await call()
+        with native_attempt_scope(aux_task=aux_task, metadata=metadata, provider=provider):
+            response = await call()
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise
     _post_safely(hooks, response=response)
     return response
+
+
+def auxiliary_attempt_metadata(
+    *, provider: str | None = None, api_mode: str | None = None
+) -> tuple[str, str, dict[str, Any]] | None:
+    from agent.auxiliary_client import _RELAY_AUX_CALL_CONTEXT
+
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return None
+    attempt_count = int(context.get("attempt_count") or 0)
+    context["attempt_count"] = attempt_count + 1
+    provider_name = str(provider or context.get("provider") or "auxiliary")
+    model_name = str(context.get("model") or "unknown")
+    return provider_name, model_name, {
+        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
+        "api_request_id": str(context["request_id"]),
+        "call_role": f"auxiliary:{context['task']}",
+        "retry_count": attempt_count,
+        "auxiliary_task": str(context["task"]),
+    }

@@ -42,7 +42,8 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
-    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "pre_auxiliary_call", "post_auxiliary_call",
+    "pre_auxiliary_native_request", "post_auxiliary_native_request", "pre_verify", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
 }
@@ -228,14 +229,17 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
+                callback_kwargs = copy.deepcopy(kwargs) if hook_name in {
+                    "pre_auxiliary_call", "pre_auxiliary_native_request", "post_auxiliary_native_request",
+                } else kwargs
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, callback_kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = self._invoke_hook_callback(cb, callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:

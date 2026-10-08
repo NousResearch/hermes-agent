@@ -546,3 +546,59 @@ own model call — for any reason, structured or not — `ctx.llm`.
   * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — async with `asyncio.gather()`
 * Auxiliary client (the engine under the hood): see
   [Provider Runtime](./provider-runtime.md).
+
+
+## Native requests on a captured route
+
+`ctx.llm.complete_native` lets a plugin append native Responses input to an
+observed request. A context engine can use this to keep a cached prefix when
+it asks for a checkpoint. The host keeps the credentials.
+
+```python
+result = ctx.llm.complete_native(
+    native_request=body,
+    route_context=event["route_context"],
+    expected_session_id=session_id,
+    timeout=120.0,
+    task="my_registered_task",
+    purpose="checkpoint",
+)
+```
+
+The result has `native_response` (the full terminal Responses JSON), `usage`,
+and `audit`. Native reasoning items, message phases, status, and nested usage
+fields stay in `native_response`. A terminal response can be incomplete or
+failed. The plugin must check its status and content before it accepts it.
+
+The first supported API mode is `codex_responses`. The request must keep every
+captured body setting, including `stream: true`, the model, instructions, and
+cache fields. Its `input` must start with the exact captured input. The plugin
+can append input items. It cannot put `extra_body`, `extra_headers`, `timeout`,
+credentials, or client options in the body. The timeout is a method argument.
+The host restores the signed per-request headers and its own auth headers.
+Clients with nonempty SDK `default_query` options cannot supply a usable
+native capture or run a native completion.
+
+`route_context` comes from `pre_auxiliary_native_request`. It is JSON data
+signed with a process-local key. It binds the profile, session, cache scope,
+provider, model, endpoint, credential and header fingerprints, request
+settings, and input prefix. It contains no credential or raw profile path.
+Keep it in memory. A copied or changed context from another process or profile
+cannot authorize a call. A changed credential, route, header, known session,
+or cache scope causes `NativeRouteError` before a send. The host checks the
+route again after the response. A token refresh can cause refusal; the plugin
+can then use its normal fallback. The user does not extract OAuth tokens.
+
+The existing task ownership rules and provider/model trust flags apply.
+Register the plugin's task with `ctx.register_auxiliary_task`. Configure
+`llm.allow_provider_override`, `llm.allowed_providers`,
+`llm.allow_model_override`, and `llm.allowed_models` for the concrete captured
+routes. The model allowlist uses the wire model from the event.
+
+The host sends one request to the resolved Responses endpoint, with SDK
+retries disabled. It does not run a fallback, convert Chat messages, change
+cache headers, or run the main `llm_request` and `llm_execution` middleware.
+A plugin that needs middleware must run its guarded middleware path around
+this call. Auxiliary usage enters the existing accounting path once. The
+native observer pair can observe this request with the plugin's task name.
+Audit logs contain only plugin, route, task, purpose, and usage metadata.

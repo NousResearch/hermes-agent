@@ -70,6 +70,15 @@ class PluginLlmCompleteResult:
 
 
 @dataclass
+class PluginLlmNativeResult:
+    """A native Responses result with its output items unchanged."""
+
+    native_response: Dict[str, Any]
+    usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
+    audit: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PluginLlmStructuredResult:
     """Result of :meth:`PluginLlm.complete_structured`.
 
@@ -457,6 +466,24 @@ class PluginLlm:
         agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
         return self._finish("complete", agent, kw, self._invoke_sync(kw), purpose)
 
+    def complete_native(
+        self, *, native_request: Dict[str, Any], route_context: Dict[str, Any],
+        expected_session_id: str, timeout: float = 120.0,
+        purpose: Optional[str] = None, task: Optional[str] = None,
+    ) -> PluginLlmNativeResult:
+        """Send one native request with host credentials on a signed captured route.
+
+        Task ownership and provider/model trust rules apply. Changed profile,
+        session, route, credential, headers, settings, or prefix cause refusal.
+        The host does not retry or use a fallback route.
+        """
+        from agent.plugin_llm_native import complete_native_for_plugin
+
+        return complete_native_for_plugin(
+            self, native_request=native_request, route_context=route_context,
+            expected_session_id=expected_session_id, timeout=timeout, purpose=purpose, task=task,
+        )
+
     def complete_structured(
         self, *, instructions: str, input: Sequence[PluginLlmInput], json_schema: Optional[Any] = None,
         json_mode: bool = False, schema_name: Optional[str] = None, system_prompt: Optional[str] = None,
@@ -589,5 +616,5 @@ def make_plugin_llm_for_test(*, plugin_id: str, policy: _TrustPolicy, sync_calle
 
 __all__ = [
     "PluginLlm", "PluginLlmTextInput", "PluginLlmImageInput", "PluginLlmInput", "PluginLlmUsage",
-    "PluginLlmCompleteResult", "PluginLlmStructuredResult", "PluginLlmTrustError", "make_plugin_llm_for_test",
+    "PluginLlmCompleteResult", "PluginLlmNativeResult", "PluginLlmStructuredResult", "PluginLlmTrustError", "make_plugin_llm_for_test",
 ]

@@ -1566,6 +1566,9 @@ class _CodexCompletionsAdapter:
         issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
+        from agent.auxiliary_native import begin_native_request, end_native_request
+
+        native_observation = begin_native_request(self._client, {**resp_kwargs, "stream": True})
         try:
             guard.start()
             from agent.codex_runtime import _consume_codex_event_stream
@@ -1591,6 +1594,7 @@ class _CodexCompletionsAdapter:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
+            end_native_request(native_observation, final)
             from agent.auxiliary_codex_response import _parse_codex_final_response
 
             text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
@@ -1601,9 +1605,13 @@ class _CodexCompletionsAdapter:
                 if tc.function.name in wire_aliases:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
+            end_native_request(native_observation, error=exc)
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+            raise
+        except BaseException as exc:
+            end_native_request(native_observation, error=exc)
             raise
         finally:
             guard.finish()
@@ -2603,25 +2611,6 @@ def _record_route_info(
         route_info["model"] = model or "default"
 
 
-def _relay_auxiliary_metadata(
-    *, provider: str | None = None, api_mode: str | None = None
-) -> tuple[str, str, dict[str, Any]] | None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return None
-    attempt_count = int(context.get("attempt_count") or 0)
-    context["attempt_count"] = attempt_count + 1
-    provider_name = str(provider or context.get("provider") or "auxiliary")
-    model_name = str(context.get("model") or "unknown")
-    return provider_name, model_name, {
-        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
-        "api_request_id": str(context["request_id"]),
-        "call_role": f"auxiliary:{context['task']}",
-        "retry_count": attempt_count,
-        "auxiliary_task": str(context["task"]),
-    }
-
-
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
@@ -2637,7 +2626,9 @@ def _relay_sync_completion(
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
     callback = create or (lambda request: _create_with_progress(client, request, task))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    from agent.auxiliary_hooks import auxiliary_attempt_metadata
+
+    route = auxiliary_attempt_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
@@ -2670,7 +2661,9 @@ async def _relay_async_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    from agent.auxiliary_hooks import auxiliary_attempt_metadata
+
+    route = auxiliary_attempt_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
@@ -2700,7 +2693,9 @@ def _relay_sync_stream(
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    from agent.auxiliary_hooks import auxiliary_attempt_metadata
+
+    route = auxiliary_attempt_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route
@@ -8189,7 +8184,10 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
-            return client.chat.completions.create(**kwargs)
+            return _relay_sync_completion(
+                client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
+                create=lambda request: client.chat.completions.create(**request),
+            )
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
     def _primary(**validate_kw: Any) -> Any:

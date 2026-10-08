@@ -343,3 +343,39 @@ explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).
+
+
+## Native auxiliary requests
+
+`pre_auxiliary_native_request` and `post_auxiliary_native_request` observe the
+physical Responses request inside the auxiliary adapter. Use these events
+when a plugin needs the final native input and settings. The existing
+`pre_auxiliary_call` and `post_auxiliary_call` keep their Chat payloads and
+outer call boundaries.
+
+Each native pair uses the existing auxiliary `api_request_id` and
+`retry_count`. It also has `aux_task`, `session_id`, `task_id`, `turn_id`,
+`platform`, `provider`, `model`, `base_url`, `api_mode`, `route_context`,
+`streaming`, and `started_at`. Parent identity is empty outside a turn.
+
+The pre event adds `native_request`, the full Responses body with
+`stream: true`, and `extra_headers`, the supported per-request headers.
+Auth headers are excluded. The post event adds `native_response`, the full
+terminal response before Chat normalization, `status`, `usage`, `error_type`,
+`ended_at`, and `api_duration`. A stream error or cancellation has no native
+response. A completed provider response can have failed or incomplete status.
+References and a streamed native MOA aggregator each emit one pair per
+physical attempt. Retries share their logical id and have different retry
+counts. The async adapter keeps the same contract.
+
+These events contain raw conversation and reasoning data. Keep them in
+memory unless the user authorized an export. Do not put them in default logs
+or diagnostics. Every subscriber gets its own deep copy. Changes, returned
+directives, exceptions, and callback timeouts cannot change the provider
+request or response. With no native subscriber, the host makes no request
+copies or route signatures.
+
+`pre_auxiliary_call` also has raw `request_tools` when its request has a
+`tools` field. This preserves full descriptions and nested schemas that the
+sanitized `request` can shorten. Raw `request_messages` and `request_tools`
+are copied; every pre-event subscriber gets a separate payload.

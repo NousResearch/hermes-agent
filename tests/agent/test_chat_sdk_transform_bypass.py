@@ -169,7 +169,7 @@ def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
 
     monkeypatch.setattr(relay_llm, "stream_current", fake_stream_current)
     monkeypatch.setattr(
-        auxiliary_client, "_relay_auxiliary_metadata", lambda **_kw: ("openrouter", "m", {}))
+        "agent.auxiliary_hooks.auxiliary_attempt_metadata", lambda **_kw: ("openrouter", "m", {}))
 
     auxiliary_client._relay_sync_stream(client, dict(body))
 

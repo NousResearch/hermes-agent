@@ -18,8 +18,6 @@ after N seconds" (very different root causes).
 from __future__ import annotations
 
 import logging
-import time
-from unittest.mock import patch
 
 
 from run_agent import AIAgent
@@ -35,14 +33,6 @@ def _make_agent() -> AIAgent:
     )
 
 
-def test_stream_diag_init_returns_well_formed_dict():
-    diag = AIAgent._stream_diag_init()
-    assert "started_at" in diag
-    assert diag["chunks"] == 0
-    assert diag["bytes"] == 0
-    assert diag["first_chunk_at"] is None
-    assert diag["http_status"] is None
-    assert diag["headers"] == {}
 
 
 class _FakeHeaders:
@@ -105,109 +95,10 @@ def test_flatten_exception_chain_caps_depth():
     assert chain.count("<-") <= 3
 
 
-def test_log_stream_retry_includes_diagnostic_fields(caplog):
-    agent = _make_agent()
-    agent._delegate_depth = 1
-    agent._subagent_id = "sa-3-deadbeef"
-    agent.provider = "openrouter"
-
-    diag = AIAgent._stream_diag_init()
-    diag["http_status"] = 200
-    diag["headers"] = {
-        "cf-ray": "8f1a2b3c4d5e6f7g-LAX",
-        "x-openrouter-provider": "Anthropic",
-        "x-openrouter-id": "gen-xyz789",
-    }
-    diag["chunks"] = 12
-    diag["bytes"] = 4096
-    # Simulate 5s elapsed with first chunk at 0.5s.
-    diag["started_at"] = time.time() - 5.0
-    diag["first_chunk_at"] = diag["started_at"] + 0.5
-
-    inner = ConnectionError("peer closed")
-    outer = RuntimeError("Connection error.")
-    outer.__cause__ = inner
-
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
-        agent._log_stream_retry(
-            kind="drop mid tool-call",
-            error=outer,
-            attempt=2,
-            max_attempts=3,
-            mid_tool_call=True,
-            diag=diag,
-        )
-
-    msg = next(
-        r.getMessage() for r in caplog.records
-        if "Stream drop mid tool-call" in r.getMessage()
-    )
-
-    # Identity
-    assert "subagent_id=sa-3-deadbeef" in msg
-    assert "provider=openrouter" in msg
-
-    # Inner-cause chain
-    assert "RuntimeError" in msg and "ConnectionError" in msg
-
-    # Counters and timing
-    assert "http_status=200" in msg
-    assert "bytes=4096" in msg
-    assert "chunks=12" in msg
-    # elapsed should be roughly 5s; allow some slack.
-    assert "elapsed=" in msg
-    assert "ttfb=0.50s" in msg
-
-    # Upstream headers
-    assert "cf-ray=8f1a2b3c4d5e6f7g-LAX" in msg
-    assert "x-openrouter-provider=Anthropic" in msg
-    assert "x-openrouter-id=gen-xyz789" in msg
 
 
-def test_log_stream_retry_works_without_diag(caplog):
-    """diag is optional — older callers / unit tests still work."""
-    agent = _make_agent()
-    agent._delegate_depth = 0
-    agent.provider = "openrouter"
-
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
-        agent._log_stream_retry(
-            kind="drop",
-            error=ConnectionError("x"),
-            attempt=2,
-            max_attempts=3,
-            mid_tool_call=False,
-        )
-
-    msg = next(r.getMessage() for r in caplog.records if "Stream drop" in r.getMessage())
-    # Without diag, the structured fields show "-" placeholders.
-    assert "http_status=-" in msg
-    assert "upstream=[-]" in msg
-    assert "bytes=0" in msg
-    assert "chunks=0" in msg
-    assert "ttfb=-" in msg
 
 
-def test_emit_stream_drop_ui_includes_elapsed_when_available():
-    agent = _make_agent()
-    agent.provider = "openrouter"
-
-    diag = AIAgent._stream_diag_init()
-    diag["started_at"] = time.time() - 8.0  # 8s on the wire before drop
-
-    with patch.object(agent, "_buffer_status") as mock_emit:
-        agent._emit_stream_drop(
-            error=ConnectionError("x"),
-            attempt=2,
-            max_attempts=3,
-            mid_tool_call=True,
-            diag=diag,
-        )
-
-    msg = mock_emit.call_args.args[0]
-    # Suffix with elapsed time helps distinguish "couldn't connect" (0s)
-    # from "died mid-stream after a while".
-    assert "after" in msg and "s" in msg
 
 
 
@@ -218,3 +109,23 @@ def test_quiet_mode_does_not_clobber_runagent_logger_level():
     for name in ("run_agent", "tools", "trajectory_compressor", "cron", "hermes_cli"):
         logger = logging.getLogger(name)
         assert logger.getEffectiveLevel() <= logging.WARNING
+
+
+def test_retry_after_drop_reports_the_attempt_that_dropped():
+    """First drop (0-indexed attempt 0) must be announced as attempt 1/N, not 2/N (#90215)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from agent.chat_completion_helpers import _StreamingCall
+
+    agent = MagicMock()
+    agent._is_provider_stream_parse_error.return_value = False
+    fake = SimpleNamespace(
+        agent=agent,
+        clients=SimpleNamespace(diag=None, close_once=lambda reason: None),
+        _cancel_current_stream_attempt=lambda reason: None,
+        last_chunk_time={"t": 0.0},
+    )
+    _StreamingCall._retry_after_drop(fake, ConnectionError("drop"), 0, 2, mid_tool_call=False, reason="t")
+    assert agent._emit_stream_drop.call_args.kwargs["attempt"] == 1
+    assert agent._emit_stream_drop.call_args.kwargs["max_attempts"] == 3

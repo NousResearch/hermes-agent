@@ -36,12 +36,17 @@ class TodoStore:
         return self._normalize_order([self._validate(t) for t in self._dedupe_by_id(todos)])
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
-        """Replace the list (default) or merge by id; returns the full list after writing."""
+        """Replace the list (default) or merge by id; returns the full list after writing.
+        Raises ValueError (leaving the list untouched) if any item is invalid."""
         before = self.read()
-        if merge:
-            self._merge(todos)
-        else:
-            self._items = self._fresh_items(todos)
+        try:
+            if merge:
+                self._merge(todos)
+            else:
+                self._items = self._fresh_items(todos)
+        except ValueError:
+            self._items = before  # rejected write must not leave a partial list behind
+            raise
         del self._items[MAX_TODO_ITEMS:]  # keep the priority head; replays can't grow unbounded
         self._sanitize_parents(self._items)
         if self._items != before:
@@ -139,9 +144,14 @@ class TodoStore:
             return {"id": "?", "content": "(invalid item)", "status": "pending"}
         item_id = str(item.get("id", "")).strip() or "?"
         content = str(item.get("content", "")).strip()
+        if not content:
+            raise ValueError(
+                f"Todo item '{item_id}' has empty or missing content. "
+                "Each item must have a non-empty description."
+            )
         status = str(item.get("status", "pending")).strip().lower()
         result = {"id": item_id,
-                  "content": TodoStore._cap_content(content) if content else "(no description)",
+                  "content": TodoStore._cap_content(content),
                   "status": status if status in VALID_STATUSES else "pending"}
         parent = str(item.get("parent") or "").strip()
         if parent and parent != item_id:
@@ -196,14 +206,12 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     if todos is None:
         items = store.read()
     else:
-        if isinstance(todos, str):  # LLMs sometimes send a JSON string instead of a list
-            try:
-                todos = json.loads(todos)
-            except (json.JSONDecodeError, TypeError):
-                return tool_error("todos must be a list of objects, got unparseable string")
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
-        items = store.write(todos, merge)
+        try:
+            items = store.write(todos, merge)
+        except ValueError as e:
+            return tool_error(str(e))
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)
@@ -273,6 +281,50 @@ TODO_SCHEMA = {
         "required": []
     }
 }
+
+# Pre-rename names that replay as the Todo tool. model_tools._LEGACY_TOOL_ALIASES derives its todo
+# entries from this, so the alias map and the transcript/TUI predicates below cannot drift.
+TODO_LEGACY_ALIASES = ("todo",)
+TODO_TOOL_NAMES = frozenset((TODO_SCHEMA["name"], *TODO_LEGACY_ALIASES))
+
+
+def is_todo_tool_name(name: Any) -> bool:
+    """True for the Todo tool's current name or a legacy alias (an already-unwrapped dispatch name)."""
+    return isinstance(name, str) and name in TODO_TOOL_NAMES
+
+
+def is_todo_tool_call(tool_call: Any) -> bool:
+    """True when a transcript tool_call entry (dict or object) invoked the Todo tool.
+
+    Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
+    default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
+    only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
+    imports: TUI resume and run_agent call this without loading either.
+    """
+    from agent.message_sanitization import _tc_field
+
+    fn = _tc_field(tool_call, "function")
+    name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")
+    if is_todo_tool_name(name):
+        return True
+    # Cheap heuristic before the bridge modules load: skip args without a literal "todo". Only a
+    # unicode-escaped name slips past, which json.dumps never writes for ASCII.
+    if isinstance(raw_args, str) and "todo" not in raw_args:
+        return False
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    if name != TOOL_CALL_NAME:
+        return False
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(args, dict):
+        return False
+    from tools.tool_search_validation import normalize_tool_call_entries
+
+    entries, error = normalize_tool_call_entries(args)
+    return not error and len(entries) == 1 and is_todo_tool_name(entries[0]["name"])
 
 
 from tools.registry import registry, tool_error

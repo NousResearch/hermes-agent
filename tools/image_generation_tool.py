@@ -31,7 +31,7 @@ def _load_fal_client() -> Any:
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
-    _normalize_fal_queue_url_format,
+    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry,
 )
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
@@ -127,8 +127,10 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     if managed_gateway is None:
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
     try:
-        return _get_managed_fal_client(managed_gateway).submit(
-            model, arguments=arguments, headers=request_headers)
+        return submit_managed_fal_with_rate_limit_retry(
+            lambda headers: _get_managed_fal_client(managed_gateway).submit(
+                model, arguments=arguments, headers=headers),
+            what="image model", name=model)
     except Exception as exc:
         # A managed-gateway 4xx usually means the portal doesn't proxy this model
         # (allowlist miss, billing gate): give remediation instead of a raw httpx error.
@@ -596,10 +598,12 @@ def _provider_result(result, contract_error: str) -> str:
     return json.dumps(result)
 
 
-def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model=None) -> Dict[str, Any]:
+def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model=None, controls=None) -> Dict[str, Any]:
     """Add the optional ``provider.generate(**kwargs)`` args in place (edit args only when supplied)."""
     if model:
         kwargs["model"] = model
+    if controls:
+        kwargs.update(controls)
     if isinstance(image_url, str) and image_url.strip():
         kwargs["image_url"] = image_url.strip()
     if reference_image_urls is not None:
@@ -612,9 +616,24 @@ def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model
     return kwargs
 
 
+def _declared_controls(provider, controls: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The subset of ``controls`` that ``provider`` declares in ``creative_controls``.
+
+    A model can still send a control the current schema no longer offers (it copies earlier turns
+    after the backend changed), and a third-party ``generate()`` without ``**kwargs`` would raise."""
+    if not controls:
+        return None
+    try:
+        declared = (provider.capabilities() or {}).get("creative_controls") or ()
+    except Exception:  # noqa: BLE001 - a broken capabilities() declares nothing, like the schema path
+        return None
+    return {name: value for name, value in controls.items() if name in declared} or None
+
+
 def _dispatch_to_plugin_provider(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None):
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    controls: Optional[Dict[str, Any]] = None):
     """JSON result from the selected plugin provider, or ``None`` to fall through to in-tree FAL
     (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via ``**kwargs``."""
     configured = _plugin_provider_name()
@@ -640,7 +659,7 @@ def _dispatch_to_plugin_provider(
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
         _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
-                             model=_read_configured_image_model())
+                             model=_read_configured_image_model(), controls=_declared_controls(provider, controls))
         result = provider.generate(**kwargs)
     except Exception as exc:
         # A TypeError from generate() predating image_url support (third-party plugin not yet
@@ -669,29 +688,19 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
 
 
 def _managed_model_plugin() -> Optional[tuple]:
-    """``(plugin_name, model_id)`` when the managed selection stores a Krea or Portal model, else ``None``.
+    """``(plugin_name, model_id)`` when the stored selection routes to the Krea or Portal gateway
+    (rule: :func:`tools.image_generation_managed.managed_route`), else ``None`` for the FAL path."""
+    from tools.image_generation_managed import KREA, PORTAL, managed_route
 
-    The managed row writes ``provider: nous`` for three gateways; the model id says which. FAL
-    models (and an unset model) return ``None`` so the in-tree FAL path handles them. Only the
-    ``nous``/unset selection qualifies — a direct/BYO provider pick dispatches normally.
-    """
-    from tools.image_generation_managed import KREA, PORTAL, managed_backend_for_model
-
-    configured_provider = _read_configured_image_provider()
-    if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
-        return None
     model_id = _read_configured_image_model()
-    backend = managed_backend_for_model(model_id)
-    if backend == KREA:
-        return "krea", model_id
-    if backend == PORTAL and configured_provider == NOUS_MANAGED_PROVIDER:
-        return "nous", model_id
-    return None
+    return {KREA: ("krea", model_id), PORTAL: ("nous", model_id)}.get(
+        managed_route(_read_configured_image_provider(), model_id))
 
 
 def _maybe_route_managed_model(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    controls: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """JSON result from the Krea or Portal gateway the stored model belongs to, or ``None`` to fall
     through to FAL.
 
@@ -719,7 +728,8 @@ def _maybe_route_managed_model(
             f"available. Pick another model via `hermes tools` → Image Generation.", "provider_not_registered")
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio, "model": model_id}
     try:
-        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale)
+        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
+                             controls=_declared_controls(provider, controls))
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Managed %s routing failed: %s", plugin_name, exc)
@@ -769,11 +779,14 @@ def _handle_image_generate(args, **kw):
     # Portal — only under the "nous"/unset selection, so BYO/direct FAL stays untouched), then FAL.
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
                    upscale=upscale if isinstance(upscale, bool) else None)
+    controls = {name: args[name] for name in _CREATIVE_CONTROL_PARAMS if name in args}
     raw = None
-    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_model, image_generate_tool):
-        raw = route(prompt, aspect_ratio, **sources)
+    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_model):
+        raw = route(prompt, aspect_ratio, controls=controls or None, **sources)
         if raw is not None:
             break
+    if raw is None:
+        raw = image_generate_tool(prompt, aspect_ratio, **sources)
     return _postprocess_image_generate_result(raw, task_id=task_id)
 
 
@@ -815,6 +828,8 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["max_reference_images"] = int(caps["max_reference_images"])
                 # Plugins opt in explicitly; absent = no upscale param.
                 info["supports_upscale"] = bool(caps.get("supports_upscale"))
+                if caps.get("creative_controls"):
+                    info["creative_controls"] = list(caps["creative_controls"])
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -838,6 +853,27 @@ _IMAGE_URL_PARAM = {
         "an absolute local file path from the conversation. Omit for "
         "text-to-image."
     ),
+}
+
+# Creative-control vocabulary (Krea 2 today); a provider advertises the names it honors via
+# ``capabilities()["creative_controls"]`` and only those reach the schema and its ``generate()``.
+_CREATIVE_CONTROL_PARAMS = {
+    "creativity": {
+        "type": "string", "enum": ["raw", "low", "medium", "high"],
+        "description": "Prompt expansion: raw (none), low, medium or high.",
+    },
+    "intensity": {
+        "type": "integer", "minimum": -100, "maximum": 100,
+        "description": "Style intensity, -100 muted to 100 highly stylized. 0 neutral.",
+    },
+    "complexity": {
+        "type": "integer", "minimum": -100, "maximum": 100,
+        "description": "Composition density, -100 minimal to 100 dense. 0 neutral.",
+    },
+    "movement": {
+        "type": "integer", "minimum": -100, "maximum": 100,
+        "description": "Motion in the scene, -100 static to 100 dynamic. 0 neutral.",
+    },
 }
 
 _UPSCALE_PARAM = {
@@ -884,6 +920,9 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         edit_clause = " (text-to-image only — the active model cannot edit existing images)"
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM
+    for name in info.get("creative_controls") or []:
+        if name in _CREATIVE_CONTROL_PARAMS:
+            properties[name] = _CREATIVE_CONTROL_PARAMS[name]
     return {"description": base_desc.format(edit_clause=edit_clause),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 
@@ -894,14 +933,3 @@ registry.register(
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_krea_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is a native Krea plugin id (``krea-2-*``)."""
-    return _normalize_krea_model(model_id) is not None
-# ---- END PLUGIN-COMPAT ----

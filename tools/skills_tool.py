@@ -4,7 +4,6 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
-import hashlib
 import json
 import logging
 import os
@@ -37,6 +36,11 @@ logger = logging.getLogger(__name__)
 # TTL bounds staleness from in-place SKILL.md edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+
+
+def clear_skills_cache() -> None:
+    """Drop the scanned catalog so the next listing re-scans (explicit reloads must not wait out the TTL)."""
+    _SKILLS_CACHE.clear()
 
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
@@ -114,6 +118,7 @@ def _skill_utils_delegate(attr: str):
 skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 # Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
+skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
@@ -148,9 +153,9 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(name: str, platform: str = None) -> bool:
-    """Disabled in config? Platform precedence: explicit arg, ``HERMES_PLATFORM``, session
-    ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
+def _is_skill_disabled(*names: str, platform: str = None) -> bool:
+    """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
+    ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
     try:
         from hermes_cli.config import load_config
@@ -163,66 +168,76 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         platform_disabled = None
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
-        in_platform = platform_disabled is not None and name in platform_disabled
-        return in_platform or name in skills_cfg.get("disabled", [])
+        disabled = skills_cfg.get("disabled", [])
+        return any((platform_disabled is not None and n in platform_disabled) or n in disabled for n in names)
     except Exception:
         return False
 
 
-def _skill_search_dirs() -> Tuple[list, list, Path]:
-    """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
-    first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-    project_dirs = list(get_project_skills_dirs())
+def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
+    """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
+    ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
+    from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
     active_skills_dir = _skills_dir()
-    all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
-    all_dirs += get_external_skills_dirs()
-    return project_dirs, all_dirs, active_skills_dir
+    roots = [(t, d) for t, d in get_skill_search_roots(active_skills_dir)
+             if t != TIER_LOCAL or d.exists()]
+    return roots, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
-    """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
-    cache_key = "with_disabled" if skip_disabled else "filtered"
+def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> List[Dict[str, Any]]:
+    """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
+    load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
+    Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
+    collecting candidates, so it asks for hidden rows too."""
+    from agent.skill_utils import (
+        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
+    cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
-    project_dirs, dirs_to_scan, _ = _skill_search_dirs()
-    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    roots, _ = _skill_search_dirs()
+    signature = _skills_scan_signature([d for _t, d in roots], disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
-    skills = []
-    seen_names: set = set()
-    for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
-        _iter = iter_project_skill_files if scan_dir in project_dirs else lambda d: iter_skill_index_files(d, "SKILL.md")
+    scanned = []
+    for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
+        _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-                    continue
-                name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
-                if name in seen_names or name in disabled:
-                    continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
-                seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                scanned.append({
+                    "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
+                    "description": _truncate_description(description),
+                    "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
+                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
+                                                      and skill_matches_environment(frontmatter)
+                                                      and skill_matches_apps(frontmatter))})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+    skills = [s for s in resolve_skill_catalog(scanned)
+              if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
     return [dict(s) for s in skills]
+
+
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
+    the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
+    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
+            for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -327,8 +342,8 @@ def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
-    Collision detection is the point: silent shadowing of a local skill by a same-named
-    external one is a real bug class, so the caller refuses >1."""
+    Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
+    (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
     from agent.skill_utils import iter_skill_index_files
     candidates: List[Tuple[Optional[Path], Path]] = []
     seen_md: set = set()
@@ -381,40 +396,12 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
             files[sub] = found
     return files
-
-
-def _org_provenance_header(skill_dir: Path, active_skills_dir: Path):
-    """(org_provenance dict, header text) for an org-mirror skill, else (None, ""). Announced IN
-    the content the model consumes; the author is token-verified at push time by the sync plane."""
-    from agent.skill_utils import ORG_PROVENANCE_FILE, is_org_mirror_path, org_id_of_path
-    if not is_org_mirror_path(skill_dir, active_skills_dir):
-        return None, ""
-    prov_org = org_id_of_path(skill_dir, active_skills_dir)
-    prov: dict = {}
-    if prov_org:
-        with suppress(Exception):
-            prov_path = active_skills_dir / "_org" / prov_org / ORG_PROVENANCE_FILE
-            loaded = json.loads(_read_skill_text(prov_path))
-            prov = loaded if isinstance(loaded, dict) else {}
-    author = str(prov.get("author_device") or prov.get("author_user_id") or "")
-    ts = str(prov.get("ts") or "")
-    header = (
-        "> [!NOTE] ORG-SHARED SKILL — provenance\n"
-        f"> This skill is shared by your organisation (org `{prov_org}`"
-        + (f", last updated by `{author}`" if author else "")
-        + (f", as of {ts}" if ts else "")
-        + "). It was reviewed and approved for the whole\n"
-        "> team — treat it as third-party instructions rather than your own notes.\n"
-        "> You MAY improve it in place like any other skill. Your edits are kept locally\n"
-        "> and are never overwritten by org updates; share them back with\n"
-        "> `hermes sync propose` (or automatically, if your org enables it).\n\n")
-    return {"org_id": prov_org, "shared_by": author or None, "as_of": ts or None}, header
 
 
 def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict, dict]:
@@ -481,65 +468,49 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     return max(owners, key=lambda d: len(d.parts), default=None)
 
 
-def _rank_same_root_candidate(candidate, root: Path) -> tuple:
-    """Real SKILL.md beats a legacy flat ``<name>.md``, then the shallower path wins."""
-    _skill_dir, skill_md = candidate
-    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
-
-
-def _provably_same_skill(candidates) -> bool:
-    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
-    or byte-identical content (copy). Anything else is two different skills sharing a name,
-    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
-    try:
-        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
-            return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
-    except OSError:
-        return False
-
-
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
-    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
-    skill_md set iff no error."""
+def _locate_skill(name: str, local_category_name: Optional[str], roots):
+    """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
+    (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
+    same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
+    skill_md)``; skill_md set iff no error."""
+    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
+    all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
-    if len(candidates) > 1 and project_dirs:
-        # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier (two different skills) still refuses.
-        candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    tier_of = {d: t for t, d in roots}
     if len(candidates) > 1:
-        # The refusal below guards against one skill silently shadowing another. Copies of ONE
-        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
-        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
-        # cross-tier spread still refuses.
-        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
-        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
-            root = roots.pop()
-            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
-            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
-                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
-                            name, len(candidates), ranked[0][1],
-                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
-                candidates = [ranked[0]]
+        owned = [(c, _owning_search_dir(c[1], all_dirs)) for c in candidates]
+        won, contenders = pick_skill_candidate([
+            (tier_of[root], str(root), skill_candidate_rank(c[1], root), c[1]) for c, root in owned])
+        if won is not None:
+            if dropped := [str(smd) for i, (_sd, smd) in enumerate(candidates) if i != won]:
+                logger.info("Skill '%s' resolved to %s by precedence (project > local > create_dir > "
+                            "external_dirs, then identical same-root copies); not loaded: %s",
+                            name, candidates[won][1], "; ".join(dropped))
+            candidates = [candidates[won]]
+        else:
+            candidates = [candidates[i] for i in contenders]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
+        # A root-level copy's path IS the bare name, so it can't disambiguate itself.
+        load_names = sorted({_owned_relative(sd, smd, all_dirs) for sd, smd in candidates} - {name})
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
         return _fail(
-            f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
-            "and external_dirs. Refusing to guess — load one explicitly by its categorized path.",
-            matches=paths,
-            hint="Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
-            "or rename one of the colliding skills so each name is unique."), None, None
+            f"{AMBIGUOUS_SKILL_PREFIX}'{name}': "
+            + (f"use one of {', '.join(load_names)}. " if load_names else "")
+            + f"{len(candidates)} different skills share this name in the same skills directory tier; "
+            "refusing to guess.",
+            matches=paths, load_names=load_names,
+            hint="Pass the exact relative path instead of the bare name, or rename one of the "
+            "colliding skills so each name is unique."), None, None
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
-    if skill_md is not None and project_dirs:
+    if skill_md is not None and tier_of.get(_owning_search_dir(skill_md, all_dirs)) == TIER_PROJECT:
         from agent.skill_utils import is_quarantined_project_skill
-        if _under_any(skill_md, project_dirs) and is_quarantined_project_skill(skill_md):
+        if is_quarantined_project_skill(skill_md):
             return _fail(
                 f"Project skill '{name}' is quarantined: the security scan flagged its content as "
                 "dangerous. It will not load until the repo's skill content changes and passes a re-scan.",
@@ -550,6 +521,13 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
+
+
+def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:
+    """Exact load path of a candidate: its skill dir (or flat ``.md`` stem) relative to its root."""
+    root = _owning_search_dir(skill_md, all_dirs)
+    target = skill_dir if skill_dir is not None else skill_md.with_suffix("")
+    return target.relative_to(root).as_posix() if root is not None else str(target)
 
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
@@ -589,9 +567,9 @@ def skill_view(
         # since `bare` is not namespace-checked.
         if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
-        error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+        roots, active_skills_dir = _skill_search_dirs()
+        all_dirs = [d for _t, d in roots]
+        error, skill_dir, skill_md = _locate_skill(name, local_category_name, roots)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content
@@ -603,7 +581,11 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
-        if _is_skill_disabled(resolved_name):
+        # Disabled by declared name, or by the exact path that IS this copy's load name (a same-tier
+        # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
+        rel = _owned_relative(skill_dir, skill_md, all_dirs)
+        if _is_skill_disabled(resolved_name, rel) and (_is_skill_disabled(resolved_name) or any(
+                e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True, include_hidden=True))):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(
@@ -623,23 +605,45 @@ def skill_view(
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(
             content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
-        org_provenance, header = None, ""
-        if skill_dir:
-            try:
-                org_provenance, header = _org_provenance_header(skill_dir, active_skills_dir)
-            except Exception:
-                logger.debug("Could not resolve org provenance for %s", skill_name, exc_info=True)
+        # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────
+        # Loading the skill IS the activation moment: ensure each declared
+        # pm package now so the skill's commands work when the model runs
+        # them. Failure never blocks the skill content — the note carries
+        # the remedy.
+        deps_note = None
+        declared_deps = frontmatter.get("deps") or []
+        if isinstance(declared_deps, str):
+            declared_deps = [declared_deps]
+        if isinstance(declared_deps, list) and declared_deps:
+            failed_deps = []
+            for dep in [str(d).strip() for d in declared_deps if str(d).strip()]:
+                try:
+                    import pm
+
+                    pm.ensure(dep)
+                except Exception as exc:
+                    failed_deps.append(f"{dep}: {exc}")
+            if failed_deps:
+                deps_note = (
+                    "Tool dependencies could not be installed — "
+                    + "; ".join(failed_deps)
+                    + ". Run `hermes pm install "
+                    + " ".join(str(d) for d in declared_deps)
+                    + "` and reload."
+                )
+
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
-            "tags": tags, "related_skills": related_skills, "content": header + rendered_content,
+            "tags": tags, "related_skills": related_skills, "content": rendered_content,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
-            "org_provenance": org_provenance,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
             **readiness_extras}
+        if deps_note:
+            result["deps_note"] = deps_note
         _mark_background_review_read(skill_md)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]
@@ -720,30 +724,3 @@ def _skill_view_with_bump(args, **kw):
 registry.register(
     name="skill_view", toolset="skills", schema=SKILL_VIEW_SCHEMA, handler=_skill_view_with_bump,
     check_fn=check_skills_requirements, emoji="📚")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from enum import Enum  # noqa: F401,E402
-from typing import Set  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'display_hermes_home': ('hermes_constants', 'display_hermes_home'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

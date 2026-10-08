@@ -34,11 +34,14 @@ for var in list(os.environ):
 os.environ.pop("FAL_KEY", None)
 os.environ.pop("HERMES_PROFILE", None)
 
+from sandbox import isolate_host  # noqa: E402
+
 tmp_root = tempfile.mkdtemp(prefix=f"ab-{ARM}-{TASK_ID}-")
 hermes_home = os.path.join(tmp_root, ".hermes")
 workspace = os.path.join(tmp_root, "ws")
 os.makedirs(hermes_home)
 os.makedirs(workspace)
+isolate_host(tmp_root, hermes_home)
 with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write("model:\n  provider: openrouter\n  model: %s\n" % MODEL)
 
@@ -104,17 +107,14 @@ IMG_URL = taskmod.IMG_URL
 
 _clarify_answers = list(TASK.get("clarify_answers") or [])
 
-def clarify_cb(question, choices, multi_select=False):
-    CALLBACK_LOG.append({"name": "clarify", "question": question, "choices": choices})
-    if _clarify_answers:
-        ans = _clarify_answers.pop(0)
-    else:
-        ans = "Use your best judgement."
-    if choices:
-        for c in choices:
-            if ans.lower() in str(c).lower():
-                return str(c)
-    return ans
+def clarify_cb(questions):
+    answers = {}
+    for entry in questions:
+        CALLBACK_LOG.append({"name": "clarify", "question": entry["question"], "choices": entry["choices"]})
+        ans = _clarify_answers.pop(0) if _clarify_answers else "Use your best judgement."
+        match = next((str(c) for c in entry["choices"] or [] if ans.lower() in str(c).lower()), None)
+        answers[entry["qid"]] = match or ans
+    return {"answers": answers, "outcome": "submitted"}
 
 def tour_cb(payload):
     CALLBACK_LOG.append({"name": "tour", "payload": payload})

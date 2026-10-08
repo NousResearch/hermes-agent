@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
@@ -19,6 +19,9 @@ class EnvVarUpdate(BaseModel):
     # Bearer for the OPENAI_BASE_URL connectivity probe (auth-gated /v1/models otherwise looks
     # "reachable but empty"); ignored by plain PUT /api/env.
     api_key: str = ""
+    # Sent by the Desktop's provider-connection forms: a key a tool panel also asks for (Gemini,
+    # xAI...) then still counts as a provider setup in shared metrics.
+    provider_setup: bool = False
 
 class EnvVarDelete(BaseModel):
     key: str
@@ -243,6 +246,13 @@ class TTSLeaseRequest(BaseModel):
     lease: str
     active: bool = True
 
+class STTLeaseRequest(BaseModel):
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
+    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
+    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
+    lease: str
+    active: bool = True
+
 class OAuthSubmitBody(BaseModel):
     session_id: str
     code: str
@@ -304,6 +314,11 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
+    # Finite repeat count (runs N times then completes); None = unlimited. Accepts the
+    # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
+    # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
+    # chokepoint with the CLI and update paths — so an unparseable value 400s there.
+    repeat: Optional[Union[int, str]] = None
     skills: Optional[List[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None

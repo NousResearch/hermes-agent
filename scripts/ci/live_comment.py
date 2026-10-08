@@ -79,6 +79,7 @@ _INFRA_JOBS = frozenset({
     "CI review comment (results)",
     "CI review comment (live)",
     "All required checks pass",
+    "All required checks pass (v2)",
     "Detect affected areas",
 })
 
@@ -426,7 +427,7 @@ def _download_artifact(
 def _parse_status_file(status_file: Path) -> list[dict]:
     """Parse a review-status.json file in GITHUB_OUTPUT format."""
     try:
-        content = status_file.read_text(encoding="utf-8").strip()
+        content = status_file.read_text(encoding="utf-8-sig").strip()
         if content.startswith("review_status="):
             content = content[len("review_status="):]
         statuses = json.loads(content)

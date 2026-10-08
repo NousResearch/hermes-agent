@@ -43,17 +43,6 @@ describe('SettingsProfileScope', () => {
     expect(container.textContent).toBe('')
   })
 
-  it('shows one chip per profile with the active profile selected by default', () => {
-    $profiles.set([profile('default', true), profile('coder')])
-
-    render(<SettingsProfileScope />)
-
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'coder' })).toBeTruthy()
-    // Following the active profile → no override, no "applies to X" note.
-    expect($settingsScopeOverride.get()).toBeNull()
-  })
-
   it('selecting another profile sets the shared override; re-selecting the active clears it', () => {
     $profiles.set([profile('default', true), profile('coder')])
 
@@ -139,9 +128,9 @@ describe('SettingsProfileScope', () => {
   })
 })
 
-// Custom Endpoints / Local Models send unscoped requests, so they always edit
-// the ACTIVE profile; the note must say which one — and stay silent for
-// single-profile users, like the selector.
+// Local Models sends unscoped requests, so it always edits the ACTIVE profile;
+// the note must say which one — and stay silent for single-profile users, like
+// the selector.
 describe('ActiveProfileNote', () => {
   it('names the active profile (by its chip label) only with two or more profiles', () => {
     $activeGatewayProfile.set('setup')

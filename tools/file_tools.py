@@ -918,6 +918,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     # same-task writes stay unblocked (patch_tool carries it).
                     _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
                 _note_edited(task_id, [path], path_to_resolved, session_id)
+                from tools.code_kernel import mark_dirty_for_edit
+                mark_dirty_for_edit(task_id, [_resolved or path])
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1025,6 +1027,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _carry_full_write_baselines(task_id, _known, getattr(result, "_writes", ()), _path_to_resolved)
                 # Clear failure counters so a future miss starts a fresh count.
                 _reset_patch_failures(task_id, [_r for _r in _path_to_resolved.values() if _r])
+                from tools.code_kernel import mark_dirty_for_edit
+                mark_dirty_for_edit(task_id, _resolved_modified)
         # old_string-not-found hint. Failure escalation is tracked for replace
         # mode only (V4A misses are rare); the generic hint is suppressed when
         # patch_replace already attached a richer "Did you mean?" snippet.

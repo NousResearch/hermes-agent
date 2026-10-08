@@ -28,6 +28,7 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
+from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -168,7 +169,7 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
-class GatewayShutdownMixin:
+class GatewayShutdownMixin(GatewaySessionEndMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -1173,10 +1174,14 @@ class GatewayShutdownMixin:
             self._flush_agent_transcript_at_shutdown(agent)
             # Off-loop + bounded: plugin on_session_finalize hooks can do arbitrary synchronous work
             # (e.g. a full-session trace export) — same hang class as the memory provider below.
-            await self._finalize_session_off_loop(
+            messages = await self._finalize_session_off_loop(
                 session_id=getattr(agent, "session_id", None), platform="gateway", reason="shutdown",
                 session_key=session_key,
             )
+            try:  # adapters are still connected here (teardown runs after this loop)
+                await self._deliver_session_end_messages(messages, session_key=session_key)
+            except Exception:
+                logger.debug("Session-end plugin message delivery failed for %s", session_key, exc_info=True)
             # Off-loop + bounded: a wedged memory provider here used to hang the whole shutdown so
             # SIGTERM never completed.
             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize", session_key=session_key)
@@ -1223,31 +1228,6 @@ class GatewayShutdownMixin:
         if tasks is None:
             tasks = self._deferred_agent_cleanup_tasks = set()
         self._track_task_in(tasks, asyncio.create_task(_cleanup_when_done()))
-
-    async def _finalize_session_off_loop(
-        self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
-    ) -> None:
-        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
-        ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
-        ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
-        profile state at call time."""
-
-        def _call() -> None:
-            from hermes_cli.lifecycle import finalize_session
-            finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
-
-        try:
-            await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._run_release_in_profile_scope, _call, (), session_key),
-                timeout=self._FINALIZE_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Session finalize hooks (%s, reason=%s) exceeded %ss; proceeding without blocking the event loop "
-                "(the worker thread is left to finish on its own).", session_id, reason, self._FINALIZE_TIMEOUT_S,
-            )
-        except Exception as finalize_exc:
-            logger.debug("Session finalize hooks (%s, reason=%s) failed: %s", session_id, reason, finalize_exc)
 
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = "", session_key: Optional[str] = None,

@@ -139,13 +139,16 @@ class TestExplicitProvision:
 
     @pytest.mark.parametrize("raw, body", [
         ("true", {"preview_full_connectors": True}),
+        ("1", {"preview_full_connectors": True}),
         ("false", {"preview_full_connectors": False}),
+        ("0", {"preview_full_connectors": False}),
         (None, {}),
-        ("1", {}),
+        ("yes", {}),
     ])
     def test_preview_full_connectors_rides_the_create_call(self, portal, monkeypatch, raw, body):
         """The cohort reaches the account service on the one call that creates the account, as a
-        real boolean; anything but exactly true/false leaves the body empty (the service default)."""
+        real boolean. "1" turns it on, as it does HERMES_GUEST_ONBOARDING, so one bundle command reads
+        the same for both; an unrecognised value leaves the body empty (the service default)."""
         if raw is None:
             monkeypatch.delenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raising=False)
         else:

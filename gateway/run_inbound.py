@@ -385,7 +385,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return None
         if _pending_clarify is None:
             return None
-        _clarify_has_audio = bool(self._pending_event_audio_paths(event))
+        _clarify_has_audio = getattr(event, "voice_parts", None) is not None or bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
         def _retain(why: str) -> str:
@@ -587,7 +587,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
         if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+            if merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text) is False:
+                self._enqueue_fifo(_quick_key, event, adapter)
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -653,7 +654,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
+        voice_ready = False
+        if getattr(event, "voice_parts", None) is not None:
+            voice_ready = self._voice_event_is_steerable(event)
+            steer_text = self._render_voice_parts(event)
+        if (self._hm_text_only(event) or voice_ready) and steer_text and hasattr(running_agent, "steer"):
             try:
                 steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
             except Exception as exc:
@@ -679,7 +684,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
-        if self._pending_event_audio_paths(event):
+        if getattr(event, "voice_parts", None) is not None or self._pending_event_audio_paths(event):
             _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
                 event, self._delivery_adapter_for(source), source, event.text or "",
                 log_context="Voice-priority-interrupt",
@@ -727,6 +732,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         if effective_busy_input_mode == "steer":
+            if getattr(event, "voice_parts", None) is not None:
+                await self._prepare_busy_steer_text(event)
             self._hm_busy_steer(event, running_agent, _quick_key)
             return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
@@ -1453,12 +1460,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
+        voice_parts = getattr(event, "voice_parts", None)
+        voice_indices = {p.index for p in voice_parts if p.kind == "audio"} if voice_parts is not None else set()
         for i, path in enumerate(event.media_urls or []):
             mtype = event.media_types[i] if i < len(event.media_types) else ""
             if _event_media_is_image(event, i):
                 image_paths.append(path)
             if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+                if voice_parts is not None:
+                    if i not in voice_indices:
+                        audio_file_paths.append(path)
+                elif event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
                     audio_file_paths.append(path)
                 elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
                     audio_paths.append(path)
@@ -1515,6 +1527,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     async def _enrich_inbound_voice(
         self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
     ) -> str:
+        if getattr(event, "voice_parts", None) is not None:
+            message_text, _ = await self._transcribe_and_echo_pending_voice(
+                event, self._delivery_adapter_for(source), source, message_text, log_context="Transcript",
+            )
+            return message_text
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
             message_text, audio_paths,
         )
@@ -1715,6 +1732,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
+        if getattr(event, "voice_parts", None) is not None:
+            await self._transcribe_and_echo_pending_voice(
+                event, self._delivery_adapter_for(source), source, event.text or "", log_context="Transcript",
+            )
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
         # Prefer the caller's resolved session key so this write key matches the consume key at the
@@ -1753,6 +1774,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     async def _prepare_clarify_reply_text(self, event) -> str:
         """Return raw text or successful voice transcripts for a clarify reply."""
+        if getattr(event, "voice_parts", None) is not None:
+            await self._transcribe_pending_audio_event_once(event)
+            return self._render_voice_parts(event, valid_only=True)
         if not self._pending_event_audio_paths(event):
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
@@ -1998,6 +2022,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     ) -> tuple[str | None, List[str]]:
         """Transcribe a pending audio event once and cache the result on the event: the interrupt
         monitor and the pending-drain path both need it — one STT call and one echo per message."""
+        if getattr(event, "voice_parts", None) is not None:
+            task = getattr(event, "_gateway_voice_task", None)
+            if task is None:
+                task = asyncio.create_task(self._process_voice_parts(event))
+                event._gateway_voice_task = task
+            return await task
         if hasattr(event, "_gateway_pending_stt_text"):
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
         audio_paths = self._pending_event_audio_paths(event)
@@ -2009,6 +2039,41 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
 
+    async def _process_voice_parts(self, event) -> tuple[str, List[str]]:
+        try:
+            while True:
+                for part in event.voice_parts:
+                    if part.kind != "audio" or part.text or part.result is not None:
+                        continue
+                    if part.index is None:
+                        part.result = (None, "[voice message audio could not be downloaded]")
+                        continue
+                    note, transcripts = await self._enrich_message_with_transcription("", [event.media_urls[part.index]])
+                    part.result = (transcripts[0] if transcripts else None, note)
+                # Merge may append/replace the list while ASR awaits. Publish only a complete view;
+                # no await between this check and cache publication.
+                if any(p.kind == "audio" and not p.text and p.result is None for p in event.voice_parts):
+                    continue
+                text = self._render_voice_parts(event)
+                transcripts = [p.result[0] for p in event.voice_parts if p.result and p.result[0] is not None]
+                event._gateway_pending_stt_text = text
+                event._gateway_pending_stt_transcripts = transcripts
+                return text, list(transcripts)
+        finally:
+            if getattr(event, "_gateway_voice_task", None) is asyncio.current_task():
+                del event._gateway_voice_task
+
+    @staticmethod
+    def _render_voice_parts(event, *, valid_only: bool = False) -> str:
+        pieces = []
+        for part in event.voice_parts:
+            text = part.text
+            if not text and part.result:
+                text = (part.result[0] or "") if valid_only else part.result[1]
+            if text:
+                pieces.append(text)
+        return "\n\n".join(pieces)
+
     async def _echo_pending_stt_transcripts_once(
         self, event, adapter, source, transcripts: List[str], *, metadata=None,
         log_context: str = "Transcript",
@@ -2018,6 +2083,15 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         append a second voice note and invalidate the cache; the re-run returns earlier transcripts
         as a prefix, so only the unsent tail is echoed."""
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
+            return
+        if getattr(event, "voice_parts", None) is not None:
+            for part in event.voice_parts:
+                if part.text or not part.result or part.result[0] is None or part.echoed:
+                    continue
+                part.echoed = True
+                await self._echo_stt_transcripts(
+                    adapter, source, [part.result[0]], metadata=metadata, log_context=log_context,
+                )
             return
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
         event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
@@ -2031,16 +2105,22 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         """Transcribe a pending voice event and echo transcripts once → ``(enriched_text,
         transcripts)`` for ``agent.interrupt()`` or the pending-drain flow; ``(text, [])`` when there
         is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback)."""
-        if not self._pending_event_audio_paths(event):
+        if getattr(event, "voice_parts", None) is None and not self._pending_event_audio_paths(event):
             return text, []
         try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
-            if metadata is _UNSET:
-                metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-            await self._echo_pending_stt_transcripts_once(
-                event, adapter, source, transcripts, metadata=metadata, log_context=log_context
-            )
-            return enriched_text or text, transcripts
+            while True:
+                enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
+                if metadata is _UNSET:
+                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                await self._echo_pending_stt_transcripts_once(
+                    event, adapter, source, transcripts, metadata=metadata, log_context=log_context
+                )
+                if getattr(event, "voice_parts", None) is not None:
+                    # Sending an echo yields too: a merge during delivery must enter the next pass.
+                    if not hasattr(event, "_gateway_pending_stt_text"):
+                        continue
+                    return event._gateway_pending_stt_text, list(event._gateway_pending_stt_transcripts)
+                return enriched_text or text, transcripts
         except Exception as trans_exc:
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []

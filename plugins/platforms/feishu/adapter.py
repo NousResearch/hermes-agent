@@ -89,8 +89,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    merge_pending_message_event,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, VoicePart
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -688,8 +689,9 @@ def normalize_feishu_message(
         )
     if normalized_type in {"file", "audio", "media"}:
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
+        native = payload.get("speech_to_text") if normalized_type == "audio" else None
         return FeishuNormalizedMessage(
-            raw_type=normalized_type, text_content="",
+            raw_type=normalized_type, text_content=native if isinstance(native, str) and native.strip() else "",
             preferred_message_type="audio" if normalized_type == "audio" else "document",
             media_refs=[media_ref] if media_ref.file_key else [], relation_kind=normalized_type,
             metadata={"placeholder_text": _attachment_placeholder(media_ref.file_name)},
@@ -2617,6 +2619,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self, *, data: Any, message: Any, sender_id: Any, chat_type: str, message_id: str, is_bot: bool = False,
     ) -> None:
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
+        voice_text = text
+        hint = ""
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -2671,6 +2675,10 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
+        if inbound_type == MessageType.VOICE:
+            # Generated mention context is display-only, never a spoken clarify answer.
+            normalized.voice_parts = ([VoicePart(result=(None, hint))] if hint else []) + [
+                VoicePart(kind="audio", text=voice_text, index=0 if media_urls else None)]
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
@@ -2702,16 +2710,20 @@ class FeishuAdapter(BasePlatformAdapter):
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
-        if not self._media_batch_is_compatible(existing, event):
+        voice_task = getattr(event, "_gateway_voice_task", None)
+        if (voice_task is not None and not voice_task.done()) or not self._media_batch_is_compatible(existing, event):
             await self._flush_media_batch_now(key)
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
-        existing.media_text_inlined.extend(event.media_text_inlined)
-        if event.text:
-            existing.text = self._merge_caption(existing.text, event.text)
+        if existing.voice_parts is not None or event.voice_parts is not None:
+            merge_pending_message_event(self._pending_media_batches, key, event)
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(event.media_text_inlined)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
@@ -3013,14 +3025,23 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
         normalized = self._normalize(raw_type, raw_content, getattr(message, "mentions", None))
-        media_urls, media_types = await self._download_feishu_message_resources(
-            message_id=message_id, normalized=normalized,
-        )
+        try:
+            media_urls, media_types = await self._download_feishu_message_resources(
+                message_id=message_id, normalized=normalized,
+            )
+        except Exception:
+            if normalized.raw_type != "audio":
+                raise
+            logger.warning("[Feishu] Voice resource download failed", exc_info=True)
+            media_urls, media_types = [], []
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
         media_text_inlined: List[bool] = []
         inlined_parts: List[str] = []
         for media_url, media_type in zip(media_urls, media_types):
+            if inbound_type == MessageType.VOICE:
+                media_text_inlined.append(bool(text))
+                continue
             extracted = await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:

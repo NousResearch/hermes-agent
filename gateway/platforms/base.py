@@ -428,7 +428,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, VoicePart
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -1800,13 +1800,39 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _snapshot_voice_parts(event: MessageEvent) -> list[VoicePart]:
+    if getattr(event, "voice_parts", None) is not None:
+        return event.voice_parts
+    from gateway.run import _event_media_is_stt_input
+    # Legacy cached text is a complete rendered view, not evidence of native transcription.
+    prepared = hasattr(event, "_gateway_pending_stt_text")
+    text = event._gateway_pending_stt_text if prepared else event.text
+    parts = [VoicePart(text=text)] if text else []
+    parts.extend(VoicePart(kind="audio", index=i, result=(None, "") if prepared else None)
+                 for i in range(len(event.media_urls)) if _event_media_is_stt_input(event, i))
+    return parts
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
-                                event: MessageEvent, *, merge_text: bool = False) -> None:
+                                event: MessageEvent, *, merge_text: bool = False) -> Optional[bool]:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
-    replace."""
+    replace. False means an in-flight incoming voice event must be retained independently."""
     existing = pending_messages.get(session_key)
     if existing:
+        ordered_voice = getattr(existing, "voice_parts", None) is not None or getattr(event, "voice_parts", None) is not None
+        if ordered_voice:
+            task = getattr(event, "_gateway_voice_task", None)
+            if task is not None and not task.done():
+                return False
+            parts = _snapshot_voice_parts(existing)
+            offset = len(existing.media_urls)
+            for part in _snapshot_voice_parts(event):
+                if part.index is not None:
+                    part.index += offset
+                parts.append(part)
+            existing.voice_parts = parts
+            existing.media_types += [""] * (len(existing.media_urls) - len(existing.media_types))
         existing_type = getattr(existing, "message_type", None)
         existing_is_photo = existing_type == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -1822,10 +1848,12 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             incoming_inline_flags = _padded_inline_flags(event)
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
-        if both_photo or existing.media_urls or incoming_has_media:
+        if ordered_voice or both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.media_types.extend(
+                    event.media_types + [""] * (len(event.media_urls) - len(event.media_types))
+                    if ordered_voice else event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -1991,6 +2019,11 @@ class BasePlatformAdapter(ABC):
         # Consecutive in-band drains per session of the just-dispatched event bouncing straight
         # back into the queue (session busy elsewhere); drives the drain back-off (#123229).
         self._requeue_counts: Dict[str, int] = {}
+        # Strong refs count both holders and waiters, including cancelled callers' work.
+        self._voice_merge_lanes: Dict[str, Tuple[asyncio.Lock, set[asyncio.Task]]] = {}
+        self._voice_merge_events: dict = {}
+        self._voice_merge_quiescing = self._voice_merge_frozen = False
+        self._voice_shutdown_contents: dict[str, dict] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
@@ -4039,6 +4072,9 @@ class BasePlatformAdapter(ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
+        if getattr(self, "_voice_merge_quiescing", False) and getattr(event, "voice_parts", None) is not None:
+            await self._merge_voice_followup_in_order(event, self._event_session_key(event))
+            return
         if not self._message_handler:
             # No handler = every inbound silently discarded on an adapter that still polls and sends;
             # say so once per adapter (#102260).
@@ -4080,6 +4116,11 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        if (getattr(self, "_voice_merge_quiescing", False)
+                and (getattr(event, "voice_parts", None) is not None
+                     or session_key in getattr(self, "_voice_merge_lanes", {}))):
+            await self._merge_voice_followup_in_order(event, session_key)
+            return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use
@@ -4131,6 +4172,16 @@ class BasePlatformAdapter(ABC):
                 # It may have stored the event before raising: queuing or starting it again below
                 # would run it twice.
                 handled = event._gateway_accepted is True
+            # Busy acknowledgement can yield through shutdown and guard release. Voice intake
+            # must reach the same commit gate before the orphan-recovery path starts a task.
+            if ((self._voice_merge_quiescing or self._voice_merge_frozen)
+                    and (event.voice_parts is not None
+                         or getattr(self._pending_messages.get(session_key), "voice_parts", None) is not None
+                         or session_key in self._voice_merge_lanes
+                         or any(key == session_key for key, _ in self._voice_merge_events.values()))):
+                if not handled:
+                    await self._queue_active_followup(event, session_key)
+                return
             # The handler awaits (profile scope load, compression-lock read). If the owner task
             # finished meanwhile, it found the slot empty and released the guard, so nothing would
             # drain what the handler queued: start that now. If the handler left this event to the
@@ -4168,6 +4219,93 @@ class BasePlatformAdapter(ABC):
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
+            return
+        pending = self._pending_messages.get(session_key)
+        if ((pending is not None and (getattr(event, "voice_parts", None) is not None
+                                     or getattr(pending, "voice_parts", None) is not None))
+                or session_key in getattr(self, "_voice_merge_lanes", {})):
+            await self._merge_voice_followup_in_order(event, session_key)
+            return
+        # This adapter-only path has no FIFO. Wait before absorbing an in-flight voice event;
+        # copying its Parts would detach the results that its task is about to commit.
+        voice_task = getattr(event, "_gateway_voice_task", None)
+        if session_key in self._pending_messages and voice_task is not None and not voice_task.done():
+            try:
+                await asyncio.shield(voice_task)
+            except asyncio.CancelledError:
+                if not voice_task.cancelled():
+                    raise
+            except Exception:
+                logger.warning("[%s] Incoming voice processing failed before merge", self.name, exc_info=True)
+        await self._queue_active_followup(event, session_key)
+
+    async def _merge_voice_followup_in_order(self, event: MessageEvent, session_key: str) -> None:
+        # Do not share the dispatch lock: this work can outlive the caller holding it.
+        if not hasattr(self, "_voice_merge_lanes"):
+            self._voice_merge_lanes = {}
+        records = _lazy_attr(self, "_voice_merge_events", dict)
+        if (getattr(self, "_voice_merge_frozen", False)
+                or getattr(self, "_voice_merge_quiescing", False)):
+            await self._queue_active_followup(event, session_key)
+            return
+        lanes = self._voice_merge_lanes
+        lock, tasks = lanes.setdefault(session_key, (asyncio.Lock(), set()))
+
+        async def commit():
+            async with lock:
+                voice_task = getattr(event, "_gateway_voice_task", None)
+                if voice_task is not None and not voice_task.done():
+                    try:
+                        await asyncio.shield(voice_task)
+                    except asyncio.CancelledError:
+                        if not voice_task.cancelled():
+                            raise
+                    except Exception:
+                        logger.warning("[%s] Incoming voice processing failed before merge",
+                                       self.name, exc_info=True)
+                await self._queue_active_followup(event, session_key)
+
+        def finished(task):
+            tasks.discard(task)
+            # Waiters register before the first await; an unlocked lock alone is not idle.
+            if not tasks:
+                del lanes[session_key]
+            if not task.cancelled() and (error := task.exception()) is not None:
+                logger.error("[%s] Ordered voice merge failed: %s", self.name, error,
+                             exc_info=(type(error), error, error.__traceback__))
+
+        task = asyncio.create_task(commit())
+        tasks.add(task)
+        records[task] = (session_key, event)
+        task.add_done_callback(finished)
+        # Cancellation only detaches the caller; the admitted event keeps its place.
+        await asyncio.shield(task)
+
+    async def _queue_active_followup(self, event: MessageEvent, session_key: str) -> None:
+        pending = self._pending_messages.get(session_key)
+        records = getattr(self, "_voice_merge_events", {})
+        if (getattr(event, "voice_parts", None) is not None
+                or getattr(pending, "voice_parts", None) is not None
+                or session_key in getattr(self, "_voice_merge_lanes", {})
+                or any(key == session_key for key, _ in records.values())):
+            # Both fallback and lane workers commit here after their last await.
+            task = asyncio.current_task()
+            record = records.get(task)
+            admitted = record is not None and record[0] == session_key and record[1] is event
+            if getattr(self, "_voice_merge_frozen", False):
+                return
+            if getattr(self, "_voice_merge_quiescing", False) and not admitted:
+                records = _lazy_attr(self, "_voice_merge_events", dict)
+                if not any(registered is event for _, registered in records.values()):
+                    records[object()] = (session_key, event)
+                event._gateway_accepted = True
+                return
+            # No debounce await between the pending write and retiring its save owner.
+            merge_pending_message_event(self._pending_messages, session_key, event,
+                                        merge_text=event.message_type == MessageType.TEXT)
+            event._gateway_accepted = True
+            if admitted:
+                records.pop(task)
             return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
@@ -4771,9 +4909,78 @@ class BasePlatformAdapter(ABC):
             self._session_tasks.pop(session_key, None)
             self._requeue_counts.pop(session_key, None)
 
+    @staticmethod
+    def _shutdown_voice_text(event: MessageEvent) -> str:
+        pieces = []
+        for part in _snapshot_voice_parts(event):
+            text = part.text or (part.result[0] if part.result else "")
+            if not text and part.kind == "audio":
+                path = event.media_urls[part.index] if part.index is not None else ""
+                text = f"[未识别语音：{path}]" if path else "[语音音频未下载]"
+            if text:
+                pieces.append(text)
+        return "\n\n".join(pieces)
+
+    async def _shutdown_voice_merges(self) -> None:
+        self._voice_merge_quiescing = True
+        runner = getattr(self, "gateway_runner", None)
+        # Same budget as run_adapters; reserve the last fifth for cancellation/finally and I/O.
+        budget = runner._adapter_disconnect_timeout_secs() if runner is not None else 5.0
+        deadline = time.monotonic() + (budget if budget > 0 else 5.0)
+        records = _lazy_attr(self, "_voice_merge_events", dict)
+        contents = _lazy_attr(self, "_voice_shutdown_contents", dict)
+        tasks = set()
+        try:
+            tasks = {t for t in records if isinstance(t, asyncio.Task) and not t.done()}
+            if tasks:
+                await asyncio.wait(tasks, timeout=max(0.0, (deadline - time.monotonic()) * 0.8))
+        finally:
+            # No await through freeze, snapshot, cancellation and save: merged entries have
+            # already left records, so each original is represented by exactly one source.
+            self._voice_merge_frozen = True
+            by_session = {}
+            for key, event in self._pending_messages.items():
+                if getattr(event, "voice_parts", None) is not None or any(k == key for k, _ in records.values()):
+                    by_session[key] = [event]
+            for key, event in records.values():
+                by_session.setdefault(key, []).append(event)
+            for key, events in by_session.items():
+                if key not in contents:
+                    contents[key] = {"text": "\n\n".join(self._shutdown_voice_text(e) for e in events)}
+                for event in events:
+                    child = getattr(event, "_gateway_voice_task", None)
+                    if child is not None and not child.done():
+                        tasks.add(child)
+            tasks.update(t for t in records if isinstance(t, asyncio.Task) and not t.done())
+            for task in tasks:
+                task.cancel()
+                task.add_done_callback(_consume_detached_handler_exception)
+            from gateway.shutdown_flush import flush_pending_to_file
+            for key, content in list(contents.items()):
+                try:
+                    saved = flush_pending_to_file({key: content}, reason="adapter_shutdown") == 1
+                except Exception:
+                    saved = False
+                    logger.warning("[%s] Voice shutdown save raised for %s", self.name, key, exc_info=True)
+                if saved:
+                    contents.pop(key)
+                    self._pending_messages.pop(key, None)
+                    for task, (record_key, _) in list(records.items()):
+                        if record_key == key:
+                            records.pop(task)
+                else:
+                    logger.warning("[%s] Voice shutdown save failed for %s; retaining recovery content",
+                                   self.name, key)
+            if tasks:
+                _, unfinished = await asyncio.wait(tasks, timeout=max(0.0, deadline - time.monotonic()) * 0.5)
+                if unfinished:
+                    logger.warning("[%s] Isolated %d voice task(s) after shutdown; CPU workers may still run",
+                                   self.name, len(unfinished))
+
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        await self._shutdown_voice_merges()
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
@@ -4794,13 +5001,17 @@ class BasePlatformAdapter(ABC):
                 break
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+            flush_pending_to_file({k: v for k, v in self._pending_messages.items()
+                                   if k not in self._voice_shutdown_contents}, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._requeue_counts,
+                       self._active_sessions, self._requeue_counts,
                        self._text_debounce_store()):
             bucket.clear()
+        for key in list(self._pending_messages):
+            if key not in self._voice_shutdown_contents:
+                self._pending_messages.pop(key)
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

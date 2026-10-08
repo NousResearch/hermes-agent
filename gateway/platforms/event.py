@@ -42,6 +42,16 @@ class ProcessingOutcome(Enum):
 
 
 @dataclass
+class VoicePart:
+    """Ordered voice content; results and echo attempts live only for this event."""
+    kind: str = "text"
+    text: str = ""
+    index: Optional[int] = None
+    result: Optional[tuple[Optional[str], str]] = None
+    echoed: bool = False
+
+
+@dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
     text: str
@@ -101,6 +111,8 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Opt-in ordered voice path. Processing tasks are dynamic private attributes, never fields.
+    voice_parts: Optional[List[VoicePart]] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

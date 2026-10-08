@@ -3309,7 +3309,7 @@ class GatewayTurnMixin:
         pending_text = None
         if _peek_event is not None:
             pending_text = _peek_event.text or ""
-            if self._pending_event_audio_paths(_peek_event):
+            if getattr(_peek_event, "voice_parts", None) is not None or self._pending_event_audio_paths(_peek_event):
                 pending_text, _ = await self._transcribe_and_echo_pending_voice(
                     _peek_event, adapter, source, pending_text, log_context=log_context,
                     metadata={"thread_id": source.thread_id} if source.thread_id else None,
@@ -3653,7 +3653,7 @@ class GatewayTurnMixin:
             elif pending_event:
                 # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
                 _pending_text = pending_event.text or ""
-                if self._pending_event_audio_paths(pending_event):
+                if getattr(pending_event, "voice_parts", None) is not None or self._pending_event_audio_paths(pending_event):
                     pending, _ = await self._transcribe_and_echo_pending_voice(
                         pending_event, adapter, source, _pending_text, log_context="Voice-drain",
                         metadata={"thread_id": source.thread_id} if source.thread_id else None,
@@ -3837,7 +3837,8 @@ class GatewayTurnMixin:
             )
             adapter = self._delivery_adapter_for(source)
             if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                if merge_pending_message_event(adapter._pending_messages, session_key, pending_event) is False:
+                    self._enqueue_fifo(session_key, pending_event, adapter)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}

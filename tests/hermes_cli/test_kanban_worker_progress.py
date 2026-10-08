@@ -303,3 +303,43 @@ def test_diagnostic_quiet_without_progress_signal():
     row = {"id": "t_legacy", "status": "running", "started_at": 9_000, "last_heartbeat_at": 9_990}
     out = diag.compute_task_diagnostics(row, [], [], now=10_000)
     assert not any(d.kind.startswith("worker_") for d in out)
+
+
+# ---------------------------------------------------------------------------
+# The documented override path: kanban.diagnostics.worker_* config keys
+# ---------------------------------------------------------------------------
+
+def test_diagnostic_honors_configured_stall_threshold():
+    """``kanban.diagnostics.worker_stall_seconds`` really moves the stall line."""
+    from hermes_cli import kanban_diagnostics as diag
+
+    row = {
+        "id": "t_cfg_stall", "status": "running", "started_at": 9_000,
+        "last_heartbeat_at": 9_990, "last_progress_at": 9_000,
+        "progress_repeat_count": 1, "tool_calls_total": 3,
+    }
+    # 1000 s since the last new tool call > the 900 s default -> stalled.
+    assert any(d.kind == "worker_stalled" for d in diag.compute_task_diagnostics(row, [], [], now=10_000))
+    # The documented `kanban.diagnostics.worker_stall_seconds` really reaches cfg.
+    assert diag.config_from_kanban_config(
+        {"diagnostics": {"worker_stall_seconds": 5_000}}
+    )["worker_stall_seconds"] == 5_000
+    # Raising the threshold keeps the same worker classified as working.
+    out = diag.compute_task_diagnostics(
+        row, [], [], now=10_000, config={"worker_stall_seconds": 5_000})
+    assert not any(d.kind == "worker_stalled" for d in out)
+
+
+def test_diagnostic_honors_configured_loop_limit():
+    """``kanban.diagnostics.worker_loop_repeat_limit`` really moves the loop line."""
+    from hermes_cli import kanban_diagnostics as diag
+
+    row = {
+        "id": "t_cfg_loop", "status": "running", "started_at": 9_000,
+        "last_heartbeat_at": 9_990, "last_progress_at": 9_990,
+        "progress_repeat_count": 3, "tool_calls_total": 9,
+    }
+    assert not any(d.kind == "worker_looping" for d in diag.compute_task_diagnostics(row, [], [], now=10_000))
+    out = diag.compute_task_diagnostics(
+        row, [], [], now=10_000, config={"worker_loop_repeat_limit": 2})
+    assert any(d.kind == "worker_looping" for d in out)

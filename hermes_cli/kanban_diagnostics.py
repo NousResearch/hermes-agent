@@ -599,7 +599,7 @@ def _rule_worker_not_progressing(task, events, runs, now, cfg) -> list[Diagnosti
             f"Heartbeat age {liveness.heartbeat_age_s}s, last new tool call {liveness.progress_age_s}s ago, "
             f"{total} tool call(s) this run. A fresh heartbeat alone does not mean the worker is working — "
             f"read the worker log before deciding; if the work is genuinely long-running, raise "
-            f"HERMES_KANBAN_PROGRESS_STALL_SECONDS or give the card an explicit runtime."
+            f"kanban.diagnostics.worker_stall_seconds in config.yaml or give the card an explicit runtime."
         ),
         actions=actions,
         first_seen_at=int(_task_field(task, "last_progress_at", 0) or 0) or now,

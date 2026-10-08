@@ -85,3 +85,61 @@ def test_manifest_version_above_shared_support_is_refused_cleanly(
 
     assert not (home / "plugins" / "demo").exists()
     assert not (home / "plugins" / ".install-metadata.json").exists()
+
+
+def _refuse(monkeypatch, manifest: dict, running: str = "0.21.5") -> str:
+    """Drive ``_check_manifest_version`` directly; the message is the deliverable (#130656)."""
+    from hermes_cli import plugins_cmd, plugins_cmd_install, plugins_manifest
+
+    monkeypatch.setattr(plugins_cmd, "PluginOperationError", RuntimeError)
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: running)
+    with pytest.raises(RuntimeError) as excinfo:
+        plugins_cmd_install._check_manifest_version(manifest, "demo")
+    return str(excinfo.value)
+
+
+def test_calver_requires_hermes_floor_refusal_does_not_recommend_update(monkeypatch):
+    """A floor written in the release-tag (CalVer) space can never be satisfied by a base_version
+    release, so the refusal must say that instead of advising an update that cannot succeed (#130656)."""
+    for spec in (">=2026.9.24", ">=v2026.9.24"):
+        message = _refuse(monkeypatch, {"requires_hermes": spec})
+        assert "cannot satisfy" in message, message
+        assert "Run " not in message  # an update cannot fix a wrong-space floor
+
+
+def test_reachable_requires_hermes_floor_refusal_still_recommends_update(monkeypatch):
+    """A floor the running base_version merely doesn't meet yet is fixable by updating."""
+    message = _refuse(monkeypatch, {"requires_hermes": ">=99.0"})
+    assert "Run " in message
+    assert "cannot satisfy" not in message
+
+
+def test_calver_ceiling_beside_manifest_version_gap_keeps_update_advice(monkeypatch):
+    """A satisfied ``<``-into-CalVer clause must not be blamed when ``manifest_version`` is the
+    failure: telling the user to rewrite ``requires_hermes`` would mask the real defect (#130684)."""
+    message = _refuse(
+        monkeypatch, {"requires_hermes": "<2026.9.24", "manifest_version": 999}
+    )
+    assert "manifest_version 999" in message, message
+    assert "Run " in message
+    assert "cannot satisfy" not in message
+
+
+def test_reachable_floor_with_calver_ceiling_refusal_recommends_update(monkeypatch):
+    """``>=99.0,<2026.9.24``: the reachable floor is what fails, so the update advice must survive
+    the presence of an already-satisfied CalVer-shaped clause (#130684)."""
+    message = _refuse(monkeypatch, {"requires_hermes": ">=99.0,<2026.9.24"})
+    assert "Run " in message
+    assert "cannot satisfy" not in message
+
+
+def test_unparseable_running_version_keeps_manifest_version_diagnosis(monkeypatch):
+    """An unparseable running version makes the whole version gate permissive, so even a
+    CalVer-shaped floor is not the failing half — ``manifest_version`` keeps the diagnosis and
+    the CalVer blame must stay gated on ``requires_hermes`` actually failing (#130684)."""
+    message = _refuse(
+        monkeypatch, {"requires_hermes": ">=2026.9.24", "manifest_version": 999}, running="banana"
+    )
+    assert "manifest_version 999" in message, message
+    assert "Run " in message
+    assert "cannot satisfy" not in message

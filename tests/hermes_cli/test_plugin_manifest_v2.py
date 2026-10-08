@@ -417,6 +417,25 @@ class TestRequiresHermes:
         from hermes_cli.plugins_manifest import version_satisfies
         assert version_satisfies(spec, current) is expected
 
+    @pytest.mark.parametrize("spec, expected", [
+        (">=2026.9.24", True),    # live catalog shape: CalVer floor vs the semver base_version space
+        (">=v2026.9.24", True),   # pinned sha's own plugin.yaml shape
+        (">2026.9.24", True),     # any operator demanding the space is unsatisfiable
+        ("==2026.9.24", True),
+        ("2026.9.24", True),      # bare version is a ``>=`` floor for version_satisfies
+        ("<2026.9.24", False),    # an upper bound into CalVer is already satisfied — not the defect
+        ("<=2026.9.24", False),
+        ("!=2026.9.24", False),
+        (">=99.0,<2026.9.24", False),  # the reachable floor is the failure; the CalVer ceiling isn't
+        (">=0.21.5,<0.22", False),
+        (">=1.0", False),         # a future major is reachable — only the CalVer space is not
+        ("banana", False),        # unparseable stays the parse check's business, not this one
+        ("", False),
+    ])
+    def test_calver_floor_is_unreachable(self, spec, expected):
+        from hermes_cli.plugins_manifest import requires_hermes_floor_unreachable
+        assert requires_hermes_floor_unreachable(spec) is expected
+
     def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
         """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
         import sys

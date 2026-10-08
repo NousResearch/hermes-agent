@@ -226,6 +226,21 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
 
     reason = manifest_version_error(manifest, plugin_name)
     if reason:
+        # ``manifest_version_error`` blames ``requires_hermes`` first and ``manifest_version``
+        # second; the CalVer diagnosis only fits when the spec is the failing half.
+        from hermes_cli.plugins_manifest import (
+            requires_hermes_error,
+            requires_hermes_floor_unreachable,
+        )
+
+        if requires_hermes_error(manifest) and requires_hermes_floor_unreachable(
+            str(manifest.get("requires_hermes") or "").strip()
+        ):
+            raise _pc().PluginOperationError(
+                f"{reason} Updating Hermes cannot satisfy a floor written in the "
+                "release-tag (CalVer) space; the plugin should declare a base_version "
+                "floor (e.g. '>=0.21.5')."
+            )
         from hermes_cli.config import recommended_update_command
         raise _pc().PluginOperationError(f"{reason} Run {recommended_update_command()} to update Hermes.",
                                          failure_class="incompatible")

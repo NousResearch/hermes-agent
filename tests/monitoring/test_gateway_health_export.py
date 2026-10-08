@@ -192,3 +192,26 @@ def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     assert first in (tmp_path / "config.yaml").read_text()
 
 
+
+
+def test_parked_platform_state_passes_through_not_coerced_to_unknown():
+    """A ``parked`` qqbot adapter (reconnect ladder topped out, slow revival probe
+    running) must surface AS ``parked`` — not coerced to ``unknown`` — so the
+    dashboards can distinguish a self-healing park from a lost platform. Parked is
+    neither ``up`` (inbound unreachable) nor ``degraded`` (not a fatal state)."""
+    from agent.monitoring.gateway_health import build_gateway_health_snapshot
+
+    snap = build_gateway_health_snapshot(
+        {
+            "gateway_state": "running",
+            "platforms": {
+                "qqbot": {"state": "parked", "error_code": "PLATFORM_ADAPTER_PARKED"}
+            },
+        },
+        gateway_running=True, profile="default", install_id="iid", version="v1",
+    )
+    up = next(m for m in snap.metrics if m.name == "hermes.platform.up")
+    degraded = next(m for m in snap.metrics if m.name == "hermes.platform.degraded")
+    assert up.attributes["hermes.platform.state"] == "parked"
+    assert up.value == 0, "parked is inbound-unreachable, not up"
+    assert degraded.value == 0, "parked is a known self-healing state, not fatal/degraded"

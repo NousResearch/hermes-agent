@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -78,22 +79,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         ``expires_at``) makes the SDK refresh first. Metadata is restored from disk, else discovered
         pre-flight when we hold tokens but no metadata: otherwise ``_refresh_token`` guesses
         ``{server_url}/token`` (wrong for split-origin providers), 404s, and we fall to browser reauth."""
-        await super()._initialize()
+        await super()._initialize()  # HermesProviderMixin: restores metadata from disk, enforces issuer binding
         tokens = self.context.current_tokens
         if tokens is not None and tokens.expires_in is not None:
-            self.context.update_token_expiry(tokens)
-        storage = self._hermes_storage()
-        if storage is not None and self.context.oauth_metadata is None:
-            meta = storage.load_oauth_metadata()
-            if meta is not None:
-                self.context.oauth_metadata = meta
-                logger.debug("MCP OAuth '%s': restored metadata from disk (token_endpoint=%s)",
-                             self._hermes_server_name, meta.token_endpoint)
+            # The SDK maps a zero TTL to ``time.time()`` and accepts equality
+            # in ``is_token_valid()``.  On a cold load that same-tick boundary
+            # can send an already-expired access token instead of refreshing it.
+            if tokens.expires_in <= 0:
+                self.context.token_expiry_time = time.time() - 1
+            else:
+                self.context.update_token_expiry(tokens)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
                 await self._prefetch_oauth_metadata()
             except Exception as exc:  # pragma: no cover — the SDK's 401-branch discovery runs next request
                 self._log_nonfatal("pre-flight metadata discovery", exc)
+            else:
+                from tools.mcp_oauth_provider import enforce_refresh_token_issuer
+                enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
@@ -107,11 +110,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
             handle_auth_metadata_response, handle_protected_resource_response)
+        from tools.mcp_oauth_provider import stamp_default_user_agent
         server_url = self.context.server_url
 
         async def _send(client, url: str, label: str):
             try:
-                return await client.send(create_oauth_metadata_request(url))
+                return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
@@ -202,6 +206,38 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except Exception as exc:  # pragma: no cover — must not throw
             self._log_nonfatal("invalid_client detection", exc)
 
+    async def _maybe_reject_fabricated_registration(self, outgoing: Any) -> None:
+        """Refuse to send the SDK's *fabricated* dynamic client registration (#78190).
+
+        When the discovered authorization-server metadata (RFC 8414) has no ``registration_endpoint``,
+        ``create_client_registration_request`` (mcp/client/auth/utils.py) guesses ``POST {origin}/register``.
+        Providers without RFC 7591 DCR — Google's hosted Gmail/Drive MCP servers among them — answer with an
+        opaque 404 and the gateway burns its reconnect ladder on an unrecoverable failure. Their supported
+        path is a pre-registered client (``oauth.client_id`` / ``client_secret``), so raise that guidance
+        instead of sending the request.
+
+        Fires only when the metadata WAS discovered and lacks the endpoint, and the request is a POST to the
+        exact guessed URL. Undiscovered metadata (a WAF-blocked fetch) keeps the SDK's guess, so a real
+        ``/register`` still works and the discovery-context error (#113771) still explains a failure.
+        """
+        meta = getattr(self.context, "oauth_metadata", None)
+        if meta is None or getattr(meta, "registration_endpoint", None) or getattr(outgoing, "method", None) != "POST":
+            return
+        from urllib.parse import urljoin
+        url = outgoing.url
+        # Same URL type as the request (httpx or httpx2), so default-port handling matches on both sides.
+        expected = type(url)(urljoin(self.context.get_authorization_base_url(self.context.server_url), "/register"))
+        if (url.scheme, url.host, url.port, url.path) != (expected.scheme, expected.host, expected.port, expected.path):
+            return
+        from mcp.client.auth.oauth2 import OAuthRegistrationError
+        name = self._hermes_server_name
+        raise OAuthRegistrationError(
+            f"MCP OAuth '{name}': this provider does not support automatic client registration (its authorization "
+            f"server advertises no registration_endpoint), so the SDK's fallback would POST {expected} and fail "
+            "(Google's hosted Gmail/Drive MCP servers and similar providers return 404 for it). Create an OAuth "
+            "client for this provider and add it under config.yaml mcp_servers.<name>.oauth (client_id, "
+            f"client_secret), then run `hermes mcp login {name}`.")
+
     async def async_auth_flow(self, request):  # type: ignore[override]
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
@@ -230,6 +266,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     sent_access_token = tokens.access_token if tokens is not None else None
                     self.context.lock.release()
                     resource_lock_released = True
+                else:
+                    try:  # refuse the SDK's guessed DCR POST before it hits the network
+                        await self._maybe_reject_fabricated_registration(outgoing)
+                    except Exception:
+                        await inner.aclose()  # release the SDK's context.lock now, not at GC
+                        raise
                 incoming = yield outgoing
                 if resource_lock_released:
                     await self.context.lock.acquire()
@@ -351,6 +393,13 @@ class MCPOAuthManager:
             if mtime_ns == entry.last_mtime_ns:
                 return False
             old, entry.last_mtime_ns = entry.last_mtime_ns, mtime_ns
+            if old == 0 and getattr(getattr(entry.provider, "context", None), "current_tokens", None) is not None:
+                # First observation with tokens already in memory only seeds the
+                # baseline: the file was written by this process's own first
+                # sign-in, and reloading on the next request would tear down the
+                # live HTTP MCP session. With no tokens in memory (started before
+                # an external `hermes mcp login`), fall through and reload.
+                return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):
                 entry.provider._initialized = False  # noqa: SLF001

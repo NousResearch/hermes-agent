@@ -4,7 +4,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NoReturn, Optional, Set
 
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color
@@ -14,17 +14,14 @@ from hermes_cli.nous_subscription import (
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
-    _cua_driver_contract_status, _cua_driver_install_ready, _pip_install, _cua_install_target_writable,
-    install_cua_driver, _CUA_INSTALLER_TIMEOUT, _CUA_INSTALLER_DRAIN_GRACE, _CUA_LOCK_STALE_AFTER,
-    _clear_stale_windows_cua_install_lock, _clear_stale_cua_install_lock, _cua_install_lock_held,
-    _cua_release_endpoint_reachable, _repair_cua_driver_autostart_windows, _run_cua_driver_installer)
+    _cua_driver_contract_status, _cua_driver_install_ready)
 from hermes_cli.tools_config_post_setup import (  # noqa: F401
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
-    _post_setup_already_installed, _module_installed, active_restorable_python_tool_dependencies,
-    restorable_python_tool_dependency, _POST_SETUP_READY)
+    _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (  # noqa: F401
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
@@ -37,7 +34,25 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
 from hermes_cli.tools_config_mcp import (  # noqa: F401
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
+
+def _pip_install(
+    args: List[str], *, timeout: int = 300, capture_output: bool = True
+) -> NoReturn:
+    # Shim to suppress old updater work until relaunch, not install or report success.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
+
 logger = logging.getLogger(__name__)
+
+
+def install_cua_driver(*args, **kwargs) -> NoReturn:
+    # A running pre-PM updater can still import the vendor installer here.
+    # Stop it before any old retry or completion branch can run.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: Set[str] = set()
@@ -72,7 +87,6 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -92,8 +106,8 @@ def gui_toolset_label(label: str) -> str:
 
 
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
-# auto-enables when xAI creds exist (mirrors HASS_TOKEN → homeassistant); its check_fn still gates the schema.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+# auto-enables when xAI creds exist; its check_fn still gates the schema.
+_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -116,15 +130,6 @@ def _xai_credentials_present() -> bool:
     except ImportError:  # pragma: no cover — secret_scope is in-repo
         get_secret = os.environ.get
     return bool(str(get_secret("XAI_API_KEY") or "").strip())
-
-
-def _homeassistant_credentials_present() -> bool:
-    """Return whether the active profile has a Home Assistant token."""
-    try:
-        from agent.secret_scope import get_secret
-        return bool((get_secret("HASS_TOKEN", "") or "").strip())
-    except Exception:
-        return False
 
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
@@ -251,13 +256,13 @@ TOOL_CATEGORIES = {
                  stt_provider="openai", **_NOUS, managed_nous_feature="stt",
                  override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
             _row("OpenAI", "paid", "whisper-1, gpt-4o-transcribe, gpt-transcribe", [_OPENAI_VOICE_KEY], stt_provider="openai"),
-            _row("Groq", "free tier", "Whisper large-v3 family — very fast",
+            _row("Groq", "free tier", "whisper-large-v3-turbo, whisper-large-v3 — very fast",
                  [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
-            _row("xAI", tag="grok-stt — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
+            _row("xAI", tag="Grok Voice Transcribe — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
-            # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
-            # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
+            _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
+                 [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
         ],
     },
@@ -268,9 +273,9 @@ TOOL_CATEGORIES = {
         # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
         # non-provider firecrawl setup-flow rows live here: managed via Nous subscription, and self-hosted.
         "providers": [
-            {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed Firecrawl billed to your subscription",
+            {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed web search and extract billed to your subscription",
              "web_backend": "firecrawl", "env_vars": [], **_NOUS, "managed_nous_feature": "web",
-             "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"]},
+             "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PERPLEXITY_API_KEY"]},
             {"name": "Firecrawl Self-Hosted", "badge": "free · self-hosted", "tag": "Run your own Firecrawl instance (Docker)",
              "web_backend": "firecrawl",
              "env_vars": [_key("FIRECRAWL_API_URL", "Your Firecrawl instance URL (e.g., http://localhost:3002)")]},
@@ -278,11 +283,14 @@ TOOL_CATEGORIES = {
     },
     "image_gen": {
         "name": "Image Generation", "icon": "🎨",
-        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI) come from plugins.image_gen.<vendor> via
-        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here — fal backend, distinct UX.
+        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
+        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here: ONE row for the
+        # FAL, Krea and Portal gateways, whose union catalog is `imagegen_backend: "nous"`; the stored model id
+        # picks the gateway at run time (tools/image_generation_managed.py).
         "providers": [
-            _row("Nous Subscription", "subscription", "Managed FAL image generation billed to your subscription", **_NOUS,
-                 managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="fal"),
+            _row("Nous Subscription", "subscription",
+                 "Managed image generation (FAL, Krea 2, Nous Portal models) billed to your subscription", **_NOUS,
+                 managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="nous"),
         ],
     },
     "video_gen": {
@@ -335,14 +343,6 @@ TOOL_CATEGORIES = {
                  browser_provider="camofox", post_setup="camofox"),
             _row("Browser Use", "free · local · cloud", "New SOTA web harness (CLI 3.0)", browser_backend="browser-use",
                  post_setup="browser_use_cli"),
-        ],
-    },
-    "homeassistant": {
-        "name": "Smart Home", "icon": "🏠",
-        "providers": [
-            _row("Home Assistant", tag="REST API integration",
-                 env_vars=[_key("HASS_TOKEN", "Home Assistant Long-Lived Access Token"),
-                           _key("HASS_URL", "Home Assistant URL", default="http://homeassistant.local:8123")]),
         ],
     },
     "spotify": {
@@ -411,10 +411,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
         str(name) for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict) and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+        if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
         from hermes_cli.plugins import get_portable_mcp_server_names_nowait
@@ -470,20 +472,12 @@ def _configurable_subset_of(tool_names: Set[str], platform: str) -> Set[str]:
 
 def _default_off_toolsets(platform: str, explicitly_configured: bool) -> Set[str]:
     """Toolsets to strip from an implicit (composite-derived) enable set. A platform named after a default-off
-    toolset (``homeassistant``) keeps it, except platform-restricted ones (``discord`` on discord stays OFF); a
-    configured HASS_TOKEN is an explicit opt-in that must survive platforms resolving without a saved list.
+    toolset keeps it, except platform-restricted ones (``discord`` on discord stays OFF).
     Platform-native default-off toolsets (``discord`` on discord) are off for unconfigured platforms as a
     security opt-in — an explicitly saved list IS that opt-in and lets them through."""
     default_off = set(_DEFAULT_OFF_TOOLSETS)
     if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
         default_off.remove(platform)
-    # Home Assistant is already runtime-gated by its check_fn (requires HASS_TOKEN to register any tools).
-    # When a user has configured HASS_TOKEN, they've explicitly opted in — don't also strip it via
-    # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms (e.g. cron) that run through
-    # _get_platform_tools without an explicit saved toolset list. Without this, Norbert's HA cron jobs
-    # regressed after #14798 made cron honor per-platform tool config.
-    if "homeassistant" in default_off and _homeassistant_credentials_present():
-        default_off.remove("homeassistant")
     if explicitly_configured:
         default_off -= {ts for ts in default_off if platform in (_TOOLSET_PLATFORM_RESTRICTIONS.get(ts) or ())}
     return default_off
@@ -545,10 +539,45 @@ def _context_engine_active(config: dict) -> bool:
     return bool(name) and name != "compressor"
 
 
+def _coerce_platform_toolsets_value(value, platform: str):
+    """Read a list-literal string saved for ``platform_toolsets.<platform>`` as the list it encodes.
+
+    The parser is shared with ``hermes doctor`` and ``hermes plugins`` (``toolset_validation``
+    ``parse_platform_toolsets_value``) so every surface agrees on the user's selection (#115866).
+    Any other non-list value is warned about once (naming the expected shape) and left as-is, so
+    the default fallback below is loud rather than silent.
+    """
+    if value is None:
+        return None
+    parsed = parse_platform_toolsets_value(value)
+    if parsed is not None:
+        return parsed
+    if platform not in _warned_invalid_platform_toolsets:
+        _warned_invalid_platform_toolsets.add(platform)
+        logger.warning(
+            "platform_toolsets.%s is %r, expected a YAML list of toolset names "
+            "(e.g. [terminal, file, web]) - falling back to the platform default. "
+            "Run `hermes tools` to reconfigure.", platform, value)
+    return value
+
+
+def _platform_toolsets_explicitly_saved(config: dict, platform: str) -> bool:
+    """True when ``platform_toolsets.<platform>`` holds an explicitly saved LIST (even ``[]``).
+
+    ``_get_platform_tools``'s ``explicitly_configured`` flag without re-running the resolver
+    (post-coercion, so a list-literal string counts too): an unset key or a non-list value
+    falls back to the platform default. Callers use this to tell an explicit zero-tool
+    selection (fail closed, #82010) from an absent one ("no restriction").
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    raw = platform_toolsets.get(platform)
+    return isinstance(_coerce_platform_toolsets_value(raw, platform), list)
+
+
 def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    toolset_names = _coerce_platform_toolsets_value(platform_toolsets.get(platform), platform)
     # An explicitly saved list (even a composite like ``hermes-discord``) is an opt-in to the platform's
     # native default-off toolsets — see _default_off_toolsets.
     # Track whether the user explicitly saved a toolset list for this platform (vs. falling back to the
@@ -558,6 +587,25 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         toolset_names = [_platform_default_toolset(platform)]
     # YAML may parse bare numeric names (``12306:``) as int; normalise so sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
+
+    # Expand legacy toolset aliases.  Older Hermes versions and clients used
+    # bare ``"hermes"`` as a composite toolset covering both the CLI and the
+    # API-server surface.  Modern code expects ``"hermes-cli"`` (and
+    # ``"hermes-api-server"`` for the HTTP endpoint), so configs persisted
+    # by those older versions still carry the legacy name; without expansion
+    # ``resolve_toolset("hermes")`` returns ``[]`` — all tools silently
+    # disappear.
+    _LEGACY_TOOLSET_ALIASES: dict = {
+        "hermes": ("hermes-cli", "hermes-api-server"),
+    }
+    expanded: list = []
+    for name in toolset_names:
+        aliases = _LEGACY_TOOLSET_ALIASES.get(name)
+        if aliases:
+            expanded.extend(aliases)
+        else:
+            expanded.append(name)
+    toolset_names = expanded
 
     configurable_keys = _configurable_keys()
     plugin_ts_keys = _get_plugin_toolset_keys()
@@ -600,7 +648,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
-        _warn_all_invalid_platform_toolsets(platform, platform_toolsets[platform])
+        _warn_all_invalid_platform_toolsets(platform, toolset_names)
     return enabled_toolsets
 
 
@@ -689,7 +737,9 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # unchecked selections on the next read. Saving from the picker is consent to clear the "no_mcp" sentinel
     # (no checkbox for it; users who once set it by hand could otherwise never re-enable MCP via the UI).
     drop = _configurable_keys() | plugin_keys | _platform_default_keys() | {"no_mcp"}
-    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
+    existing_toolsets = _coerce_platform_toolsets_value(
+        cfg_get(config, "platform_toolsets", platform, default=[]), platform
+    )
     preserved_entries = {str(e) for e in (existing_toolsets if isinstance(existing_toolsets, list) else [])
                          if str(e) not in drop}
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
@@ -1076,34 +1126,3 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MANAGED_FEATURE_COVERAGE_CATEGORY': ('hermes_cli.nous_subscription', 'MANAGED_FEATURE_COVERAGE_CATEGORY'),
-    'NOUS_MANAGED_PROVIDER': ('tools.tool_backend_helpers', 'NOUS_MANAGED_PROVIDER'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'fal_key_is_configured': ('tools.tool_backend_helpers', 'fal_key_is_configured'),
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'save_env_value': ('hermes_cli.config', 'save_env_value'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

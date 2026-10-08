@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id
+from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -39,6 +39,7 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
+    current_turn_user_idx: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -47,7 +48,7 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any,
+    truncated_tool_call_retries: Any, current_turn_user_idx: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -60,7 +61,8 @@ def run_tool_round(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
-            truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            truncated_tool_call_retries=truncated_tool_call_retries,
+            current_turn_user_idx=current_turn_user_idx, result=result,
         )
 
     if not agent.quiet_mode:
@@ -82,10 +84,19 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
+    # Normalize only this unpersisted turn. Each local bridge entry must pass
+    # through the same scope, approvals, state and scheduling as a singleton.
+    from agent.tool_call_batches import expand_local_tool_batches
+    assistant_message.tool_calls = expand_local_tool_batches(
+        assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
+
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
     )
+    # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
+    # before it is staged (idempotent for already-normalized ids).
+    normalize_provider_tool_call_ids(assistant_message.tool_calls)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
@@ -150,6 +161,9 @@ def run_tool_round(
             agent.stream_delta_callback(None)
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    from hermes_cli.observability.shared_metrics_harness import finish_tool_round
+
+    finish_tool_round(agent)
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to
@@ -163,7 +177,7 @@ def run_tool_round(
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
-        agent._emit_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
+        agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation.
@@ -191,6 +205,7 @@ def run_tool_round(
         compression_attempts=compression_attempts,
         max_compression_attempts=max_compression_attempts, effective_task_id=effective_task_id,
         final_response=final_response, turn_exit_reason=_turn_exit_reason,
+        current_turn_user_idx=current_turn_user_idx,
     )
     messages = _ptc.messages
     active_system_prompt = _ptc.active_system_prompt
@@ -198,6 +213,7 @@ def run_tool_round(
     compression_attempts = _ptc.compression_attempts
     final_response = _ptc.final_response
     _turn_exit_reason = _ptc.turn_exit_reason
+    current_turn_user_idx = _ptc.current_turn_user_idx
     if _ptc.end_turn:
         return _verdict("break")
 

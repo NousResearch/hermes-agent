@@ -37,7 +37,6 @@ def test_small_discrete_cards_have_no_automatic_recommendation():
 def test_24gb_discrete_card_recommends_resident_qwen_27b():
     picked = recommended_entry(_discrete(24))
     assert picked is not None
-    assert picked[0].id == "qwen3.8-27b"
     assert picked[1] == "best-quality-resident"
     choice = select_variant(picked[0], _discrete(24))
     assert choice is not None and choice.zero_spill

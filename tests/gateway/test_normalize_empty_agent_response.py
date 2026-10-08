@@ -93,26 +93,44 @@ class TestExplicitNoneErrorIsNoneSafe:
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
         assert "None" not in response
-        # Non-persistence generic failures may legitimately say
-        # 'unknown error' — the defect is rendering the literal None.
-        assert "unknown error" in response.lower()
+        # The generic failure copy names the recovery commands; the detail stays in the log.
+        assert "/retry" in response and "/new" in response
 
 
 class TestGenericFailureRegression:
-    """Non-persistence failures keep the existing byte-identical message."""
+    """Non-persistence failures get a plain reply that names /retry and /new; the raw exception
+    text never reaches the chat (it goes to the gateway log)."""
 
-    def test_provider_error_still_formats_request_failed(self):
+    def test_provider_error_hides_raw_detail_and_names_retry(self):
         agent_result = {
             "final_response": "",
             "failed": True,
-            "error": "provider exploded",
+            "error": "ValueError: provider exploded {\"code\": 502}",
             "api_calls": 1,
         }
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
-        assert "The request failed: provider exploded" in response
-        assert "/reset" in response
+        assert "provider exploded" not in response and "ValueError" not in response
+        assert "/retry" in response and "/new" in response
+        assert "hermes logs" in response
+
+    def test_partial_turn_hides_provider_envelope_and_names_retry(self):
+        raw = "API call failed after 3 retries: HTTP 500 internal server error"
+        agent_result = {"final_response": "", "partial": True, "error": raw, "api_calls": 2}
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert "HTTP 500" not in response
+        assert "/retry" in response and "/compress" in response
+
+    def test_partial_turn_keeps_curated_loop_text(self):
+        curated = "Response truncated due to output length limit"
+        agent_result = {"final_response": "", "partial": True, "error": curated, "api_calls": 2}
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert curated in response and "/retry" in response
 
     def test_context_failure_branch_unchanged(self):
         agent_result = {
@@ -124,8 +142,8 @@ class TestGenericFailureRegression:
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=60)
 
-        assert "context window" in response
-        assert "/compact" in response
+        assert "too long" in response
+        assert "/compress" in response and "/new" in response
 
 
 class TestNonempty400EnvelopeOverflowReply:
@@ -142,8 +160,8 @@ class TestNonempty400EnvelopeOverflowReply:
         response = _normalize_empty_agent_response(
             self._failed(self._ENVELOPE), self._ENVELOPE, history_len=138,
         )
-        assert "context window" in response.lower()
-        assert "/compact" in response
+        assert "too long" in response.lower()
+        assert "/compress" in response
         assert self._ENVELOPE not in response
 
     @pytest.mark.parametrize("text", [

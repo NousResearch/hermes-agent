@@ -2,6 +2,7 @@
 gateway forwarding.
 """
 
+import asyncio
 import contextlib
 import logging
 import inspect
@@ -87,7 +88,7 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -123,13 +124,19 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
-def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+def _annotate_cron_job(
+    job: Dict[str, Any], profile: str, home: Path, heartbeat_age: Optional[float] = None,
+) -> Dict[str, Any]:
     return {
         **job,
         "profile": profile,
         "profile_name": profile,
         "hermes_home": str(home),
-        "is_default_profile": profile == "default"}
+        "is_default_profile": profile == "default",
+        # Seconds since this profile's ticker last iterated (None = never/unknown): a
+        # `next_run_at` parked in the past is only explained by a scheduler that stopped
+        # ticking, so the dashboard can date it (#114309).
+        "scheduler_heartbeat_age_s": heartbeat_age}
 
 
 @contextlib.contextmanager
@@ -158,10 +165,11 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
             result = create_job_with_scheduler_registration(*args, **kwargs)
         else:
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        heartbeat_age = cron_jobs.get_ticker_heartbeat_age()
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        return [_annotate_cron_job(j, profile_name, home, heartbeat_age) for j in result]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        return _annotate_cron_job(result, profile_name, home, heartbeat_age)
     return result
 
 
@@ -241,6 +249,17 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         context_from = _cron_string_list(body.context_from)
         _validate_dashboard_cron_context_from(context_from, profile_name)
         no_agent = bool(body.no_agent)
+        # Finite repeat: non-positive counts are a client error (the core chokepoint
+        # would silently make them unlimited — indistinguishable from omission);
+        # everything else (int, 'forever'/'once'/'3') coerces through the shared
+        # normalize_repeat_value, the same validation the CLI uses.
+        repeat = body.repeat
+        if repeat is not None:
+            if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat < 1:
+                raise HTTPException(
+                    status_code=400, detail="repeat must be a positive integer")
+            from cron.jobs import normalize_repeat_value
+            repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
         return _mutate_cron_for_profile(
@@ -249,6 +268,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),
@@ -319,11 +339,10 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
     import os as _os
     multiplex = False
     try:
-        from gateway.config import _env_multiplex_profiles_override
-        multiplex = bool(cfg_get(load_config(), "gateway", "multiplex_profiles", default=False))
-        env_flag = _env_multiplex_profiles_override()
-        if env_flag is not None:
-            multiplex = env_flag
+        # The live default gateway's own record, else the explicit flag — never the merged default:
+        # an unset gateway.multiplex_profiles is settled by the gateway at boot, not by this process.
+        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        multiplex = default_gateway_multiplexes()
     except Exception:
         _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
 
@@ -380,7 +399,7 @@ async def _forward_cron_fire_to_gateway(
     drops the fire with 200: retrying into an operator-stopped gateway can never succeed.
     """
     _profile_name, home = _cron_profile_home(profile)
-    url = _gateway_fire_endpoint(_profile_name, home)
+    url = await asyncio.to_thread(_gateway_fire_endpoint, _profile_name, home)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -409,7 +428,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

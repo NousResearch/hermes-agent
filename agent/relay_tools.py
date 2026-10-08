@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from agent import relay_llm, relay_runtime
+from tools.execution_observability import collect_tool_resources
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,17 @@ def execute(
     raw_result: dict[str, Any] = {}
     callback_error: BaseException | None = None
     callback_context = contextvars.copy_context()
+    tool_resources = None
 
     def guarded(final_args: dict[str, Any]) -> Any:
+        nonlocal tool_resources
         # Everything the tool transitively calls (incl. auxiliary LLM calls on worker
         # threads) must bypass managed Relay: the pipeline's Futures bind to THIS loop,
         # which is blocked until the tool returns.
         # See #77244.
-        with relay_runtime.managed_callback_guard():
-            return callback(final_args)
+        with collect_tool_resources() as tool_resources:
+            with relay_runtime.managed_callback_guard():
+                return callback(final_args)
 
     def invoke(next_args: Any) -> Any:
         nonlocal callback_error, observed_args
@@ -43,7 +47,8 @@ def execute(
             callback_error = exc
             raise
         raw_result.update(value=result, json=_jsonable(result))
-        return runtime.relay.ToolExecutionResult(raw_result["json"])
+        annotation = tool_resources.annotation() if tool_resources is not None else None
+        return runtime.relay.ToolExecutionResult(raw_result["json"], annotation=annotation)
 
     try:
         managed = _run_awaitable(

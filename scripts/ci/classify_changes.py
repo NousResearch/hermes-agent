@@ -36,15 +36,21 @@ Lanes:
   shared runner; running them on every Python PR made their timing noise
   everyone's problem. They still run on push (fail-open) and whenever the
   script, its siblings, or their tests change.
+* ``plugin_catalog`` — the catalog admission gate (structural check plus the
+  pinned-source clone and validate). A ``paths:`` filter cannot start it on a
+  merge group, so the lane carries the path list instead.
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
 
 ``docker``, ``nix`` and the E2E lanes take most of the larger-runner minutes.
-An ordinary product change does not start them on a pull request. Every push
-to main runs them all (a push has no diff, so every lane is on), so a
-regression they catch shows up on main after the merge. A stable-release run
-forces every lane on.
+An ordinary product change does not start them on a pull request. A merge
+group runs them all (``run_e2e``), and so does every push to main (a push has
+no diff, so every lane is on). A stable-release run forces every lane on.
+
+A ``merge_group`` event is classified from its own diff, the compare of the
+group's ``base_sha`` (its parent: the previous queue entry or the target tip)
+against its ``head_sha``. The other lanes follow that diff like a pull request's.
 
 Contract — *fail open, never closed*. We may run a lane we didn't need, but
 must never skip one a change could break:
@@ -187,7 +193,7 @@ _RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 # The slow lanes and the paths that start each one on a pull request. A path
 # belongs here when the lane is the only CI that exercises it for real: the
 # suite itself, its harness, and the product code the suite exists to guard.
-# Everything else reaches these lanes on the next push to main.
+# Everything else reaches these lanes in the merge queue.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
 _NPM_MANIFESTS = ("package.json", "package-lock.json")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
@@ -582,6 +588,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
+        "plugin_catalog": any(f.startswith("plugin-catalog/") for f in files),
         **{lane: run_e2e or on for lane, on in _slow_lanes(files).items()},
     }
     consumers = [c for f in files for c in _SHARED_FIXTURE_CONSUMERS.get(f, ())]
@@ -602,6 +609,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True
+        ret["plugin_catalog"] = True
         ret.update(dict.fromkeys(_slow_lanes([]), True))
     return ret
 
@@ -682,6 +690,16 @@ def pull_request_labels() -> list[str]:
     return [label["name"] for label in labels if isinstance(label, dict) and label.get("name")]
 
 
+def _runs_slow_lanes() -> bool:
+    """Does this event run every slow lane whatever its diff touches?
+
+    A merge group does: it is the last run before the change lands, so the
+    slow lanes a pull request skips by path meet the suite here. A pull request
+    opts in with the ``run-e2e`` label.
+    """
+    return os.environ.get("EVENT_NAME") == "merge_group" or RUN_E2E_LABEL in pull_request_labels()
+
+
 def main() -> int:
     files = sys.stdin.read().splitlines()
     if not any(f.strip() for f in files):
@@ -693,7 +711,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             files = recovered
-    lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
+    lanes = classify(files, run_e2e=_runs_slow_lanes())
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:

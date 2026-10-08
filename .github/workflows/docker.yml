@@ -15,6 +15,11 @@ on:
   # path publishes only immutable version tags; the ordered stable publication
   # controller moves stable/latest from the receipt-bound registry digest.
   pull_request:
+  # The merge queue runs the build and tests before a change lands. The push
+  # below still builds and tests once more: it gates the publish jobs, which
+  # run only for a main push.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_call:
@@ -87,7 +92,7 @@ jobs:
   # Classify the PR's changed files. ci.yml used to gate the docker call on
   # its own ``detect`` outputs; now that this workflow triggers itself, it
   # runs the same composite action. On push and release the classifier fails
-  # open (every lane true), so post-merge validation is never weakened.
+  # open (every lane true), and on a merge group the slow lanes are forced on.
   # Release phases skip classification entirely: the parent already ran full
   # CI and the tag dispatch has no meaningful PR diff to classify.
   detect:
@@ -112,7 +117,7 @@ jobs:
         env:
           # The docker lane is a slow lane: on a pull request it runs only
           # for docker meta, the dependency manifests, PM and tests/docker
-          # (or the run-e2e label). Every push to main builds the image.
+          # (or the run-e2e label). Every merge group and every push to main builds the image.
           # classify_changes.py owns the formula.
           DOCKER: ${{ steps.classify.outputs.docker }}
         run: |
@@ -220,7 +225,8 @@ jobs:
           # Slim owns the scope; desktop adds the gated apt layer, so it reads
           # and writes nothing — a mode=max scope could exceed the cache cap.
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
-          cache-to: ${{ (github.event_name != 'pull_request' && matrix.variant == 'slim') && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
+          # Main only: a PR's or a merge group's cache is scoped to its own ref.
+          cache-to: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group' && matrix.variant == 'slim') && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
 
 
       # Run the docker-integration test suite against the freshly-built image

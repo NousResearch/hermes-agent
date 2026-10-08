@@ -284,6 +284,40 @@ NEW = {"plugin-catalog/new.yaml": "name: new\n"}
 ], ids=["rename", "typechange", "entry-plus-tooling", "sha-bump",
         "entry-plus-email-map", "readme-docs-ci-only"])
 def test_changed_entries_step(tmp_path, change, rc, listed, text):
+    _run_changed_entries(tmp_path, change, rc, listed, text, merge_group=False)
+
+
+@pytest.mark.parametrize("change, rc, listed, text", [
+    (_rename, 0, ["plugin-catalog/renamed.yaml"], None),
+    (lambda r: _write(r, {**NEW, "scripts/tool.py": "x = 2\n"}), 1, [], "scripts/tool.py"),
+    (lambda r: _write(r, {"plugin-catalog/README.md": "rules v2\n"}), 0, [], None),
+], ids=["rename", "entry-plus-tooling", "readme-only"])
+def test_changed_entries_step_on_a_merge_group(tmp_path, change, rc, listed, text):
+    """The same contract on a queue entry, diffed against the group's parent."""
+    _run_changed_entries(tmp_path, change, rc, listed, text, merge_group=True)
+
+
+def test_merge_group_diff_excludes_entries_ahead_in_the_queue(tmp_path):
+    """Entry B's group already contains entry A; only B's own change is B's to admit."""
+    repo = tmp_path / "queue"
+    _write(repo, {"plugin-catalog/old.yaml": "name: old\n"})
+    _git(repo, "init", "-qb", "main")
+    _commit(repo, "target tip")
+    _write(repo, {"plugin-catalog/a.yaml": "name: a\n"})
+    parent = _commit(repo, "queue entry A")
+    _write(repo, {"plugin-catalog/b.yaml": "name: b\n"})
+    _commit(repo, "queue entry B")
+    out = tmp_path / "gh-output.txt"
+    out.touch()
+    res = _run(_step("Find changed catalog"), tmp_path, repo,
+               {**os.environ, "GITHUB_OUTPUT": str(out), "MERGE_GROUP_BASE_SHA": parent})
+    assert res.returncode == 0, res.stdout + res.stderr
+    listed = out.read_text(encoding="utf-8")
+    assert "plugin-catalog/b.yaml" in listed
+    assert "plugin-catalog/a.yaml" not in listed
+
+
+def _run_changed_entries(tmp_path, change, rc, listed, text, *, merge_group):
     """Renames and typechanges must reach the pinned gate; an entry PR that also
     touches tooling fails before any clone, while email maps and entry-free
     policy PRs stay green."""
@@ -302,8 +336,10 @@ def test_changed_entries_step(tmp_path, change, rc, listed, text):
     _git(repo, "update-ref", "refs/remotes/origin/main", base)
     out = tmp_path / "gh-output.txt"
     out.touch()
-    res = _run(_step("Find changed catalog"), tmp_path, repo,
-               {**os.environ, "GITHUB_OUTPUT": str(out)})
+    env = {**os.environ, "GITHUB_OUTPUT": str(out)}
+    if merge_group:
+        env["MERGE_GROUP_BASE_SHA"] = base
+    res = _run(_step("Find changed catalog"), tmp_path, repo, env)
     assert res.returncode == rc, res.stdout + res.stderr
     lines = out.read_text(encoding="utf-8").splitlines()
     assert [f for f in lines if f and "__EOF__" not in f and f != "files<<__EOF__"] == listed

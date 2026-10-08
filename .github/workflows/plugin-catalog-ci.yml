@@ -1,7 +1,10 @@
 name: Plugin Catalog CI
 
-# Admission gate for plugin-catalog entries. Fires ONLY on PRs touching
-# plugin-catalog/** so it can never go red on unrelated PRs.
+# Admission gate for plugin-catalog entries. ci.yaml calls it when the
+# ``plugin_catalog`` lane fires (the diff touches plugin-catalog/**), on a pull
+# request and again on the merge group that carries it, so it can never go red
+# on unrelated changes. A ``paths:`` filter cannot do this job: merge_group
+# events do not support one.
 #
 # Two gates:
 #   structural            — cheap schema check, no hermes install needed
@@ -11,9 +14,7 @@ name: Plugin Catalog CI
 #                            `hermes plugins validate`.
 
 on:
-  pull_request:
-    paths:
-      - "plugin-catalog/**"
+  workflow_call:
 
 permissions:
   contents: read
@@ -44,6 +45,9 @@ jobs:
           python3 scripts/validate_plugin_catalog.py plugin-catalog/
 
   pinned-source-validate:
+    # Needs a pull request or merge group diff. A stable-release run calls this
+    # workflow on a tag, where there is no candidate entry to admit.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -61,19 +65,33 @@ jobs:
 
       - name: Find changed catalog entries
         id: changed
+        env:
+          # Set on a merge_group event only. The group commit's parent is the
+          # previous queue entry (or the target tip), so this entry's diff is
+          # exactly BASE..HEAD.
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          # HEAD is the PR merge commit: diffing it against its first parent is
-          # exactly what the PR would land. Refuse anything else rather than
-          # silently diffing a single commit.
-          if ! git rev-parse -q --verify 'HEAD^2' >/dev/null; then
-            echo "::error::expected the pull_request merge commit as HEAD"
-            exit 1
+          if [ -n "${MERGE_GROUP_BASE_SHA:-}" ]; then
+            BASE="$MERGE_GROUP_BASE_SHA"
+            if ! git merge-base --is-ancestor "$BASE" HEAD; then
+              echo "::error::merge group base $BASE is not an ancestor of HEAD"
+              exit 1
+            fi
+          else
+            # HEAD is the PR merge commit: diffing it against its first parent
+            # is exactly what the PR would land. Refuse anything else rather
+            # than silently diffing a single commit.
+            if ! git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+              echo "::error::expected the pull_request merge commit as HEAD"
+              exit 1
+            fi
+            BASE=$(git rev-parse 'HEAD^1')
           fi
           # Added + modified + renamed + typechanged entry files only; deletions
           # and removed.yaml have nothing to clone. A rename or file->symlink
           # change that slipped past this list would skip the supply-chain gate.
-          CHANGED=$(git diff --name-only --diff-filter=AMRT 'HEAD^1' HEAD \
+          CHANGED=$(git diff --name-only --diff-filter=AMRT "$BASE" HEAD \
             -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml')
           # The grep can only shrink the list and runs on its own so a git diff
           # failure still fails the step instead of looking like "no changes".
@@ -86,7 +104,7 @@ jobs:
             # touches tooling could neuter the gate vetting it. Contributor
             # email maps are data the gate never executes; README/policy/CI PRs
             # with no entry change skip this check.
-            ALL=$(git diff --name-only 'HEAD^1' HEAD)
+            ALL=$(git diff --name-only "$BASE" HEAD)
             OUTSIDE=$(printf '%s' "$ALL" | grep -vE '^(plugin-catalog|contributors/emails)/' || true)
             if [ -n "$OUTSIDE" ]; then
               echo "::error::catalog entry PRs may only touch plugin-catalog/** and contributors/emails/**, found:"

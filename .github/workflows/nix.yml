@@ -12,8 +12,12 @@ name: Nix flake check
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  # No push trigger: the merge queue checks every change before it lands. The
+  # schedule is what saves the store into the default-branch scope (below).
+  schedule:
+    - cron: '47 4 * * *'
   workflow_call:
     inputs:
       release:
@@ -40,13 +44,13 @@ concurrency:
   cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
 
 jobs:
-  # A `paths:` filter cannot gate this workflow: a push to main must run it
+  # A `paths:` filter cannot gate this workflow: a merge group must run it
   # whatever changed, because the flake packages the product and nine of the
   # checks run the built binary. The `nix` lane is a slow lane
   # (classify_changes.py): on a pull request it runs for the flake files and
-  # the dependency manifests, or the run-e2e label. On push the classifier
-  # fails open and every lane is true, so a product change that breaks the
-  # flake turns main red after the merge.
+  # the dependency manifests, or the run-e2e label. A merge group forces every
+  # slow lane on, so a product change that breaks the flake fails its queue
+  # entry. This workflow is not a required check: it reports and does not gate.
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
@@ -117,12 +121,13 @@ jobs:
           # of the lockfile, so an old store still removes most of the work.
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
-          # Save from main only. A cache that a PR writes is visible to that
-          # PR alone and never to another branch, so a save there spends the
-          # 10 GB quota of the repository and helps no later run. A PR still
-          # restores: it reads the cache that the merge to main wrote. This is
-          # the same rule that docker.yml applies to `cache-to`.
-          save: ${{ github.event_name != 'pull_request' }}
+          # Save from main only. A cache that a PR or a merge group writes is
+          # visible to that ref alone and never to another branch, so a save
+          # there spends the 10 GB quota of the repository and helps no later
+          # run. A PR or a merge group still restores: it reads the cache that
+          # the scheduled run on main wrote. This is the same rule that
+          # docker.yml applies to `cache-to`.
+          save: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
 
           # Collect garbage before the save, so the store stays inside the
           # 10 GB quota of the repository. Without a limit the store grows at

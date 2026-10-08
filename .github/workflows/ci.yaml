@@ -35,16 +35,24 @@ on:
         type: boolean
         default: false
   pull_request:
-  push:
-    branches: [main]
+  # The merge queue is the full-suite gate: a group runs every lane before it
+  # lands (see detect-changes), so a push to main no longer re-runs CI.
+  merge_group:
+    types: [checks_requested]
+  # Warms the default-branch caches. A run in the merge queue or on a PR saves
+  # into its own ref's scope, which no other run can restore, so only a run on
+  # main refreshes what the next PR starts from (tests.yml saves the per-file
+  # durations, the setup-pm and nix steps their stores, below).
+  schedule:
+    - cron: '17 4 * * *'
 
 permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
 
-# cancel-in-progress only ever applies to PR events. A push, a dispatch, and
-# above all a stable-release workflow_call run are never cancelled by a later
-# commit or a rerun of the same branch — the caller's own concurrency uses
+# cancel-in-progress only ever applies to PR events. A merge group, a
+# schedule, a dispatch, and above all a stable-release workflow_call run are
+# never cancelled by a later commit or a rerun of the same branch — the caller's own concurrency uses
 # github.run_id, so even a parent rerun cannot kill this child mid-flight.
 # Release (workflow_call with inputs.release) never cancels and never gets
 # cancelled: its group is github.run_id. PRs collapse per-PR; pushes use the
@@ -56,8 +64,8 @@ concurrency:
 jobs:
   # ─────────────────────────────────────────────────────────────────────
   # detect: run the classifier once. Every downstream job reads its outputs
-  # to decide whether to run. On push/dispatch the classifier fails open
-  # (all lanes true) so post-merge validation is never weakened.
+  # to decide whether to run. A merge group runs every slow lane and follows
+  # its own diff for the rest; schedule/dispatch fail open (all lanes true).
   #
   # A release run (inputs.release) additionally forces every lane true via
   # the `release-forced-*` outputs: a stable candidate must run the FULL
@@ -80,6 +88,7 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      plugin_catalog: ${{ steps.gate-lanes.outputs.plugin_catalog }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -120,9 +129,9 @@ jobs:
   # Windows journeys in tests-os) take most of the larger-runner minutes.
   # On a pull request each runs only when the diff touches that suite or the
   # code it guards, or the PR carries the `run-e2e` label
-  # (scripts/ci/classify_changes.py::_E2E_LANES). Every push to main runs
-  # all of them, so a regression the path lists miss turns main red after
-  # the merge.
+  # (scripts/ci/classify_changes.py::_E2E_LANES). Every merge group runs
+  # all of them, so a regression the path lists miss fails the queue entry
+  # instead of landing on main.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests
@@ -228,6 +237,12 @@ jobs:
     if: needs.detect.outputs.e2e_desktop_update == 'true'
     uses: ./.github/workflows/e2e-desktop-update.yml
 
+  plugin-catalog:
+    name: Plugin catalog admission
+    needs: detect
+    if: needs.detect.outputs.plugin_catalog == 'true'
+    uses: ./.github/workflows/plugin-catalog-ci.yml
+
   docs-site:
     name: Docs Site
     needs: detect
@@ -308,7 +323,7 @@ jobs:
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped.
   #
-  #   Non-release (PR/push): failure fails. Update/E2E consumers selected
+  #   Non-release (PR/merge group/schedule): failure fails. Update/E2E consumers selected
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
@@ -342,6 +357,7 @@ jobs:
       - e2e-desktop
       - e2e-desktop-core
       - e2e-desktop-update
+      - plugin-catalog
       - docs-site
       - history-check
       - contributor-check
@@ -466,7 +482,7 @@ jobs:
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save baseline cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         run: |
           # Degraded runs (API rate-limited) produce no ci-timings.json —
           # skip rather than fail, and never cache an empty baseline.
@@ -477,7 +493,7 @@ jobs:
           fi
 
       - name: Upload baseline to cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
+        if: github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json

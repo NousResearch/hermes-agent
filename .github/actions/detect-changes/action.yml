@@ -2,8 +2,9 @@ name: Detect affected areas
 description: >-
   Classify a PR's changed files into CI work lanes (python, frontend, site,
   scan, deps) so the orchestrator can conditionally call only
-  the sub-workflows a PR can affect. Outputs are always "true" on push/dispatch
-  events and fail open (everything "true") when the diff cannot be computed.
+  the sub-workflows a PR can affect. A merge_group event is classified from the
+  group's own diff, with every slow lane forced on. Outputs are always "true" on
+  push/dispatch events and fail open (everything "true") when the diff cannot be computed.
 
 inputs:
   github-token:
@@ -66,6 +67,9 @@ outputs:
   rust:
     description: Run `cargo test` for the Tauri bootstrap installer.
     value: ${{ steps.classify.outputs.rust }}
+  plugin_catalog:
+    description: Run the plugin-catalog admission gate.
+    value: ${{ steps.classify.outputs.plugin_catalog }}
 
 runs:
   using: composite
@@ -82,15 +86,18 @@ runs:
         GH_TOKEN: ${{ inputs.github-token || github.token }}
         REPO: ${{ github.repository }}
         EVENT_NAME: ${{ github.event_name }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # A merge group's base_sha is its parent commit (the previous queue entry,
+        # or the tip of the target branch), so the compare is exactly the changes
+        # this entry adds on top of everything already validated ahead of it.
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
       run: |
         set -euo pipefail
 
-        # Only pull_request events are gated. Other events (push, release,
-        # dispatch) leave CHANGED empty, so the classifier fails open and every
-        # lane runs. Post-merge / on-demand validation is never weakened.
-        if [ "$EVENT_NAME" = "pull_request" ]; then
+        # Only pull_request and merge_group events are gated. Other events (push,
+        # release, dispatch) leave CHANGED empty, so the classifier fails open and
+        # every lane runs. Post-merge / on-demand validation is never weakened.
+        if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "merge_group" ]; then
           # Use the compare endpoint with the pinned base/head SHAs from the
           # event payload instead of the "current PR files" endpoint. The SHAs
           # are frozen at trigger time, so the file list is deterministic even

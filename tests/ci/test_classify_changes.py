@@ -47,12 +47,13 @@ DEFAULT = {
     "bootstrap": True,
     "desktop_updater": True,
     "rust": True,
+    "plugin_catalog": True,
 }
 
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False, plugin_catalog=False) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -80,6 +81,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "bootstrap": bootstrap,
         "desktop_updater": desktop_updater,
         "rust": rust,
+        "plugin_catalog": plugin_catalog,
     }
 
 
@@ -387,6 +389,10 @@ CASES = {
         ["tests/docker/test_image_smoke.py"],
         _lanes(python=True, python_prod=False, scan=True, docker=True),
     ),
+    "catalog entry → plugin_catalog": (
+        ["plugin-catalog/example.yaml"],
+        _lanes(python=True, plugin_catalog=True),
+    ),
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
     "action change → all": ([".github/actions/detect-changes/action.yml"], DEFAULT),
@@ -407,6 +413,26 @@ def test_run_e2e_label_turns_every_slow_lane_on_and_nothing_else(files):
     unlabelled = classify(files)
     assert {k: v for k, v in labelled.items() if k not in SLOW_LANES} == \
         {k: v for k, v in unlabelled.items() if k not in SLOW_LANES}
+
+
+@pytest.mark.parametrize("files", [["README.md"], ["gateway/run.py"], ["apps/desktop/src/app.tsx"]])
+def test_merge_group_runs_every_slow_lane_and_follows_the_diff_for_the_rest(files, monkeypatch, capsys):
+    """The queue entry is the last run before a change lands, so it runs what a PR skips by path."""
+    monkeypatch.setenv("EVENT_NAME", "merge_group")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(files)))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    assert main() == 0
+    out = dict(line.split("=") for line in capsys.readouterr().out.splitlines())
+    assert {lane for lane in SLOW_LANES if out[lane] == "true"} == SLOW_LANES
+    expected = {k: str(v).lower() for k, v in classify(files).items() if k not in SLOW_LANES}
+    assert {k: v for k, v in out.items() if k not in SLOW_LANES} == expected
+
+
+def test_merge_group_never_reads_pull_request_labels(monkeypatch):
+    """A merge group has no pull_request payload, so the label lookup must not run."""
+    monkeypatch.setenv("EVENT_NAME", "merge_group")
+    monkeypatch.setattr(_mod, "pull_request_labels", lambda: pytest.fail("looked up PR labels"))
+    assert _mod._runs_slow_lanes() is True
 
 
 def test_every_slow_lane_path_matches_a_tracked_file():
@@ -502,6 +528,23 @@ _REPO = Path(__file__).resolve().parents[2]
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
+
+
+def test_merge_group_reaches_the_diff_and_every_lane_consumer():
+    """The compare reads the group's SHAs, and every workflow that reports a check triggers on the queue."""
+    step = _yaml(".github/actions/detect-changes/action.yml")["runs"]["steps"][0]
+    assert "github.event.merge_group.base_sha" in step["env"]["BASE_SHA"]
+    assert "github.event.merge_group.head_sha" in step["env"]["HEAD_SHA"]
+    assert 'EVENT_NAME" = "merge_group"' in step["run"]
+    for workflow in ("ci.yaml", "docker.yml", "nix.yml"):
+        assert "merge_group" in _yaml(f".github/workflows/{workflow}")[True], workflow
+
+
+def test_plugin_catalog_gate_is_a_required_job_of_the_orchestrator():
+    jobs = _yaml(".github/workflows/ci.yaml")["jobs"]
+    assert jobs["plugin-catalog"]["uses"] == "./.github/workflows/plugin-catalog-ci.yml"
+    assert "plugin_catalog" in jobs["plugin-catalog"]["if"]
+    assert "plugin-catalog" in jobs["all-checks-pass"]["needs"]
 
 
 def test_every_lane_reaches_the_composite_action():

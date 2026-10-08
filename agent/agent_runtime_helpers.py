@@ -659,11 +659,8 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: list[dict], *, marker_pairs_only: bool = False) -> tuple[list[dict], int]:
-    """Pass 3: merge consecutive plain-text user messages (no user input lost).
-    ``marker_pairs_only`` (the bare-list surface of ``repair_message_sequence``) folds ONLY a
-    display-marker row into its plain neighbor — the #94486 addressability fold — while two real
-    user turns stay their canonical source boundaries (#63298)."""
+def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
+    """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
     from agent.turn_context import _source_identified_user_row
@@ -689,11 +686,6 @@ def _merge_consecutive_users(messages: list[dict], *, marker_pairs_only: bool = 
             # A queued prompt's stable client source id IS its turn boundary (#63298): a
             # source-identified user row keeps its own row on every layer.
             and not _source_identified_user_row(prev) and not _source_identified_user_row(msg)
-            # The bare-list fold is ONLY the display-marker addressability pair (#94486):
-            # exactly one side is a display-marker row; marker+marker and plain+plain stay
-            # their canonical boundaries there (#63298).
-            and (not marker_pairs_only
-                 or bool(prev.get("display_kind")) != bool(msg.get("display_kind")))
             # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
@@ -751,11 +743,13 @@ def _merge_consecutive_users(messages: list[dict], *, marker_pairs_only: bool = 
     return merged, repairs
 
 
-# Adjacent user messages are canonical source boundaries, not malformed history — each queued
-# turn keeps its own row for attribution. They are merged only on the per-request wire copy by
-# ``drop_thinking_only_and_merge_users`` for strict providers.
+# The consecutive-user fold is the documented pre-call belt for strict provider alternation
+# (without it: silent empty responses or 400s), and the persist-override machinery is built on it.
+# One carve-out: a source-identified (queued) user row IS its turn boundary and never folds
+# (#63298) — its wire boundary lives in the replay layer (``replay_historical_content``).
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
+    _merge_consecutive_users,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
@@ -777,15 +771,16 @@ def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
 
 
 def repair_message_sequence(agent, messages: list[dict]) -> int:
-    """Collapse malformed assistant/tool structure left in the live history; returns repair count.
-    This is the pre-call belt for host-fed, resumed or replayed histories. Passes in order:
-    decode any sentinel-encoded multimodal rows (so an image is not merged as text); merge
-    consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
-    known); drop stray tool results; prune unanswered tool_calls. Adjacent user turns are
-    canonical source boundaries and are deliberately preserved on the wire passes; provider role
-    alternation is repaired on the per-request ``api_messages`` copy by
-    ``drop_thinking_only_and_merge_users``. A LIVE durable transcript (an agent with its session
-    store) additionally runs the persisted-layer user fold below.
+    """Collapse malformed role-alternation left in the live history; returns repair count.
+    Providers require strict alternation after the system message (violations: silent empty
+    responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
+    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as
+    text); merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id
+    union is known); drop stray tool results; prune unanswered tool_calls; merge consecutive user
+    turns (no user input lost — the merged-override machinery keeps the unanswered prefix). One
+    carve-out: a source-identified (queued) user row is its own turn boundary and never folds
+    (#63298); its wire boundary is preserved by the replay layer (``replay_historical_content``).
+    A user turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
@@ -794,20 +789,6 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
         current, made = repair_pass(current)
-        repairs += made
-    # The consecutive-user fold is persisted-layer bookkeeping, NOT one of the wire passes: on a
-    # live durable transcript an ask whose turn got no reply absorbs the next one into ONE turn
-    # (``MERGED_TURN_PREFIX`` keeps the unanswered text under the persist override; the survivor
-    # keeps its uid and records the absorbed ones). Bare message lists — the per-request repair
-    # surface — keep their user turns distinct, and ``_merge_consecutive_users`` never folds a
-    # source-identified (queued) row.
-    if getattr(agent, "_session_db", None) is not None:
-        current, made = _merge_consecutive_users(current)
-        repairs += made
-    else:
-        # A bare list folds ONLY the display-marker addressability pair (#94486); two real
-        # user turns stay their canonical boundaries (#63298).
-        current, made = _merge_consecutive_users(current, marker_pairs_only=True)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.

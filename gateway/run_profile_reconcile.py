@@ -239,7 +239,7 @@ class GatewayProfileReconcileMixin:
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
-    async def _unserve_profile(self, name: str, home: "Path") -> None:
+    async def _unserve_profile(self, name: str, home: "Path", *, quiesce: bool = False) -> None:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
         The releasing process is not always the deleter (#130244): under multiplexing THIS gateway
@@ -281,9 +281,15 @@ class GatewayProfileReconcileMixin:
             for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
                 with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
                     self._evict_cached_agent(key)
-            with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
+            # A connected opener can take the full SQLite startup budget. Keep the
+            # control socket responsive while the registry waits; to_thread carries scope.
+            if quiesce:
                 from hermes_state_registry import close_all_under
-                close_all_under(home)
+                await asyncio.to_thread(close_all_under, home, strict=True)
+            else:
+                with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
+                    from hermes_state_registry import close_all_under
+                    await asyncio.to_thread(close_all_under, home)
             with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                 from plugins.memory.holographic.store import MemoryStore
                 MemoryStore.release_all_under(home)
@@ -311,15 +317,40 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     """Build on the owning loop; socket handlers themselves run on executor threads."""
     loop = asyncio.get_running_loop()
 
-    async def apply(name):
-        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
-        if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
+    async def apply(name, quiesce=False):
+        from hermes_cli.profiles import (
+            get_profile_dir, profiles_to_serve, profile_is_parked, validate_profile_name,
+        )
+        multiplex = runner._multiplex_on()
+        if not runner._running or (multiplex and runner._served_profile_homes is None) or (
+                not quiesce and not multiplex):
             return {"error": "host multiplexer is not ready"}
         async with runner._reconcile_lock():
             active = getattr(runner, "_primary_profile_name", None) or "default"
             if not isinstance(name, str) or not name or name == active:
                 return {"error": "a non-launch profile name is required"}
-            known = dict(runner._served_profile_homes)
+            known = dict(runner._served_profile_homes or {})
+            if quiesce:
+                from hermes_constants import named_profile_is_deleted
+                from gateway.run import _profile_runtime_scope
+                from hermes_state_registry import close_all_under
+                validate_profile_name(name)
+                if name == "default":
+                    return {"error": "a named profile is required for quiescence"}
+                home = get_profile_dir(name)
+                if not named_profile_is_deleted(home):
+                    return {"error": f"profile '{name}' must be tombstoned before quiescence"}
+                if name in known:
+                    await runner._unserve_profile(name, known.pop(name), quiesce=True)
+                    runner._record_served_profiles(active, list(known.items()))
+                # Retry after a pending reply must still sweep: _unserve_profile removes
+                # bookkeeping before its close settles, and its ordinary release is best-effort.
+                with _profile_runtime_scope(home, hydrate_secrets=False):
+                    await asyncio.to_thread(close_all_under, home, strict=True)
+                if not named_profile_is_deleted(home):
+                    return {"error": f"profile '{name}' is no longer tombstoned"}
+                return {"unserved": name, "quiesced": True,
+                        "served_profiles": runner.served_profile_names()}
             if not serve:
                 if name not in known:
                     return {"error": f"profile '{name}' is not served"}
@@ -340,7 +371,8 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             return {"served": name, "served_profiles": result["served_profiles"]}
 
     def handler(params):
-        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            apply(params.get("name"), quiesce=not serve and params.get("quiesce") is True), loop)
         try:
             return future.result(timeout=5.0)
         except TimeoutError:

@@ -673,6 +673,62 @@ class TestCloseAllUnder:
         profile_dir.mkdir(parents=True)
         assert registry.close_all_under(profile_dir) == 0
 
+    @pytest.mark.parametrize("ordering", ["sweep", "inflight_release"])
+    def test_failed_physical_close_remains_owned_until_a_strict_retry_settles(
+            self, tmp_path, monkeypatch, ordering):
+        """A refused retired-generation capture keeps a live SQLite handle, never a quiescence ACK."""
+        from hermes_state_dbfile import RetiredGenerationCaptureError
+
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        db = registry.acquire(profile_dir / "state.db")
+        real_close = db.close
+        entered, resume = threading.Event(), threading.Event()
+
+        def failed_close():
+            entered.set()
+            assert resume.wait(5.0)
+            raise RetiredGenerationCaptureError("retired WAL capture refused")
+
+        monkeypatch.setattr(db, "close", failed_close)
+        try:
+            if ordering == "sweep":
+                resume.set()
+                assert registry.close_all_under(profile_dir) == 1
+            else:
+                released, release_done = self._in_thread(lambda: registry.release(db))
+                assert entered.wait(5.0)
+                barrier = registry._tearing_down[(profile_dir / "state.db").resolve()]
+                waited = threading.Event()
+                real_wait = barrier.event.wait
+
+                def observed_wait(timeout=None):
+                    waited.set()
+                    return real_wait(timeout)
+
+                monkeypatch.setattr(barrier.event, "wait", observed_wait)
+                swept, sweep_done = self._in_thread(lambda: registry.close_all_under(profile_dir))
+                assert waited.wait(5.0)
+                resume.set()
+                assert release_done.wait(5.0) and sweep_done.wait(5.0)
+                assert released == [True] and swept == [0]
+
+            assert db._conn is not None
+            generation = registry._retired.get(id(db))
+            assert generation is not None, "a refused physical close lost its live writer"
+            assert generation.db is db and generation.retired
+            with pytest.raises(RuntimeError, match="session database handle"):
+                registry.close_all_under(profile_dir, strict=True)
+            assert db._conn is not None and id(db) in registry._retired
+
+            monkeypatch.setattr(db, "close", real_close)
+            assert registry.close_all_under(profile_dir, strict=True) == 1
+            assert db._conn is None and id(db) not in registry._retired
+        finally:
+            resume.set()
+            monkeypatch.setattr(db, "close", real_close)
+            real_close()
+
     def test_waits_for_admitted_teardown_after_generation_is_gone(self, tmp_path, monkeypatch):
         """Final release admits teardown before close; rmtree still needs that wait."""
         profile_dir = tmp_path / "profiles" / "work"
@@ -714,3 +770,124 @@ class TestCloseAllUnder:
         assert errors == []
         assert db._conn is None
         assert swept == [0]
+
+    @staticmethod
+    def _pause_opens(monkeypatch):
+        """Pause every ``acquire`` right after its SessionDB connected, before it is installed."""
+        connected, resume = threading.Event(), threading.Event()
+        real_open = registry._open_session_db
+
+        def _paused_open(path):
+            db = real_open(path)
+            connected.set()
+            assert resume.wait(10.0)
+            return db
+
+        monkeypatch.setattr(registry, "_open_session_db", _paused_open)
+        return connected, resume
+
+    @staticmethod
+    def _in_thread(fn):
+        result: list = []
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                result.append(fn())
+            except BaseException as exc:  # surfaced to the assertions below
+                result.append(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return result, done
+
+    @staticmethod
+    def _live_connections(path: Path) -> int:
+        import hermes_cli.sqlite_safe_read as tracked
+
+        with tracked._live_lock:
+            return tracked._live_connections.get(tracked._key(path), 0)
+
+    def test_waits_for_an_open_in_flight_under_the_directory(self, tmp_path, monkeypatch):
+        """An ``acquire`` still constructing (connected, not yet installed) when the sweep ran was
+        missed: the sweep returned 0, then the writer installed and kept the file open (#127811)."""
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        connected, resume = self._pause_opens(monkeypatch)
+        opened, open_done = self._in_thread(lambda: registry.acquire(profile_dir / "state.db"))
+        assert connected.wait(5.0)
+        swept, sweep_done = self._in_thread(lambda: registry.close_all_under(profile_dir))
+        try:
+            assert not sweep_done.wait(0.5), "the sweep returned while a writer under it was still opening"
+        finally:
+            resume.set()
+        assert sweep_done.wait(10.0) and open_done.wait(10.0)
+
+        db = opened[0]
+        assert swept == [1]
+        assert db._conn is None and db._shared_registry_owned is False
+        assert registry._generations.get((profile_dir / "state.db").resolve()) is None
+        # An unserve is not a delete: the profile can be served again with a fresh generation.
+        again = registry.acquire(profile_dir / "state.db")
+        assert again is not db and again._conn is not None
+        assert registry.release(again) is True
+
+    def test_does_not_wait_for_an_open_outside_the_directory(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / "profiles" / "work"
+        sibling_dir = tmp_path / "profiles" / "workshop"  # shares the name prefix, not the directory
+        profile_dir.mkdir(parents=True)
+        sibling_dir.mkdir(parents=True)
+        connected, resume = self._pause_opens(monkeypatch)
+        opened, open_done = self._in_thread(lambda: registry.acquire(sibling_dir / "state.db"))
+        assert connected.wait(5.0)
+        try:
+            swept, sweep_done = self._in_thread(lambda: registry.close_all_under(profile_dir))
+            assert sweep_done.wait(5.0), "the sweep waited for an open outside its directory"
+            assert swept == [0]
+        finally:
+            resume.set()
+        assert open_done.wait(10.0)
+        assert opened[0]._conn is not None
+        assert registry.release(opened[0]) is True
+
+    @pytest.mark.parametrize("ordering", ["opening_during_sweep", "returned_before_sweep"])
+    def test_a_delete_sweep_leaves_no_writer_behind(self, tmp_path, monkeypatch, ordering):
+        """The profile-delete order (``hermes_cli.profiles.delete_profile``): tombstone, sweep, rmtree.
+        Whether the handle was still being opened when the sweep ran or had already been returned to
+        its holder, it ends closed; it cannot reopen a writer after the tombstone, a new open is
+        refused, and nothing holds the file under the removal (#127811)."""
+        import sqlite3
+
+        from hermes_constants import mark_named_profile_deleted
+
+        root = tmp_path / "hermes"
+        profile_dir = root / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        (root / "config.yaml").write_text("{}\n", encoding="utf-8")  # <root>/profiles is a profiles root
+        state_db = profile_dir / "state.db"
+        if ordering == "opening_during_sweep":
+            connected, resume = self._pause_opens(monkeypatch)
+            opened, open_done = self._in_thread(lambda: registry.acquire(state_db))
+            assert connected.wait(5.0)
+            mark_named_profile_deleted(profile_dir)
+            swept, sweep_done = self._in_thread(lambda: registry.close_all_under(profile_dir))
+            try:
+                assert not sweep_done.wait(0.5), "the sweep returned while a writer under it was still opening"
+            finally:
+                resume.set()
+            assert sweep_done.wait(10.0) and open_done.wait(10.0)
+            db = opened[0]
+        else:
+            db = registry.acquire(state_db)
+            mark_named_profile_deleted(profile_dir)
+            swept = [registry.close_all_under(profile_dir)]
+
+        assert swept == [1] and db._conn is None
+        with pytest.raises(sqlite3.OperationalError, match="deleted"):
+            db.create_session("after-tombstone", source="cli")
+        assert db._conn is None
+        with pytest.raises(FileNotFoundError):
+            registry.acquire(state_db)
+        assert self._live_connections(state_db) == 0
+        shutil.rmtree(profile_dir)

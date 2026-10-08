@@ -1855,14 +1855,13 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     _stop_profile_backends(canon, profile_dir)
     _stop_bot_desktop(profile_dir)
 
+    from hermes_cli.gateway_multiplex_served import profile_gateway_homes, require_profile_quiescence
+    gateway_homes = profile_gateway_homes(profile_dir)
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
-    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
-    # into the directory before we remove it. Identity settlement is a separate delete-only
-    # operation below: an ordinary unserve must preserve identity, because a rename's old name
-    # leaves the served set exactly like a deleted one does (#111926, delete side).
-    _notify_multiplexer(canon)
-    identity_settled = _purge_identity(canon)
+    # A bounded rescan may still be pending. Require a completed remote sweep before
+    # identity purge or filesystem mutation; a failed delete remains tombstoned for retry.
+    require_profile_quiescence(canon, gateway_homes)
 
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
@@ -1880,11 +1879,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
-    with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
+    from hermes_state_registry import close_all_under as _close_session_dbs_under
+    _closed = _close_session_dbs_under(profile_dir, strict=True)
+    if _closed:
+        print(f"✓ Released {_closed} session database connection(s) held by this process")
+    identity_settled = _purge_identity(canon)
 
     # The Desktop serve process routes its agent/errors logs for every profile through one
     # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
@@ -2470,25 +2469,28 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
     # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
     # resurrected dir as a ghost served profile (#109267).
+    from hermes_cli.gateway_multiplex_served import profile_gateway_homes, require_profile_quiescence
+    gateway_homes = profile_gateway_homes(old_dir)
+    # Identity migration and hot-serving retain their default-multiplexer owner.
+    # The wider handle barrier also covers standalone and named-home gateways.
     live_mux = _live_default_multiplexer()
-    if live_mux:
-        mark_named_profile_deleted(old_dir)
-        _notify_multiplexer(old_canon)
-
-    # 1c. Release this process's cached MCP stderr handle into the old home (same as
-    # delete_profile): Windows refuses to rename a directory holding an open file, and the
-    # handle would otherwise stay cached under the old key after the move.
-    from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+    # Fence this process's openers too, even when no messaging gateway is running.
+    mark_named_profile_deleted(old_dir)
 
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
     # undo the unroute so the profile is never stranded tombstoned-but-present.
     try:
+        require_profile_quiescence(old_canon, gateway_homes)
+        # Windows also requires this process's cached MCP stderr handles to close.
+        from hermes_constants import hermes_home_key
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+        from hermes_state_registry import close_all_under
+        close_all_under(old_dir, strict=True)
         old_dir.rename(new_dir)
     except Exception:
+        clear_named_profile_deleted(old_dir)
         if live_mux:
-            clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
         _maybe_register_gateway_service(old_canon)
         if service_removed:
@@ -2497,8 +2499,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
     # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
     # resurrect it, and a future profile reusing the old name must not read as deleted.
-    if live_mux:
-        clear_named_profile_deleted(old_dir)
+    clear_named_profile_deleted(old_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

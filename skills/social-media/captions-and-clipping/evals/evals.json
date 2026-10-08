@@ -1,0 +1,89 @@
+{
+  "skill": "captions-and-clipping",
+  "version": "1.0.0",
+  "description": "The repurposing engine of the video cluster: turn long-form video into short, self-contained clips and add sound-off captions, using Opus Clip / CapCut / Submagic. Below the ai-video router; sibling to veo-3, heygen, ai-voiceover. Uses the CLIP framework. Tools clip and caption; a human reviews (most clips need cleanup); WoopSocial schedules/publishes; AI-edited video is disclosed.",
+  "evals": [
+    {
+      "name": "treats_a_clip_as_a_standalone_short",
+      "input": "Turn my 60-minute podcast into Shorts.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains a clip must be a self-contained Short with its own hook, not a random 30 seconds of the long video",
+        "Uses AI moment-detection (e.g. Opus Clip ClipAnything) to surface candidates, then human selection for complete thoughts/hooks",
+        "Introduces the CLIP framework (Cut to the moment, Lay out vertical, Inscribe captions, Polish & publish clean) and notes a 60-min video can yield ~10-30 clips",
+        "Reads brand-profile and voice-builder first"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Make some clips from our webinar.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before selecting or styling clips",
+        "Picks moments and caption styling that fit the brand, not generic viral templates",
+        "Routes each clip's hook/caption copy to the platform writer (youtube-shorts / reels-script / tiktok-script)",
+        "Flags that clips are drafts a human reviews before publishing"
+      ]
+    },
+    {
+      "name": "treats_virality_score_as_a_hint_not_a_verdict",
+      "input": "Just export the top virality-scored clips and ship them.",
+      "expect": [
+        "Warns the virality score is unreliable (clips rated ~40 sometimes outperform ~85) and clip-selection accuracy drops on multi-speaker content",
+        "Notes roughly 70% of auto-generated clips need manual cleanup, so a human selects self-contained, on-strategy moments",
+        "Frames AI clipping as a force multiplier, not a replacement for judgment on brand voice and narrative",
+        "Recommends reviewing transcripts/hooks rather than trusting the score blindly"
+      ]
+    },
+    {
+      "name": "routes_tools_by_their_strengths",
+      "input": "Should I use Opus Clip, Submagic, or CapCut for this?",
+      "expect": [
+        "Opus Clip to find and cut at scale (ClipAnything moment-detection, ReframeAnything 9:16 tracking, virality score)",
+        "Submagic for best-in-class animated/word-by-word captions, noting its ~30-minute source cap rules it out as the clipper for full podcasts",
+        "CapCut as the free manual editor when hands-on control matters (no AI clip detection)",
+        "Suggests the common division of labor: Opus Clip to cut, then Submagic to caption (verify-quarterly)"
+      ]
+    },
+    {
+      "name": "pushback_on_watermark_reupload_and_guaranteed_virality",
+      "input": "Re-upload my TikToks with the CapCut/TikTok watermark straight to Reels and Shorts, and guarantee they'll go viral.",
+      "expect": [
+        "Refuses watermarked re-uploads: other-platform watermarks trigger the Originality Score and throttle reach on Reels/Shorts",
+        "Advises exporting clean, native, watermark-free files instead",
+        "Will not guarantee or fabricate virality/metrics; the virality score is only a hint and WoopSocial has no analytics to verify outcomes",
+        "Offers the legitimate path: clean export plus a platform-tuned hook/caption"
+      ]
+    },
+    {
+      "name": "edge_case_sound_off_captions_required",
+      "input": "Do I even need captions? Assume people have sound on.",
+      "expect": [
+        "States most social video is watched on mute, so burned-in captions are essential (lift completion, accessibility, and caption text is indexed for search)",
+        "Recommends word-by-word/karaoke styling, ~2 lines per frame, inside safe zones, away from UI",
+        "Advises reviewing transcription accuracy (auto-captions are ~97-99% but misread names/jargon)",
+        "Keeps captions on-brand rather than defaulting to a generic template"
+      ]
+    },
+    {
+      "name": "honest_scope_clip_review_publish",
+      "input": "Auto-clip 20 Shorts and post them all through WoopSocial.",
+      "expect": [
+        "States the tools clip and caption, but a human reviews each (most clips need cleanup) before anything publishes — no auto-publishing slop",
+        "Lays out the chain: ai-video routes -> captions-and-clipping cuts/captions -> human review -> scheduling-and-queue -> WoopSocial",
+        "Requires AI disclosure for AI-edited video (EU AI Act disclosure applies from August 2026)",
+        "Refuses to fabricate any performance metric (WoopSocial has no analytics surface)"
+      ]
+    },
+    {
+      "name": "bridges_clips_into_the_funnel",
+      "input": "How do these clips actually grow my channel?",
+      "expect": [
+        "Explains clips are a discovery engine: bridge each Short back to the source long-form (the Short-to-long click-through is tracked)",
+        "Distinguishes same-moment cross-platform-repurposing from evergreen content-recycling, and points to both",
+        "Routes Shorts strategy to youtube-shorts and the long-form destination to youtube-long-form",
+        "Frames clipping as feeding the funnel, not vanity clip volume"
+      ]
+    }
+  ]
+}

@@ -187,12 +187,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
-    # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
-    # call_llm plus the except-chain fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
-    # attempts) silently multiplies the effective wall time of every aux call by 3× on a slow/hung endpoint,
-    # so a 120s timeout can stall ~360s before Hermes sees a single failure (issue #54465). Disable
-    # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
-    # via kwargs.
     kwargs.setdefault("max_retries", 0)
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
@@ -2626,7 +2620,9 @@ def _relay_sync_completion(
     relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
-    callback = create or (lambda request: _create_with_progress(client, request, task))
+    callback = create or (lambda request: _create_with_progress(
+        client, request, task, force_stream=_provider_requires_stream(
+            provider or _effective_provider_for_client(client, ""), str(getattr(client, "base_url", "") or ""))))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2659,7 +2655,9 @@ async def _relay_async_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
-    callback = create or (lambda request: _acreate_with_progress(client, request))
+    callback = create or (lambda request: _acreate_with_progress(
+        client, request, force_stream=_provider_requires_stream(
+            provider or _effective_provider_for_client(client, ""), str(getattr(client, "base_url", "") or ""))))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -3759,6 +3757,7 @@ def _prepare_same_provider_retry(
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
     extra_headers: Optional[Dict[str, str]] = None,
+    narrowed_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
     if task == "vision":
@@ -3782,13 +3781,19 @@ def _prepare_same_provider_retry(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
+        no_progress_timeout=_get_task_no_progress_timeout(task)
+        if isinstance(retry_client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None,
     )
-    # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
+    if narrowed_kwargs is not None:
+        # Credential rebuilds must not restore fields rejected by the parameter ladder.
+        for field in ("temperature", "max_tokens", "max_completion_tokens",
+                      "reasoning_effort", "_reasoning_config", "response_format", "extra_body"):
+            if field in narrowed_kwargs:
+                retry_kwargs[field] = narrowed_kwargs[field]
+            else:
+                retry_kwargs.pop(field, None)
+    # Keep attribution/capability headers (e.g. Copilot x-initiator, #60293).
     if extra_headers:
-        # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
-        # recovery retry silently lose capability gating (#60293).
-        # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -4072,9 +4077,15 @@ def _plan_fallback_candidate(
             provider, destination.base_url or str(getattr(client, "base_url", "") or ""),
             destination.api_mode, model or destination.model,
         )
-        return retry_destination, _fallback_request_kwargs(retry_destination, **common)
+        retry_kwargs = _fallback_request_kwargs(retry_destination, **common)
+        if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+            retry_kwargs["no_progress_timeout"] = _get_task_no_progress_timeout(task)
+        return retry_destination, retry_kwargs
 
-    return destination, _fallback_request_kwargs(destination, **common), _rebuild
+    fb_kwargs = _fallback_request_kwargs(destination, **common)
+    if isinstance(fb_client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        fb_kwargs["no_progress_timeout"] = _get_task_no_progress_timeout(task)
+    return destination, fb_kwargs, _rebuild
 
 
 def _quarantine_fallback_candidate(
@@ -4193,7 +4204,11 @@ async def _call_fallback_candidate_async(
 
     async def _send(client: Any, request_kwargs: Dict[str, Any], dest: _FallbackDestination) -> Any:
         return _validate_llm_response(
-            await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
+            await _relay_async_completion(
+                client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode,
+                create=lambda request: _acreate_with_progress(
+                    client, request, task,
+                    force_stream=_provider_requires_stream(dest.provider, dest.base_url))),
             task,
         )
     from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
@@ -7764,26 +7779,19 @@ def _ladder_credential_rungs(
                 # The stale client is cached under the route label (e.g. "auto"), not the
                 # concrete backend we refreshed.
                 _evict_cached_clients(resolved_provider)
+            # Continue with the retry's narrowed failure; refresh cannot fix transport errors.
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
             step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))
+                (auth_refresh_provider, route.resolved_model or route.final_model, kwargs))
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
             if first_err is None:
                 return resp, None
-            # ``first_err`` is now the retry's own failure, not the original auth error: the
-            # pool gate below and the ladder tail's eviction check both read this narrowed
-            # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
-            # instead, since the provider-fallback rung only acts on ``_FALLBACK_REASONS``.
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
-    # Capture the exact key used so recovery finds the right pool entry even if another
-    # process rotated the pool meanwhile (current() would be None).
+    # Recover the failed key even if another process already rotated the pool.
     _client_api_key = str(getattr(client, "api_key", "") or "")
-    # Gate on the narrowed error: a connection failure from the retry above arrives here
-    # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
-    # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
@@ -7798,7 +7806,7 @@ def _ladder_credential_rungs(
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
                 return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                    "retry_same_provider", (resolved_provider, route.resolved_model, kwargs))), None
             except Exception as retry2_err:
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
@@ -7963,11 +7971,6 @@ def _aux_recovery_ladder(
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
-    # Reached only when no fallback answered, so the next auxiliary call rebuilds a fresh
-    # client instead of reusing the dead one. ``first_err`` is the narrowed error from the
-    # rungs above, not necessarily the original one. See issue #23432.
-    # Mirror the sync path: drop poisoned clients on connection/timeout so the next aux call rebuilds. See
-    # issue #23432.
     if _is_connection_error(first_err):
         try:
             _evict_cached_client_instance(client)
@@ -8137,8 +8140,9 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model, narrowed_kwargs = step.args
+        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider,
+                                  resolved_model=retry_model, narrowed_kwargs=narrowed_kwargs)
     return "fallback", step.args, candidate_kwargs
 
 
@@ -8190,7 +8194,6 @@ def _call_llm_impl(
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
     def _primary(**validate_kw: Any) -> Any:
-        # Retry transient failures before provider fallback, including pinned MoA advisors.
         return _validate_llm_response(
             _relay_sync_completion(
                 client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,

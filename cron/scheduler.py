@@ -2414,6 +2414,7 @@ class _CronAgentSetup:
     runtime: dict = None
     prefill_messages: Any = None
     max_iterations: Any = None
+    max_tokens: Any = None
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
@@ -2433,6 +2434,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
+    setup.max_tokens = job.get("max_tokens")
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2476,6 +2478,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,
+        max_tokens=setup.max_tokens,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,

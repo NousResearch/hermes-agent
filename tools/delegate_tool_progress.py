@@ -292,7 +292,7 @@ class _ChildProgressRelay:
 
     def __init__(
         self, task_index: int, goal: str, spinner: Any, parent_cb: Any, task_count: int,
-        subagent_id, parent_id, depth, model, toolsets, session_ref,
+        subagent_id, parent_id, depth, model, toolsets, session_ref, display_name=None,
     ) -> None:
         self.task_index, self.task_count, self.goal_label = task_index, task_count, (goal or "").strip()
         # session_ref is a SHARED dict filled in later by the caller — keep the identity.
@@ -300,6 +300,7 @@ class _ChildProgressRelay:
         self.subagent_id, self.parent_id, self.depth, self.model, self.toolsets = (
             subagent_id, parent_id, depth, model, toolsets
         )
+        self.display_name = display_name  # presentation identity (#118081); never a routing key
         self.batch: List[str] = []
         self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
@@ -315,7 +316,7 @@ class _ChildProgressRelay:
 
     def _identity_kwargs(self) -> Dict[str, Any]:
         kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
-        kw.update({k: getattr(self, k) for k in ("subagent_id", "parent_id", "depth", "model") if getattr(self, k) is not None})
+        kw.update({k: getattr(self, k) for k in ("subagent_id", "parent_id", "depth", "model", "display_name") if getattr(self, k) is not None})
         if self.toolsets is not None:
             kw["toolsets"] = list(self.toolsets)
         # child_session_id / delegation_id are filled into the shared ref once
@@ -419,6 +420,7 @@ def _build_child_progress_callback(
     task_index: int, goal: str, parent_agent, task_count: int = 1, *, subagent_id: Optional[str] = None,
     parent_id: Optional[str] = None, depth: Optional[int] = None, model: Optional[str] = None,
     toolsets: Optional[List[str]] = None, session_ref: Optional[Dict[str, Any]] = None,
+    display_name: Optional[str] = None,
 ) -> Optional[callable]:
     """Relay for one child's events (see ``_ChildProgressRelay``), or None when the parent has neither a spinner nor a
     progress callback — the child then runs with no progress callback at all (zero behavior change)."""
@@ -431,6 +433,7 @@ def _build_child_progress_callback(
         session_ref["_parent_scope"] = parent_agent
     relay = _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
+        display_name,
     )
     relay.parent_scope = parent_agent
     return relay

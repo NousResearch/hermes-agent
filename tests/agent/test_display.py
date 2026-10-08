@@ -96,6 +96,43 @@ class TestBuildToolPreview:
         )
         assert result is not None and len(result) <= 30
 
+    def test_steer_preview_prefers_display_name(self, monkeypatch):
+        """#118081: steer/stop previews name the child, not the raw sa- id."""
+        from agent import display as display_mod
+        monkeypatch.setattr(
+            "tools.delegate_tool_registry.get_subagent_display_name",
+            lambda sid: "Hypatia" if sid == "sa-2-73b48efe" else None,
+        )
+        result = build_tool_preview(
+            "delegate_task", {"action": "steer", "subagent_id": "sa-2-73b48efe", "message": "focus on Cobb Street history"}
+        )
+        assert result == 'steer Hypatia: "focus on Cobb Street his..."'
+
+    def test_steer_preview_falls_back_to_raw_id(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool_registry.get_subagent_display_name", lambda sid: None
+        )
+        result = build_tool_preview(
+            "delegate_task", {"action": "steer", "subagent_id": "sa-2-73b48efe", "message": "widen the search"}
+        )
+        assert result.startswith("steer sa-2-73b48efe:")
+
+    def test_stop_preview_uses_display_name(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool_registry.get_subagent_display_name",
+            lambda sid: "Turing" if sid == "sa-1-abc" else None,
+        )
+        assert build_tool_preview("delegate_task", {"action": "stop", "subagent_id": "sa-1-abc"}) == "stop Turing"
+        assert build_tool_preview("delegate_task", {"action": "list"}) == "list"
+
+    def test_steer_preview_without_target_id_has_no_dangling_punctuation(self, monkeypatch):
+        """#118104 review: empty subagent_id must not render as `steer : "x"` / `steer `."""
+        monkeypatch.setattr(
+            "tools.delegate_tool_registry.get_subagent_display_name", lambda sid: None
+        )
+        assert build_tool_preview("delegate_task", {"action": "steer", "message": "x"}) == 'steer: "x"'
+        assert build_tool_preview("delegate_task", {"action": "steer"}) == "steer"
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None

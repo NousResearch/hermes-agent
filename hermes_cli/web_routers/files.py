@@ -52,7 +52,8 @@ _MEDIA_CONTENT_TYPES = {
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 
 _STREAMABLE_MEDIA_EXTENSIONS = frozenset({
-    ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm",
+    ".avi", ".bmp", ".flac", ".gif", ".jpeg", ".jpg", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".ogg",
+    ".opus", ".png", ".wav", ".webm", ".webp",
 })
 
 _FS_READDIR_HIDDEN = {
@@ -618,10 +619,12 @@ async def download_managed_file(request: Request, path: str):
 @router.get("/api/files/stream")
 @router.head("/api/files/stream")
 async def stream_managed_file(request: Request, path: str):
-    """Stream managed audio/video inline with HTTP Range support — Electron's
+    """Stream managed raster images and audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
-    as download."""
+    as download. Raster images can also use this route when they exceed the
+    base64 preview cap. SVG/HTML remain excluded because they can contain
+    active content."""
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 

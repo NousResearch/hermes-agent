@@ -41,6 +41,8 @@ export interface MockServerOptions {
   /** Extra ids listed by GET /v1/models beside `mock-model` (a pickable second model). */
   extraModels?: string[]
 
+  /** Deterministic final text for tests exercising real attachment rendering. */
+  reply?: string
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -958,7 +960,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
 
-            streamTextResponse(res, model, reply, holdThisStream || holdThisCompletion ? () => {
+            streamTextResponse(res, model, options.reply ?? reply, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
@@ -971,9 +973,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             if (holdThisCompletion) {
               heldCompletionCount++
               resolveHeldStreamStarted?.()
-              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, reply))
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, options.reply ?? reply))
             } else {
-              nonStreamingTextResponse(res, model, reply)
+              nonStreamingTextResponse(res, model, options.reply ?? reply)
             }
           }
         })

@@ -806,8 +806,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        # Streamed replies arrive here as raw model Markdown, frame by frame: format like send() does.
+        payload = {"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": self.format_message(content)}
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": content}) as resp:
+            async with self._bridge_req("post", "edit", 15, json=payload) as resp:
                 return SendResult(success=True, message_id=message_id) if resp.status == 200 else SendResult(success=False, error=await resp.text())
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -818,7 +820,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error=f"File not found: {file_path}")
         jid = to_whatsapp_jid(chat_id)
         payload: Dict[str, Any] = {"chatId": jid, "filePath": file_path, "mediaType": media_type}
-        payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
+        payload.update({k: v for k, v in (("caption", self.format_message(caption or "")), ("fileName", file_name)) if v})
         result = await self._post_bridge_message("send-media", payload, timeout=120)
         if result.success and result.message_id:
             # A later quote of this attachment carries only a thumbnail stub; the bridge's cache
@@ -1105,8 +1107,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         own_session = str(_session_dir(getattr(pconfig, "extra", {}) or {}))
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
+        # Cron/send_message deliveries bypass adapter.send(), so they format here like send() does.
+        message = WhatsAppAdapter.format_message(message or "")
         # A caption only applies to a single media file — never repeat it across a multi-file send.
-        media_caption = caption if (caption and len(media) == 1) else None
+        media_caption = WhatsAppAdapter.format_message(caption) if (caption and len(media) == 1) else None
         pending_mentions = _normalize_outbound_mentions(mentions)
 
         def _mention_first_payload(payload):

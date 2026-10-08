@@ -265,12 +265,13 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         )
 
     # ------------------------------------------------------------------ formatting
-    def format_message(self, content: str) -> str:
+    @classmethod
+    def format_message(cls, content: str) -> str:
         """Convert markdown to WhatsApp syntax (*bold*, _italic_, ~strike~); fenced and
         inline code are protected via placeholder substitution."""
         if not content:
             return content
-        result, fences = _stash(r"```[\s\S]*?```", self._sanitize_outbound_text(content), "FENCE")
+        result, fences = _stash(r"```[\s\S]*?```", cls._sanitize_outbound_text(content), "FENCE")
         result, codes = _stash(r"`[^`\n]+`", result, "CODE")
         # Italic *text* → _text_ BEFORE bold so **bold** doesn't become italic;
         # lookarounds skip list bullets and bold delimiters.

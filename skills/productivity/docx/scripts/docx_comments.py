@@ -93,6 +93,46 @@ def list_comments(doc) -> list:
 
 # ---------------------------------------------------------------- anchoring
 
+class UnsupportedRunStructureError(ValueError):
+    """A requested interior split cannot preserve run structure safely."""
+
+    def __init__(self, tags: list[str]):
+        self.tags = tuple(tags)
+        super().__init__(
+            "target requires an interior split of a run containing "
+            "unsupported structural children: " + ", ".join(self.tags))
+
+
+def _unsupported_run_children(run_el) -> list[str]:
+    """Return non-text run children that cannot be safely duplicated."""
+    allowed = {q("rPr"), q("t")}
+    return [etree.QName(child).localname
+            for child in run_el if child.tag not in allowed]
+
+
+def _anchor_split_plan(para, start: int, end: int):
+    """Plan and validate every split before applying any XML mutation."""
+    pos = 0
+    plan = []
+    for run_el in list(para._p.iter(q("r"))):
+        rtext = "".join(t.text or "" for t in run_el.iter(q("t")))
+        r_start, r_end = pos, pos + len(rtext)
+        pos = r_end
+        if r_end <= start or r_start >= end:
+            continue
+        left_offset = start - r_start if r_start < start else None
+        right_offset = end - r_start if r_end > end else None
+        plan.append((run_el, left_offset, right_offset))
+
+    for run_el, left_offset, right_offset in plan:
+        if left_offset is None and right_offset is None:
+            continue
+        unsupported = _unsupported_run_children(run_el)
+        if unsupported:
+            raise UnsupportedRunStructureError(unsupported)
+    return plan
+
+
 def _split_run(para, run_el, offset: int):
     """Split a run element at text offset; return the new right-hand run."""
     text = "".join(t.text or "" for t in run_el.iter(q("t")))
@@ -116,20 +156,16 @@ def find_anchor_runs(doc, target: str):
         if start < 0:
             continue
         end = start + len(target)
-        pos = 0
+        plan = _anchor_split_plan(para, start, end)
         covered = []
-        for run_el in para._p.iter(q("r")):
-            rtext = "".join(t.text or "" for t in run_el.iter(q("t")))
-            r_start, r_end = pos, pos + len(rtext)
-            pos = r_end
-            if r_end <= start or r_start >= end:
-                continue
-            if r_start < start:  # split off the left part
-                run_el = _split_run(para, run_el, start - r_start)
-                r_start = start
-            if r_end > end:      # split off the right part
-                _split_run(para, run_el, end - r_start)
-            covered.append(run_el)
+        for run_el, left_offset, right_offset in plan:
+            current = run_el
+            if left_offset is not None:  # split off the left part
+                current = _split_run(para, current, left_offset)
+            if right_offset is not None:  # split off the right part
+                left = left_offset if left_offset is not None else 0
+                _split_run(para, current, right_offset - left)
+            covered.append(current)
         return para, covered
     return None, []
 
@@ -257,7 +293,14 @@ def main() -> int:
         return 0
 
     if args.cmd == "add":
-        para, runs = find_anchor_runs(doc, args.target)
+        try:
+            para, runs = find_anchor_runs(doc, args.target)
+        except UnsupportedRunStructureError as exc:
+            print(json.dumps({"ok": False,
+                              "code": "unsupported-structural-run",
+                              "target": args.target,
+                              "error": str(exc)}, ensure_ascii=False))
+            return 1
         if not runs:
             print(json.dumps({"ok": False,
                               "error": f"target not found: {args.target}"}))

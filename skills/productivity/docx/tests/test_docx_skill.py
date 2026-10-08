@@ -7,16 +7,20 @@ fixtures are generated on the fly; no network.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import struct
 import subprocess
 import sys
+import zipfile
 import zlib
 from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.shared import Mm
+from lxml import etree
 
 SKILL = Path(__file__).resolve().parent.parent
 SCRIPTS = SKILL / "scripts"
@@ -250,6 +254,27 @@ def run_raw(script: str, *args: str):
         capture_output=True, env=env)
 
 
+def _structural_counts(path: Path) -> dict:
+    with zipfile.ZipFile(str(path)) as archive:
+        document_xml = archive.read("word/document.xml")
+        rels_xml = archive.read("word/_rels/document.xml.rels")
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns = {"w": w, "wp": wp, "r": rel}
+    root = etree.fromstring(document_xml)
+    rels = etree.fromstring(rels_xml)
+    return {
+        "document_xml_sha256": hashlib.sha256(document_xml).hexdigest(),
+        "drawing_count": len(root.xpath(".//w:drawing", namespaces=ns)),
+        "relationship_embed_ids": root.xpath(
+            ".//*[@r:embed]/@r:embed", namespaces=ns),
+        "document_relationship_ids": rels.xpath(
+            ".//*[local-name()='Relationship']/@Id"),
+        "docPr_ids": root.xpath(".//wp:docPr/@id", namespaces=ns),
+    }
+
+
 def _add_ins(para, rev_id: int, text: str, author="Editor"):
     from lxml import etree
     ins = etree.SubElement(para._p, q("ins"))
@@ -396,6 +421,67 @@ class TestComments:
                        "not present", "--text", "x", "-o",
                        tmp_path / "y.docx")
         assert proc.returncode == 1
+
+    def test_interior_split_rejects_structural_run_before_mutation(
+            self, tmp_path: Path):
+        image = tmp_path / "target.png"
+        make_png(image)
+        doc = Document()
+        para = doc.add_paragraph()
+        run_ = para.add_run("before TARGET after")
+        run_.add_picture(str(image), width=Mm(10))
+        base = tmp_path / "target.docx"
+        doc.save(str(base))
+
+        before_bytes = base.read_bytes()
+        before = _structural_counts(base)
+        out = tmp_path / "rejected.docx"
+        proc = run_raw("docx_comments.py", "add", base, "--target",
+                       "TARGET", "--text", "Needs a source", "-o", out)
+        assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+        payload = json.loads(proc.stdout.decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["code"] == "unsupported-structural-run"
+        assert "drawing" in payload["error"]
+        assert not out.exists()
+
+        assert base.read_bytes() == before_bytes
+        after = _structural_counts(base)
+        assert after == before
+        assert before["drawing_count"] == 1
+        assert len(before["relationship_embed_ids"]) == 1
+        assert len(before["docPr_ids"]) == 1
+
+    @pytest.mark.parametrize("case", [
+        "simple_partial", "cross_run", "complex_no_split",
+    ])
+    def test_anchor_controls(self, case: str, tmp_path: Path):
+        doc = Document()
+        para = doc.add_paragraph()
+        image = tmp_path / "control.png"
+        if case == "simple_partial":
+            target = "TARGET"
+            para.add_run("ordinary TARGET control")
+        elif case == "cross_run":
+            target = "TARGET"
+            para.add_run("before TAR")
+            para.add_run("GET after")
+        else:
+            target = "COMPLEX TARGET"
+            make_png(image)
+            run_ = para.add_run(target)
+            run_.add_picture(str(image), width=Mm(10))
+        base = tmp_path / f"{case}.docx"
+        doc.save(str(base))
+        out = tmp_path / f"{case}-commented.docx"
+
+        result = run("docx_comments.py", "add", base, "--target", target,
+                     "--text", "control note", "-o", out)
+        assert result["ok"] is True
+        listed = run("docx_comments.py", "list", out)["comments"]
+        assert listed[0]["anchored_text"] == target
+        if case == "complex_no_split":
+            assert _structural_counts(out)["drawing_count"] == 1
 
 
 class TestValidate:

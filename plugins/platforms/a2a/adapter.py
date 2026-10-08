@@ -820,7 +820,8 @@ class A2AAdapter(BasePlatformAdapter):
             headers["X-A2A-Signature"] = signature
         try:
             req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            opener = security.callback_opener(localhost_mode=self._security_context.localhost_only())
+            with opener.open(req, timeout=10) as resp:
                 status = resp.status
         except Exception as e:
             return fail("failed: %s", e)

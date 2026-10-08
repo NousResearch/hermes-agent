@@ -1,7 +1,8 @@
 """Shell-script hooks bridge: ``hooks:`` config → first-use consent per ``(event, command)`` →
 callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
 Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
-JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
+JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``;
+a top-level ``notice`` / ``systemMessage`` on any event is shown to the user, never to the model.
 Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
 
 from __future__ import annotations
@@ -420,14 +421,17 @@ def _evaluate_result(
             return parsed
         message = stderr[:_STDERR_MESSAGE_LIMIT] or _DEFAULT_BLOCK_MESSAGE
         logger.info("shell hook exited %d — blocking (event=%s command=%s): %s", BLOCK_EXIT_CODE, spec.event, spec.command, message)
-        return {"action": "block", "message": message}
+        notice = parsed.get("notice") if isinstance(parsed, dict) else None
+        return {"action": "block", "message": message, **({"notice": notice} if notice else {})}
     # Other non-zero exits: still parse stdout so exit-code failures can carry a block directive.
     if r["returncode"] != 0:
         logger.warning("shell hook exited %d (event=%s command=%s); stderr=%s",
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
-    if parsed is None and fail_closed and r["returncode"] != 0:
+    # A notice alone is not a decision: a fail-closed gate that died with only a notice still blocks.
+    no_directive = parsed is None or set(parsed) == {"notice"}
+    if no_directive and fail_closed and r["returncode"] != 0:
         return _fail_closed_block(
             spec, f"hook exited {r['returncode']} with no directive",
         )
@@ -509,7 +513,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         logger.warning("shell hook stdout was not valid JSON (event=%s): %s", event, stdout[:200])
         return None
-    return _RESPONSE_PARSERS.get(event, _parse_context)(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    parsed = _RESPONSE_PARSERS.get(event, _parse_context)(data)
+    # ``systemMessage`` (Claude-Code) / ``notice`` (Hermes): user-visible, model-invisible, any event.
+    for key in ("notice", "systemMessage"):
+        notice = data.get(key)
+        if isinstance(notice, str) and notice.strip():
+            return {**(parsed or {}), "notice": notice}
+    return parsed
 
 
 # --- Allowlist / consent ---

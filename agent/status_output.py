@@ -127,6 +127,22 @@ class StatusOutputMixin:
         else:
             self._pending_startup_notices = [*getattr(self, "_pending_startup_notices", ()), notice]
 
+    def _emit_hook_notice(self, hook_name: str, text: str) -> None:
+        """A plugin/shell hook's ``notice`` / ``systemMessage``: shown to the user, never to the model
+        (port of MiniMax-AI/minimax-code#376). CLI prints it on the status lane like other lifecycle
+        output; TUI/Desktop get a self-expiring ``AgentNotice`` toast and the messaging gateway a
+        one-shot line. Nothing here touches ``messages``, so history, compaction and export never see it."""
+        message = f"⚑ hook {hook_name}: {text}"
+        if (getattr(self, "platform", None) or "cli") == "cli":
+            self._emit_status_kind("hook_notice", message, origin="_emit_hook_notice")
+            return
+        import uuid
+
+        from agent.credits_tracker import AgentNotice
+
+        key = f"hook-notice.{uuid.uuid4().hex[:12]}"
+        self._emit_notice(AgentNotice(text=message, level="info", kind="ttl", ttl_ms=30_000, key=key, id=key))
+
     def _replay_startup_warnings(self) -> None:
         pending = getattr(self, "_pending_startup_notices", None)
         if pending and getattr(self, "notice_callback", None):

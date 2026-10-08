@@ -446,6 +446,8 @@ before it can be added.
 
 Payload fields below are the exact event-specific fields supplied by each call site. For backward compatibility, `PluginManager` also adds `telemetry_schema_version="hermes.observer.v1"` to every plugin-hook callback. That legacy envelope marker does not mean all hook payloads share one semantic schema; new versioned contracts belong to their concrete event or capability family.
 
+**User-visible notices (any hook).** A callback on any event may return a dict with a `notice` key (the Claude-Code hook protocol's `systemMessage` is accepted as a synonym) to tell the *user* something without telling the model: `{"notice": "Formatted 3 files"}`. The text is shown on the surface the session runs on — a `⚑ hook <event>: …` status line in the CLI, a self-expiring toast in the TUI and Desktop, a one-shot line on messaging platforms — and is never appended to the conversation, so it does not reach model context, compaction, or `/save` export. It combines with the event's own directive (`{"action": "block", "message": "…", "notice": "…"}` blocks *and* notifies); a notice alone is never a decision. ANSI/control sequences are stripped and the text is capped at 2,000 characters.
+
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
@@ -1851,6 +1853,13 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
+
+// Tell the USER something on any event, without telling the model (Claude-Code `systemMessage`
+// is accepted as a synonym). Shown as a status line / toast / one-shot platform message; never
+// enters model context. Combines with the directives above; a notice alone is not a decision —
+// a fail_closed gate that exits non-zero with only a notice still blocks:
+{"notice": "Checks complete. The report is in reports/latest.md"}
+{"systemMessage": "Checks complete. The report is in reports/latest.md"}
 
 // Silent no-op — any empty / non-matching output is fine:
 ```

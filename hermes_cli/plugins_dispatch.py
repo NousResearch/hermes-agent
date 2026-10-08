@@ -157,6 +157,16 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
+def _deliver_hook_notices(hook_name: str, kwargs: Dict[str, Any], results: List[Any]) -> None:
+    """Show any ``notice`` / ``systemMessage`` the callbacks returned to the user (never the model)."""
+    try:
+        from agent.hook_notices import deliver_hook_notices
+
+        deliver_hook_notices(hook_name, kwargs, results)
+    except Exception:
+        logger.debug("hook notice delivery failed (hook=%s)", hook_name, exc_info=True)
+
+
 def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
@@ -242,6 +252,7 @@ class PluginDispatchMixin:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+        _deliver_hook_notices(hook_name, kwargs, results)
         return results
 
     def _report_hook_failure(
@@ -518,6 +529,7 @@ class PluginDispatchMixin:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+        _deliver_hook_notices(hook_name, kwargs, results)
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

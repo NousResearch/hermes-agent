@@ -63,6 +63,7 @@ behavior-affecting hooks:
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
+| any hook | May return `{"notice": "..."}` (or Claude-Code's `systemMessage`) to show the user a message that never enters model context; combines with the event's own directive. |
 
 Telemetry plugins should treat these behavior-affecting returns as optional
 compatibility features, not as observability requirements.

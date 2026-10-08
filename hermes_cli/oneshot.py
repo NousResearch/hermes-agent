@@ -275,6 +275,11 @@ def run_oneshot(
     JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
+
+    Terminal quiet is scoped to the agent call (root-logger handlers only): outside that
+    window — pre-redirect validation, post-run failure/usage reporting — stderr is suppressed
+    best-effort, and a logger that carries its own terminal-bound handler without propagating
+    to the root logger is no longer silenced manager-wide.
     """
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.

@@ -13,7 +13,7 @@ files on `main`.
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and
    `abandoned-rc.*`). Derive the next SemVer from the published release family
-   seeded at `0.21.4` alone: the newer of the protected R2 stable head and the
+   seeded at `0.21.5` (the last legacy CalVer release, v2026.9.24) alone: the newer of the protected R2 stable head and the
    newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
    release that skipped bundles moves only the second. Attempts do not move the
    version line. A cut whose next version already has a final `vX.Y.Z` tag is

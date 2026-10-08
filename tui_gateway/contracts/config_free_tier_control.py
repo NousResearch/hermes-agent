@@ -210,6 +210,9 @@ class FreeTierStatusResult(Result):
     retry_after: int | None = None
     # A browser challenge the account service is waiting on (``hermes_cli/anon_challenge.py``).
     challenge: FreeTierChallengePayload | None = None
+    # Seconds until the sign-in offer after a finished task is due (0 = due now); absent when none is
+    # pending (no finished task since the last offer, or not on the free tier).
+    nudge_due_in: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -249,6 +252,14 @@ class FreeTierAckNoticeResult(Result):
 
 method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
+
+
+class FreeTierClaimNudgeResult(Result):
+    claimed: bool
+
+
+method("free_tier.claim_nudge", params=ProfileParams, result=FreeTierClaimNudgeResult,
+       doc="Claim the due sign-in offer; true for exactly one caller each time an offer comes due.")
 
 
 # ── shared metrics consent ────────────────────────────────────────────────────────────────────

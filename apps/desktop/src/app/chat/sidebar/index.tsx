@@ -314,6 +314,11 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
     model: result.model ?? null,
     output_tokens: 0,
     preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
+    // The backend stamps every hit with its owning profile; a legacy backend
+    // that omits it serves the default store, so fall back to it. Without this
+    // a named-profile hit synthesized from search carries no owner and its
+    // row paints no profile chip in the All-profiles view.
+    profile: result.profile ?? 'default',
     source: result.source ?? null,
     started_at: ts,
     title: result.title?.trim() || null,
@@ -741,7 +746,7 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
-  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
+  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope, profiles)
 
   const searchResults = useMemo(
     () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),

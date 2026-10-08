@@ -5448,7 +5448,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         self, interaction: discord.Interaction, *, name: str, message: str = "",
         auto_archive_duration: int = 1440,
     ) -> Dict[str, Any]:
-        """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
+        """Create a thread in the current channel, anchored on a seed message; falls back
+        to a message-less public thread on rejection (e.g. permissions)."""
         name = (name or "").strip()
         if not name:
             return {"error": t("platform.discord.command.thread.error_name_required")}
@@ -5466,26 +5467,31 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
         reason = f"Requested by {display_name} via /thread"
         starter_message = (message or "").strip()
+        # Seed-first: the starter message anchors the thread in the parent feed;
+        # a message-less thread only shows in the channel's thread list (#131690).
         try:
-            thread = await parent_channel.create_thread(
+            seed_content = starter_message or t("platform.discord.thread.seed_message", name=name)
+            seed_msg = await parent_channel.send(seed_content)
+            thread = await seed_msg.create_thread(
                 name=name, auto_archive_duration=auto_archive_duration, reason=reason,
             )
-            if starter_message:
-                await thread.send(starter_message)
             return self._thread_created(thread, name)
-        except Exception as direct_error:
+        except Exception as seed_error:
             try:
-                seed_content = starter_message or t("platform.discord.thread.seed_message", name=name)
-                seed_msg = await parent_channel.send(seed_content)
-                thread = await seed_msg.create_thread(
+                thread = await parent_channel.create_thread(
                     name=name, auto_archive_duration=auto_archive_duration, reason=reason,
+                    type=discord.ChannelType.public_thread,
                 )
+                if starter_message:
+                    await thread.send(starter_message)
                 return self._thread_created(thread, name)
-            except Exception as fallback_error:
+            except Exception as direct_error:
+                # Key placeholders keep their historical names (direct/fallback); the
+                # primary path is now the seed message, the direct create is the fallback.
                 return {
                     "error": t(
                         "platform.discord.command.thread.error_both_failed",
-                        direct_error=str(direct_error), fallback_error=str(fallback_error)),
+                        direct_error=str(seed_error), fallback_error=str(direct_error)),
                 }
 
     @staticmethod
@@ -5614,7 +5620,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
-        Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
+        Seed-message anchored (renders in the parent feed); falls back to a message-less
+        public thread. DMs/voice/threads can't host threads."""
         if not self._client or not DISCORD_AVAILABLE:
             return None
         try:
@@ -5639,31 +5646,36 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
+        # Seed-first: a thread anchored on a starter message renders inline in the
+        # parent feed; a message-less thread only surfaces in the channel's thread
+        # list (#131690).
+        try:
+            send = getattr(parent, "send", None)
+            if send is not None:
+                seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
+                thread = await seed_msg.create_thread(
+                    name=thread_name, auto_archive_duration=1440, reason=reason,
+                )
+                return str(thread.id)
+        except Exception as seed_error:
+            logger.debug(
+                "[%s] Handoff thread: seed-message create failed (%s); trying message-less create",
+                self.name, seed_error,
+            )
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name, auto_archive_duration=1440, reason=reason,
+                    type=discord.ChannelType.public_thread,
+                )
                 return str(thread.id)
         except Exception as direct_error:
-            logger.debug(
-                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
-                self.name, direct_error,
-            )
-        try:
-            send = getattr(parent, "send", None)
-            if send is None:
-                return None
-            seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
-            thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
-            )
-            return str(thread.id)
-        except Exception as fallback_error:
             logger.warning(
                 "[%s] Handoff thread: both create paths failed for parent %s: %s",
-                self.name, parent_chat_id, fallback_error,
+                self.name, parent_chat_id, direct_error,
             )
-            return None
+        return None
 
     def _self_contained_prompt_content(
         self, header: str, body: str, *, code_block: bool = False, tail: str = ""

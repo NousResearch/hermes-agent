@@ -283,7 +283,12 @@ jobs:
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-        run: python3 -m scripts.ci.archive_inputs
+        run: |
+          if [ -z "${CLOUDFLARE_R2_ACCOUNT_ID:-}" ] || [ -z "${CLOUDFLARE_R2_ACCESS_KEY_ID:-}" ] || [ -z "${CLOUDFLARE_R2_SECRET_ACCESS_KEY:-}" ] || [ -z "${CLOUDFLARE_R2_BUCKET:-}" ]; then
+            echo "::warning::R2 credentials are not configured; skipping pinned-input archival for this fork."
+            exit 0
+          fi
+          python3 -m scripts.ci.archive_inputs
 
       - name: Set up native identity reader
         # product_identity() runs apps/desktop/product-identity.cjs: disposable

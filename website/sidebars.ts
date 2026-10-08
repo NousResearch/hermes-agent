@@ -588,6 +588,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-pinecone-research',
                     'user-guide/skills/optional/research/research-qmd',
                     'user-guide/skills/optional/research/research-research-paper-writing',
+                    'user-guide/skills/optional/research/research-rnd-execution',
                     'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',
                     'user-guide/skills/optional/research/research-searxng-search',

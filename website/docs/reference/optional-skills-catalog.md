@@ -242,6 +242,7 @@ hermes skills uninstall <skill-name>
 | [**pinecone-research**](../user-guide/skills/optional/research/research-pinecone-research.md) | Agent RAG and long-term memory with Pinecone. |
 | [**qmd**](../user-guide/skills/optional/research/research-qmd.md) | Hybrid local search over notes, docs, and transcripts. |
 | [**research-paper-writing**](../user-guide/skills/optional/research/research-research-paper-writing.md) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
+| [**rnd-execution**](../user-guide/skills/optional/research/research-rnd-execution.md) | Evidence-gated R&D execution for agent-led research work. |
 | [**rss-feeds**](../user-guide/skills/optional/research/research-rss-feeds.md) | Read RSS, Atom, JSON feeds; discover feeds behind a page. |
 | [**scrapling**](../user-guide/skills/optional/research/research-scrapling.md) | Scrape sites with stealth browsing and Cloudflare bypass. |
 | [**searxng-search**](../user-guide/skills/optional/research/research-searxng-search.md) | Free keyless meta-search aggregating 70+ engines. |

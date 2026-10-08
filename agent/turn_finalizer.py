@@ -144,6 +144,8 @@ def _resolve_budget_fallback(
             final_response = _pending_verification_response
             if _pending_verification_response_previewed:
                 agent._response_was_previewed = True
+                # Reuses the candidate the user already saw sealed as an interim (#130396).
+                agent._reused_response_text = final_response
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
@@ -692,6 +694,9 @@ def finalize_turn(
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
+        # The final is byte-for-byte a response this turn already delivered (no footer or
+        # explanation appended since): it carries no new text for the client to paint.
+        "response_reused": bool(final_response) and final_response == getattr(agent, "_reused_response_text", None),
         "model": agent.model,
         # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
         **result_model_fields(agent),
@@ -740,10 +745,16 @@ def finalize_turn(
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False
+    agent._reused_response_text = None
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
+
+    # A voice turn's model route ends with the turn: memory sync and the background review
+    # below (and the next turn) run on the session's main model.
+    from agent.voice_turn_route import end_voice_turn_route
+    end_voice_turn_route(agent)
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (

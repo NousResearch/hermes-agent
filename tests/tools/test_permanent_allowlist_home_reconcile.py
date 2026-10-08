@@ -67,7 +67,7 @@ def test_named_home_save_preserves_disk_edits_without_resurrecting_revocation(ho
         write_allowlist(named, ["kept-op", "operator-added"])
         # Revocation is intentionally synchronized on reload/save, not watched.
         assert approval.is_approved("named-session", "revoked-op")
-        approval._persist_choice("named-session", "always", [("new-grant", "Fixture", False)])
+        approval._persist_choice("named-session", "always", ["new-grant"])
         assert disk_allowlist(named) == {"kept-op", "operator-added", "new-grant"}
         assert not approval.is_approved("another-session", "revoked-op")
         assert approval.is_approved("another-session", "new-grant")
@@ -99,7 +99,7 @@ def test_empty_reload_revokes_then_explicit_new_grant_persists_only_in_selected_
         assert approval.load_permanent_allowlist() == set()
         assert all(not approval.is_approved("fresh-session", key) for key in previous)
         assert approval.is_approved("ongoing-session", "session-only")
-        approval._persist_choice("fresh-session", "always", [("new-grant", "Fixture", False)])
+        approval._persist_choice("fresh-session", "always", ["new-grant"])
         assert disk_allowlist(home) == {"new-grant"}
         assert approval.is_approved("later-session", "new-grant")
     assert disk_allowlist(other) == {"other-only"}
@@ -130,7 +130,7 @@ def test_reload_of_one_home_does_not_replace_another_cached_home(homes):
         approval.load_permanent_allowlist()
     with selected_home(other):
         assert approval.is_approved("other-session", "other-only")
-        approval._persist_choice("other-session", "always", [("other-new", "Fixture", False)])
+        approval._persist_choice("other-session", "always", ["other-new"])
         assert disk_allowlist(other) == {"other-only", "other-new"}
     assert disk_allowlist(named) == set()
 
@@ -152,7 +152,7 @@ def test_concurrent_always_choices_do_not_restore_a_revoked_pattern(homes, monke
             with selected_home(named):
                 if second:
                     second_started.set()
-                approval._persist_choice(session, "always", [(pattern, "Fixture", False)])
+                approval._persist_choice(session, "always", [pattern])
         except BaseException as exc:
             failures.append(exc)
         finally:

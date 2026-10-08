@@ -1315,6 +1315,38 @@ def _skill_should_show(
     )
 
 
+def _plugin_skill_prompt_rows(
+    disabled: "set[str]", available_tools: "set[str] | None", available_toolsets: "set[str] | None",
+    session_platform: "str | None",
+) -> "list[tuple[str, str]]":
+    """``(qualified_name, description)`` for every skill registered by an ENABLED plugin
+    (``ctx.register_skill``), filtered through the same offer-time gates as on-disk skills.
+    Plugin skills live in the plugin-manager registry — never under the profile skills tree —
+    so the disk scans above cannot see them; this is their one path into ``<available_skills>``.
+    The qualified ``plugin:skill`` name is exactly what ``skill_view`` resolves, and disabling
+    or unloading a plugin removes its registry entries, so enablement gating is inherent."""
+    rows: "list[tuple[str, str]]" = []
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
+        for meta in get_plugin_manager().list_plugin_skill_metadata():
+            name = str(meta.get("name") or "")
+            if not name or name in disabled:
+                continue
+            frontmatter = meta.get("frontmatter") or {}
+            if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
+                    and skill_matches_apps(frontmatter)):
+                continue
+            if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
+                                      available_toolsets, session_platform):
+                continue
+            desc = str(meta.get("description") or "").strip() or extract_skill_description(frontmatter)
+            rows.append((name, desc))
+    except Exception:
+        logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
+    return rows
+
+
 def _current_session_platform_hint() -> str:
     """Active platform without importing the gateway package on CLI startup."""
     platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
@@ -1476,12 +1508,15 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
+    # root — the snapshot manifest can't see them change, so they participate in the cache key.
+    plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
     cache_key = (
         str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(),
+        _oneshot_prompt_variant(), tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir)
     app_gated = snapshot is not None and any(
@@ -1532,6 +1567,14 @@ def _build_skills_system_prompt_inner(
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
     _label_visible_entries(visible_entries, skills_by_category)
+    if plugin_rows:
+        # Same category label skills_list gives registry skills; qualified names are already
+        # namespaced (plugin:skill) so they cannot collide with on-disk load_names.
+        listed = {name for entries in skills_by_category.values() for name, _ in entries}
+        for name, desc in plugin_rows:
+            if name not in listed:
+                listed.add(name)
+                skills_by_category.setdefault("plugin", []).append((name, desc))
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
@@ -1576,12 +1619,30 @@ def _truncate_content(
         warnings.append(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
+    omitted = _omitted_headings(content, head_chars, len(content) - tail_chars)
+    sections = f" Omitted sections: {'; '.join(omitted)}." if omitted else ""
     marker = (
         f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. The middle is "
-        f"omitted — if you need the full instructions, read the complete file with the read_file tool: "
-        f"{read_path or filename}]\n\n"
+        f"omitted.{sections} If you need the full instructions, read the complete file with the read_file "
+        f"tool: {read_path or filename}]\n\n"
     )
     return content[:head_chars] + marker + content[-tail_chars:]
+
+
+def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> list:
+    """Markdown headings whose line starts inside ``content[start:end]``, so a truncation marker tells
+    the agent what it lost; ``#`` lines inside fenced code blocks are comments, not headings."""
+    import re
+
+    headings, offset, fenced = [], 0, False
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and start <= offset < end and re.match(r"#{1,6} \S", stripped):
+            headings.append(stripped.lstrip("#").strip())
+        offset += len(line)
+    return headings[:limit] + (["..."] if len(headings) > limit else [])
 
 
 def load_soul_md(context_length: Optional[int] = None, home_override: "Path | None" = None) -> Optional[str]:

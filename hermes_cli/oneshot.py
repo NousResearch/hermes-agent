@@ -460,6 +460,11 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     session_meta = session_db.get_session(resolved)
     if not session_meta:
         raise RuntimeError(f"session not found: {resume}")
+    # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779): a
+    # quiet one-shot resume would be a write-capable process the board cannot observe.
+    from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+    if (kanban_refusal := kanban_resume_refusal(session_db, resolved)) is not None:
+        raise RuntimeError(f"cannot resume session {resume}: {kanban_refusal}")
     session_db.assert_resume_safe(resolved, tip_only=True)
     restored, _display = session_db.get_resume_conversations(resolved)
     history = [m for m in restored if m.get("role") != "session_meta"]

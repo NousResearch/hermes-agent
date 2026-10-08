@@ -47,9 +47,17 @@ def _completion_cwd(params: dict | None = None) -> str:
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
     named_ssh = profile_home is not None and _cwd_is_remote(profile_home)
+    # A NAMED profile with no configured workspace (placeholder/unset terminal.cwd) never inherits
+    # the LAUNCH profile's cwd (#87584): the Desktop stamps the app-global workspace into every
+    # pooled backend's TERMINAL_CWD, and _launch_configured_cwd()/that env var hold the launch
+    # profile's value — a session for another profile would land in the wrong workspace. Its own
+    # home is the same default its standalone gateway would use (placeholder → $HOME).
+    named_local_default = (
+        str(profile_home) if profile_home is not None and not named_ssh and not client_cwd and not session_cwd else None
+    )
     raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
-              or ("~" if named_ssh else "") or _launch_configured_cwd()
+              or ("~" if named_ssh else "") or named_local_default or _launch_configured_cwd()
               or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
@@ -214,6 +222,35 @@ _LAUNCH_CWD_NOT_A_WORKSPACE = {"desktop"}
 def _context_cwd_is_launch_artifact(session: dict | None) -> bool:
     """Whether the session cwd came from app launch rather than user intent."""
     return bool(session and not session.get("explicit_cwd") and _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE)
+
+
+def _resolve_create_cwd(params: dict, source: str, profile_home) -> tuple[bool, str, bool]:
+    """``(explicit_cwd, session_cwd, remote_cwd)`` for a freshly created session.
+
+    Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace". A
+    chosen workspace is one the gateway host can ``isdir``-probe, an ssh-shaped cwd on a remote
+    profile, or — the #108205 desktop arm — a nonblank desktop-sourced cwd the host probe could
+    not vouch for: the client names a workspace its gateway host cannot see (Docker/remote
+    backend topology), and a failed host-side isdir is a topology artifact, not a verdict on
+    the client's path. The CLIENT vouches instead, with #52589 provenance: a deliberate pick
+    (``cwd_explicit``) adopts the raw path outright; an inherited app-global workspace only
+    counts once the completion resolution actually adopted it, so a launch-dir fallback still
+    persists nothing and a named profile's configured ``terminal.cwd`` keeps winning.
+    """
+    raw_cwd = str(params.get("cwd") or "").strip()
+    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
+    explicit_cwd = False
+    with contextlib.suppress(Exception):
+        explicit_cwd = bool(raw_cwd) and (
+            remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
+    session_cwd = _completion_cwd(params)
+    if raw_cwd and not explicit_cwd and source == "desktop":
+        if params.get("cwd_explicit"):
+            explicit_cwd = True
+            session_cwd = raw_cwd
+        elif session_cwd and session_cwd == os.path.abspath(os.path.expanduser(raw_cwd)):
+            explicit_cwd = True
+    return explicit_cwd, session_cwd, remote_cwd
 
 
 def _persisted_session_cwd(session: dict) -> str | None:
@@ -408,7 +445,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     global default here wins the INSERT-OR-IGNORE race (a reconnect silently reverts to the profile default).
     model_config carries provider/reasoning/service_tier so resume restores effort + fast too."""
     override = raw if isinstance(raw := session.get("model_override"), dict) else {}
-    row_model = str(override.get("model") or "").strip() or _session_default_model(session)
+    row_model = str(override.get("model") or "").strip() or _session_default_route(session)[0]
     model_config: dict = {k: str(v) for k in ("model", "provider", "base_url", "api_mode") if (v := override.get(k))}
     # A RESOLVED provider "custom" (named ``providers:``/``custom_providers:`` entry) persisted bare here is the origin
     # of "No LLM provider configured" rows (resume routes to OpenRouter with no key). Recover the durable
@@ -438,6 +475,10 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    # A /yolo toggled before the first message had no row to persist to (rows are created lazily here).
+    from tools.approval import is_session_yolo_enabled
+    if is_session_yolo_enabled(session.get("session_key") or ""):
+        model_config["yolo_mode"] = True
     return row_model, model_config
 
 

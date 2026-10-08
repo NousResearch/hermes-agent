@@ -402,6 +402,22 @@ class TestSessionKeyContext:
         finally:
             approval_context.reset_current_session_key(token)
 
+    def test_gateway_context_ignores_stale_session_key_environment(self, monkeypatch):
+        from gateway.platform_context import AuthenticatedPlatformContext, authenticated_platform_context_scope
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", "stale-foreign-session")
+        context = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+        with authenticated_platform_context_scope(context):
+            assert approval_module.get_current_session_key(default="missing") == "missing"
+
+    def test_nested_approval_context_cannot_replace_ambient_key(self):
+        outer = approval_context.set_current_session_key("session-a")
+        try:
+            with pytest.raises(ValueError, match="cannot replace ambient"):
+                approval_context.set_current_session_key("session-b")
+        finally:
+            approval_context.reset_current_session_key(outer)
+
 
 class TestRmFalsePositiveFix:
     """Regression tests: filenames starting with 'r' must NOT trigger recursive delete."""

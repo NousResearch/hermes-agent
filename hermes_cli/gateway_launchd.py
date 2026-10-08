@@ -14,7 +14,15 @@ import shlex
 import subprocess
 import sys
 import time
+from enum import Enum
 from xml.sax.saxutils import escape
+
+
+class LaunchdReload(Enum):
+    NOT_NEEDED = "not_needed"
+    DEFERRED = "deferred"
+    REGISTERED = "registered"
+    FAILED = "failed"
 
 
 def _gw():
@@ -534,16 +542,15 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
-def refresh_launchd_plist_if_needed() -> bool:
-    """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
-    re-reads it immediately."""
+def refresh_launchd_plist_if_needed() -> LaunchdReload:
+    """Rewrite a stale plist and report whether launchd confirmed the refreshed service."""
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
-        return False
+        return LaunchdReload.NOT_NEEDED
 
     new_plist = _gw().generate_launchd_plist()
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
-        return False
+        return LaunchdReload.FAILED
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
@@ -571,7 +578,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             "↻ Updated gateway launchd service definition; reload deferred to "
             "a transient launchd job (survives the bootout of this process)"
         )
-        return True
+        return LaunchdReload.DEFERRED
 
     # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
     # during a drain, and KeepAlive can't revive an unregistered job.
@@ -594,9 +601,10 @@ def refresh_launchd_plist_if_needed() -> bool:
             "launchd reload of %s failed — service not registered after %ds of retries; see %s",
             target, int(_reload_budget), _launchd_reload_log_path(),
         )
-        return False
+        print("⚠ Updated plist but launchd did not re-register the gateway service")
+        return LaunchdReload.FAILED
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
-    return True
+    return LaunchdReload.REGISTERED
 
 
 def launchd_install(force: bool = False, *, start_now: bool = True):
@@ -613,7 +621,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
             return
         if load:
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            if _gw().refresh_launchd_plist_if_needed():
+            reload = _gw().refresh_launchd_plist_if_needed()
+            if reload is not LaunchdReload.FAILED:
                 print("✓ Service definition updated")
             else:
                 # The plist was rewritten but launchd never registered it (or the write was refused):
@@ -693,7 +702,12 @@ def launchd_start():
             _launchd_ok("✓ Service started")
         return
 
-    _gw().refresh_launchd_plist_if_needed()
+    reload = _gw().refresh_launchd_plist_if_needed()
+    if reload is LaunchdReload.REGISTERED:
+        # In-process refresh waited until launchctl confirmed a supervising PID.
+        _launchd_ok("✓ Service started")
+        return
+    # DEFERRED only confirms helper submission; kickstart remains necessary until a PID is confirmed.
     try:
         _launchctl_kickstart_current(label)
     except subprocess.CalledProcessError as e:
@@ -778,7 +792,7 @@ def launchd_restart():
     # kickstart below would hang on the same wall — go straight to the
     # bootout/bootstrap-retry path, which is bounded and reports its own
     # failure instead of stalling the update for 90s.
-    refresh_ok = _gw().refresh_launchd_plist_if_needed()
+    reload = _gw().refresh_launchd_plist_if_needed()
     from gateway.status import get_running_pid
     try:
         pid = get_running_pid()
@@ -807,7 +821,7 @@ def launchd_restart():
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
-        if not refresh_ok and _gw().get_launchd_plist_path().exists() and not _gw().launchd_plist_is_current():
+        if reload is LaunchdReload.FAILED:
             # The refresh attempted a reload and launchd never re-registered
             # the (rewritten) job: kickstart would hang on the same wall. The
             # bootout already happened inside the refresh — bootstrap is the

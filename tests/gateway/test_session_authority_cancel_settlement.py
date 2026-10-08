@@ -202,7 +202,7 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
     """finish_result can raise (a concurrent reset/compression moved runtime_generation).
 
     The pump must survive that: the failure is logged with the admission id, the row is
-    left for recovery (owner restart -> unknown) rather than silently re-settled, and the
+    marked unknown rather than silently re-settled, and the
     drain task ends without an unretrieved exception so the FIFO can be re-armed.
     """
     import logging
@@ -227,5 +227,5 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
             [rec.getMessage() for rec in caplog.records]
         row, = [r for r in list_session_admissions(db, session_id='s', pending_only=False)
                 if r['admission_id'] == head.admission_id]
-        assert row['status'] == 'started', 'left for recovery, never silently re-settled'
+        assert row['status'] == 'unknown', 'explicit recovery is possible without inventing a terminal result'
         assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'

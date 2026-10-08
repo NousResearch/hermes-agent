@@ -411,6 +411,7 @@ class SessionAuthority:
         row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
                                             generation=generation,
                                             _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
+        self.pending_results.pop(admission_id, None)
         # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
         # would otherwise stay on disk forever (the drain releases only settled turns).
         from gateway.session_ingress_media import release_admission_media
@@ -580,55 +581,61 @@ class SessionAuthority:
                 logging.getLogger(__name__).exception('Admitted turn %s failed', admission_id)
                 response = 'The admitted turn failed.'
                 outcome = 'failed'
+            settled = None
             try:
                 with live.event_stream.lock:
                     from gateway.session_results import finish_result
-                    captured = self.pending_results.pop(admission_id, None)
+                    captured = self.pending_results.get(admission_id)
                     settled, response = finish_result(self.db, epoch=self.epoch, row=row,
                         response=response, outcome=outcome, result=captured)
-                    live.controls.snapshot(ref.session_id, None)
-                    from gateway.session_ingress_media import release_admission_media
-                    release_admission_media(self.db, admission_id)
-                    # ``status`` is the message.complete contract's TurnStatus: the Desktop
-                    # extends a Stopped bubble to the persisted partial only on 'interrupted'.
-                    complete = {
-                        'text': response, 'content': response, 'admission_id': admission_id,
-                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
-                        'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
-                            settled['outcome'], 'error')}
-                    # Only the agent's reuse site sets this (never inferred from equal text): the
-                    # final repeats a reply the viewer already painted, so it settles in place.
-                    captured_result = (captured or {}).get('result') or {}
-                    if response and captured_result.get('response_reused'):
-                        complete['response_reused'] = True
-                    # The committed row addresses of the turn: a viewer binds the streamed reply to
-                    # its stored row, so a transcript read racing this frame never paints it twice.
-                    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
-                    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
-                    if isinstance(captured_result.get('persisted_turn'), dict):
-                        complete['persisted_turn'] = {**captured_result['persisted_turn'],
-                                                      'submission_id': row['request_id']}
-                    live.event_stream.publish(ref.session_id, complete)
-                    # The idle snapshot (running=false) follows the completion, as on every other
-                    # host: a viewer that read running=false first settled the reply as a turn whose
-                    # terminal frame was lost and raced its own transcript read against the real one.
-                    self._publish_pending(ref)
+                    self.pending_results.pop(admission_id, None)
+                    from gateway.session_settlement_recovery import publish_terminal
+                    publish_terminal(self, ref, row, settled, response, captured)
             except Exception:
-                # The settle fence lost (a reset/compression moved runtime_generation under
-                # the turn). The row stays `started` for recovery -> `unknown`; re-settling
-                # it here would forge an outcome the ledger refused. The pump itself must
-                # not die silently: log with the id and fall through to release observers.
                 import logging
                 logging.getLogger(__name__).exception(
-                    'Settlement of admission %s failed; left for recovery', admission_id)
-                response = 'The admitted turn could not be settled.'
+                    'Settlement or publication of admission %s failed', admission_id)
+                if settled is None:
+                    self.pending_results.setdefault(admission_id, {
+                        'result': {'final_response': response, 'failed': outcome == 'failed'}, 'usage': {}})
+                    from gateway.session_settlement_recovery import recover_failed_settlement
+                    try:
+                        status = await recover_failed_settlement(self, row)
+                    except RuntimeStoreError:
+                        # Ownership moved; this owner may only release its process-local observers.
+                        self._pause(ref, 'unknown_execution')
+                        return
+                    # Discard can race the off-loop recovery stamp; its terminal decision wins.
+                    current = get_session_admission(self.db, admission_id=admission_id)
+                    status = current['status']
+                    if status == 'unknown':
+                        self._publish_pending(ref)
+                        self._pause(ref, 'unknown_execution')
+                        return
+                    # A write can commit before reporting failure. Re-read its exact result,
+                    # then publish the terminal outcome rather than inventing uncertainty.
+                    from gateway.session_results import admission_result
+                    from gateway.session_settlement_recovery import publish_terminal
+                    with live.event_stream.lock:
+                        captured = admission_result(self.db, admission_id)
+                        self.pending_results.pop(admission_id, None)
+                        if captured is None:
+                            # An operator discarded uncertainty while recovery yielded. There is
+                            # no committed answer to replay; its queued successor may now run.
+                            waiter = self.waiters.pop(admission_id, None)
+                            if waiter is not None and not waiter.done():
+                                waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                            continue
+                        settled = current
+                        response = captured['result'].get('final_response') or ''
+                        publish_terminal(self, ref, row, settled, response, captured)
             finally:
                 # The stamp names a claimed, unsettled execution. Left in place, idle
                 # mutations (session.updated) would carry a terminal generation and
                 # a versioned viewer fence would discard them as late frames.
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
-            self.pending_stops.pop(ref.session_id, None)
+                self.pending_stops.pop(ref.session_id, None)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)

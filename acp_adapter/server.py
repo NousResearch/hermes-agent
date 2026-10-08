@@ -255,8 +255,19 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._subagent_metadata = False
 
     # ---- Connection lifecycle -----------------------------------------------
+
+    def _subagent_progress_for(self, state: SessionState):
+        from hermes_constants import get_hermes_home
+        from .subagents import SubagentProgress
+
+        if state.subagent_progress is None:
+            state.subagent_progress = SubagentProgress(state.session_id, get_hermes_home() / "acp-subagents")
+        state.subagent_progress.bind(asyncio.get_running_loop(), lambda: self._conn,
+                                    metadata=self._subagent_metadata)
+        return state.subagent_progress
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
@@ -532,6 +543,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.version_info import get_version_info
 
         auth_methods = build_auth_methods()
+        meta = client_capabilities.field_meta if client_capabilities is not None else None
+        hermes = meta.get("hermes") if isinstance(meta, dict) else None
+        self._subagent_metadata = isinstance(hermes, dict) and type(hermes.get("subagentProgress")) is int and hermes["subagentProgress"] == 1
         logger.info(
             "Initialize from %s (protocol v%s)", client_info.name if client_info else "unknown",
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION,
@@ -541,6 +555,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
             agent_capabilities=AgentCapabilities(
+                field_meta={"hermes": {"subagentProgress": 1}},
                 load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
@@ -594,6 +609,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 # broke every spec-compliant ACP client that measures notifications synchronously against
                 # the load response — see #12285 follow-up.
                 await self._replay_session_history(state)
+                await self._subagent_progress_for(state).replay()
             except Exception:
                 logger.warning(
                     f"ACP history replay raised during session/{replay_verb} for %s — "
@@ -880,6 +896,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        if state.subagent_progress is not None:
+            await state.subagent_progress.drain()
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
     def _flush_turn_tool_calls(
@@ -909,6 +927,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
                 turn_state=turn_state,
+                subagent_progress=self._subagent_progress_for(state).record,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).

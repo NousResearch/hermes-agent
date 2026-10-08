@@ -384,10 +384,19 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     default = _BUILTIN_SKINS["default"]
     skin_name = str(data.get("name", "unknown"))
 
+    # YAML null means unset: `key:` and an unquoted `#hex` (YAML reads it as a comment) load as
+    # None, which must inherit rather than reach Rich/prompt_toolkit as a color (startup crash).
+    def scalar(key: str, fallback: Any) -> Any:
+        value = data.get(key)
+        return fallback if value is None else value
+
     def section(key: str) -> Dict[str, Any]:
         value = data.get(key)
         if isinstance(value, dict):
-            return value
+            if unset := [k for k, v in value.items() if v is None]:
+                logger.warning("Skin '%s' has empty '%s' keys %s (quote hex colors: \"#rrggbb\"); inheriting",
+                               skin_name, key, unset)
+            return {k: v for k, v in value.items() if v is not None}
         if value is not None:
             logger.warning("Skin '%s' has invalid '%s' section type (%s); ignoring section",
                            skin_name, key, type(value).__name__)
@@ -399,13 +408,13 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     # "no hand-tuned variant for that polarity" and consumers (the TUI) fall back to `colors`
     # + automatic adaptation, which beats the default's gold light palette under a crimson skin.
     return SkinConfig(
-        name=skin_name, description=data.get("description", ""), colors=merged("colors"),
+        name=skin_name, description=scalar("description", ""), colors=merged("colors"),
         light_colors=section("light_colors"), dark_colors=section("dark_colors"),
         spinner=merged("spinner"), branding=merged("branding"),
-        tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
-        tool_emojis=section("tool_emojis"), banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""),
-        custom_css=str(data.get("customCSS", "")).strip()[:32768])
+        tool_prefix=scalar("tool_prefix", default.get("tool_prefix", "┊")),
+        tool_emojis=section("tool_emojis"), banner_logo=scalar("banner_logo", ""),
+        banner_hero=scalar("banner_hero", ""),
+        custom_css=str(scalar("customCSS", "")).strip()[:32768])
 
 
 def list_skins() -> List[Dict[str, str]]:
@@ -416,7 +425,7 @@ def list_skins() -> List[Dict[str, str]]:
     for f in sorted(skins_path.glob("*.yaml")) if skins_path.is_dir() else ():
         data = _load_skin_from_yaml(f)
         if data and not any(s["name"] == data.get("name", f.stem) for s in result):
-            result.append({"name": data.get("name", f.stem), "description": data.get("description", ""),
+            result.append({"name": data.get("name", f.stem), "description": data.get("description") or "",
                            "source": "user"})
     return result
 

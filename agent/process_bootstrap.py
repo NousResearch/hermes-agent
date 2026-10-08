@@ -2,9 +2,9 @@
 
 Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
-(``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
-runs sync httpx connects through the process-wide Happy Eyeballs racer
-(``hermes_bootstrap``).
+wrappers (``agent.stdio_wrappers``), env-only HTTP proxy resolution, and the
+httpcore backend that runs sync httpx connects through the process-wide Happy
+Eyeballs racer (``hermes_bootstrap``).
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from typing import Any, Optional
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from agent.stdio_wrappers import _SafeWriter, _unwrap_stdio_stream
+from agent.thread_scoped_output import _ThreadRoutingStream
 
 
 _OPENAI_CLS_CACHE = None
@@ -127,44 +129,6 @@ class _OpenAIProxy:
 
     def __repr__(self):
         return "<lazy openai.OpenAI proxy>"
-
-
-class _SafeWriter:
-    """Transparent stdio wrapper swallowing OSError/ValueError from broken pipes.
-
-    Headless runs (systemd, Docker) lose the stdout pipe → ``OSError: [Errno 5]``;
-    subagent threads can see the shared handle close → ``ValueError``. Either
-    would otherwise crash the agent (often via double-fault in an except handler).
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner):
-        object.__setattr__(self, "_inner", inner)
-
-    def write(self, data):
-        try:
-            return self._inner.write(data)
-        except (OSError, ValueError):
-            return len(data) if isinstance(data, str) else 0
-
-    def flush(self):
-        try:
-            self._inner.flush()
-        except (OSError, ValueError):
-            pass
-
-    def fileno(self):
-        return self._inner.fileno()
-
-    def isatty(self):
-        try:
-            return self._inner.isatty()
-        except (OSError, ValueError):
-            return False
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 def _get_proxy_from_env() -> Optional[str]:
@@ -328,8 +292,16 @@ def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
-            setattr(sys, stream_name, _SafeWriter(stream))
+        if stream is None or isinstance(stream, _SafeWriter):
+            continue
+        inner, routing = _unwrap_stdio_stream(stream, _ThreadRoutingStream)
+        if routing is not None:
+            # A routing proxy's writes already swallow failures; adding a
+            # _SafeWriter layer over it only deepened the alternating wrapper
+            # chain by one layer per agent build (recursion crash on long-lived
+            # gateways).
+            continue
+        setattr(sys, stream_name, _SafeWriter(inner))
 
 
 # Drop-in for ``openai.OpenAI``.
@@ -337,7 +309,7 @@ OpenAI = _OpenAIProxy()
 
 
 __all__ = [
-    "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_get_proxy_from_env",
+    "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_install_safe_stdio", "_get_proxy_from_env",
     "_get_proxy_for_base_url", "build_keepalive_http_client", "close_shared_transports",
     "enable_happy_eyeballs_on_client",
 ]

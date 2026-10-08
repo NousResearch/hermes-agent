@@ -35,7 +35,9 @@ const rafQueue: FrameRequestCallback[] = []
 function flushFrames() {
   const queued = rafQueue.splice(0)
 
-  for (const cb of queued) {cb(0)}
+  for (const cb of queued) {
+    cb(0)
+  }
 }
 
 beforeEach(() => {

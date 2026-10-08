@@ -195,7 +195,16 @@ describe('messages below the viewport', () => {
     expect($threadMessagesBelowBySession.get()['runtime-a'] ?? 0).toBe(1)
 
     // Non-message subtree mutations do not schedule another geometry read.
-    mutate?.([{ type: 'childList', addedNodes: [window.document.createElement('span')], removedNodes: [] } as unknown as MutationRecord], {} as MutationObserver)
+    mutate?.(
+      [
+        {
+          type: 'childList',
+          addedNodes: [window.document.createElement('span')],
+          removedNodes: []
+        } as unknown as MutationRecord
+      ],
+      {} as MutationObserver
+    )
     expect(frame).toBeUndefined()
 
     // Another visible pane reaching bottom must not erase this reader's count.

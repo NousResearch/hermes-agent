@@ -11,7 +11,7 @@
 import type * as assistantUiModule from '@assistant-ui/react'
 import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import type * as messageReactionsModule from '@/components/assistant-ui/thread/use-message-reactions'
@@ -58,6 +58,16 @@ vi.mock('@assistant-ui/react', async importActual => {
 
 stubThreadEnvironment()
 stubThreadViewportSize()
+
+// Markdown surfaces get the code plugin (all of shiki) from a one-shot async
+// import (`useCodePlugin`), and every surface mounted before it lands
+// re-renders once to swap it in. Cold, that import can take longer than the
+// settle loop below, which put that one-time re-render inside the chunk window
+// (0.1 per settled row). Load the module before the test so the hook's own
+// import resolves while rows are still settling.
+beforeAll(async () => {
+  await import('@streamdown/code')
+})
 
 beforeEach(() => {
   rootRenders.clear()
@@ -156,10 +166,14 @@ describe('streaming into a settled transcript', () => {
 
     await findByText('tok0')
 
-    // Let the render-budget backfill finish mounting older rows first, so the
-    // window below measures RE-renders of mounted rows, not first mounts.
-    for (let settle = 0, last = -1; settle < 50 && rootRenders.size !== last; settle += 1) {
-      last = rootRenders.size
+    // Let the render-budget backfill finish mounting older rows, and any async
+    // one-shot work (the code plugin swap) re-render them, so the window below
+    // measures per-chunk RE-renders only. Settle on the render COUNT, not the
+    // mounted-row count: a one-time re-render of a mounted row adds no row.
+    const renderTotal = () => sum(rootRenders, [...rootRenders.keys()]) + sum(textRenders, [...textRenders.keys()])
+
+    for (let settle = 0, last = -1; settle < 50 && renderTotal() !== last; settle += 1) {
+      last = renderTotal()
       await act(async () => {
         await new Promise(resolve => setTimeout(resolve, 50))
       })

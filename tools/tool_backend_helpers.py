@@ -21,6 +21,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
+        # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
         account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
                         else get_nous_portal_account_info())
         return bool(account_info.logged_in) and account_info.tool_gateway_entitled
@@ -230,6 +231,19 @@ def read_selection(section: str) -> str | None:
     # use_gateway: false with no name key is not a usable selection shape;
     # per-capability web keys still count as configured via selection_exists().
     return None
+
+
+def read_web_capability_selection(capability: Optional[str] = None) -> str | None:
+    """Stored selection that decides ONE web capability (``"search"`` / ``"extract"``):
+    ``web.<capability>_backend`` when set (``"nous"`` = managed gateway, a vendor name =
+    that vendor direct), else the shared :func:`read_selection`. Lets search and extract
+    each choose between the user's own key and the Nous Tool Gateway."""
+    if capability:
+        raw = _raw_section("web") or {}
+        pin = str(raw.get(f"{capability}_backend") or "").strip().lower()
+        if pin:
+            return pin
+    return read_selection("web")
 
 
 def selection_exists(section: str) -> bool:

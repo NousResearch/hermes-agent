@@ -1082,7 +1082,7 @@ test('isMissingFileError classifies ENOENT/ENOTDIR as expected preview-read outc
 })
 
 test('missingFileResult builds the structured missing-file IPC answer', () => {
-  const error = new Error('ENOENT: no such file or directory, open \'/tmp/gone.txt\'')
+  const error = new Error("ENOENT: no such file or directory, open '/tmp/gone.txt'")
 
   ;(error as NodeJS.ErrnoException).code = 'ENOENT'
 

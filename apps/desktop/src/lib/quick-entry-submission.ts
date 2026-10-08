@@ -89,6 +89,7 @@ export function captureQuickEntryRequest(input: {
   identity: QuickEntryRequestIdentity
 }): CapturedQuickEntryRequest {
   const identity: QuickEntryRequestIdentity = { ...input.identity }
+
   const request: CapturedQuickEntryRequest = {
     correlationId: input.correlationId,
     identity
@@ -161,6 +162,7 @@ export function validateQuickEntryAcceptance(
   }
 
   const result = isRecord(backendResult) && Object.keys(backendResult).length > 0 ? backendResult : null
+
   if (
     result === null ||
     !nonEmptyString(result.correlationId) ||

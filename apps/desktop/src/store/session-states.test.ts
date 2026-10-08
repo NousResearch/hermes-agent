@@ -13,6 +13,7 @@ import {
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $projectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -20,13 +21,14 @@ import {
   $workspaceCwdOwner,
   setCurrentCwd,
   setSessionOwnerHint,
-  setSessions
+  setSessions,
+  setUnlistedSessionOwnerRows
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
-  $focusedStoredSessionId,
   $focusedWorkspaceCwd,
   $sessionStates,
   $sessionTiles,
@@ -276,6 +278,7 @@ function runtimeBindingDelegate(
   return {
     archiveSession: vi.fn(),
     branchSession: vi.fn(),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(),
     executeSlash: vi.fn(),
     interruptSession: vi.fn(),
@@ -1179,6 +1182,11 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     $layoutTree.set(null)
     $selectedStoredSessionId.set(null)
     setWorkspaceScope('sessions')
+    // The cwd-ladder tests below load rows into slices the describe never
+    // touched before; leave every store as empty as they found it.
+    setSessions([])
+    setUnlistedSessionOwnerRows([])
+    $projectTree.set([])
   })
 
   it('a Bots-pane click keeps the main-zone bot tile focused instead of collapsing to a null selection edge', () => {
@@ -1244,9 +1252,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
   it('computes $focusedWorkspaceCwd from the focused tile session state or sessions list', () => {
     $selectedStoredSessionId.set('primary-1')
     setSessions([{ cwd: '/repo-stacked', id: 'stacked' } as any])
-    $sessionTiles.set([
-      { storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any
-    ])
+    $sessionTiles.set([{ storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any])
     $sessionStates.set({
       'rt-stacked': { cwd: '/repo-stacked' } as any
     })
@@ -1269,15 +1275,112 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     setSessions([{ cwd: '/repo-primary-project', id: 'primary-1' } as any])
     $sessionTiles.set([])
     $sessionStates.set({})
-    $layoutTree.set(
-      split('row', [
-        group(['workspace'], { active: 'workspace', id: 'grp-main' })
-      ])
-    )
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
     noteActiveTreeGroup('grp-main')
 
     expect($focusedStoredSessionId.get()).toBe('primary-1')
     expect($focusedWorkspaceCwd.get()).toBe('/repo-primary-project')
+  })
+
+  it('resolves a cold focused tile cwd from the unlisted owner rows, not only the paginated recents page (#76535)', () => {
+    // A cold restored tile outside the recents page and project preview caps
+    // has no $sessions row; a resume-time by-id resolve parked its row on the
+    // unlisted-owner atom, which $focusedWorkspaceCwd never searched — so
+    // Files showed "No project open" for a valid tile whose cwd was known.
+    $selectedStoredSessionId.set('primary-1')
+    setSessions([{ cwd: '/repo-primary', id: 'primary-1' } as never])
+    setUnlistedSessionOwnerRows([{ cwd: '/repo-cold', id: 'cold-4' } as never])
+    $sessionTiles.set([{ storedSessionId: 'cold-4', workspaceMode: 'sessions' } as never])
+    $sessionStates.set({})
+    $layoutTree.set(
+      split('row', [
+        group(['files'], { active: 'files', id: 'grp-files' }),
+        group(['workspace', tilePane('cold-4')], { active: tilePane('cold-4'), id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-files')
+
+    expect($focusedStoredSessionId.get()).toBe('cold-4')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-cold')
+  })
+
+  it('resolves a cold focused tile cwd from the project tree lanes (#76535)', () => {
+    // Same class, second cache: a session opened as a tab from a project
+    // group lives only in the (capped) tree rows until new activity lands it
+    // in recents. tileStoredRow already resolves titles this way; cwd must
+    // agree.
+    $selectedStoredSessionId.set('primary-1')
+    setSessions([{ cwd: '/repo-primary', id: 'primary-1' } as never])
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              { id: 'lane', label: 'lane', path: null, sessions: [{ cwd: '/repo-tree', id: 'tree-5' } as never] }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      } as never
+    ])
+    $sessionTiles.set([{ storedSessionId: 'tree-5', workspaceMode: 'sessions' } as never])
+    $sessionStates.set({})
+    $layoutTree.set(
+      split('row', [
+        group(['files'], { active: 'files', id: 'grp-files' }),
+        group(['workspace', tilePane('tree-5')], { active: tilePane('tree-5'), id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-files')
+
+    expect($focusedStoredSessionId.get()).toBe('tree-5')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-tree')
+  })
+
+  it('widens the primary historical fallback the same way — a selected session outside recents resolves from the tree (#76535)', () => {
+    // The sibling path of the same defect: the primary branch's historical
+    // fallback (no owner-gated currentCwd, no live slice) scanned recents
+    // only. The focused-session row ladder must agree for both branches.
+    $selectedStoredSessionId.set('deep-primary')
+    setCurrentCwd('')
+    $sessionTiles.set([])
+    $sessionStates.set({})
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [{ cwd: '/repo-deep-primary', id: 'deep-primary' } as never]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      } as never
+    ])
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
+    noteActiveTreeGroup('grp-main')
+
+    expect($focusedStoredSessionId.get()).toBe('deep-primary')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-deep-primary')
   })
 })
 
@@ -1355,6 +1458,7 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     const { registry } = await import('@/contrib/registry')
     const session = await import('@/store/session')
     const states = await import('@/store/session-states')
+    const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
     registry.register({
       area: 'panes',
@@ -1386,11 +1490,11 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup('grp-main')
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
 
-    return { states, tree }
+    return { $focusedStoredSessionId, states, tree }
   }
 
   it('restores the live strip slot after reordering and retains the exact owner', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, states, tree } = await setup()
     states.openSessionTile('after', 'center', 'workspace')
     tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
     const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
@@ -1400,17 +1504,17 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup(null)
     states.reopenLastClosedTile()
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
-    expect(states.$focusedStoredSessionId.get()).toBe('closed')
+    expect($focusedStoredSessionId.get()).toBe('closed')
     expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
   })
 
   it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, tree } = await setup()
     const { openSession } = await import('@/app/open-session')
     const navigate = vi.fn()
     tree.noteActiveTreeGroup('sidebar')
     openSession('palette-result', navigate, 'stack')
-    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
+    expect($focusedStoredSessionId.get()).toBe('palette-result')
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
     expect(navigate).not.toHaveBeenCalled()
   })

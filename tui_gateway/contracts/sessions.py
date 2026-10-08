@@ -1,6 +1,7 @@
 """Session lifecycle contracts (``tui_gateway/methods_session.py``): create / resume / activate /
 close, the live-session snapshot those share, history + compression + undo, mid-turn corrections,
 listing/browsing stored rows, spawn-tree snapshots, event replay and the stateless one-shot LLM call.
+``session.start_chat`` lives in ``tui_gateway/methods_start_chat.py``.
 """
 
 from __future__ import annotations
@@ -129,10 +130,14 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # #65410: stable caller-chosen key so a retried create (response lost in
+    # transit) returns the SAME session instead of a duplicate child.
+    idempotency_key: str | None = None
 
 
 class SessionCreateResult(Result):
@@ -152,6 +157,10 @@ class SessionBranchStoredParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #65410: the desktop's whole-session branch rides the same create plumbing and
+    # now always sends the caller's stable key (its retry path reuses it). Optional
+    # so an older client that omits it keeps the historic behaviour.
+    idempotency_key: str | None = None
 
 
 class SessionBranchStoredResult(Result):
@@ -228,6 +237,9 @@ class SessionListRow(Result):
     message_count: int = 0
     live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):
@@ -389,6 +401,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
+    # lost-response retry returns the SAME child instead of a duplicate.
+    idempotency_key: str | None = None
 
 
 class SessionBranchResult(Result):
@@ -407,6 +422,8 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
 
 class SessionBranchWholeParams(SessionParams):
     name: str | None = None
+    # #65410: same retry contract as session.branch.
+    idempotency_key: str | None = None
 
 
 class SessionBranchWholeResult(Result):
@@ -759,3 +776,43 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+
+
+# ── start_chat ────────────────────────────────────────────────────────────────────────────────
+
+
+class StartChatArgs(Params):
+    """The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``)."""
+
+    message: str
+    title: str | None = None
+    profile: str | None = None
+
+
+class SessionStartChatParams(SessionParams):
+    """``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only)."""
+
+    tool_call_id: str
+    args: StartChatArgs
+
+
+class StartChatStatus(WireEnum):
+    started = "started"
+    rejected = "rejected"
+
+
+class SessionStartChatResult(Result):
+    """``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same
+    arguments may succeed on another try (``retryable``). A call already retried returns that retry's result."""
+
+    status: StartChatStatus
+    session_id: str | None = None
+    profile: str | None = None
+    title: str | None = None
+    message: str | None = None
+    reason: str | None = None
+    retryable: bool | None = None
+
+
+method("session.start_chat", params=SessionStartChatParams, result=SessionStartChatResult,
+       doc="Run a start_chat request again from the session that made it (the handoff card's Retry).")

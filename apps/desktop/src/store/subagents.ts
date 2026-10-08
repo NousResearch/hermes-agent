@@ -399,7 +399,15 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
 
 // Statuses that end a subagent run. The store's asStatus normalizes the last
 // three to failed/interrupted, so the event path treats them as terminal too.
-const SUBAGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'interrupted', 'timeout', 'error', 'cancelled', 'canceled'])
+const SUBAGENT_TERMINAL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'interrupted',
+  'timeout',
+  'error',
+  'cancelled',
+  'canceled'
+])
 
 /** True only for a `subagent.complete` carrying a status that ends the run —
  *  the one event the interrupted-session guard in the message-stream must let

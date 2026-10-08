@@ -327,12 +327,13 @@ const ATTACHMENT_REF_LINE_RE = /^@[a-z][a-z0-9-]*:[^\n]*\n?/i
 export function stripAttachmentRefs(text: string): string {
   let current = text ?? ''
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const next = current.replace(ATTACHMENT_REF_LINE_RE, '')
+
     if (next === current) {
       break
     }
+
     current = next
   }
 
@@ -489,6 +490,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
       custom: {
         ...(message.interim ? { interim: true } : {}),
+        ...(message.interrupted ? { interrupted: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),

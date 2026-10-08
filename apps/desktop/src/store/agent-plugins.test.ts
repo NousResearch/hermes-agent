@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $agentPlugins,
+  $agentPluginsProfile,
   type AgentPluginRow,
   installAgentPlugin,
   isDesktopRelevantPlugin,
@@ -12,7 +13,10 @@ import {
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
   ({ name: partial.key ?? 'x', status: 'enabled', ...partial }) as AgentPluginRow
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  $agentPluginsProfile.set(undefined)
+})
 
 describe('installAgentPlugin', () => {
   it('waits for a slow successful install instead of reporting the generic 30s timeout', async () => {
@@ -86,6 +90,7 @@ describe('isDesktopRelevantPlugin (#98861)', () => {
 describe('saveAgentPluginSettings (#46600, #87934)', () => {
   it('writes values through plugins.manage settings and secrets ONLY through the credential writer', async () => {
     $agentPlugins.set([row({ key: 'demo', source: 'user' })])
+    $agentPluginsProfile.set('workbot')
     const refreshed = row({ key: 'demo', settings_schema: [], source: 'user' })
     const request = vi.fn(async () => ({ ok: true, plugin: refreshed }))
     const writeSecret = vi.fn(async () => ({ ok: true }))
@@ -111,5 +116,29 @@ describe('saveAgentPluginSettings (#46600, #87934)', () => {
     expect(writeSecret).toHaveBeenCalledWith('DEMO_API_KEY', 'sk-1')
     expect(JSON.stringify(request.mock.calls)).not.toContain('sk-1')
     expect($agentPlugins.get()[0].settings_schema).toEqual([])
+  })
+
+  // The list is shared across profiles: a save that lands after the list moved
+  // to another profile must neither patch that list nor refetch over it.
+  it('leaves a list loaded for another profile alone', async () => {
+    const other = row({ key: 'demo', source: 'user' })
+
+    $agentPlugins.set([other])
+    $agentPluginsProfile.set('other')
+    const request = vi.fn(async () => ({ ok: true, plugin: row({ key: 'demo', settings_schema: [], source: 'user' }) }))
+
+    const ok = await saveAgentPluginSettings(request as never, {
+      failMessage: 'fail',
+      key: 'demo',
+      profile: 'workbot',
+      secrets: {},
+      values: { retries: 2 },
+      writeSecret: vi.fn(async () => ({ ok: true }))
+    })
+
+    expect(ok).toBe(true)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect($agentPlugins.get()).toEqual([other])
+    expect($agentPluginsProfile.get()).toBe('other')
   })
 })

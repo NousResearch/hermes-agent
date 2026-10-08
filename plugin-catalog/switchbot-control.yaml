@@ -1,0 +1,21 @@
+name: switchbot-control
+repo: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control
+sha: bb68cb4358b83ff01396a477834d766e9069aaff
+description: "SwitchBot OpenAPI v1.1, personal use. No Plug Mini on/off. Locks off unless enabled. setPosition only Curtain/Curtain3 (0=open). Disclosure — Controls real devices through the SwitchBot cloud API (api.switch-bot.com) using your SWITCHBOT_TOKEN and SWITCHBOT_SECRET. Every command asks for Hermes approval and is refused under cron, yolo, approvals off and unattended sessions. Lock and door devices stay refused unless you turn on safety_devices. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a command and approve it. Answering \"always\" adds an unused line to config.yaml each time. The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. Not tested on real devices."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - switchbot_devices
+  - switchbot_command
+  - switchbot_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SWITCHBOT_TOKEN
+  - SWITCHBOT_SECRET

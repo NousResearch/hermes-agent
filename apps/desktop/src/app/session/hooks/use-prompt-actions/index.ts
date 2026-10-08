@@ -38,7 +38,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates, isSessionRemote } from '@/store/session-states'
+import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -61,7 +61,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeUserInterruptedMessages,
+  finalizeStoppedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -705,7 +705,7 @@ export function usePromptActions({
 
     if (!sessionId) {
       releaseBusy()
-      setMessages(finalizeUserInterruptedMessages($messages.get()))
+      setMessages(finalizeStoppedMessages($messages.get()))
 
       return
     }
@@ -716,7 +716,7 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-      const messages = finalizeUserInterruptedMessages(state.messages, streamId)
+      const messages = finalizeStoppedMessages(state.messages, streamId)
 
       return {
         ...state,
@@ -789,6 +789,23 @@ export function usePromptActions({
       })
 
       if (!text || !target) {
+        return false
+      }
+
+      // #105176: a steer reaches here on the composer's own busy belief, and
+      // the composer keeps that belief one effect tick past the busy→false
+      // settle. When it lags, the turn has already ended: redirecting would
+      // echo the bubble into a chat the user never typed in and RPC an idle
+      // session whose text the backend can cross-deliver into another
+      // session's live run. The slice is authoritative, so refuse before the
+      // optimistic insert and the caller queues the text for the conversation
+      // whose run is actually live. Without a stale belief there is nothing
+      // stale to catch: the caller deliberately asked for a correction (a
+      // rotation gap, a recovery retry) and the gateway authoritatively
+      // rejects an idle redirect.
+      const liveTurn = $sessionStates.get()[target.sessionId]
+
+      if (busyRef.current && liveTurn && !isLiveTurnAwaitingEvents(liveTurn)) {
         return false
       }
 
@@ -868,6 +885,7 @@ export function usePromptActions({
     [
       activeSessionIdRef,
       appendSessionTextMessage,
+      busyRef,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
@@ -1100,6 +1118,7 @@ export function usePromptActions({
             }
 
             const refreshed = $messages.get()
+
             const retryPlan = planRestore(refreshed, messageId, {
               text: target?.text ?? plan.sourceText,
               userOrdinal: target?.userOrdinal ?? plan.truncateOrdinal

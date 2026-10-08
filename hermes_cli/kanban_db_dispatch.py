@@ -957,6 +957,51 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+# A model repetition-loop death is an INFRASTRUCTURE retry, not a failed coding
+# attempt: it gets its own violation-style streak (``_repetition_loop_streak``),
+# never ``consecutive_failures`` — the code-miss budget stays untouched. At the
+# limit the block is a ROUTING FLAG for Derrick's router (it creates the Mack
+# rework card off it), not an operator question.
+_REPETITION_LOOP_FAILURE_LIMIT = 3
+
+# Closed runs to walk when counting the streak; it trips at a handful anyway.
+_REPETITION_LOOP_SCAN_LIMIT = 50
+
+_REPETITION_LOOP_ESCALATION = (
+    "3 infra retries (repetition-loop) — route to Mack (rework coder)"
+)
+
+
+def _repetition_loop_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count the task's trailing run of repetition-loop worker deaths.
+
+    Same walk as ``_protocol_violation_streak``: closed runs newest-first
+    (including the one ``detect_crashed_workers`` just closed), ``rate_limited``
+    runs neutral and skipped, any other closed run breaks the streak. Deaths are
+    recognized by the ``repetition_loop`` run-metadata marker, with the error
+    text as fallback for runs recorded before the marker existed.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome, error, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, _REPETITION_LOOP_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        outcome = row["outcome"] or ""
+        if outcome == "rate_limited":
+            continue
+        if outcome == "crashed" and (
+            _kb._json_dict(row["metadata"]).get("repetition_loop")
+            or "repetition loop" in (row["error"] or "")
+        ):
+            streak += 1
+            continue
+        break
+    return streak
+
+
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
     # ``kanban_complete`` / ``kanban_block`` / ``kanban_request_review``. Overwhelmingly the work itself succeeded and only the
@@ -1033,6 +1078,11 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    repetition_loop: bool = False
+    """A model repetition-loop death (``REPETITION_LOOP_INTERRUPTED`` in the
+    worker's last output): an INFRASTRUCTURE retry, not a failed coding attempt —
+    gets its own bounded streak (``_repetition_loop_streak``) and must never
+    consume ``consecutive_failures`` (the code-miss budget)."""
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
@@ -1059,6 +1109,14 @@ def _classify_dead_worker(
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
+        from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
+
+        if REPETITION_LOOP_INTERRUPTED in dead.error_text:
+            # Single source of truth: agent/repetition_guard.py. The marker rides
+            # in the event payload -> run metadata, the durable marker
+            # ``_repetition_loop_streak`` counts (error text is the fallback).
+            dead.repetition_loop = True
+            dead.event_payload["repetition_loop"] = True
     return dead
 
 
@@ -1195,12 +1253,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.repetition_loop:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
-                # board UI and retry worker need the corrective message.
+                # board UI and retry worker need the corrective message. Same for
+                # a below-budget repetition-loop death (infra retry, not a code
+                # miss); at the trip the loop branch overwrites it with the
+                # Mack routing flag.
                 conn.execute(
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
@@ -1273,6 +1334,22 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},
             )
+        elif dead.repetition_loop:
+            # Infrastructure retry, never a coding miss: the loop-death streak is
+            # separate from ``consecutive_failures`` (which stays untouched).
+            # Below the limit the card is already back at ``ready`` with the
+            # death's error stamped; at the limit the block is a ROUTING FLAG —
+            # Derrick's router creates the Mack (rework coder) card off it.
+            streak = _repetition_loop_streak(conn, tid)
+            if streak < _REPETITION_LOOP_FAILURE_LIMIT:
+                continue
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                (_REPETITION_LOOP_ESCALATION[:500], tid),
+            )
+            if _kb.block_task(conn, tid, reason=_REPETITION_LOOP_ESCALATION, kind="needs_input"):
+                auto_blocked.append(tid)
+            continue
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
             extra = {"pid": pid, "claimer": claimer}

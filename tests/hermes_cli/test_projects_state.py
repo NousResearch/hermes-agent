@@ -253,6 +253,19 @@ def test_cli_history_text_json_and_limit(app, capsys):
     assert out.index("step 2") < out.index("step 0")
 
 
+def test_cli_history_limit_beyond_sqlite_integer_range_is_clamped(app, capsys):
+    for i in range(2):
+        assert _run(["state", app, "--set", "--now", f"step {i}"]) == 0
+    capsys.readouterr()
+
+    assert _run(["state", app, "--history", "--limit", str(2**63), "--json"]) == 0
+    captured = capsys.readouterr()
+    history = json.loads(captured.out)["history"]
+    assert [h["now"] for h in history] == ["step 1", "step 0"]
+    assert len(history) <= pdb.STATE_HISTORY_LIMIT
+    assert "Traceback" not in captured.err
+
+
 def test_cli_unknown_project_is_rc1(capsys):
     assert _run(["state", "nope"]) == 1
     assert _run(["state", "nope", "--set", "--goal", "g"]) == 1
@@ -269,6 +282,25 @@ def test_cli_refused_writes_are_rc2_and_record_nothing(app, capsys):
     assert _run(["state", app, "--set", "--goal", "archived"]) == 2
     assert "project:" in capsys.readouterr().err
     assert _stored_state(app) is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["--limit", "1"],                       # --limit outside --history
+    ["--set", "--goal", "g", "--limit", "1"],
+    ["--by", "agent"],                      # --by outside --set
+    ["--history", "--by", "agent"],
+])
+def test_cli_mode_flags_outside_their_mode_are_rc2(app, capsys, argv):
+    assert _run(["state", app, *argv]) == 2
+    assert "project:" in capsys.readouterr().err
+    assert _stored_state(app) is None
+
+
+def test_cli_every_state_option_has_help_text():
+    parser = argparse.ArgumentParser()
+    top = projects_cmd.build_parser(parser.add_subparsers(dest="command"))
+    state = next(a for a in top._actions if isinstance(a, argparse._SubParsersAction)).choices["state"]
+    assert [a.option_strings for a in state._actions if a.option_strings and not a.help] == []
 
 
 def test_cli_set_and_history_are_exclusive(app, capsys):

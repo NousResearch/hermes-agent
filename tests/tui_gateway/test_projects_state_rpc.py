@@ -50,6 +50,15 @@ def test_get_set_history_round_trip(project_id):
     assert [h["now"] for h in limited] == ["implementation"]
 
 
+def test_history_limit_beyond_sqlite_integer_range_is_clamped(project_id):
+    _ok("projects.state.set", {"id": project_id, "goal": "g"})
+
+    resp = _rpc("projects.state.history", {"id": project_id, "limit": 2**63})
+
+    assert "error" not in resp, resp.get("error")
+    assert [h["goal"] for h in resp["result"]["history"]] == ["g"]
+
+
 @pytest.mark.parametrize("method,extra", [
     ("projects.state.get", {}),
     ("projects.state.set", {"goal": "g"}),

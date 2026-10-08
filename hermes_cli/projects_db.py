@@ -440,10 +440,11 @@ def get_project_state(conn: sqlite3.Connection, project_id: str) -> Optional[dic
 
 
 def project_state_history(conn: sqlite3.Connection, project_id: str, limit: int = STATE_HISTORY_LIMIT) -> List[dict]:
-    """Past handover records, newest first (at most ``STATE_HISTORY_LIMIT`` are kept)."""
+    """Past handover records, newest first. Only ``STATE_HISTORY_LIMIT`` are kept, so a larger
+    ``limit`` is clamped to it (which also keeps it inside SQLite's integer range)."""
     if int(limit) < 1:
         raise ValueError(f"limit must be at least 1, got {limit}")
-    return _state_rows(conn, project_id, int(limit))
+    return _state_rows(conn, project_id, min(int(limit), STATE_HISTORY_LIMIT))
 
 
 def set_project_state(

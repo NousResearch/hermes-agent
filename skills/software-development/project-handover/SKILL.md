@@ -37,8 +37,12 @@ never injected into prompts.
 
 Every command goes through `terminal`. Read with `--json`; write with `--set`
 and always `--by agent`, which marks the record as yours rather than the user's.
+`--by` is a self-declared label for filtering, not authentication; each saved
+version carries one author, including carried-over fields.
 
 ```bash
+hermes project list
+hermes project show <project>
 hermes project state <project> --json
 hermes project state <project> --set --by agent --now "wiring the RPC" --next "tests"
 ```
@@ -64,9 +68,10 @@ capped at 2000 characters and only the 50 newest records per project are kept.
 
 ## Procedure
 
-1. **Resolve the project.** Use the slug the user names, or match the working
-   directory to a folder from `hermes project list`. If none fits, ask before
-   creating one.
+1. **Resolve the project.** Use the slug the user names. Otherwise run
+   `hermes project list`, then `hermes project show <slug>` for the candidates,
+   and pick the project whose folder is the most specific ancestor of the
+   working directory. If none or several fit, ask.
 2. **Read on resume.** Run `hermes project state <project> --json` before
    planning. A `null` state means nothing was recorded: say so and work from
    the user's instructions, never from a guess.
@@ -82,7 +87,8 @@ capped at 2000 characters and only the 50 newest records per project are kept.
 ## Pitfalls
 
 - Omitting `--by agent` attributes your write to the user.
-- Field flags without `--set` are refused (exit 2) instead of silently reading.
+- Field flags or `--by` without `--set`, and `--limit` without `--history`, are
+  refused (exit 2) instead of silently ignored.
 - An archived project refuses writes; ask the user before restoring it.
 - Records are per profile. Under `hermes -p other` you will not see them.
 - Do not store secrets, tokens or personal data: the record is plain text.

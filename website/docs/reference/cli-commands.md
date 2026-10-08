@@ -949,9 +949,9 @@ A short handover record that answers "where is this project at?" after a restart
 |--------|-------------|
 | `--set` | Record a handover. At least one field must end up non-empty. |
 | `--goal` / `--now` / `--next` / `--blockers` | Field values (only with `--set`); each is capped at 2000 characters. |
-| `--by` | Who is recording it: `user` (default) or `agent`. |
+| `--by` | Who is recording it (only with `--set`): `user` (default) or `agent`. `--by` is a self-declared label for filtering, not authentication; each saved version carries one author, including carried-over fields. |
 | `--history` | List past records, newest first. The 50 newest per project are kept. |
-| `--limit` | How many history records to show. |
+| `--limit` | How many history records to show (only with `--history`; default and maximum 50). |
 | `--json` | Machine-readable output: `{"project": {...}, "state": {...} \| null}` or `{"project": {...}, "history": [...]}`. |
 
 Records live in the profile's `projects.db` (other profiles never see them) and are deleted with their project. An archived project's record stays readable but refuses writes until it is restored. The desktop backend exposes the same record as `projects.state.get`, `projects.state.set` and `projects.state.history`; writes through it are always attributed to `user`.

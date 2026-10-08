@@ -8,12 +8,18 @@ Those exact records remain while their room authority is live. Grant refresh and
 ordinary grant revocation followed by reauthorization do not erase them. A grant
 identifier or a retention timeout cannot establish a new logical attempt.
 
-The cancellation store compacts terminal cancellation records at two authoritative
-lifecycle boundaries:
+The cancellation store retires authority at two lifecycle boundaries:
 
 - The target accepts a verified successor authority epoch for that room member.
 - Disband retires the current epoch using the grant's explicit `retire` permission,
   after the home has obtained Stop acknowledgments.
+
+Proven-never-admitted cancellation barriers can compact immediately. Accepted
+stopped runs retain their terminal receipt through a bounded observation deadline
+that includes the authenticated status-grant horizon and the settlement recovery
+window. This allows the final Stop result to be observed after restart. After the
+deadline, pruning may remove the receipt while the durable authority floor still
+forbids replay. Missing history never proves that a task was not admitted.
 
 One durable watermark per room origin/member/target/profile replaces the retired
 attempt records. It records the current authority home, gateway and epoch, plus the
@@ -39,7 +45,9 @@ Older records lacking authenticated predecessor coordinates remain conservative.
 
 Peer reservations supersede every member of a room on the target profile, so a
 shared room/target/profile origin and epoch record fences all those members too.
-It is committed before the reservation changes. A member without a successor
+For ordinary invitations, the grant transaction commits before this floor is
+published. The committed reservation refuses captured old requests if publication
+is interrupted. A member without a successor
 invitation still refuses captured work from the old epoch, and its terminal
 cancellations can compact. Retirement remains per member: retiring one member
 does not disable another at the same epoch. New members may join the current home;

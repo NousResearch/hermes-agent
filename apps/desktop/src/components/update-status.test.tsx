@@ -59,6 +59,25 @@ describe('deriveUpdateStatus', () => {
     expect(view.supported).toBe(false)
   })
 
+  it('local-only branch: idle tone, names the distance behind main, never offers the install', () => {
+    const view = derive({ supported: true, localOnly: true, behind: 15, message: "Branch 'x' has never been pushed" })
+
+    expect(view.tone).toBe('idle')
+    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(en.updates.localBranchBehind(15))
+  })
+
+  it.each([
+    [0, en.updates.localBranchCurrent],
+    [null, en.updates.localBranchBehindUnknown]
+  ])('local-only branch with behind=%s reads the matching line', (behind, line) => {
+    const view = derive({ supported: true, localOnly: true, behind, updateAvailable: false })
+
+    expect(view.tone).toBe('idle')
+    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(line)
+  })
+
   it('check error shows one plain line and keeps the transport message with the error', () => {
     const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 

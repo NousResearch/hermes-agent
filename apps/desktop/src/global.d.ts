@@ -867,6 +867,10 @@ export interface DesktopUpdateStatus {
   /** Which mechanism owns updates for this install (see electron/updater). */
   mechanism?: UpdaterMechanismClient
   updateAvailable?: boolean
+  /** The pinned branch exists nowhere upstream (never pushed, or deleted with
+   *  unmerged commits): `behind` measures it against main for information only
+   *  and no update may be applied from the app. */
+  localOnly?: boolean
   branch?: string
   currentBranch?: string
   reason?: string

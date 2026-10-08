@@ -84,9 +84,13 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
 
 function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStatusInput): UpdateStatusView {
   const behind = status?.behind ?? 0
+  // A checkout pinned to a branch that exists nowhere upstream (a local overlay
+  // branch) reports its distance behind main for information only: the updater
+  // must not move it, so nothing here may offer the install.
+  const localOnly = Boolean(status?.localOnly)
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
-  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
+  const updateAvailable = !localOnly && (behind > 0 || Boolean(status?.updateAvailable))
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
@@ -107,6 +111,21 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
 
   if (applying) {
     return { applying, line: u.installing, supported, tone: 'available', updateAvailable }
+  }
+
+  if (localOnly && status) {
+    return {
+      applying,
+      line:
+        status.behind === null
+          ? u.localBranchBehindUnknown
+          : behind > 0
+            ? u.localBranchBehind(behind)
+            : u.localBranchCurrent,
+      supported,
+      tone: 'idle',
+      updateAvailable
+    }
   }
 
   if (updateAvailable) {

@@ -15,6 +15,7 @@ import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import type { DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
@@ -36,7 +37,7 @@ import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { resolveVersionStatus } from '@/lib/version-status'
+import { resolveVersionStatus, type VersionStatusCopy } from '@/lib/version-status'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
@@ -71,7 +72,8 @@ import {
   $desktopVersion,
   $updateApply,
   $updateStatus,
-  openUpdateOverlayFor
+  openUpdateOverlayFor,
+  type UpdateApplyState
 } from '@/store/updates'
 import type { StatusResponse, UsageStats } from '@/types/hermes'
 
@@ -79,6 +81,30 @@ import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
+
+/** The client (this app) version item's status, from the raw update-store values. */
+function clientVersionStatus(
+  updateStatus: DesktopUpdateStatus | null,
+  updateApply: UpdateApplyState,
+  copy: VersionStatusCopy,
+  remote: boolean,
+  version: string | undefined
+) {
+  return resolveVersionStatus({
+    applying: updateApply.applying || updateApply.stage === 'restart',
+    applyMessage: updateApply.message,
+    behind: updateStatus?.behind ?? 0,
+    branch: updateStatus?.branch,
+    localOnly: updateStatus?.localOnly,
+    copy,
+    remote,
+    restarting: updateApply.stage === 'restart',
+    sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
+    target: 'client',
+    updateAvailable: updateStatus?.updateAvailable,
+    version
+  })
+}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -397,19 +423,13 @@ export function useStatusbarItems({
   const clientVersionItem = useMemo<StatusbarItem>(() => {
     const applying = updateApply.applying || updateApply.stage === 'restart'
 
-    const status = resolveVersionStatus({
-      applying,
-      applyMessage: updateApply.message,
-      behind: updateStatus?.behind ?? 0,
-      branch: updateStatus?.branch,
+    const status = clientVersionStatus(
+      updateStatus,
+      updateApply,
       copy,
-      remote: connection?.mode === 'remote',
-      restarting: updateApply.stage === 'restart',
-      sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
-      target: 'client',
-      updateAvailable: updateStatus?.updateAvailable,
-      version: desktopVersion?.appVersion
-    })
+      connection?.mode === 'remote',
+      desktopVersion?.appVersion
+    )
 
     return {
       className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
@@ -425,18 +445,7 @@ export function useStatusbarItems({
       toggleLabel: copy.toggleVersion,
       variant: 'action'
     }
-  }, [
-    desktopVersion?.appVersion,
-    connection?.mode,
-    copy,
-    updateApply.applying,
-    updateApply.message,
-    updateApply.stage,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.updateAvailable
-  ])
+  }, [desktopVersion?.appVersion, connection?.mode, copy, updateApply, updateStatus])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
     if (connection?.mode !== 'remote') {

@@ -142,6 +142,24 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
 
 
+def test_local_commits_over_origin_main_count_from_the_merge_base(installation):
+    """A HEAD carrying local commits exists nowhere upstream, so compare 404s for it; the distance
+    behind main is the merge-base with origin/main compared against the tip -- still without a fetch."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    git("update-ref", "refs/remotes/origin/main", base)
+    target = "a" * 40
+    responses["/repos/fixture/fork/commits/main"] = (200, target)
+    responses[f"/repos/fixture/fork/compare/{base}...{target}"] = (200, {"ahead_by": 5, "commits": []})
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 5, status
+    assert status["updateAvailable"] is True
+    assert status["targetSha"] == target
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main",
+                        f"/repos/fixture/fork/compare/{head}...{target}",
+                        f"/repos/fixture/fork/compare/{base}...{target}"]
+
+
 @pytest.mark.parametrize("tip_kind,compare,expected", [
     ("head", None, 0), ("base", None, 0),
     ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),
@@ -371,14 +389,41 @@ def test_never_pushed_branch_keeps_its_pin(installation, pinned_by):
         git("checkout", "-q", "local-work")
     status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
     assert status["branch"] == "local-work", status
-    assert status["error"] == "branch-local-only"
+    assert "error" not in status, status
     assert status["localOnly"] is True
     assert "never been pushed" in status["message"]
-    assert "targetSha" not in status
+    # The pin stays; the distance behind main is still measured (here: level with the bare origin).
+    assert status["targetSha"] == git("rev-parse", "origin/main")
+    assert status["behind"] == 0
+    assert status["updateAvailable"] is False
     if pinned_by == "desktop":
         assert json.loads(branch_file.read_text()) == {"branch": "local-work"}
     else:
         assert not branch_file.exists()
+    assert requests == [MAIN_CHANNEL]
+
+
+def test_never_pushed_branch_reports_distance_behind_main_without_offering_an_update(installation):
+    """A kept local pin still says how far behind main the checkout is; it never offers to apply an update."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    git("branch", "local-work")
+    local = _commit_on(git, "local-work", "unpushed work")
+    for n in (1, 2):
+        git("commit", "-q", "--allow-empty", "-m", f"upstream {n}")
+    git("push", "-q", "origin", "main")
+    git("checkout", "-q", "local-work")
+    status = check_for_updates(install_root=root, home=home)
+    assert status["branch"] == "local-work", status
+    assert "error" not in status, status
+    assert status["localOnly"] is True
+    assert "never been pushed" in status["message"]
+    assert status["targetSha"] == git("rev-parse", "origin/main")
+    # No GitHub repository to count against here: the honest no-count sentinel, never a guessed number.
+    assert status["behind"] == -1
+    assert status["updateAvailable"] is False
+    assert git("rev-parse", "HEAD") == local
     assert requests == [MAIN_CHANNEL]
 
 
@@ -406,8 +451,11 @@ def test_deleted_remote_branch_heals_only_when_its_commits_are_in_main(installat
     status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
     if merge == "unmerged":
         assert status["branch"] == "pushed", status
-        assert status["error"] == "branch-local-only"
+        assert "error" not in status, status
+        assert status["localOnly"] is True
         assert "not in main" in status["message"]
+        assert status["targetSha"] == git("rev-parse", "origin/main")
+        assert status["updateAvailable"] is False
         assert json.loads(branch_file.read_text())["branch"] == "pushed"
     else:
         assert "error" not in status, status

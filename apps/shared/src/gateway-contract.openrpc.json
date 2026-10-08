@@ -1291,7 +1291,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/RoomParams"
+            "$ref": "#/components/schemas/GroupsPeerRetirementsParams"
           }
         }
       ],
@@ -15392,6 +15392,31 @@
             ],
             "default": null,
             "title": "Ttl Seconds"
+          },
+          "retirement_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retirement Only"
+          },
+          "previous_authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Previous Authority"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -15593,6 +15618,37 @@
           "retirements"
         ],
         "title": "GroupsPeerRetireResult",
+        "type": "object"
+      },
+      "GroupsPeerRetirementsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Room Id"
+          }
+        },
+        "title": "GroupsPeerRetirementsParams",
         "type": "object"
       },
       "GroupsPeerRevokeParams": {
@@ -28656,33 +28712,6 @@
           }
         },
         "title": "RoomMemberInput",
-        "type": "object"
-      },
-      "RoomParams": {
-        "additionalProperties": false,
-        "description": "Any method addressed at one hosted room.",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "room_id": {
-            "title": "Room Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "room_id"
-        ],
-        "title": "RoomParams",
         "type": "object"
       },
       "RoomTaskReceipt": {

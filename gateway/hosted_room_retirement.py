@@ -18,6 +18,8 @@ _FIELDS = ("room_id", "home_install_id", "authority_gateway_id", "authority_epoc
 def _rows(conn, room_id):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_TABLE,)).fetchone() is None:
         return []
+    if room_id is None:
+        return conn.execute(f"SELECT retirement_id,value FROM {_TABLE}").fetchall()
     return conn.execute(f"SELECT retirement_id,value FROM {_TABLE} WHERE room_id=?", (room_id,)).fetchall()
 
 
@@ -80,8 +82,8 @@ def settle(db_path, room_id, identity, *, grant=None, client=None):
     try:
         result = client.revoke_grant(grant=value["grant"], retire_authority=True)
     except PeerRunsHTTPError as exc:
-        if exc.status_code not in {401, 403} or exc.error_code not in {
-                "invalid_room_grant", "room_reauthorization_required", "room_retirement_not_granted"}:
+        from tui_gateway.hosted_room_service import _grant_revoke_is_terminal
+        if not _grant_revoke_is_terminal(exc):
             raise
         value["status"] = "needs_reauthorization"
         _replace(db_path, identity, original, value)

@@ -155,15 +155,24 @@ def _room_link_run_storage_durable() -> bool:
     return bool(getattr(store, "durable", False))
 
 
-def _record_peer_run_authority(claims, *, publish=False):
+def _record_peer_run_authority(claims, *, publish=False, body=None):
+    from gateway.platforms.api_server_room_grants import _retirement_only, _previous_authority
     if _bound_server is None:
+        if _retirement_only(claims):
+            raise ValueError("retirement requires retained target authority")
         return  # Embedded callers expose no peer-run transport/store.
     from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
     store = _bound_server._run_idempotency_store
     authority = room_authority(claims)
-    if not store.accepts_room_authority(authority):
+    if _retirement_only(claims):
+        if not store.permits_room_retirement(authority):
+            raise ValueError("retirement authority is not retained")
+        return
+    previous = _previous_authority(claims, body or {})
+    if not store.accepts_room_authority(authority, previous):
         raise ValueError("room authority has already advanced")
-    if publish and not store.observe_room_authority(room_run_scope(claims), authority):
+    previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
+    if publish and not store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home):
         raise ValueError("room authority has already advanced")
 
 
@@ -272,6 +281,9 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
     ttl = float(params.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
         raise ValueError("ttl_seconds must be between 60 and 86400")
+    retirement_only = params.get("retirement_only", False)
+    if type(retirement_only) is not bool or (retirement_only and "previous_authority" in params):
+        raise ValueError("invalid retirement invitation")
     grant_secret = gateway_room_grant_secret()
     execution_policy = _profile_execution_policy(profile)
     token = issue_room_grant(
@@ -282,11 +294,12 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         authority_epoch=int(params.get("authority_epoch") or 0),
         member_id=str(params.get("member_id") or ""), target_install_id=installation_id,
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
-        ttl_seconds=ttl)
+        ttl_seconds=ttl, **({"permissions": ("status", "retire")} if retirement_only else {}))
     claims = decode_room_grant(grant_secret, token, permission="status")
-    _record_authority(claims)
-    reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
-    _record_authority(claims, publish=True)
+    _record_authority(claims, body=params)
+    if not retirement_only:
+        reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
+        _record_authority(claims, publish=True, body=params)
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
@@ -326,6 +339,8 @@ def _(rid, params: dict, service) -> dict:
     grant = str(params.get("grant") or "")
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
     probe = client.probe(grant=grant)
+    if probe.get("retirement_only") is True:
+        raise ValueError("retirement authorization cannot register an execution route")
     # Frozen dataclass equality: an equal live catalog already passed the checks above.
     if GatewayRoomCatalog.from_mapping(probe.get("catalog")) != catalog:
         raise ValueError("target capability catalog changed during setup")
@@ -361,7 +376,7 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """List outstanding target-authority cleanup even after room history expires."""
     from gateway.hosted_room_retirement import status
-    return _ok(rid, {"retirements": status(service.db_path, params["room_id"])})
+    return _ok(rid, {"retirements": status(service.db_path, params.get("room_id"))})
 
 
 @_room_method("groups.peer.retire", code=5125, service_code=4121)

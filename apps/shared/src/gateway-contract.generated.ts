@@ -1750,6 +1750,8 @@ export interface GroupsPeerInviteParams {
   member_id?: string | null
   grant_id?: string | null
   ttl_seconds?: number | null
+  retirement_only?: boolean | null
+  previous_authority?: Record<string, unknown> | null
 }
 export interface GroupsPeerInviteResult {
   grant: string
@@ -1873,10 +1875,9 @@ export interface BrowserControllerParams {
 export interface BrowserControllerDetachResult {
   detached?: boolean
 }
-/** Any method addressed at one hosted room. */
-export interface RoomParams {
+export interface GroupsPeerRetirementsParams {
   profile?: string | null
-  room_id: string
+  room_id?: string | null
 }
 export interface GroupsPeerRetireResult {
   retirements: Record<string, unknown>[]
@@ -5157,7 +5158,7 @@ export interface RpcMethods {
   /** Retry authority retirement with an optional fresh exact-scope target grant; never reopen execution. */
   'groups.peer.retire': { params: GroupsPeerRetireParams; result: GroupsPeerRetireResult }
   /** List retained peer-authority retirement obligations, including ended rooms. */
-  'groups.peer.retirements': { params: RoomParams; result: GroupsPeerRetireResult }
+  'groups.peer.retirements': { params: GroupsPeerRetirementsParams; result: GroupsPeerRetireResult }
   /** Revoke one target-issued grant using its exact profile scope. */
   'groups.peer.revoke': { params: GroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. */

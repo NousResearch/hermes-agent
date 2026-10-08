@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
+from tools.computer_use.verification import valid_verification_expect
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
 from tools.computer_use.cua_backend_driver import (  # noqa: F401 — resolve_cua_driver_cmd: frozen updater surface
@@ -400,6 +401,22 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         payload = dict(args) if args else {}
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
+
+    def verify_state(self, expect: List[Dict[str, Any]], *, pid: Optional[int] = None, window_id: Optional[int] = None) -> ActionResult:
+        """Evaluate nonempty predicates against an explicit pair or the captured window."""
+        if not valid_verification_expect(expect):
+            return ActionResult(ok=False, action="verify_state", message="verify_state requires 1–8 valid element/window `expect` predicates.")
+        # Do not combine a new process/window with stale captured ownership.
+        if pid is None or window_id is None:
+            refusal, target = self._target_args("verify_state", need_window=True)
+            if refusal is not None:
+                return refusal
+            if ((pid is not None and pid != target["pid"])
+                    or (window_id is not None and window_id != target["window_id"])):
+                return ActionResult(ok=False, action="verify_state", message="Partial target differs from capture; provide both pid and window_id or capture again.")
+            pid, window_id = target["pid"], target["window_id"]
+        args: Dict[str, Any] = {"expect": expect, "pid": pid, "window_id": window_id}
+        return self._action("verify_state", args)
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit

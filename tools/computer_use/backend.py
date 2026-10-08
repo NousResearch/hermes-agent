@@ -15,6 +15,7 @@ from agent.provider_base import ProviderBase
 
 _JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
+
 def image_dimensions_from_bytes(raw: bytes) -> Optional[Tuple[int, int]]:
     """(width, height) for PNG / JPEG bytes, or None when unreadable. PNG: IHDR. JPEG: walk
     segments (skipping 0xFF fill bytes) to the first SOF marker; stop at SOS. Used by the
@@ -171,6 +172,9 @@ class ComputerUseBackend(ABC):
 
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult: ...  # e.g. AXPopUpButton selection
+
+    @abstractmethod
+    def verify_state(self, expect: List[Dict[str, Any]], *, pid: Optional[int] = None, window_id: Optional[int] = None) -> ActionResult: ...
 
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))

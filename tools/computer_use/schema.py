@@ -9,6 +9,7 @@ than pixel coordinates, which remain supported for models trained on them.
 from __future__ import annotations
 
 from typing import Any, Dict
+from tools.computer_use.verification import EXPECT_SCHEMA
 
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
@@ -31,6 +32,7 @@ _PROPERTIES: Dict[str, Any] = {
             "wait",
             "list_apps",
             "list_windows",
+            "verify_state",
             "focus_app",
         ],
         "description": (
@@ -62,14 +64,16 @@ _PROPERTIES: Dict[str, Any] = {
     "pid": {
         "type": "integer",
         "description": (
-            "Optional exact process target for action='capture'. Pair with window_id when "
+            "Optional exact process target for action='capture' or 'verify_state'. Verification defaults to the "
+            "captured window; without a capture, provide both pid and window_id. Pair with window_id when "
             "discovery cannot resolve an X11 app."
         ),
     },
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for action='capture' or 'verify_state'. Verification defaults "
+            "to the captured window. Pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },
@@ -176,6 +180,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Default false."
         ),
     },
+    "expect": EXPECT_SCHEMA,
     "capture_after": {
         "type": "boolean",
         "description": (
@@ -188,7 +193,7 @@ _PROPERTIES: Dict[str, Any] = {
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag, and deterministic state verification — on macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "

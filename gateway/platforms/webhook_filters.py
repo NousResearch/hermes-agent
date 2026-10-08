@@ -18,6 +18,27 @@ DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 _MISSING = object()
 
 
+def route_names(value: Any) -> list[str]:
+    """A route's ``events`` / ``skills`` value as a list of names. A hand-edited scalar
+    (``events: pull_request_review``) is read like the ``--events a,b`` flag: used raw, ``in``
+    substring-matched it (a ``pull_request`` event passed) and iterating it yielded characters."""
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list):
+        return []
+    return [name for item in value if (name := str(item).strip())]
+
+
+def validate_route_names(route_name: str, route: dict) -> None:
+    """route_names() reads any other type as empty, and an empty ``events`` accepts every event,
+    so a malformed value must fail here instead of opening the filter."""
+    for field in ("events", "skills"):
+        value = route.get(field)
+        if value is not None and not isinstance(value, (str, list)):
+            raise ValueError(f"[webhook] Route '{route_name}' {field} must be a name, a comma-separated string "
+                             f"or a list, got {value!r}.")
+
+
 def _stringify_filter_value(value: Any) -> str:
     return "" if value is _MISSING else json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
 

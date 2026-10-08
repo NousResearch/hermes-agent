@@ -5,12 +5,36 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_compression import _CHAIN_CAP
 
 
 @pytest.fixture
 def db(tmp_path):
     with SessionDB(db_path=tmp_path / "projection.db") as database:
         yield database
+
+
+@pytest.mark.parametrize("hops", [101, _CHAIN_CAP + 1], ids=["past-old-bound", "current-bound"])
+def test_long_chain_source_filters_match_the_python_walk(db, hops):
+    expected_index = min(hops, _CHAIN_CAP)
+    parent = None
+    for index in range(hops + 1):
+        session_id = f"long-{index:04d}"
+        source = "webui" if index == expected_index else "telegram"
+        db.create_session(session_id, source, parent_session_id=parent)
+        if parent is not None:
+            db.end_session(parent, "compression")
+        parent = session_id
+
+    expected_tip = f"long-{expected_index:04d}"
+    assert db.get_compression_tip("long-0000") == expected_tip
+    rows = db.list_sessions_rich(source="webui")
+    assert [row["id"] for row in rows] == [expected_tip]
+    assert rows[0]["source"] == "webui"
+    assert db.list_sessions_rich(source="telegram") == []
+    assert db.session_count(source="webui", exclude_children=True) == 1
+    assert db.session_count(source="telegram", exclude_children=True) == 0
+    assert db.session_count_by_source(exclude_children=True) == {"webui": 1}
 
 
 def test_reset_sibling_cannot_change_projected_source_membership(db):

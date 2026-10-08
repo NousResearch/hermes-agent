@@ -275,6 +275,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "backup": (_sub("backup", "build_backup_parser", "cmd_backup"), "*."),
     "import": (_sub("import_cmd", "build_import_cmd_parser", "cmd_import"), "*."),
     "config": (_sub("config", "build_config_parser", "cmd_config"), "env-path, check"),
+    "harness": (_sub("harness", "build_harness_parser", "cmd_harness"), "*."),
     "tools": (
         _sub("tools", "build_tools_parser", "cmd_tools"),
         "list, *enable, *disable, *post-setup"),

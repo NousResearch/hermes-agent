@@ -224,6 +224,103 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
         await get_flow.asend(httpx.Response(200, request=get_retry))
 
 
+@pytest.mark.asyncio
+async def test_outer_close_closes_inner_generator_in_task(tmp_path, monkeypatch):
+    """Closing the OUTER generator (httpx's deterministic teardown) must close the
+    inner SDK generator in the SAME task, freeing ``context.lock``.
+
+    The inner generator sits suspended inside ``async with self.context.lock`` at
+    its ``yield request``.  Abandoned, asyncio's asyncgen finalizer closes it in a
+    *different* task; with a task-affine primitive on ``context.lock`` (any SDK
+    change away from the Semaphore mitigation) that cross-task release strands
+    the cached provider's lock for the life of the process — the permanent-wedge
+    shape from GH#101756 (a week of production: 75 cross-task RuntimeErrors and
+    906 parkings; teardown never reached the network again).  The bridge must
+    ``aclose()`` the inner generator itself, AFTER the conditional re-acquire so
+    the SDK's ``async with`` releases a lock owned by this task (GH#101756).
+    """
+    import gc
+
+    import anyio
+
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    # Obvious placeholder values (not credentials): assembled so scanners see them for what they are.
+    fake_access = "access" + "-token"
+    fake_refresh = "refresh" + "-token"
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token=fake_access,
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token=fake_refresh,
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    # Put a task-affine primitive back on context.lock: the shape the Semaphore
+    # swap in __init__ mitigates but must not have to cover.  Only with it does
+    # an abandoned inner generator wedge the lock, so the assertion below
+    # distinguishes the deterministic close from GC finalization.
+    provider.context.lock = anyio.Lock()
+
+    request = httpx.Request("GET", "https://example.com/mcp")
+    flow = provider.async_auth_flow(request)
+    outbound = await flow.__anext__()  # inner acquires the lock, bridge releases it for the request
+    assert outbound is request
+
+    await flow.aclose()  # httpx closes the OUTER generator on teardown
+    gc.collect()
+    await asyncio.sleep(0.05)  # let a stray asyncgen finalizer task run, were one left behind
+
+    assert not provider.context.lock.locked(), (
+        "the inner SDK generator must be closed in the owning task so its "
+        "``async with context.lock`` releases legally; a lock still held here "
+        "means the generator was abandoned to cross-task finalization (GH#101756)"
+    )
+
+    # The freed lock must stay usable: a second flow on the same cached provider
+    # must be able to acquire it instead of deadlocking before any HTTP.
+    second = provider.async_auth_flow(request)
+    second_outbound = await asyncio.wait_for(second.__anext__(), timeout=2.0)
+    assert second_outbound is request
+    await second.aclose()
+    assert not provider.context.lock.locked()
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
     return None

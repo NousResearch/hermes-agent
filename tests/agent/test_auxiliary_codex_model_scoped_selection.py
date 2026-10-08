@@ -181,3 +181,33 @@ def test_legacy_pool_without_model_kwarg_falls_back_with_warning(
     assert pool_present is True
     assert entry is not None
     assert any("does not accept a model scope" in r.message for r in caplog.records)
+
+
+def test_compression_model_selects_despite_sibling_cooldown(codex_pool_home, monkeypatch):
+    """Regression for #125695 on the auxiliary.compression path (#126768).
+
+    The compression task builds its Codex client from
+    ``auxiliary.compression.model``: ``get_text_auxiliary_client("compression")``
+    resolves that model, then funnels it through ``_build_codex_client(model)``
+    -> ``_resolve_codex_credential_and_base(model=...)`` ->
+    ``_select_pool_entry("openai-codex", model=...)``. With an active cooldown
+    on an unrelated model (COOLED_MODEL), the scoped compression-model select
+    must still return the healthy credential, while unscoped selection stays
+    conservative and blocks (documenting the mechanism).
+    """
+    monkeypatch.setattr(
+        aux,
+        "_get_auxiliary_task_config",
+        lambda task: (
+            {"provider": "openai-codex", "model": ENTITLED_MODEL}
+            if task == "compression"
+            else {}
+        ),
+    )
+    client, model = aux.get_text_auxiliary_client("compression")
+    assert client is not None
+    assert model == ENTITLED_MODEL
+
+    pool_present, entry = aux._select_pool_entry("openai-codex")
+    assert pool_present is True
+    assert entry is None

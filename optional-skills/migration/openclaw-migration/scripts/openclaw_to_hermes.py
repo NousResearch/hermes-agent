@@ -516,8 +516,13 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
 # read as self-referential to the new agent identity.
 #
 # Case-preserving: ``OpenClaw`` → ``Hermes`` (prose), but lowercase matches
-# like ``openclaw`` → ``hermes`` (so filesystem paths like ``~/.openclaw``
-# become ``~/.hermes`` — the real Hermes home — not the broken ``~/.Hermes``).
+# like ``openclaw`` → ``hermes``.
+#
+# A brand token glued into a larger path/identifier token — ``trim.openclaw``
+# (a real username), ``state/openclaw.sqlite`` (a real source filename),
+# ``~/.openclaw/config.yaml`` (the old install) — is left verbatim: those
+# strings name real objects on the source system and the migrated memories
+# are the user's record of where their data lived (#131862).
 _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
     (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
@@ -525,16 +530,33 @@ _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
 ]
 
 
-def _case_preserving_replacement(replacement: str):
-    """Return a re.sub replacement fn that lowercases the result when the
-    matched text was all-lowercase.
+def _in_path_or_identifier(text: str, start: int, end: int) -> bool:
+    """True when the match at ``text[start:end]`` is glued to ``.`` or ``/``
+    into a larger path/identifier token instead of standing as a prose word.
 
-    Keeps ``OpenClaw`` → ``Hermes`` but maps ``openclaw`` → ``hermes`` so a
-    filesystem path like ``~/.openclaw/config.yaml`` rewrites to
-    ``~/.hermes/config.yaml`` (the real Hermes home) instead of the broken
-    ``~/.Hermes/config.yaml``.
+    ``trim.openclaw``, ``state/openclaw.sqlite`` and ``~/.openclaw/...`` all
+    qualify; sentence-final punctuation (``...used OpenClaw.``) does not.
+    """
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+    rest = text[end + 1:end + 2]
+    if before in (".", "/"):
+        return True
+    return after == "/" or (after == "." and (rest.isalnum() or rest in ("_", "-")))
+
+
+def _case_preserving_replacement(text: str, replacement: str):
+    """Return a re.sub replacement fn that lowercases the result when the
+    matched text was all-lowercase and leaves path/identifier-embedded
+    matches untouched.
+
+    Keeps ``OpenClaw`` → ``Hermes`` and lowercase prose ``openclaw`` →
+    ``hermes``, while ``trim.openclaw`` / ``state/openclaw.sqlite`` survive
+    verbatim (see :func:`_in_path_or_identifier`).
     """
     def _sub(match: "re.Match[str]") -> str:
+        if _in_path_or_identifier(text, match.start(), match.end()):
+            return match.group(0)
         matched = match.group(0)
         if matched and matched.islower():
             return replacement.lower()
@@ -545,11 +567,12 @@ def _case_preserving_replacement(replacement: str):
 def rebrand_text(text: str) -> str:
     """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes.
 
-    Preserves case so filesystem-path matches (lowercase) don't become
-    capitalized directory names that don't exist.
+    Preserves case so lowercase prose matches stay lowercase, and leaves
+    brand tokens that are part of a larger path/identifier (usernames,
+    source filenames, ``~/.openclaw/...``) verbatim (#131862).
     """
     for pattern, replacement in _REBRAND_PATTERNS:
-        text = pattern.sub(_case_preserving_replacement(replacement), text)
+        text = pattern.sub(_case_preserving_replacement(text, replacement), text)
     return text
 
 

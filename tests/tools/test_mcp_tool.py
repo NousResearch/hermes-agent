@@ -1635,11 +1635,60 @@ class TestHTTPConfig:
         config = {"url": "https://example.com/mcp"}
 
         async def _test():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
+            # The re-probe is disabled too: with the installed SDK importable, a live
+            # re-probe would clear the patched flag and never raise (#134933).
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False), \
+                 patch("tools.mcp_tool._reprobe_mcp_http_availability", return_value=False):
                 with pytest.raises(ImportError):
                     await server._run_http(config)
 
         asyncio.run(_test())
+
+    def test_transient_http_import_failure_recovered_by_reprobe(self, monkeypatch):
+        """Regression test for #134933.
+
+        ``_ensure_mcp_sdk`` attempts the SDK import once per process; a transient
+        ``mcp.client.streamable_http`` import failure on that first probe latched
+        HTTP transport unavailable forever, so parked self-probes failed with the
+        canned upgrade message for the process lifetime. The re-probe must clear a
+        latched False verdict when the import works again.
+        """
+        from tools import mcp_tool
+
+        calls = {"n": 0}
+        real_import = mcp_tool._import_sdk_names
+
+        def _flaky_import(module, names, missing_msg=None):
+            if module == "mcp.client.streamable_http":
+                calls["n"] += 1
+                return calls["n"] > 1  # transient failure, then recovered
+            return real_import(module, names, missing_msg)
+
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+        monkeypatch.setattr(mcp_tool, "_MCP_HTTP_AVAILABLE", False)  # latched verdict
+        monkeypatch.setattr(mcp_tool, "_import_sdk_names", _flaky_import)
+        assert mcp_tool._reprobe_mcp_http_availability() is True
+        assert mcp_tool._MCP_HTTP_AVAILABLE is True
+        assert calls["n"] == 2  # both spellings retried, not one latched attempt
+
+    def test_reprobe_noops_when_http_already_available(self, monkeypatch):
+        from tools import mcp_tool
+
+        monkeypatch.setattr(mcp_tool, "_MCP_HTTP_AVAILABLE", True)
+        monkeypatch.setattr(
+            mcp_tool, "_import_sdk_names",
+            lambda *a, **k: pytest.fail("available verdicts must never be re-imported"))
+        assert mcp_tool._reprobe_mcp_http_availability() is True
+
+    def test_reprobe_honors_sdk_unavailable_without_import(self, monkeypatch):
+        from tools import mcp_tool
+
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False)
+        monkeypatch.setattr(mcp_tool, "_MCP_HTTP_AVAILABLE", False)
+        monkeypatch.setattr(
+            mcp_tool, "_import_sdk_names",
+            lambda *a, **k: pytest.fail("SDK-unavailable verdicts must not import"))
+        assert mcp_tool._reprobe_mcp_http_availability() is False
 
     def test_stdio_unavailable_raises_importerror_not_nameerror(self):
         """Regression test for #30904.

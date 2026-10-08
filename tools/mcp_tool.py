@@ -184,6 +184,31 @@ def _ensure_mcp_sdk() -> bool:
         return _MCP_AVAILABLE
 
 
+def _reprobe_mcp_http_availability() -> bool:
+    """Re-run the HTTP-transport import after a latched unavailability verdict.
+
+    ``_ensure_mcp_sdk`` attempts the SDK import exactly once per process: a transient
+    import failure on that first probe latches ``_MCP_HTTP_AVAILABLE=False`` forever, so
+    every later connect (including parked self-probes) fails with the canned upgrade
+    message even though the package imports fine (#134933). Each call re-runs just the
+    two streamable-HTTP imports; a verdict of available (possibly test-patched) is
+    never redone. HTTP-unavailable tests patch this to return False.
+    """
+    global _MCP_NEW_HTTP, _MCP_LEGACY_HTTP, _MCP_HTTP_AVAILABLE
+    if _MCP_HTTP_AVAILABLE or not _MCP_AVAILABLE:
+        return _MCP_HTTP_AVAILABLE
+    with _MCP_SDK_IMPORT_LOCK:
+        if _MCP_HTTP_AVAILABLE:  # lost the race to a concurrent re-probe
+            return _MCP_HTTP_AVAILABLE
+        _MCP_NEW_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamable_http_client",))
+        _MCP_LEGACY_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamablehttp_client",))
+        _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
+        if _MCP_HTTP_AVAILABLE:
+            logger.info("MCP HTTP transport available again (a transient import failure had "
+                        "latched it unavailable for this process)")
+    return _MCP_HTTP_AVAILABLE
+
+
 _SDK_HTTPX_MOD = None
 
 

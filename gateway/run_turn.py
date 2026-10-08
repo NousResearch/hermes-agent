@@ -512,7 +512,6 @@ class GatewayTurnMixin:
     async def _hmwa_open_session(self, session_entry, session_key, source):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
         Returns ``(_was_auto_reset, _is_new_session)``."""
-        # Consume was_auto_reset immediately so it cannot re-fire and wipe overrides set between turns.
         # Capture and immediately consume was_auto_reset so it does not re-fire on subsequent messages —
         # preventing the cleanup from wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
@@ -1409,7 +1408,7 @@ class GatewayTurnMixin:
             )
         return bounded
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, internal=False):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, message, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
@@ -1418,13 +1417,13 @@ class GatewayTurnMixin:
             return
         human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
-            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # Same branch logic as the TUI (offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
-            from agent.onboarding import first_contact_turn_note
+            from agent.onboarding import first_contact_turn_note, setup_command
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
-                session_history_empty=True, install_has_prior_sessions=False,
-            )
+                session_history_empty=True, install_has_prior_sessions=False, message=message,
+                command=setup_command(source.platform.value))
             if note:
                 turn_sidecar_notes.append(note)
 
@@ -2051,6 +2050,7 @@ class GatewayTurnMixin:
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        self._restore_session_yolo(session_key, session_entry)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -2101,7 +2101,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).

@@ -36,11 +36,9 @@ import {
   resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
-import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
@@ -49,8 +47,6 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
-
-const onboardingEnabled = isOnboardingEnabled()
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -491,8 +487,8 @@ interface MarkdownTextSurfaceProps {
   /** This text is the model's private scratchpad (reasoning), so nothing in it
    *  may be promoted into app chrome: no artifact cards from fenced blocks (a
    *  draft must not register artifact versions), and no transcript directives
-   *  (a `::onboarding{step="look"}` the model was only reminding itself about
-   *  otherwise mounted a live accent picker inside the thinking block). */
+   *  (a directive the model was only reminding itself about would otherwise
+   *  mount a live plugin card inside the thinking block). */
   scratchpad?: boolean
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
@@ -513,10 +509,10 @@ interface MarkdownTextSurfaceProps {
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
 // table-driven so adding/tweaking levels is one row.
 const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
-  h1: 'text-[length:calc(1rem*var(--conversation-text-scale,1))] tracking-tight',
-  h2: 'text-[length:calc(0.9375rem*var(--conversation-text-scale,1))] tracking-tight',
-  h3: 'text-[length:calc(0.875rem*var(--conversation-text-scale,1))]',
-  h4: 'text-[length:var(--conversation-text-font-size)]'
+  h1: 'text-[1.25em] tracking-tight',
+  h2: 'text-[1.15em] tracking-tight',
+  h3: 'text-[1.075em]',
+  h4: 'text-[1em]'
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
@@ -599,18 +595,6 @@ function MarkdownParagraph({
         )}
       </>
     )
-  }
-
-  // Directive-in-progress: while the message is still streaming, a paragraph
-  // that begins with `::` is a directive whose closing shape hasn't fully
-  // arrived (directives always sit alone in their own paragraph — FLOW.md),
-  // so it can't be claimed yet. Rendering the plain <p> here is the raw-text
-  // flash (`::ask{question="Wha…`) that snaps into a card on settle — hold
-  // the slot empty instead. Once streaming ends this branch is dead, so a
-  // SETTLED malformed/unclaimed directive still shows as prose (an authoring
-  // bug the user should see).
-  if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
-    return null
   }
 
   return (

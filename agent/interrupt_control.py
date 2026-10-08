@@ -158,6 +158,7 @@ class InterruptControlMixin:
             self._interrupt_requested = True
             self._interrupt_message = message
             self._tool_interrupt_reason = tool_interrupt_reason
+            self._turn_user_intervened = True
             # The turn record and the log must agree on WHO asked for the stop (#112647).
             logger.info("Interrupt requested (%s): %s", "hard" if hard_cancel else "soft", tool_interrupt_reason)
             _hard_event = getattr(self, "_hard_interrupt_requested", None) if hard_cancel else None
@@ -272,6 +273,8 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        # The turn no longer ran on its own (first-task-done detection reads this off the result).
+        self._turn_user_intervened = True
         return True
 
     def redirect(self, text: str) -> bool:
@@ -289,7 +292,10 @@ class InterruptControlMixin:
                 if self._interrupt_requested:
                     return False
             try:
-                return bool(_native_steer(cleaned))
+                accepted = bool(_native_steer(cleaned))
+                if accepted:
+                    self._turn_user_intervened = True
+                return accepted
             except Exception:
                 logger.debug("Codex app-server turn/steer failed", exc_info=True)
                 return False
@@ -322,6 +328,7 @@ class InterruptControlMixin:
             )
             self._interrupt_requested = True
             self._interrupt_message = None
+            self._turn_user_intervened = True
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)

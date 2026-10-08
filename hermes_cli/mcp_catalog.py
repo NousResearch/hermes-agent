@@ -243,6 +243,21 @@ def _parse_tools(path: Path, raw: Any) -> ToolsSpec:
     return ToolsSpec(default_enabled=default_enabled, default_excluded=default_excluded)
 
 
+_MAX_APPLICATIONS = 16
+_APP_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}")
+
+
+def _validate_applications(labels: object) -> list[str]:
+    """Accept bounded display labels/aliases, never paths, commands or regexes."""
+    if not isinstance(labels, list) or len(labels) > _MAX_APPLICATIONS:
+        raise ValueError("suggest.applications must be a list of at most 16 app labels")
+    for label in labels:
+        if (not isinstance(label, str) or not _APP_LABEL.fullmatch(label)
+                or label != label.strip() or ".." in label or " --" in label):
+            raise ValueError("suggest.applications must contain safe app labels (1–80 characters)")
+    return list(labels)
+
+
 def _parse_suggest(path: Path, suggest_raw: Any) -> Optional[SuggestSpec]:
     if suggest_raw is None:
         return None
@@ -251,10 +266,8 @@ def _parse_suggest(path: Path, suggest_raw: Any) -> Optional[SuggestSpec]:
     hosts_raw = suggest_raw.get("hosts") or []
     _require_str_list(path, "suggest.keywords", kw_raw, non_empty=True)
     _require_str_list(path, "suggest.hosts", hosts_raw, non_empty=True)
-    from hermes_cli.mcp_app_detection import validate_applications
-
     try:
-        applications = validate_applications(suggest_raw.get("applications", []))
+        applications = _validate_applications(suggest_raw.get("applications", []))
     except ValueError as exc:
         raise CatalogError(f"{path}: {exc}") from exc
     examples = suggest_raw.get("examples", [])

@@ -200,6 +200,12 @@ export const koConversation: Pick<
     review: '검토'
   },
   composer: {
+    localSetup: {
+      title: '이 컴퓨터에서 모델을 실행할 수 있습니다',
+      text: model =>
+        `${model} 모델을 이 컴퓨터에서 실행할 수 있습니다. 대화는 컴퓨터에만 저장되며 사용 비용이 없습니다.`,
+      action: '자세히 보기'
+    },
     message: '메시지',
     wakingProfile: profile => `${profile} 깨우는 중…`,
     placeholderStarting: 'Hermes 시작 중...',

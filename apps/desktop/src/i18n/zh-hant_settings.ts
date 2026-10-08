@@ -847,7 +847,12 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
-      showOptions: '顯示選項'
+      showOptions: '顯示選項',
+      developerTitle: '開發者',
+      resetOnboardingTitle: '重設初始設定',
+      resetOnboardingDesc: '刪除設定聊天、重建設定設定檔，並再次執行首次設定。你自己的設定檔、聊天和外掛都會保留。',
+      resetOnboardingAction: '重設',
+      resetOnboardingFailed: '無法重設初始設定'
     },
     hudModifier: {
       title: '輕按叫出 HUD',

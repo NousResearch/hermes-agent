@@ -756,6 +756,12 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     autosaveFailed: '自動保存に失敗しました',
     imported: '設定をインポートしました',
     invalidJson: '設定 JSON が無効です',
+    developerTitle: '開発者',
+    resetOnboardingTitle: 'オンボーディングをリセット',
+    resetOnboardingDesc:
+      'セットアップ用のチャットを削除し、セットアッププロファイルを作り直して、初回セットアップをもう一度実行します。自分で作成したプロファイル、チャット、プラグインはそのまま残ります。',
+    resetOnboardingAction: 'リセット',
+    resetOnboardingFailed: 'オンボーディングをリセットできませんでした',
     keepAwakeTitle: 'コンピューターをスリープさせない',
     keepAwakeDesc:
       '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',

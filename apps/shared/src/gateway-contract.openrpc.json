@@ -1033,6 +1033,24 @@
       }
     },
     {
+      "name": "free_tier.claim_nudge",
+      "summary": "Claim the due sign-in offer; true for exactly one caller each time an offer comes due.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierClaimNudgeResult"
+        }
+      }
+    },
+    {
       "name": "free_tier.provision",
       "summary": "Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.",
       "params": [
@@ -1970,7 +1988,7 @@
     },
     {
       "name": "onboarding.ensure_setup_profile",
-      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.",
+      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name.",
       "params": [
         {
           "name": "params",
@@ -1983,6 +2001,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/OnboardingEnsureSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.ensure_setup_session",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingEnsureSetupSessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingEnsureSetupSessionResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.mark_seen",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.record_failed_start",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
         }
       }
     },
@@ -2001,6 +2073,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/OnboardingResetSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.state",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
         }
       }
     },
@@ -2523,24 +2613,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ProfilesListResult"
-        }
-      }
-    },
-    {
-      "name": "profiles.remember_onboarding",
-      "summary": "Write the onboarding facts into the default profile's user memory and confirm they landed.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfilesRememberOnboardingParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/ProfilesRememberOnboardingResult"
         }
       }
     },
@@ -3495,6 +3567,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionSetHiddenResult"
+        }
+      }
+    },
+    {
+      "name": "session.start_chat",
+      "summary": "Run a start_chat request again from the session that made it (the handoff card's Retry).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionStartChatParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionStartChatResult"
         }
       }
     },
@@ -14199,6 +14289,20 @@
         "title": "FreeTierChallengeResultParams",
         "type": "object"
       },
+      "FreeTierClaimNudgeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claimed"
+        ],
+        "title": "FreeTierClaimNudgeResult",
+        "type": "object"
+      },
       "FreeTierProvisionResult": {
         "additionalProperties": false,
         "properties": {
@@ -14352,6 +14456,18 @@
               }
             ],
             "default": null
+          },
+          "nudge_due_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nudge Due In"
           }
         },
         "required": [
@@ -19822,119 +19938,6 @@
         "title": "OkResult",
         "type": "object"
       },
-      "OnboardingAnswers": {
-        "additionalProperties": true,
-        "description": "``tui_gateway/onboarding_personalization.py`` \u2014 the facts agreed during onboarding.",
-        "properties": {
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
-          },
-          "context": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context"
-          },
-          "theme": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Theme"
-          },
-          "accent": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Accent"
-          },
-          "layout": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Layout"
-          },
-          "focus": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Focus"
-          },
-          "connectors": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connectors"
-          },
-          "plugins": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Plugins"
-          }
-        },
-        "title": "OnboardingAnswers",
-        "type": "object"
-      },
       "OnboardingCatalogPlugin": {
         "additionalProperties": false,
         "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
@@ -19996,12 +19999,6 @@
           "created": {
             "title": "Created",
             "type": "boolean"
-          },
-          "role": {
-            "const": "setup",
-            "default": "setup",
-            "title": "Role",
-            "type": "string"
           }
         },
         "required": [
@@ -20011,6 +20008,61 @@
         ],
         "title": "OnboardingEnsureSetupProfileResult",
         "type": "object"
+      },
+      "OnboardingEnsureSetupSessionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages"
+          }
+        },
+        "title": "OnboardingEnsureSetupSessionParams",
+        "type": "object"
+      },
+      "OnboardingEnsureSetupSessionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "empty": {
+            "title": "Empty",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "session_id",
+          "empty"
+        ],
+        "title": "OnboardingEnsureSetupSessionResult",
+        "type": "object"
+      },
+      "OnboardingIntro": {
+        "enum": [
+          "unseen",
+          "seen"
+        ],
+        "title": "OnboardingIntro",
+        "type": "string"
       },
       "OnboardingResetSetupProfileResult": {
         "additionalProperties": false,
@@ -20034,6 +20086,53 @@
           "path"
         ],
         "title": "OnboardingResetSetupProfileResult",
+        "type": "object"
+      },
+      "OnboardingStateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "intro": {
+            "$ref": "#/components/schemas/OnboardingIntro"
+          },
+          "failed_starts": {
+            "title": "Failed Starts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "eligible",
+          "intro",
+          "failed_starts"
+        ],
+        "title": "OnboardingStateResult",
         "type": "object"
       },
       "OpenRequestEntry": {
@@ -23838,19 +23937,6 @@
             "title": "Previous Names",
             "type": "array"
           },
-          "role": {
-            "anyOf": [
-              {
-                "const": "setup",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
-          },
           "last_session": {
             "anyOf": [
               {
@@ -24774,58 +24860,6 @@
           }
         },
         "title": "ProfilesListResult",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "answers": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OnboardingAnswers"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "title": "ProfilesRememberOnboardingParams",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingResult": {
-        "additionalProperties": false,
-        "properties": {
-          "saved": {
-            "default": true,
-            "title": "Saved",
-            "type": "boolean"
-          },
-          "profile": {
-            "default": "default",
-            "title": "Profile",
-            "type": "string"
-          },
-          "target": {
-            "default": "user",
-            "title": "Target",
-            "type": "string"
-          }
-        },
-        "title": "ProfilesRememberOnboardingResult",
         "type": "object"
       },
       "ProfilesSetAssetParams": {
@@ -32087,6 +32121,128 @@
         "title": "SessionSetHiddenResult",
         "type": "object"
       },
+      "SessionStartChatParams": {
+        "additionalProperties": false,
+        "description": "``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/StartChatArgs"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id",
+          "args"
+        ],
+        "title": "SessionStartChatParams",
+        "type": "object"
+      },
+      "SessionStartChatResult": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same\narguments may succeed on another try (``retryable``). A call already retried returns that retry's result.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/StartChatStatus"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionStartChatResult",
+        "type": "object"
+      },
       "SessionStatusParams": {
         "additionalProperties": false,
         "properties": {
@@ -32623,6 +32779,165 @@
           "cwd"
         ],
         "title": "SessionWorkspaceMoveResult",
+        "type": "object"
+      },
+      "SetupChooseKind": {
+        "enum": [
+          "question",
+          "accent",
+          "theme",
+          "layout",
+          "connectors",
+          "plugins",
+          "tour",
+          "fork",
+          "machine_use"
+        ],
+        "title": "SetupChooseKind",
+        "type": "string"
+      },
+      "SetupChooseOption": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "SetupChooseOption",
+        "type": "object"
+      },
+      "SetupChooseRequestParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SetupChooseKind"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SetupChooseOption"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "multi_select": {
+            "default": false,
+            "title": "Multi Select",
+            "type": "boolean"
+          },
+          "preselected": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preselected"
+          }
+        },
+        "required": [
+          "session_id",
+          "kind",
+          "question"
+        ],
+        "title": "SetupChooseRequestParams",
+        "type": "object"
+      },
+      "SetupChooseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "picked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Picked"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "said": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Said"
+          }
+        },
+        "title": "SetupChooseResult",
         "type": "object"
       },
       "SetupReadyPayload": {
@@ -34621,6 +34936,53 @@
         ],
         "title": "SpawnTreeSaveResult",
         "type": "object"
+      },
+      "StartChatArgs": {
+        "additionalProperties": false,
+        "description": "The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``).",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "StartChatArgs",
+        "type": "object"
+      },
+      "StartChatStatus": {
+        "enum": [
+          "started",
+          "rejected"
+        ],
+        "title": "StartChatStatus",
+        "type": "string"
       },
       "StatusUpdatePayload": {
         "additionalProperties": false,
@@ -39773,6 +40135,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "setup_choose",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SetupChooseRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SetupChooseResult"
         }
       }
     },

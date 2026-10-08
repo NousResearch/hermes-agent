@@ -510,6 +510,7 @@ export const zhHantCommandCenter = {
     last: '上次：',
     next: '下次：',
     noRuns: '尚無執行',
+    queuedRun: '排隊中的執行',
     manage: '管理',
     showRuns: '顯示執行記錄',
     hideRuns: '隱藏執行記錄',

@@ -1,14 +1,15 @@
 import { billingRiskJa as billingRiskCopy } from './billing-risk-copy'
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaSettings } from './ja-settings'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
+import { jaOnboarding } from './ja_onboarding'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { ja as permissionModelCopy } from './permission-model-copy'
 
-export const ja = defineLocale({
+export const jaOverrides = {
   settings: jaSettings,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
@@ -1086,6 +1087,7 @@ export const ja = defineLocale({
     last: '前回',
     next: '次回',
     noRuns: 'まだ実行されていません',
+    queuedRun: '待機中の実行',
     manage: '管理',
     showRuns: '実行履歴を表示',
     hideRuns: '実行履歴を隠す',
@@ -1361,6 +1363,27 @@ export const ja = defineLocale({
       done: '完了'
     }
   },
+
+  handoffTour: {
+    profileTitle: '最初のタスクはデフォルトのプロファイルで実行されます',
+
+    profileText:
+      'このレールでプロファイルを切り替えます。いま点灯しているのが default で、タスクのセッションはここにあります。もう一方はセットアップ用のプロファイルで、ウェルカムチャットはそちらにあります。',
+
+    sessionsTitle: 'プロファイルごとにセッションが分かれています',
+
+    sessionsText:
+      'この一覧は default プロファイルのものです。「新しいセッション」は選択中のプロファイルで始まります。レールでプロファイルを切り替えると一覧も変わります。',
+
+    stayTitle: 'Hermes はワンクリックで呼べます',
+
+    stayText:
+      '手を借りたいときは、セットアッププロファイルに切り替えて「Hermes へようこそ」を開いてください。いつでもそこにあります。',
+    localTitle: 'このマシンはローカルでモデルを実行できます',
+    localText: (model: string) =>
+      `${model} はお使いのハードウェアで動きます。無料で、チャットはこのコンピューターから出ません。いつでもここ、モデルメニューから選べます。`
+  },
+
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
@@ -1515,6 +1538,11 @@ export const ja = defineLocale({
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
+    localSetup: {
+      title: 'このコンピューターで実行できます',
+      text: (model: string) => `${model} はこのマシンで動きます。無料で、チャットはこのコンピューターから出ません。`,
+      action: '見てみる'
+    },
     queueEdit: '編集',
     queueExpand: '展開',
     queueCollapse: '折りたたむ',
@@ -1860,10 +1888,7 @@ export const ja = defineLocale({
     bundleOutOfSyncAction: 'インストーラーを入手',
     checkingShort: '確認中…'
   },
-  guidedGreeting: {
-    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
-    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
-  },
+
   install: {
     stageStates: {
       pending: '待機中',
@@ -1939,95 +1964,9 @@ export const ja = defineLocale({
     copyOutput: '出力をコピー',
     reloadRetry: '再読み込みして再試行'
   },
-  onboarding: {
-    headerTitle: 'Hermes Agent のセットアップをしましょう',
-    headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
-    preparingInstall: 'Hermes はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
-    starting: 'Hermes を起動中…',
-    lookingUpProviders: 'プロバイダーを検索中...',
-    collapse: '折りたたむ',
-    otherProviders: 'その他のプロバイダー',
-    haveApiKey: 'API キーをお持ちです',
-    chooseLater: '後でプロバイダーを選択します',
-    recommended: '推奨',
-    connected: '接続済み',
-    featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
-    fireworksPitch: '直接モデル API — Fireworks がホストする最先端モデル',
-    localModelsTitle: 'モデルをローカルで実行',
-    localModelsPitch: 'アカウント不要——モデルをダウンロードしてこのマシンで実行',
-    openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'モデル API に直接接続',
-        description: 'Fireworks AI がホストするモデルに直接アクセスします。'
-      },
-      openrouter: {
-        short: '1 つのキーで多くのモデル',
-        description: '1 つのキーで数百のモデルをホスト。新規インストールのデフォルトとして最適。'
-      },
-      openai: {
-        short: 'GPT クラスのモデル',
-        description: 'OpenAI モデルへの直接アクセス。'
-      },
-      gemini: {
-        short: 'Gemini モデル',
-        description: 'Google Gemini モデルへの直接アクセス。'
-      },
-      xai: {
-        short: 'Grok モデル',
-        description: 'xAI Grok モデルへの直接アクセス。'
-      },
-      local: {
-        short: 'セルフホスト',
-        description:
-          'ローカルまたはセルフホストの OpenAI 互換エンドポイント（vLLM、llama.cpp、Ollama など）に Hermes を接続。'
-      }
-    },
-    backToSignIn: 'サインインに戻る',
-    getKey: 'キーを取得',
-    replaceCurrent: '現在の値を置き換え',
-    pasteApiKey: 'API キーを貼り付け',
-    couldNotSave: '認証情報を保存できませんでした。',
-    connecting: '接続中',
-    update: '更新',
-    flowSubtitles: {
-      pkce: 'ブラウザーを開いてサインインし、ここに戻ります',
-      device_code: 'ブラウザーで確認ページを開きます — Hermes が自動接続します',
-      external: 'ターミナルで一度サインインして、チャットに戻ります'
-    },
-    startingSignIn: provider => `${provider} のサインインを開始中...`,
-    verifyingCode: provider => `${provider} でコードを確認中...`,
-    connectedProvider: provider => `${provider} が接続されました`,
-    connectedPicking: provider => `${provider} が接続されました。デフォルトモデルを選択中...`,
-    signInFailed: 'サインインに失敗しました。再試行してください。',
-    signInExpired:
-      '承認待ちでタイムアウトしました。多くの場合、開いたタブのサインインページが止まっている（サーバー側の問題）ためです。そのページでサインインを完了してから再試行してください。解決しない場合は API キーまたは CLI を利用してください。',
-    pickDifferentProvider: '別のプロバイダーを選択',
-    signInWith: provider => `${provider} でサインイン`,
-    openedBrowser: provider => `${provider} をブラウザーで開きました。`,
-    authorizeThere: 'そこで Hermes を承認してください。',
-    copyAuthCode: '認証コードをコピーして以下に貼り付けてください。',
-    pasteAuthCode: '認証コードを貼り付け',
-    reopenAuthPage: '認証ページを再度開く',
-    autoBrowser: provider =>
-      `${provider} をブラウザーで開きました。Hermes をそこで承認すれば自動接続されます。コピーや貼り付けは不要です。`,
-    reopenSignInPage: 'サインインページを再度開く',
-    waitingAuthorize: '承認を待っています...',
-    externalPending: provider =>
-      `${provider} は独自の CLI からサインインします。ターミナルでこのコマンドを実行してから、戻って「サインインしました」を選択してください:`,
-    signedIn: 'サインインしました',
-    deviceCodeOpened: provider => `${provider} をブラウザーで開きました。そこにこのコードを入力してください:`,
-    reopenVerification: '確認ページを再度開く',
-    copy: 'コピー',
-    defaultModel: 'デフォルトモデル',
-    freeTier: '無料プラン',
-    pro: 'Pro',
-    free: '無料',
-    price: (input, output) => `${input} 入力 / ${output} 出力 per Mtok`,
-    change: '変更',
-    startChatting: '始める',
-    docs: provider => `${provider} ドキュメント`
-  },
+
+  onboarding: jaOnboarding,
+
   modelPicker: {
     title: 'モデルを切り替え',
     current: '現在:',
@@ -2618,6 +2557,7 @@ export const ja = defineLocale({
       confirmAndContinueLabel: '確定して続行',
       singleSelectHint: '1つ選ぶ',
       multiSelectHint: '該当するものをすべて選択',
+      oneQuestion: '1問',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。',
@@ -2626,6 +2566,31 @@ export const ja = defineLocale({
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
       lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'アクセントカラー',
+        connectors: 'アプリ',
+        layout: 'レイアウト',
+        plugins: 'プラグイン',
+        theme: '外観'
+      },
+      loading: 'オプションを読み込み中…',
+      unavailable: 'このリストは現在利用できません。代わりにチャットで返信してください。',
+      findApp: 'アプリを検索',
+      customColor: 'カスタムカラー',
+      plugin: 'プラグイン',
+      startsLater: '始めるときに設定します。'
+    },
+    startChat: {
+      starting: title => `「${title}」を開始中…`,
+      startingUntitled: 'チャットを開始中…',
+      untitled: '新しいチャット',
+      notStarted: 'チャットを開始できませんでした',
+      inProfile: profile => `${profile} 内`,
+      open: '開く',
+      openFailed: 'チャットを開けませんでした',
+      retry: '再試行'
     },
     tool: {
       copyCode: 'コードをコピー',
@@ -2776,21 +2741,11 @@ export const ja = defineLocale({
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
-        terminal: {
-          done: 'コマンドを実行しました',
-          pending: 'コマンドを実行中',
-          pendingAction: '実行中'
-        },
-        todo: {
-          done: 'Todo を更新しました',
-          pending: 'Todo を更新中',
-          pendingAction: '更新中'
-        },
-        vision_analyze: {
-          done: '画像を分析しました',
-          pending: '画像を分析中',
-          pendingAction: '分析中'
-        },
+        setup_choose: { done: '設定の質問をしました', pending: '設定の質問をしています', pendingAction: '質問中' },
+        start_chat: { done: 'チャットを開始しました', pending: 'チャットを開始中', pendingAction: '開始中' },
+        terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
+        todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
+        vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },
         web_extract: {
           done: 'Web ページを読み取りました',
           pending: 'Web ページを読み取り中',
@@ -2988,11 +2943,6 @@ export const ja = defineLocale({
         text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
         action: '今すぐ更新'
       },
-      'local-setup': {
-        title: 'このマシンはローカルでモデルを実行できます',
-        text: 'お使いのハードウェアでローカルモデルを動かせます。会話はこのコンピュータから出ず、料金もかかりません。',
-        action: 'セットアップ'
-      },
       'right-pane': {
         title: '作業用ペイン',
         text: 'ファイル、ターミナル、レビュー、アプリ内ブラウザはサイドペインにまとまっています。'
@@ -3028,6 +2978,16 @@ export const ja = defineLocale({
       toggle: open => `サイドバーを${open ? '表示' : '非表示'}`
     }
   },
+  freeTier: {
+    offer: {
+      heading: 'Hermes を使い続ける',
+      body: '現在は無料枠をご利用中です。Hermes を使い続けると、いずれ上限に達します。無料の Nous アカウントでサインインすると、より多くの利用枠が使えます。',
+      signIn: 'サインイン',
+      notNow: '今はしない'
+    }
+  },
   billingRisk: billingRiskCopy,
   permissionModel: permissionModelCopy
-})
+} satisfies TranslationOverrides
+
+export const ja = defineLocale(jaOverrides)

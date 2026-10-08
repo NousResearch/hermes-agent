@@ -23,6 +23,8 @@ describe('Korean translation contract', () => {
     expect(ko.desktop.branchTitle(17)).toContain('17')
     expect(ko.ui.sidebar.toggle(true)).not.toBe(ko.ui.sidebar.toggle(false))
     expect(ko.skills.toggleToolset('TOOLS', true)).not.toBe(ko.skills.toggleToolset('TOOLS', false))
+    expect(ko.composer.localSetup.text('LOCAL_MODEL')).toContain('LOCAL_MODEL')
+    expect(ko.composer.localSetup.text('LOCAL_MODEL')).toContain('컴퓨터')
   })
 
   it('keeps original description extensions and schema field copy available', () => {

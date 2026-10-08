@@ -1,13 +1,13 @@
 // Korean: original translations by @dalgme (PR #40716).
 // Additional catalog coverage by Dante (@dandacompany); integrated without replacing original copy.
 import { billingRiskKo as billingRiskCopy } from './billing-risk-copy'
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { koCapabilities } from './ko-capabilities'
 import { koConversation } from './ko-conversation'
 import { koSettings } from './ko-settings'
 import { ko as permissionModelCopy } from './permission-model-copy'
 
-export const ko = defineLocale({
+export const koOverrides = {
   ...koConversation,
   ...koCapabilities,
   settings: koSettings,
@@ -755,9 +755,6 @@ export const ko = defineLocale({
     copyAuthCode: '인증 코드를 복사하여 아래에 붙여넣으세요.',
     pasteAuthCode: '인증 코드 붙여넣기',
     reopenAuthPage: '인증 페이지 다시 열기',
-    autoBrowser: provider =>
-      `브라우저에서 ${provider}을(를) 열었습니다. 해당 페이지에서 Hermes의 접근 권한을 허용하면 자동으로 연결됩니다. 코드를 복사하거나 붙여넣을 필요가 없습니다.`,
-    reopenSignInPage: '로그인 페이지 다시 열기',
     waitingAuthorize: '접근 권한 허용을 기다리는 중...',
     externalPending: provider =>
       `${provider}은(는) 자체 CLI를 통해 로그인합니다. 터미널에서 이 명령을 실행한 후 돌아와 "로그인했습니다"를 선택하세요:`,
@@ -910,11 +907,6 @@ export const ko = defineLocale({
         title: '첨부와 명령',
         text: '@를 입력하면 대화에 파일을 가져오고 /를 입력하면 명령을 실행합니다.'
       },
-      'local-setup': {
-        title: '이 컴퓨터에서 모델을 실행할 수 있습니다',
-        text: '현재 하드웨어로 로컬 모델을 실행할 수 있습니다. 대화는 컴퓨터에만 저장되며 사용 비용이 없습니다.',
-        action: '설정하기'
-      },
       'right-pane': {
         title: '작업 패널',
         text: '오른쪽에서 파일, 터미널, 변경 사항 검토, 앱 내 브라우저를 사용할 수 있습니다.'
@@ -995,10 +987,6 @@ export const ko = defineLocale({
     stayTitle: '클릭 한 번으로 Hermes의 도움을 받으세요',
     stayText:
       '도움이 필요할 때마다 setup 프로필로 전환해 Welcome to Hermes 대화를 여세요. 언제든 그곳에서 다시 볼 수 있습니다.'
-  },
-  guidedGreeting: {
-    line: '반가워요. 저는 Hermes예요. 2분 정도만 함께 설정을 마치고, 원하시는 작업을 바로 시작해 볼게요.\n\n먼저, 어떻게 불러 드리면 될까요?',
-    nameSuggestion: (name: string) => `(원하시면 ${name}님이라고 불러 드릴 수도 있어요.)`
   },
   freeTier: {
     providerRowTitle: 'Nous · 무료 요금제',
@@ -1082,4 +1070,6 @@ export const ko = defineLocale({
     declined: '데이터 학습 등급 경고를 수락하지 않아 모델 변경을 취소했습니다.'
   },
   interfaceMode: { advanced: { label: '고급' } }
-})
+} satisfies TranslationOverrides
+
+export const ko = defineLocale(koOverrides)

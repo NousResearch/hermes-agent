@@ -1,14 +1,15 @@
 import { billingRiskZh as billingRiskCopy } from './billing-risk-copy'
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zh as permissionModelCopy } from './permission-model-copy'
 import { zhSettings } from './zh-settings'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
+import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
-export const zh = defineLocale({
+export const zhOverrides = {
   settings: zhSettings,
   externalOpenFailed: {
     title: '无法打开此链接',
@@ -1461,6 +1462,7 @@ export const zh = defineLocale({
     last: '上次：',
     next: '下次：',
     noRuns: '尚无运行',
+    queuedRun: '排队中的运行',
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
@@ -1740,6 +1742,26 @@ export const zh = defineLocale({
     },
     markAllRead: '全部标记为已读'
   },
+
+  handoffTour: {
+    profileTitle: '你的第一个任务在默认配置文件中运行',
+
+    profileText:
+      '这条栏用于切换配置文件。现在亮着的是 default，任务会话就在这里。另一个是设置配置文件，欢迎聊天在那里。',
+
+    sessionsTitle: '每个配置文件都有自己的会话',
+
+    sessionsText:
+      '这个列表属于 default 配置文件。“新会话”会在当前选中的配置文件中开始。在栏上切换配置文件，列表也会随之变化。',
+
+    stayTitle: 'Hermes 一键可达',
+
+    stayText: '需要帮忙时，切换到设置配置文件并打开“欢迎使用 Hermes”。它会一直在那里。',
+    localTitle: '这台电脑可以在本地运行模型',
+    localText: (model: string) =>
+      `${model} 适合你的硬件。免费运行，对话不会离开你的电脑。随时在这里的模型菜单中选择它。`
+  },
+
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -1902,6 +1924,11 @@ export const zh = defineLocale({
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
+    localSetup: {
+      title: '这可以在你的电脑上运行',
+      text: (model: string) => `${model} 适合这台电脑。免费，对话留在你的电脑上。`,
+      action: '带我看看'
+    },
     queueEdit: '编辑',
     queueExpand: '展开',
     queueCollapse: '收起',
@@ -2293,10 +2320,7 @@ export const zh = defineLocale({
     versionDetailsInstallId: '安装 ID',
     versionDetailsUncommittedChanges: '未提交的变更'
   },
-  guidedGreeting: {
-    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
-    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
-  },
+
   install: {
     stageStates: {
       pending: '等待中',
@@ -2371,94 +2395,9 @@ export const zh = defineLocale({
     copyOutput: '复制输出',
     reloadRetry: '重新加载并重试'
   },
-  onboarding: {
-    headerTitle: '开始设置 Hermes Agent',
-    headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
-    preparingInstall: 'Hermes 正在完成安装。首次运行通常不到一分钟。',
-    starting: '正在启动 Hermes…',
-    lookingUpProviders: '正在查找提供方...',
-    collapse: '收起',
-    otherProviders: '其他提供方',
-    haveApiKey: '我有 API 密钥',
-    chooseLater: '稍后再选择提供方',
-    recommended: '推荐',
-    connected: '已连接',
-    featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
-    fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
-    localModelsTitle: '本地运行模型',
-    localModelsPitch: '无需账号——下载模型，在本机运行',
-    openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
-    apiKeyOptions: {
-      fireworks: {
-        short: '直接模型 API',
-        description: '直接访问 Fireworks AI 托管的模型。'
-      },
-      openrouter: {
-        short: '一个密钥，多个模型',
-        description: '用一个密钥访问数百个模型。适合新安装的默认选择。'
-      },
-      openai: {
-        short: 'GPT 级模型',
-        description: '直接访问 OpenAI 模型。'
-      },
-      gemini: {
-        short: 'Gemini 模型',
-        description: '直接访问 Google Gemini 模型。'
-      },
-      xai: {
-        short: 'Grok 模型',
-        description: '直接访问 xAI Grok 模型。'
-      },
-      local: {
-        short: '自托管',
-        description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
-      }
-    },
-    backToSignIn: '返回登录',
-    getKey: '获取密钥',
-    replaceCurrent: '替换当前值',
-    pasteApiKey: '粘贴 API 密钥',
-    localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
-    localModelNamePlaceholder: '模型名称（例如 command-a-plus-05-2026）',
-    couldNotSave: '无法保存凭据。',
-    connecting: '连接中',
-    update: '更新',
-    flowSubtitles: {
-      pkce: '打开浏览器登录，然后回到这里继续',
-      device_code: '在浏览器中打开验证页面 — Hermes 会自动连接',
-      external: '先在终端登录一次，然后回来继续对话'
-    },
-    startingSignIn: provider => `正在为 ${provider} 启动登录...`,
-    verifyingCode: provider => `正在通过 ${provider} 验证你的代码...`,
-    connectedProvider: provider => `${provider} 已连接`,
-    connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
-    signInFailed: '登录失败，请重试。',
-    signInExpired:
-      '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
-    pickDifferentProvider: '选择其他提供方',
-    signInWith: provider => `使用 ${provider} 登录`,
-    openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
-    authorizeThere: '请在那里授权 Hermes。',
-    copyAuthCode: '复制授权码并粘贴到下面。',
-    pasteAuthCode: '粘贴授权码',
-    reopenAuthPage: '重新打开授权页面',
-    autoBrowser: provider => `已在浏览器中打开 ${provider}。请在那里授权 Hermes，连接会自动完成，无需复制或粘贴。`,
-    reopenSignInPage: '重新打开登录页面',
-    waitingAuthorize: '等待你授权...',
-    externalPending: provider => `${provider} 通过自己的 CLI 登录。请在终端运行此命令，然后回来选择“我已登录”：`,
-    signedIn: '我已登录',
-    deviceCodeOpened: provider => `已在浏览器中打开 ${provider}。请在那里输入此代码：`,
-    reopenVerification: '重新打开验证页面',
-    copy: '复制',
-    defaultModel: '默认模型',
-    freeTier: '免费层',
-    pro: 'Pro',
-    free: '免费',
-    price: (input, output) => `${input} 输入 / ${output} 输出每 Mtok`,
-    change: '更改',
-    startChatting: '开始',
-    docs: provider => `${provider} 文档`
-  },
+
+  onboarding: zhOnboarding,
+
   freeTier: {
     providerRowTitle: 'Nous · 免费层',
     providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
@@ -2499,7 +2438,13 @@ export const zh = defineLocale({
     retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
     errorBody: '登录未完成；请重试。',
     alreadySignedInHeading: '已登录。',
-    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
+    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。',
+    offer: {
+      heading: '继续使用 Hermes',
+      body: '你正在使用免费额度。继续使用 Hermes 的话，你会开始遇到限制。登录免费的 Nous 账户，即可获得更多额度。',
+      signIn: '登录',
+      notNow: '暂不'
+    }
   },
   modelPicker: {
     title: '切换模型',
@@ -3087,6 +3032,7 @@ export const zh = defineLocale({
       confirmAndContinueLabel: '确认并继续',
       singleSelectHint: '选一个',
       multiSelectHint: '可多选',
+      oneQuestion: '1 个问题',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。',
       continueLabel: '继续',
@@ -3094,6 +3040,31 @@ export const zh = defineLocale({
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: '强调色',
+        connectors: '应用',
+        layout: '布局',
+        plugins: '插件',
+        theme: '外观'
+      },
+      loading: '正在加载选项…',
+      unavailable: '此列表暂不可用，请直接在对话中回复。',
+      findApp: '查找应用',
+      customColor: '自定义颜色',
+      plugin: '插件',
+      startsLater: '开始时我们会帮你设置好这些。'
+    },
+    startChat: {
+      starting: title => `正在启动“${title}”…`,
+      startingUntitled: '正在启动对话…',
+      untitled: '新对话',
+      notStarted: '对话未能启动',
+      retry: '重试',
+      inProfile: profile => `位于 ${profile}`,
+      open: '打开',
+      openFailed: '无法打开对话'
     },
     catalogInstall: {
       preparing: '正在准备安装…',
@@ -3204,121 +3175,31 @@ export const zh = defineLocale({
         runningTool: action => `正在运行 ${action}`
       },
       titles: {
-        browser_click: {
-          done: '已点击页面元素',
-          pending: '正在点击页面元素',
-          pendingAction: '正在点击'
-        },
-        browser_fill: {
-          done: '已填写表单字段',
-          pending: '正在填写表单字段',
-          pendingAction: '正在填写'
-        },
-        browser_navigate: {
-          done: '已打开页面',
-          pending: '正在打开页面',
-          pendingAction: '正在打开'
-        },
-        browser_snapshot: {
-          done: '已捕获页面快照',
-          pending: '正在捕获页面快照',
-          pendingAction: '正在捕获'
-        },
-        browser_take_screenshot: {
-          done: '已捕获截图',
-          pending: '正在捕获截图',
-          pendingAction: '正在捕获'
-        },
-        browser_type: {
-          done: '已在页面输入',
-          pending: '正在页面输入',
-          pendingAction: '正在输入'
-        },
-        clarify: {
-          done: '已提问',
-          pending: '正在提问',
-          pendingAction: '正在提问'
-        },
-        cronjob: {
-          done: 'Cron 任务',
-          pending: '正在安排 Cron 任务',
-          pendingAction: '正在安排'
-        },
-        edit_file: {
-          done: '已编辑文件',
-          pending: '正在编辑文件',
-          pendingAction: '正在编辑'
-        },
-        execute_code: {
-          done: '已运行代码',
-          pending: '正在编写脚本',
-          pendingAction: '正在编写脚本'
-        },
-        image_generate: {
-          done: '已生成图片',
-          pending: '正在生成图片',
-          pendingAction: '正在生成'
-        },
-        list_files: {
-          done: '已列出文件',
-          pending: '正在列出文件',
-          pendingAction: '正在列出'
-        },
-        memory: {
-          done: '已保存到记忆',
-          pending: '正在保存到记忆',
-          pendingAction: '正在保存'
-        },
-        patch: {
-          done: '已修补文件',
-          pending: '正在修补文件',
-          pendingAction: '正在修补'
-        },
-        read_file: {
-          done: '已读取文件',
-          pending: '正在读取文件',
-          pendingAction: '正在读取'
-        },
-        search_files: {
-          done: '已搜索文件',
-          pending: '正在搜索文件',
-          pendingAction: '正在搜索'
-        },
-        session_search_recall: {
-          done: '已搜索会话历史',
-          pending: '正在搜索会话历史',
-          pendingAction: '正在搜索'
-        },
-        terminal: {
-          done: '已运行命令',
-          pending: '正在运行命令',
-          pendingAction: '正在运行'
-        },
-        todo: {
-          done: '已更新待办',
-          pending: '正在更新待办',
-          pendingAction: '正在更新'
-        },
-        vision_analyze: {
-          done: '已分析图片',
-          pending: '正在分析图片',
-          pendingAction: '正在分析'
-        },
-        web_extract: {
-          done: '已读取网页',
-          pending: '正在读取网页',
-          pendingAction: '正在读取'
-        },
-        web_search: {
-          done: '已搜索网页',
-          pending: '正在搜索网页',
-          pendingAction: '正在搜索'
-        },
-        write_file: {
-          done: '已编辑文件',
-          pending: '正在编辑文件',
-          pendingAction: '正在编辑'
-        }
+        browser_click: { done: '已点击页面元素', pending: '正在点击页面元素', pendingAction: '正在点击' },
+        browser_fill: { done: '已填写表单字段', pending: '正在填写表单字段', pendingAction: '正在填写' },
+        browser_navigate: { done: '已打开页面', pending: '正在打开页面', pendingAction: '正在打开' },
+        browser_snapshot: { done: '已捕获页面快照', pending: '正在捕获页面快照', pendingAction: '正在捕获' },
+        browser_take_screenshot: { done: '已捕获截图', pending: '正在捕获截图', pendingAction: '正在捕获' },
+        browser_type: { done: '已在页面输入', pending: '正在页面输入', pendingAction: '正在输入' },
+        clarify: { done: '已提问', pending: '正在提问', pendingAction: '正在提问' },
+        cronjob: { done: 'Cron 任务', pending: '正在安排 Cron 任务', pendingAction: '正在安排' },
+        edit_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' },
+        execute_code: { done: '已运行代码', pending: '正在编写脚本', pendingAction: '正在编写脚本' },
+        image_generate: { done: '已生成图片', pending: '正在生成图片', pendingAction: '正在生成' },
+        list_files: { done: '已列出文件', pending: '正在列出文件', pendingAction: '正在列出' },
+        memory: { done: '已保存到记忆', pending: '正在保存到记忆', pendingAction: '正在保存' },
+        patch: { done: '已修补文件', pending: '正在修补文件', pendingAction: '正在修补' },
+        read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
+        search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
+        session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
+        setup_choose: { done: '已提出设置问题', pending: '正在提出设置问题', pendingAction: '正在提问' },
+        start_chat: { done: '已启动对话', pending: '正在启动对话', pendingAction: '正在启动' },
+        terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
+        todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
+        vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },
+        web_extract: { done: '已读取网页', pending: '正在读取网页', pendingAction: '正在读取' },
+        web_search: { done: '已搜索网页', pending: '正在搜索网页', pendingAction: '正在搜索' },
+        write_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' }
       }
     }
   },
@@ -3494,11 +3375,6 @@ export const zh = defineLocale({
         text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
         action: '立即更新'
       },
-      'local-setup': {
-        title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
-        action: '立即设置'
-      },
       'right-pane': {
         title: '工作面板',
         text: '文件、终端、审阅和内置浏览器都在侧边面板里。'
@@ -3536,4 +3412,6 @@ export const zh = defineLocale({
   },
   billingRisk: billingRiskCopy,
   permissionModel: permissionModelCopy
-})
+} satisfies TranslationOverrides
+
+export const zh = defineLocale(zhOverrides)

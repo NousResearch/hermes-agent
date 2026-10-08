@@ -1122,6 +1122,17 @@
   padding-top: calc(var(--titlebar-height) + 1rem);
 }
 
+/* The setup chat is a first conversation read at arm's length in a small
+   window, so its transcript, cards and composer run a size up. It sets the
+   base tokens: the thread and composer scopes derive the final ones from
+   these times the chat text scale. */
+[data-setup-chat] {
+  --conversation-text-base-size: 0.9375rem;
+  --conversation-tool-base-size: 0.75rem;
+  --conversation-caption-base-size: 0.8125rem;
+  --conversation-base-line-height: 1.375rem;
+}
+
 @keyframes arc-border {
   /* Transform travel (compositor-only), never background-position: the old
      background-position version cost ~3,600 main-thread style recalcs per
@@ -1688,14 +1699,6 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
-}
-
-/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
-   `overflow-hidden` so wide code/tables don't blow the column; that same clip
-   shears the first pill's left cap. Cards opt the surface out; tables/code keep
-   their own overflow. */
-[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
-  overflow: visible;
 }
 
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That

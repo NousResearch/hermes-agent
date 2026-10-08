@@ -170,6 +170,7 @@ export const zhHantAssistant = {
       noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
       singleSelectHint: '選一個',
+      oneQuestion: '1 個問題',
       multiSelectHint: '可多選',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。',
@@ -178,6 +179,31 @@ export const zhHantAssistant = {
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: '強調色',
+        connectors: '應用程式',
+        layout: '版面配置',
+        plugins: '外掛',
+        theme: '外觀'
+      },
+      loading: '正在載入選項…',
+      unavailable: '此清單暫時無法使用，請直接在聊天中回覆。',
+      findApp: '尋找應用程式',
+      customColor: '自訂顏色',
+      plugin: '外掛',
+      startsLater: '開始時我們會幫你設定好這些。'
+    },
+    startChat: {
+      starting: title => `正在啟動「${title}」…`,
+      startingUntitled: '正在啟動聊天…',
+      untitled: '新聊天',
+      notStarted: '無法啟動該聊天。',
+      retry: '重試',
+      inProfile: profile => `位於 ${profile}`,
+      open: '開啟',
+      openFailed: '無法開啟聊天'
     },
     tool: {
       copyCode: '複製程式碼',
@@ -250,6 +276,8 @@ export const zhHantAssistant = {
         browser_take_screenshot: { done: '已擷取截圖', pending: '正在擷取截圖', pendingAction: '正在擷取' },
         browser_type: { done: '已在頁面輸入', pending: '正在頁面輸入', pendingAction: '正在輸入' },
         clarify: { done: '已提問', pending: '正在提問', pendingAction: '正在提問' },
+        setup_choose: { done: '已提出設定問題', pending: '正在提出設定問題', pendingAction: '正在提問' },
+        start_chat: { done: '已啟動聊天', pending: '正在啟動聊天', pendingAction: '正在啟動' },
         cronjob: { done: 'Cron 工作', pending: '正在安排 Cron 工作', pendingAction: '正在安排' },
         edit_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' },
         execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },

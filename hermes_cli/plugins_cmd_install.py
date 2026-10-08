@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 import tempfile
-import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -19,7 +18,6 @@ from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.plugin_install_phase import InstallPhase
-from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -804,18 +802,6 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc)}
 
 
-# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
-# thread; without it every thread read the same config version and all but the first commit were
-# refused as stale. The version check in PM stays: it still catches an edit from another process.
-_ENABLE_LOCKS: dict[str, threading.Lock] = {}
-_ENABLE_LOCKS_GUARD = threading.Lock()
-
-
-def _enable_lock() -> threading.Lock:
-    with _ENABLE_LOCKS_GUARD:
-        return _ENABLE_LOCKS.setdefault(hermes_home_key(), threading.Lock())
-
-
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
     """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
     its Python dependencies."""
@@ -824,8 +810,8 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     if deps:
         step(InstallPhase.python_packages)
     try:
-        with _enable_lock():
-            _pc()._set_plugin_enabled(installed_name, enable=True)
+        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
+        _pc()._set_plugin_enabled(installed_name, enable=True)
     except AdmissionRefused as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None

@@ -4,7 +4,12 @@ brokered OAuth row with an opaque bearer rotates on its stored expiry."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import sysconfig
 import time
+from pathlib import Path
 
 import hermes_cli.auth
 import providers
@@ -98,3 +103,30 @@ def test_brokered_opaque_bearer_rotates_on_stored_expiry_and_keeps_the_refresh_t
     assert pool.try_refresh_current() is None
     pool.mark_exhausted_and_rotate(status_code=401, api_key_hint="ya29.revoked")
     assert json.loads((home / "auth.json").read_text())["credential_pool"][name][0]["last_status"] == STATUS_DEAD
+
+
+def test_bundled_provider_discovery_survives_an_interpreter_without_an_http_client(tmp_path):
+    """Every bundled provider plugin must import in an interpreter that has no HTTP client.
+
+    Provider discovery is not exclusive to the full runtime: ``hermes update`` ends in a ``pm ensure``
+    whose worker imports ``hermes_cli.config``, which runs ``_inject_profile_env_vars()`` ->
+    ``list_providers()`` at import time, on a four-package PM interpreter with no ``httpx``. A plugin
+    that pulls an HTTP client at import time drops out of that registry — the observed
+    ``hermes update`` line ``Failed to load bundled provider plugin solstice: No module named 'httpx'``.
+    """
+    repo = Path(hermes_cli.__file__).resolve().parents[1]
+    probe = "\n".join((
+        "import sys",
+        "sys.path.insert(0, sys.argv[1])",
+        "sys.path.insert(0, sys.argv[2])  # the running test's own dependency tree (`-I` drops PYTHONPATH)",
+        "sys.modules['httpx'] = None  # stand in for an interpreter with no HTTP client",
+        "import providers",
+        "profile = providers.get_provider_profile('solstice')",
+        "assert profile is not None and profile.name == 'solstice', profile",
+    ))
+    done = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe, str(repo), sysconfig.get_path("purelib")],
+        capture_output=True, text=True, timeout=180,
+        env={**os.environ, "HERMES_HOME": str(tmp_path / "hermes")},
+    )
+    assert done.returncode == 0, f"stdout:\n{done.stdout}\nstderr:\n{done.stderr}"

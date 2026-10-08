@@ -90,7 +90,7 @@ Configure in `~/.hermes/config.yaml`:
 ```yaml
 checkpoints:
   enabled: false              # master switch (default: false — opt-in)
-  max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc)
+  max_snapshots: 20           # visible checkpoints per project; count trims allow 20% headroom
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
 
@@ -260,7 +260,7 @@ With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, 
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin. Each drop is reclaimed before deciding whether another is necessary. Every project keeps at least one snapshot. A failed Git operation stops pruning and is reported; maintenance never discards more history to compensate for failed reclamation.
-- **Real pruning, off the hot path** — `max_snapshots` and the size cap are enforced by rewriting the per-project ref at checkpoint time (cheap); the store is then marked `.gc-pending` and the periodic prune runs `git gc --prune=now` once, so loose objects don't accumulate and a tool call never waits on a full repack.
+- **Batched count pruning, deferred GC** — listings show at most `max_snapshots` checkpoints per project. Physical history may retain up to `floor(max_snapshots / 5)` extra snapshots before the next take trims it back to `max_snapshots`. This avoids rebuilding every retained commit on every edit once the limit is reached; limits below five still trim immediately. Count trims and size-cap rewrites mark the store `.gc-pending`, and the periodic prune runs `git gc --prune=now` to reclaim objects. A tool call can still perform a batched rewrite, but never waits on a full repack.
 - **Concurrent operations** — snapshots, restores, diffs and maintenance use one process-shared store lock. An operation reports a busy store rather than running GC over another process's unpublished objects. A restore applies its selected tree before pruning the safety snapshot's history.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — snapshot failures do not block your tools. Pruning failures are logged as warnings; explicit maintenance reports an error count.

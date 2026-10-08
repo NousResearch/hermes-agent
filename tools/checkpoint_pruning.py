@@ -103,10 +103,12 @@ class Pruner:
             self._mark_gc_pending()
 
     def trim(self, ref: str, keep_count: int) -> None:
-        """Snapshot-count budget on the checkpoint-take path: rewrites the ref, defers the gc."""
+        """Batch count trims with at most 20% extra history; listings retain their own limit."""
         commits = self._commits(ref)
         keep_count = max(1, keep_count)
-        if len(commits) > keep_count:
+        # Reparenting recreates every retained commit. Headroom amortizes that work
+        # across takes instead of rebuilding the whole chain after every edit.
+        if len(commits) > keep_count + keep_count // 5:
             self._rewrite(ref, commits, commits[-keep_count:], gc=False)
 
     def drop_one_round(self, cap_bytes: int) -> bool:

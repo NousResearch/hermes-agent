@@ -1003,7 +1003,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        stop_reason = "cancelled" if cancelled else "end_turn"
+        if result.get("failed"):
+            # A non-retryable provider error (model retired, missing key, billing) reaches us as
+            # failed/error, but final_response is that error summary, already sent above as plain
+            # assistant text. Without a marker the client cannot tell it from a real answer.
+            # ``_meta``, not stop_reason="refusal": refusal means the model refused and already
+            # answers an unknown session; the protocol has no stop reason for a provider error.
+            return PromptResponse(
+                stop_reason=stop_reason, usage=usage,
+                field_meta={"hermes": {"failed": True, "error": str(result.get("error") or "")[:500]}},
+            )
+        return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and

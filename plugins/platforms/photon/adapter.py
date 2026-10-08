@@ -603,6 +603,15 @@ class PhotonAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=_DEDUP_MAX_SIZE, ttl_seconds=_DEDUP_WINDOW_SECONDS)  # at-least-once stream
         self._sent_message_ids: Dict[str, float] = {}  # only reactions targeting OUR sends are routed
         self._last_inbound_by_chat: Dict[str, str] = {}  # default target for the react action
+        # Inbound ids that arrived as iMessage threaded replies: the answer to one of these is
+        # sent back into that thread (#100663 / #105320). Bounded like _sent_message_ids.
+        self._threaded_inbound_ids: Dict[str, float] = {}
+        # Honours the shared per-platform ``reply_to_mode``: "off" never threads, "all" always
+        # quote-replies the triggering message, and the default "first" threads only when the user
+        # themselves replied in a thread, so ordinary chats stay unthreaded.
+        # YAML 1.1 parses a bare ``off`` as False, so False means "off", not unset (as in discord).
+        raw_mode = getattr(config, "reply_to_mode", None)
+        self._reply_to_mode: str = "off" if raw_mode is False else (str(raw_mode).strip().lower() if raw_mode else "first")
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
@@ -846,6 +855,8 @@ class PhotonAdapter(BasePlatformAdapter):
                 target_id and target_id in self._sent_message_ids) or stored_text is not None
             reply_ctx = {"reply_to_message_id": target_id, "reply_to_text": target_text or stored_text,
                          "reply_to_is_own_message": is_own}
+            if message_id:
+                self._remember_threaded_inbound(message_id)
             content = content["content"]
         ctype = content.get("type")
 
@@ -1255,7 +1266,18 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        return await self._sidecar_send(chat_id, self.format_message(content), reply_to=self._thread_anchor(reply_to))
+
+    def _remember_threaded_inbound(self, message_id: str) -> None:
+        bounded_put(self._threaded_inbound_ids, message_id, time.time(), self._SENT_IDS_MAX)
+
+    def _thread_anchor(self, reply_to: Optional[str]) -> Optional[str]:
+        """The message id to thread an outbound send under, per ``reply_to_mode``."""
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        if self._reply_to_mode == "all" or reply_to in self._threaded_inbound_ids:
+            return reply_to
+        return None
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1274,6 +1296,29 @@ class PhotonAdapter(BasePlatformAdapter):
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
         return result
 
+    @staticmethod
+    def _media_metadata_for_event(event: MessageEvent, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        # Base media delivery carries metadata, not reply_to. Keep the anchor turn-local:
+        # simultaneous conversations share this adapter, never their delivery dictionaries.
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        media_metadata = dict(metadata or {})
+        media_metadata["photon_reply_to_message_id"] = _reply_anchor_for_event(event)
+        return media_metadata
+
+    async def _deliver_attachments(self, event, extracted, metadata, *, anything_sent, record_delivery):
+        await super()._deliver_attachments(
+            event, extracted, self._media_metadata_for_event(event, metadata),
+            anything_sent=anything_sent, record_delivery=record_delivery)
+
+    async def _play_tts_file(self, event, text_content, tts_path, first, metadata, record_delivery):
+        return await super()._play_tts_file(
+            event, text_content, tts_path, first, self._media_metadata_for_event(event, metadata), record_delivery)
+
+    def _media_thread_anchor(self, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        anchor = reply_to if reply_to is not None else (metadata or {}).get("photon_reply_to_message_id")
+        return self._thread_anchor(anchor)
+
     # -- Outbound media (parity with BlueBubbles): URL-based helpers cache to a local path
     # first; file-based ones pass the path straight to /send-attachment.
 
@@ -1283,28 +1328,30 @@ class PhotonAdapter(BasePlatformAdapter):
             from gateway.platforms.base import cache_image_from_url
             local_path = await cache_image_from_url(image_url)
         except Exception:  # couldn't fetch — send the URL as text
-            return await super().send_image(chat_id, image_url, caption, reply_to)
-        return await self._sidecar_send_attachment(chat_id, local_path, caption=caption)
+            return await super().send_image(chat_id, image_url, caption, self._media_thread_anchor(reply_to, metadata), metadata)
+        return await self._sidecar_send_attachment(chat_id, local_path, caption=caption, reply_to=self._media_thread_anchor(reply_to, metadata))
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
                               reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
                               **kwargs) -> SendResult:
-        return await self._sidecar_send_attachment(chat_id, image_path, caption=caption)
+        return await self._sidecar_send_attachment(chat_id, image_path, caption=caption, reply_to=self._media_thread_anchor(reply_to, metadata))
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
                          **kwargs) -> SendResult:
-        return await self._sidecar_send_attachment(chat_id, audio_path, caption=caption, kind="voice")
+        return await self._sidecar_send_attachment(chat_id, audio_path, caption=caption, kind="voice",
+                                                    reply_to=self._media_thread_anchor(reply_to, metadata))
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
                          **kwargs) -> SendResult:
-        return await self._sidecar_send_attachment(chat_id, video_path, caption=caption)
+        return await self._sidecar_send_attachment(chat_id, video_path, caption=caption, reply_to=self._media_thread_anchor(reply_to, metadata))
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None,
                             metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        return await self._sidecar_send_attachment(chat_id, file_path, name=file_name, caption=caption)
+        return await self._sidecar_send_attachment(chat_id, file_path, name=file_name, caption=caption,
+                                                    reply_to=self._media_thread_anchor(reply_to, metadata))
 
     # send_animation: base falls back to send_image (iMessage renders GIFs inline as images).
 
@@ -1450,13 +1497,18 @@ class PhotonAdapter(BasePlatformAdapter):
                 and raw.get("error_class") in ("auth_or_config", "target_not_allowed"))
 
     def _send_retry_is_final(self, result: SendResult) -> bool:
-        return self._is_permanent_sidecar_failure(result)  # already carries the user-facing explanation
+        # Threaded sends have no cross-request idempotency key. Unless the sidecar
+        # recovered a proven refusal itself, failure may mean delivery without an ack.
+        raw = result.raw_response
+        return self._is_permanent_sidecar_failure(result) or (
+            isinstance(raw, dict) and raw.get("photon_thread_delivery_unknown") is True)
 
     async def _send_plain_fallback(self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> SendResult:
         """No Markdown banner (replies are markdown or already-stripped plain text); bypass
         richlink() so a rich-link outage doesn't strand a sendable URL."""
         return await self._sidecar_send(
-            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
+            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False,
+            reply_to=self._thread_anchor(reply_to))
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False,
                          sent_text: Optional[str] = None) -> SendResult:
@@ -1464,24 +1516,27 @@ class PhotonAdapter(BasePlatformAdapter):
         a ``PhotonSidecarError``'s class/retryability so ``_send_with_retry`` can recognise
         permanent failures. ``sent_text`` is what a later threaded reply to this bubble quotes;
         every outbound path passes through here, so recording here covers them all."""
+        failure_metadata = {"photon_thread_delivery_unknown": True} if body.get("replyToId") else {}
         try:
             data = await self._sidecar_call(path, body)
         except PhotonSidecarError as e:
             if structured:
                 return SendResult(success=False, error=str(e), retryable=e.retryable,
-                                  raw_response={"error_class": e.error_class, "retryable": e.retryable})
-            return SendResult(success=False, error=str(e))
+                                  raw_response={"error_class": e.error_class, "retryable": e.retryable,
+                                                **failure_metadata})
+            return SendResult(success=False, error=str(e), raw_response=failure_metadata)
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=str(e), raw_response=failure_metadata)
         self._record_sent_message(data.get("messageId"))
         if sent_text:
             await _record_sent_text_async(body.get("spaceId"), data.get("messageId"), sent_text)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send(self, space_id: str, text: str, *, richlink: bool = True,
-                            markdown: bool = True) -> SendResult:
+                            markdown: bool = True, reply_to: Optional[str] = None) -> SendResult:
         sent_text = text
-        rich_url = _richlink_candidate(text) if richlink else None
+        # A threaded reply must be a plain text send: /send-richlink has no reply target.
+        rich_url = _richlink_candidate(text) if richlink and not reply_to else None
         if rich_url:
             rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url},
                                                 sent_text=sent_text)
@@ -1499,6 +1554,8 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
+        if reply_to:  # key omitted otherwise: older sidecars ignore unknown keys anyway
+            body["replyToId"] = reply_to
         return await self._post_send("/send", body, structured=True, sent_text=sent_text)
 
     async def _sidecar_send_poll(self, space_id: str, title: str, options: list) -> SendResult:
@@ -1513,7 +1570,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _sidecar_send_attachment(self, space_id: str, path: str, *, name: Optional[str] = None,
                                        mime_type: Optional[str] = None, caption: Optional[str] = None,
-                                       kind: str = "attachment") -> SendResult:
+                                       kind: str = "attachment", reply_to: Optional[str] = None) -> SendResult:
         """POST a local file to ``/send-attachment``. ``kind="voice"`` sends audio as a voice
         note (downgrades to a plain audio attachment where unsupported)."""
         safe_path = self.validate_media_delivery_path(str(path))  # send_*_file / cron may pass arbitrary strings
@@ -1521,6 +1578,8 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"unsafe or missing attachment path: {path}")
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
+        if reply_to:
+            body["replyToId"] = reply_to
         label = caption or _attachment_label(kind, name or os.path.basename(safe_path))
         return await self._post_send("/send-attachment", body, structured=True, sent_text=label)
 

@@ -307,6 +307,10 @@ let Spectrum,
   spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
+  spectrumReply,
+  IMessageNotFoundError,
+  IMessageValidationError,
+  IMessageErrorCode,
   imessageEffect;
 try {
   ({
@@ -318,8 +322,12 @@ try {
     markdown: spectrumMarkdown,
     richlink: spectrumRichlink,
     typing: spectrumTyping,
+    reply: spectrumReply,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
+  // Use the pinned provider's actual error class, not message/name matching.
+  ({ NotFoundError: IMessageNotFoundError, ValidationError: IMessageValidationError, ErrorCode: IMessageErrorCode } =
+    await import("@photon-ai/advanced-imessage/grpc"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -371,6 +379,65 @@ function lruSet(map, key, value, cap) {
 function rememberKnownSpace(id, space) {
   if (!id || typeof id !== "string" || !space) return;
   lruSet(knownSpaces, id, space, MAX_KNOWN_SPACES);
+}
+
+// Resolve a reply target once per request (attachment and caption share it).
+// Lookup failure precedes delivery, so an unthreaded send is safe. After a
+// send attempt, recover only from a definitive typed refusal or SDK-skipped content.
+async function sendMaybeThreaded(space, builder, replyToId, replyState = {}, isNativeVoice = false) {
+  if (!replyToId || typeof replyToId !== "string" || !spectrumReply) {
+    return await space.send(builder);
+  }
+  if (!replyState.resolved) {
+    try {
+      replyState.target = knownMessages.get(replyToId) ?? (await space.getMessage(replyToId));
+    } catch (e) {
+      replyState.target = undefined;
+    }
+    replyState.resolved = true;
+  }
+  const target = replyState.target;
+  if (!target) {
+    console.error(
+      `photon-sidecar: reply target ${replyToId} not found; sending unthreaded`
+    );
+    return await space.send(builder);
+  }
+  let result;
+  try {
+    result = await space.send(spectrumReply(builder, target));
+  } catch (e) {
+    // The pinned provider refuses native audio + reply before delivery with
+    // this exact contract. It is a content limitation, not a stale anchor:
+    // keep the cache, but make this request's voice and caption unthreaded.
+    // SDK builders expose only build(); voice provenance belongs to this send,
+    // not shared replyState, because the subsequent caption is text.
+    if (isNativeVoice && e instanceof IMessageValidationError &&
+        e.grpcCode === 9 && e.code === "internalError" && e.retryable === false &&
+        e.message === "[upstream] is_audio_message with reply_to is not supported by the IMAgentKit send path") {
+      replyState.target = undefined;
+      return await space.send(builder);
+    }
+    // advanced-imessage 2.1.0 maps a server NOT_FOUND (gRPC 5) plus
+    // error-code=messageNotFound into this typed refusal. On a reply send
+    // the only message reference is the reply target. Generic errors, 5xx,
+    // timeouts and connection loss cannot establish non-delivery.
+    if (!(e instanceof IMessageNotFoundError) ||
+        e.grpcCode !== 5 || e.code !== IMessageErrorCode.messageNotFound || e.retryable !== false) {
+      throw e;
+    }
+    knownMessages.delete(replyToId);
+    replyState.target = undefined;
+    return await space.send(builder);
+  }
+  // spectrum-ts 12.7.0 buildSpace skips UnsupportedError and resolves
+  // undefined. A single text/media builder was not sent; don't report success
+  // with a null message id, and don't leave its caption in a rejected thread.
+  if (result === undefined) {
+    replyState.target = undefined;
+    return await space.send(builder);
+  }
+  return result;
 }
 
 function rememberKnownMessage(message) {
@@ -1065,7 +1132,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, format = "text" } = body || {};
+      const { spaceId, text, format = "text", replyToId } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -1085,7 +1152,7 @@ const server = http.createServer(async (req, res) => {
         chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
-      const result = await space.send(builder);
+      const result = await sendMaybeThreaded(space, builder, replyToId);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-richlink") {
@@ -1098,7 +1165,7 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind } =
+      const { spaceId, path, name, mimeType, caption, kind, replyToId } =
         body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
@@ -1116,13 +1183,14 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await space.send(builder);
+      const replyState = {};
+      const result = await sendMaybeThreaded(space, builder, replyToId, replyState, kind === "voice");
 
       // iMessage delivers the caption as a separate bubble; send it
-      // after the media so the attachment renders first.
+      // after the media, with the same resolved target as the attachment.
       if (caption && typeof caption === "string") {
         try {
-          await space.send(spectrumText(caption));
+          await sendMaybeThreaded(space, spectrumText(caption), replyToId, replyState);
         } catch (e) {
           console.error(
             "photon-sidecar: attachment sent but caption failed: " +

@@ -364,40 +364,46 @@ export const koOverrides = {
     }
   },
   sharedMetrics: {
-    consentTitle: 'Hermes 개선에 참여하시겠습니까?',
+    consentTitle: '사용 통계를 공유하시겠습니까?',
+    dialogTitle: '사용 통계',
     consentBody:
-      '공유 지표에는 범위가 제한된 집계값만 담깁니다. 프롬프트, 파일, 경로, 오류 문구는 절대 담지 않습니다. 수집은 이 기기에서만 하며, Nous로 전송하려면 따로 동의해야 합니다.',
-    whatIsCollected: '수집 항목',
-    collectedIntro: '범위가 제한된 집계값만 수집합니다:',
-    collectedActivity: '활동, 세션 길이, 결과, 오류 유형',
-    collectedModels: '모델 경로와 토큰 합계',
-    collectedNames: '내장 도구, 명령, 카탈로그 이름',
-    collectedMilestones: '구간별로 묶은 설정 횟수',
-    collectedReliability: '업데이트 결과와 소요 시간, 비정상 종료, 시작 및 응답 속도, 메시징 플랫폼 상태',
-    collectedUsage:
-      'Hermes 사용 방식: 에이전트 정확도와 효율(편집 일치, 루프, 복구, 작업당 토큰·도구 호출 수, 캐시 무효화), 화면별·데스크톱 모드별 활성 시간, 사용하는 앱 영역·동작·설정, 금방 닫거나 끈 기능, 공급자 설정 결과',
-    collectedMachine:
-      '대략적인 기기 정보: RAM 범위, GPU 종류, Hermes 버전 경과 기간과 릴리스 채널, 밀린 업데이트 수, 로컬 모델 서버 사용 여부',
-    installId:
-      '전송을 켜면 매일 만들어지는 패키지를 Nous 텔레메트리 서비스로 올립니다. 패키지에는 이 프로필의 설치 ID가 들어갑니다. 설치 ID는 개인 정보가 없는 고정 무작위 UUID이며, shared-metrics 디렉터리를 지우면 초기화됩니다.',
-    consentWindow:
-      '수집 기간 전체가 기록된 동의 기간 안에 드는 패키지만 전송됩니다 — 동의하기 전의 데이터나 전송을 꺼 둔 동안의 데이터는 이 기기에 남습니다. 전송은 언제든 다시 끌 수 있습니다.',
+      'Hermes는 세션 길이, 실행된 모델과 도구, 실패 시점처럼 사용 방식을 집계할 수 있습니다. 메시지, 파일, 경로, 오류 문구는 절대 기록하지 않습니다.',
+    whatIsCollected: '집계 항목',
+    collectedActivity: '세션: 길이, 결과, 오류 유형, 일별 활성 시간',
+    collectedModels: '모델: 사용한 모델, 토큰 합계',
+    collectedNames: '기능: 사용하거나 끈 내장 도구, 명령, 앱 영역, 설정',
+    collectedMilestones: '설정: 완료한 단계, 공급자 연결, 스킬·플러그인·작업 개수',
+    collectedReliability: '앱 상태: 비정상 종료, 시작 및 응답 속도, 업데이트, 메시징 연결',
+    collectedUsage: '에이전트 품질: 실패한 편집, 잘못된 도구 호출, 갇힌 루프, 작업당 비용',
+    collectedMachine: '기기: OS, RAM 범위, GPU 종류, Hermes 버전, 로컬 모델 사용 여부',
+    sending:
+      '“Nous와 공유”를 고르지 않으면 통계는 이 컴퓨터에만 남습니다. 공유한 통계는 이 프로필의 무작위 ID와 함께 하루 한 번 Nous로 전송됩니다. 동의한 뒤에만 집계되는 Hermes 설치 1회 알림을 제외하면, 동의하기 전의 통계는 절대 전송되지 않습니다. 설정에서 언제든 바꿀 수 있습니다.',
     readDocs: '자세한 내용 읽기',
-    share: '수집하고 Nous로 전송',
-    local: '이 기기에서만 수집',
+    share: 'Nous와 공유',
+    local: '이 컴퓨터에만 보관',
     off: '참여 안 함',
-    changeLater: '설정 → 안전에서 언제든 바꿀 수 있습니다.',
     saveFailed: '선택을 저장하지 못했습니다',
     collectLabel: '사용 통계 수집',
-    collectDesc: '범위가 제한된 집계값을 이 기기에 보관합니다. 프롬프트, 파일, 경로, 오류 문구는 절대 담지 않습니다.',
-    sendLabel: '사용 통계를 Nous로 전송',
+    collectDesc: '횟수만 집계해 이 컴퓨터에 보관합니다. 메시지, 파일, 경로, 오류 문구는 절대 담지 않습니다.',
+    sendLabel: '사용 통계를 Nous와 공유',
     sendDesc:
-      '매일 만들어지는 패키지를 Nous 텔레메트리 서비스로 올립니다. 동의 기간 안의 데이터만 전송합니다. 수집을 켜야 합니다.',
+      '이 프로필의 무작위 ID와 함께 하루 한 번 통계를 Nous로 전송합니다. 설치 1회 알림을 제외하면 동의하기 전의 통계는 절대 전송되지 않습니다. 수집을 켜야 합니다.',
     unavailable: '이 설정을 바꾸려면 Hermes 백엔드를 업데이트하세요.',
-    stripBody: '범위가 제한된 집계값만 수집하며, 프롬프트나 파일은 절대 담지 않습니다.',
+    stripBody: '횟수만 집계합니다. 메시지나 파일은 절대 담지 않습니다.',
     stripReaskBody: '한 번 더 여쭙니다: 이전 버전에서는 이 안내를 보기 전에 “참여 안 함”이 저장될 수 있었습니다.',
-    stripChoices: { share: 'Nous로 전송', local: '이 기기에만', off: '참여 안 함' },
+    stripChoices: { share: 'Nous와 공유', local: '이 컴퓨터에만 보관', off: '참여 안 함' },
     stripDetails: '자세히'
+  },
+
+  appTour: {
+    sessions: { title: '내 대화', text: '모든 대화가 여기에 있습니다. 검색하거나 고정하거나 다시 열 수 있습니다.' },
+    composer: { title: '여기에 요청하세요', text: '원하는 작업을 말하세요. @를 입력하면 파일을 넣을 수 있습니다.' },
+    newSession: { title: '새로 시작', text: '새 세션은 자체 컨텍스트를 가집니다. 작업마다 하나씩 쓰세요.' },
+    model: { title: '모델 선택기', text: '어떤 모델이 답할지 고릅니다.' },
+    modelLocal: '이 컴퓨터에서 모델을 로컬로 구동할 수 있습니다: 설정 → 공급자 → 로컬 모델.',
+    capabilities: { title: '기능', text: 'Hermes가 쓸 수 있는 스킬, 도구, 플러그인입니다. 여기서 더 추가하세요.' },
+    messaging: { title: '메시징', text: 'Telegram, Slack, Discord 등에서 Hermes를 부르세요.' },
+    rightPane: { title: '작업용 창', text: '파일, 터미널, 리뷰, 앱 내 브라우저를 오른쪽에 엽니다.' }
   },
 
   fileMenu: {
@@ -632,6 +638,17 @@ export const koOverrides = {
   remoteDisplayBanner: {
     message: reason =>
       `소프트웨어 렌더링 사용 중 — 원격 디스플레이가 감지되었습니다(${reason}). 깜빡임을 막기 위해 GPU 가속을 껐습니다.`
+  },
+
+  butterbar: {
+    goTo: (index, total) => `알림 ${total}개 중 ${index}번째 보기`,
+    legal: {
+      before: 'Hermes Agent 이용에는 ',
+      terms: '서비스 약관',
+      between: ' 및 ',
+      privacy: '개인정보 처리방침',
+      after: '이 적용됩니다.'
+    }
   },
 
   billingBlock: {
@@ -1366,18 +1383,26 @@ export const koOverrides = {
         enabled: '음성 인식',
         echoTranscripts: '인식 결과 표시',
         provider: '음성 인식 공급자',
+        streaming: '실시간 인식',
         local: {
           model: '로컬 인식 모델',
           language: '인식 언어'
         },
         openai: {
-          model: 'OpenAI STT 모델'
+          model: 'OpenAI STT 모델',
+          streamingModel: 'OpenAI 실시간 인식 모델'
         },
         groq: {
           model: 'Groq STT 모델'
         },
         mistral: {
           model: 'Mistral STT 모델'
+        },
+        xai: {
+          model: 'xAI STT 모델'
+        },
+        deepinfra: {
+          model: 'DeepInfra STT 모델'
         },
         elevenlabs: {
           modelId: 'ElevenLabs STT 모델',
@@ -1559,6 +1584,7 @@ export const koOverrides = {
       stt: {
         enabled: '로컬 또는 공급자 기반 음성 인식을 활성화합니다.',
         echoTranscripts: '음성 메시지의 🎙️ 인식 원문을 대화에 다시 표시합니다.',
+        streaming: '말하는 동안 텍스트를 표시합니다(OpenAI, xAI, ElevenLabs). 실패하면 녹음본으로 대체합니다.',
         elevenlabs: {
           languageCode: '선택 사항인 ISO-639-3 언어 코드입니다. 비워 두면 ElevenLabs가 자동 감지합니다.'
         }
@@ -1573,6 +1599,9 @@ export const koOverrides = {
       confirmUninstall: '제거 확인',
       uninstallHermes: 'Hermes 제거',
       checkingInstalled: '설치된 항목을 확인하는 중…',
+      managedBody: '이 설치는 시스템이 관리하므로 Hermes가 스스로 제거할 수 없습니다.',
+      dataKept: path => `설정, 대화, 비밀 값은 ${path}에 있습니다. 앱을 제거해도 지워지지 않습니다.`,
+      openAppsSettings: '앱 설정 열기',
       chooseHowMuch:
         '어디까지 제거할지 고르세요. 작업을 마치려면 앱이 종료되며, 설치 프로그램을 다시 열면 언제든 돌아올 수 있습니다.',
       confirmBody: what => `${what}을(를) 제거합니다. 되돌릴 수 없습니다.`,
@@ -1692,6 +1721,12 @@ export const koOverrides = {
       alwaysExternalLinksTitle: '링크를 항상 외부 브라우저로 열기',
       alwaysExternalLinksDesc:
         '클릭한 모든 링크를 앱 내 브라우저 대신 시스템 브라우저에서 엽니다. 마우스 오른쪽 버튼 메뉴의 "앱 내 브라우저에서 열기"는 그대로 동작합니다.',
+      developerTitle: '개발자',
+      resetOnboardingTitle: '첫 실행 설정 초기화',
+      resetOnboardingDesc:
+        '설정 대화를 삭제하고 설정 프로필을 다시 만든 뒤 첫 실행 설정을 다시 진행합니다. 직접 만든 프로필, 대화, 플러그인은 그대로 남습니다.',
+      resetOnboardingAction: '초기화',
+      resetOnboardingFailed: '첫 실행 설정을 초기화하지 못했습니다',
       voiceShortcutHintTitle: '음성 녹음 단축키 안내',
       voiceShortcutHintDesc:
         '음성 녹음 단축키는 설정 → 키보드 단축키("음성 대화 시작 / 중지")에서 지정합니다. voice.record_key 설정값은 CLI와 TUI에만 적용됩니다.',
@@ -2116,6 +2151,7 @@ export const koOverrides = {
         mcp: { label: 'MCP', hint: 'MCP 도구 라우팅' },
         title_generation: { label: '제목 생성', hint: '세션 제목' },
         review: { label: '리뷰', hint: '/review 리뷰어 서브에이전트' },
+        voice_chat: { label: '음성 대화', hint: '음성 모드의 음성 응답' },
         triage_specifier: { label: '분류 명세', hint: '칸반 명세 구체화' },
         kanban_decomposer: { label: '칸반 분해', hint: '작업 분해' },
         profile_describer: { label: '프로필 설명', hint: '프로필 설명 자동 생성' },
@@ -2144,6 +2180,7 @@ export const koOverrides = {
       modelsTitle: '모델',
       recommended: '권장',
       recommendedReason: {
+        'product-default': '제조사가 이 머신의 기본값으로 정한 모델입니다.',
         'best-quality-resident':
           'GPU 안에서 전부 돌면서 최고 속도를 내는 모델 중 품질이 가장 높습니다. 이 하드웨어에서 예상되는 속도와 품질을 함께 따져 고릅니다.',
         'speed-gated-quality':
@@ -3679,6 +3716,7 @@ export const koOverrides = {
     next: '다음:',
     overdueSince: '지연 시작:',
     noRuns: '아직 실행 기록이 없습니다',
+    queuedRun: '대기 중인 실행',
     manage: '관리',
     showRuns: '실행 기록 보기',
     hideRuns: '실행 기록 숨기기',
@@ -3926,6 +3964,8 @@ export const koOverrides = {
       removeFromSidebar: '사이드바에서 숨기기',
       createdInPreviousContext:
         '이전 연결 또는 프로필에서 만든 프로젝트입니다. 그쪽으로 다시 전환하면 찾을 수 있으며, IDEA.md는 작성되지 않았습니다.',
+      hiddenFromSidebar: '사이드바에서 숨김',
+      undoHide: '되돌리기',
       createFailed: '프로젝트를 생성하지 못했습니다',
       staleBackend:
         '프로젝트를 만들려면 Hermes 백엔드를 업데이트하세요 — 백엔드가 이 데스크톱 앱보다 오래되었습니다(설정 → 업데이트 → 백엔드).',
@@ -4195,6 +4235,12 @@ export const koOverrides = {
     editingQueuedInComposer: '입력창에서 대기 중인 턴 편집 중',
     restoredDraftNotice: '보내지 않은 메시지를 복원했습니다',
     restoredDraftUndo: '되돌리기',
+    localSetup: {
+      title: '이 컴퓨터에서 실행할 수 있습니다',
+      text: (model: string) =>
+        `${model}을(를) 이 머신에서 구동할 수 있습니다. 무료이며 대화는 이 컴퓨터 밖으로 나가지 않습니다.`,
+      action: '살펴보기'
+    },
     queueEdit: '편집',
     queueExpand: '펼치기',
     queueCollapse: '접기',
@@ -4614,11 +4660,10 @@ export const koOverrides = {
     sessionsText:
       '이 목록은 기본 프로필의 것입니다. 새 세션은 현재 선택된 프로필에서 시작됩니다. 레일에서 프로필을 바꾸면 목록도 함께 바뀝니다.',
     stayTitle: 'Hermes는 클릭 한 번 거리에 있습니다',
-    stayText: '도움이 필요하면 언제든 설정 프로필로 전환해 Hermes 시작하기를 여세요. 계속 그 자리에 있습니다.'
-  },
-  guidedGreeting: {
-    line: '어서 오세요. 저는 Hermes입니다. 2분만 주시면 주변을 정리해 두고, 그다음엔 정말 하고 싶으신 일에 저를 써 보시죠.\n\n먼저, 어떻게 불러드릴까요?',
-    nameSuggestion: (name: string) => `(원하시면 그냥 ${name}(이)라고 불러드릴게요.)`
+    stayText: '도움이 필요하면 언제든 설정 프로필로 전환해 Hermes 시작하기를 여세요. 계속 그 자리에 있습니다.',
+    localTitle: '이 머신에서 모델을 로컬로 구동할 수 있습니다',
+    localText: (model: string) =>
+      `${model}을(를) 이 하드웨어에서 구동할 수 있습니다. 무료이며 대화는 이 컴퓨터 밖으로 나가지 않습니다. 원할 때 언제든 여기 모델 메뉴에서 고르세요.`
   },
   install: {
     stageStates: {
@@ -4705,6 +4750,9 @@ export const koOverrides = {
     headerDesc: '대화를 시작하려면 모델 공급자를 연결하세요. 대부분 한 번의 클릭으로 끝납니다.',
     preparingInstall: 'Hermes가 설치를 마무리하고 있습니다. 첫 실행에서는 보통 1분이 채 걸리지 않습니다.',
     starting: 'Hermes를 시작하는 중…',
+    setupSlowTitle: '설정이 평소보다 오래 걸리고 있습니다.',
+    setupSlowBody: 'Hermes가 아직 백그라운드에서 시작하는 중입니다.',
+    continueWithoutSetup: '설정 없이 계속',
     lookingUpProviders: '공급자를 찾는 중...',
     collapse: '접기',
     otherProviders: '다른 공급자',
@@ -4767,9 +4815,6 @@ export const koOverrides = {
     copyAuthCode: '인증 코드를 복사해 아래에 붙여넣으세요.',
     pasteAuthCode: '인증 코드 붙여넣기',
     reopenAuthPage: '인증 페이지 다시 열기',
-    autoBrowser: provider =>
-      `브라우저에서 ${provider}을(를) 열었습니다. 그곳에서 Hermes를 승인하면 자동으로 연결됩니다 — 복사하거나 붙여넣을 것이 없습니다.`,
-    reopenSignInPage: '로그인 페이지 다시 열기',
     waitingAuthorize: '승인을 기다리는 중...',
     externalPending: provider =>
       `${provider}은(는) 자체 CLI로 로그인합니다. 터미널에서 이 명령을 실행한 뒤 돌아와 "로그인했습니다"를 선택하세요:`,
@@ -4833,6 +4878,12 @@ export const koOverrides = {
       'Hermes가 로그인을 마치기 위해 Nous 서비스에 닿지 못했습니다. 인터넷 연결을 확인한 뒤 재시도하세요. 세션은 그대로 유지됩니다.',
     alreadySignedInHeading: '이미 로그인되어 있습니다.',
     alreadySignedInBody: '이 Hermes는 이미 Nous 계정에 로그인되어 있습니다.',
+    offer: {
+      heading: 'Hermes를 계속 사용하세요',
+      body: '지금은 무료 사용량을 쓰고 있습니다. Hermes를 계속 쓰다 보면 한도에 걸리기 시작합니다. 무료 Nous 계정으로 로그인하면 더 많은 사용량을 받습니다.',
+      signIn: '로그인',
+      notNow: '나중에'
+    },
     setupFailed: {
       gateClosed:
         '이 버전의 Hermes는 Nous 계정 없이는 시작할 수 없습니다. 로그인하거나 계정을 만드세요. 무료이고 1분이면 됩니다.',
@@ -4909,6 +4960,11 @@ export const koOverrides = {
       cacheRead: '캐시 읽기',
       priceTitle: (input: string, output: string, cache: string) =>
         `입력 ${input}/Mtok · 출력 ${output}/Mtok` + (cache ? ` · 캐시 읽기 ${cache}/Mtok` : ''),
+      localSetup: {
+        title: '로컬 실행 · 무료, 비공개',
+        text: (model: string, size: string) => `이 머신에 맞는 ${model} · ${size} 다운로드`,
+        action: '설정하기'
+      },
       limited: '제한됨',
       limitedUntil: time => `${time}까지 제한됨`,
       limitedTip: (provider, time) =>
@@ -5604,9 +5660,35 @@ export const koOverrides = {
       confirmAndContinueLabel: '확인하고 계속',
       singleSelectHint: '하나 선택',
       multiSelectHint: '해당하는 항목 모두 선택',
+      oneQuestion: '질문 1개',
       questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변함`,
       notDelivered:
         '이 질문이 앱에 전달되지 않아 여기서는 답할 수 없습니다. 중지를 눌러 턴을 끝낸 뒤 채팅에서 답하세요.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: '강조 색상',
+        connectors: '앱',
+        layout: '레이아웃',
+        plugins: '플러그인',
+        theme: '모양'
+      },
+      loading: '옵션을 불러오는 중…',
+      unavailable: '지금은 이 목록을 사용할 수 없습니다. 대신 대화에서 답하세요.',
+      findApp: '앱 찾기',
+      customColor: '사용자 지정 색상',
+      plugin: '플러그인',
+      startsLater: '시작할 때 설정해 드립니다.'
+    },
+    startChat: {
+      starting: title => `“${title}” 대화를 시작하는 중…`,
+      startingUntitled: '대화를 시작하는 중…',
+      untitled: '새 대화',
+      notStarted: '그 대화를 시작하지 못했습니다.',
+      retry: '재시도',
+      inProfile: profile => `${profile} 프로필`,
+      open: '열기',
+      openFailed: '대화를 열지 못했습니다'
     },
     catalogInstall: {
       preparing: '설치를 준비하는 중…',
@@ -5629,7 +5711,18 @@ export const koOverrides = {
       securityHeading: '보안',
       scan: { passed: '검사 통과', warnings: '검사에서 경고 발견', failed: '검사 실패' },
       requirementsLabel: '필요 항목',
-      credentialsHeading: '자격 증명'
+      requiresHermes: range => `Hermes ${range}`,
+      envVar: name => `${name} 환경 변수`,
+      credentialsHeading: '자격 증명',
+      phase: {
+        downloading: '다운로드하는 중…',
+        python_packages: 'Python 패키지를 설치하는 중…',
+        loading_tools: '도구를 불러오는 중…'
+      },
+      serverNotConnected: (server, reason) => `MCP 서버 ${server}에 연결되지 않음${reason ? `: ${reason}` : ''}`,
+      notEnabled: '설치했지만 켜지 않음',
+      missingEnv: names => `설정을 마치려면 ${names}을(를) 지정하세요`,
+      alreadyInstalled: '이미 설치되어 있어 그대로 두었습니다'
     },
     mcpSetup: {
       installTitle: 'MCP 서버 추가',
@@ -5749,6 +5842,8 @@ export const koOverrides = {
           pending: '세션 기록을 검색하는 중',
           pendingAction: '검색하는 중'
         },
+        setup_choose: { done: '설정 질문함', pending: '설정 질문하는 중', pendingAction: '질문하는 중' },
+        start_chat: { done: '대화를 시작함', pending: '대화를 시작하는 중', pendingAction: '시작하는 중' },
         terminal: { done: '명령을 실행함', pending: '명령을 실행하는 중', pendingAction: '실행하는 중' },
         todo: { done: '할 일을 갱신함', pending: '할 일을 갱신하는 중', pendingAction: '갱신하는 중' },
         vision_analyze: { done: '이미지를 분석함', pending: '이미지를 분석하는 중', pendingAction: '분석하는 중' },
@@ -5938,11 +6033,6 @@ export const koOverrides = {
         title: '로컬 엔진 업데이트가 있습니다',
         text: '로컬 모델을 구동하는 엔진을 업데이트합니다. 진행 중인 로컬 요청이 중단될 수 있습니다.',
         action: '지금 업데이트'
-      },
-      'local-setup': {
-        title: '이 머신에서 모델을 구동할 수 있습니다',
-        text: '하드웨어가 로컬 모델을 구동할 수 있습니다. 대화는 이 컴퓨터에 머물고 비용도 들지 않습니다.',
-        action: '설정하기'
       },
       'right-pane': {
         title: '작업용 창',

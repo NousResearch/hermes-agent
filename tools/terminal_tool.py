@@ -333,12 +333,15 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         record_session_cwd(task_id, new_cwd)
-        # Live env may be cached under the raw task_id (per-session surfaces)
+        # Live env may be cached under the session's own key (per-session surfaces)
         # or the collapsed container id (isolation-keyed rollouts); try both so
-        # a CWD-only override (which collapses to "default") still finds it.
+        # a CWD-only override (which collapses to "default") still finds it. The
+        # raw id is only ever read under its owner's qualification: under a routed
+        # profile the bare id names the launch profile's environment.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            env = (_active_environments.get(_qualify_task_key(task_id))
+                   or _active_environments.get(container_id))
         if env is not None and getattr(env, "cwd", None) is not None:
             sanitized = _sanitize_cwd_for_live_env(env, new_cwd)
             if sanitized is not None:
@@ -379,12 +382,20 @@ _ISOLATION_OVERRIDE_KEYS = frozenset({
 })
 
 
-def _has_isolation_overrides(task_id: Optional[str]) -> bool:
-    """True when *task_id* registered image/env_type overrides — the single
-    "isolated RL/benchmark rollout" predicate shared by key resolution and
-    container creation so the two can't drift."""
-    overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
+def _isolation_overrides_registered(key: str) -> bool:
+    """True when the override registry holds image/env_type overrides under the EXACT registry
+    key *key*. The builder calls this with the environment key it was handed: that key already
+    carries the routed profile and any child→parent alias, so qualifying it again would miss the
+    registration (and asking about the initiating child's own id would read the wrong owner)."""
+    overrides = _task_env_overrides.get(key)
     return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
+
+
+def _has_isolation_overrides(task_id: Optional[str]) -> bool:
+    """True when the RAW *task_id* registered image/env_type overrides — the single
+    "isolated RL/benchmark rollout" predicate for key resolution (the container creators ask
+    :func:`_isolation_overrides_registered` about the resolved key instead)."""
+    return bool(task_id) and _isolation_overrides_registered(_qualify_task_key(task_id))
 
 
 @dataclass(frozen=True)
@@ -566,18 +577,35 @@ def _select_image(env_type: str, overrides: Dict[str, Any], config: Dict[str, An
 
 
 def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
-    """Return the cached env for the collapsed id, else for the raw task_id, else None.
+    """Return the cached env for the collapsed id, else for the task's own key, else None.
 
     Caller holds ``_env_lock``. Per-session surfaces (ACP/gateway/dashboard)
     with a CWD-only override collapse to ``"default"`` for container sharing,
     yet an env may already be cached under the originating task_id; honor it
-    instead of spawning a duplicate. Refreshes ``_last_activity`` on a hit.
+    instead of spawning a duplicate. That fallback reads the raw id under its
+    owner's qualification only (:func:`_qualify_task_key`): under a routed
+    profile the bare id is the launch profile's slot, and a cold routed miss
+    must not resolve to it. Refreshes ``_last_activity`` on a hit.
     """
-    for key in (effective_task_id, task_id):
+    own_key = _qualify_task_key(task_id) if task_id else None
+    for key in (effective_task_id, own_key):
         if key and key in _active_environments:
             _last_activity[key] = time.time()
             return _active_environments[key]
     return None
+
+
+def _own_env_keys(task_id: Optional[str]) -> tuple:
+    """Cache keys a RAW *task_id* may name an environment by, most specific first: the collapsed
+    container id, then the id under its owner's qualification (:func:`_qualify_task_key`). Never
+    the bare id under a routed profile: on a multiplexed host that is the launch profile's slot,
+    so every raw-id reader, evictor and teardown goes through here instead of trying ``task_id``
+    itself. Callers already holding a resolved key must use an exact lookup instead."""
+    keys = [_resolve_container_task_id(task_id)]
+    own = _qualify_task_key(task_id) if task_id else None
+    if own and own not in keys:
+        keys.append(own)
+    return tuple(keys)
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:

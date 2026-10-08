@@ -6,9 +6,9 @@ Mirror image of the keyless rescue in test_web_keyless_rescue.py.
 
 Covers:
 - eligibility: only fires on the ring's own exhaustion verdict, only for a
-  keyless-mode ring vendor that actually has an API key, never for a vendor
-  pinned "free", and never when a keyed call failed (that's the other
-  rescue's job)
+  keyless-mode ring vendor that actually has an API key (in practice a
+  ``free`` pin on Exa, Parallel or Keenable; keyed Firecrawl never rides the
+  ring), and never when a keyed call failed (that's the other rescue's job)
 - search dispatcher: exhausted ring → keyed retry, annotated with
   backstopped_from + backend_error
 - statelessness: the next dispatch goes back to the keyless ring
@@ -209,6 +209,28 @@ def test_free_pin_is_the_target_case_not_an_exclusion():
     assert web_tools_rescue._backstop_eligible(
         _KeylessExhaustedProvider(), RING_EXHAUSTED
     ) is True
+
+
+def test_firecrawl_with_a_key_never_rides_the_ring(monkeypatch):
+    """Firecrawl is outside the backstop's reachable population.
+
+    Its ``_use_keyless_ring()`` returns False whenever a key (or a self-hosted
+    URL) is on file, before the tier is consulted, so even a ``free`` pin
+    cannot put a keyed Firecrawl install on the ring. The call is keyed, and a
+    keyed failure is the keyless rescue's job. Pinned here so the scope stated
+    in ``_backstop_eligible``'s docstring and the docs cannot drift silently.
+    """
+    from plugins.web.firecrawl import provider as fc
+
+    for var in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"):
+        monkeypatch.setattr(fc, "_env", lambda name, v=var: "set" if name == v else "")
+        assert fc._use_keyless_ring() is False, var
+        assert web_tools_rescue._ring_vendor_keyless("firecrawl") is False, var
+
+        class _Firecrawl(_KeylessExhaustedProvider):
+            name = "firecrawl"
+
+        assert web_tools._rescue_eligible(_Firecrawl()) is True, var
 
 
 def test_keyed_failure_never_reaches_the_backstop(monkeypatch):

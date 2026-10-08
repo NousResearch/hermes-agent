@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from html import escape as html_escape
 import json
+import shlex
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
 
 from hermes_cli.timefmt import coerce_epoch
@@ -251,12 +252,14 @@ Formats:
 Options:
   filename   optional output name/path (default: auto-named;
              CLI saves under ~/.hermes/sessions/saved/)
+             quote the whole filename/path when it contains spaces
   redact     scrub API keys, tokens, and credentials before writing
 
 Examples:
   /save json
   /save html
   /save md notes.md
+  /save md "meeting notes.md"
   /save html session.html redact"""
 
 _SAVE_FORMAT_ALIASES = {"json": "json", "snapshot": "json", "md": "md", "markdown": "md", "html": "html"}
@@ -268,6 +271,30 @@ def normalize_save_format(fmt: Optional[str]) -> str:
     if token not in _SAVE_FORMAT_ALIASES:
         raise ValueError(f"Unknown format {token!r} — expected one of: json, md, html")
     return _SAVE_FORMAT_ALIASES[token]
+
+
+def parse_save_args(raw_args: str) -> Optional[Tuple[str, Optional[str], bool]]:
+    """Parse a format, one optional quoted filename, and a trailing redaction flag."""
+    # Non-POSIX tokenization preserves literal backslashes in Windows paths and filename apostrophes.
+    lexer = shlex.shlex(raw_args, posix=False)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    parts = list(lexer)
+    redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
+    if redact:
+        parts.pop()
+    if not parts:
+        return None
+    if len(parts) > 2:
+        raise ValueError("Expected a format and at most one filename; quote filenames containing spaces.")
+    parts = [part[1:-1] if len(part) >= 2 and part[0] in "\"'" and part[-1] == part[0] else part
+             for part in parts]
+    if not parts[0].strip():
+        raise ValueError("A save format is required.")
+    filename = parts[1] if len(parts) > 1 else None
+    if filename == "":
+        raise ValueError("The save filename must not be empty.")
+    return normalize_save_format(parts[0]), filename, redact
 
 
 def _render_html_for_save(session: Dict[str, Any]) -> str:

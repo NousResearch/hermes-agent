@@ -623,22 +623,19 @@ class CLISessionMixin:
         """
         from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, parse_save_args, render_session_for_save)
 
-        parts = cmd.split()[1:]
-        redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
-        if redact:
-            parts = parts[:-1]
-        if not parts:
-            print(SAVE_USAGE)
-            return
+        parts = cmd.split(None, 1)
         try:
-            fmt = normalize_save_format(parts[0])
+            args = parse_save_args(parts[1] if len(parts) > 1 else "")
         except ValueError as e:
             print(f"(._.) {e}")
             print(SAVE_USAGE)
             return
-        filename = parts[1] if len(parts) > 1 else None
+        if args is None:
+            print(SAVE_USAGE)
+            return
+        fmt, filename, redact = args
 
         # Prefer the durable DB row (metadata + tool calls); fall back to in-memory history.
         # getattr: test doubles may not carry _session_db / session_id.

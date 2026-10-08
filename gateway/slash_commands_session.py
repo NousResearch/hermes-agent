@@ -717,18 +717,15 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_USAGE, default_save_filename, load_save_snapshot, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, default_save_filename, load_save_snapshot, parse_save_args, render_session_for_save)
 
-        parts = event.get_command_args().split()
-        redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
-        if redact:
-            parts = parts[:-1]
-        if not parts:
-            return SAVE_USAGE
         try:
-            fmt = normalize_save_format(parts[0])
+            args = parse_save_args(event.get_command_args())
         except ValueError as e:
             return f"{e}\n\n{SAVE_USAGE}"
+        if args is None:
+            return SAVE_USAGE
+        fmt, filename, redact = args
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -736,7 +733,7 @@ class GatewaySessionCommandsMixin:
         if not self._session_db:
             return t("gateway.shared.session_db_unavailable")
         # Never trust path separators from chat input; the filename is only echoed to the platform.
-        filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
+        filename = filename or default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
         from hermes_state import SessionExportTooLargeError
         try:

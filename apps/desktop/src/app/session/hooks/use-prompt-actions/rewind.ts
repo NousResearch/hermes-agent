@@ -409,7 +409,7 @@ export function finalizeUserInterruptedMessages(
   occurredAt = Date.now() / 1000
 ): ChatMessage[] {
   const marked = messages.map(message =>
-    message.pending || message.id === streamId
+    message.pending || message.id === streamId || message.interim
       ? { ...message, parts: message.parts.map(markInterruptedToolCall) }
       : message
   )

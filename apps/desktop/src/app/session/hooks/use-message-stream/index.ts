@@ -1191,7 +1191,7 @@ export function useMessageStream({
 
         return {
           ...state,
-          messages: nextMessages,
+          messages: sealOpenToolParts(nextMessages),
           streamId: null,
           pendingBranchGroup: null,
           sawAssistantPayload: true,

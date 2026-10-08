@@ -1,5 +1,6 @@
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 
+import { sealOpenToolParts } from './tool-parts'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 export function textPart(text: string, timestamp?: number): ChatMessagePart {
@@ -558,7 +559,7 @@ export function finalizeInterruptedMessages(
   streamId?: null | string,
   occurredAt = Date.now() / 1000
 ): ChatMessage[] {
-  return messages
+  const settled = messages
     .filter(
       message =>
         !(
@@ -577,6 +578,9 @@ export function finalizeInterruptedMessages(
           }
         : message
     )
+
+  // Interim bubbles are no longer pending, but their tools can still be open.
+  return sealOpenToolParts(settled)
 }
 
 // Coalesce only adjacent deltas of the same channel. Switching between text

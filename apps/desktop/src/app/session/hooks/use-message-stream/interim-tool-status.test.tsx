@@ -1,4 +1,4 @@
-import { AssistantRuntimeProvider, useExternalStoreRuntime } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, useAuiState, useExternalStoreRuntime } from '@assistant-ui/react'
 import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -9,10 +9,18 @@ import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 
+import { finalizeStoppedMessages } from '../use-prompt-actions/rewind'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 stubThreadEnvironment()
 stubThreadViewportSize()
+
+function RuntimeMarker() {
+  const running = useAuiState(state => state.thread.isRunning)
+
+  return <span data-testid="running-marker">{String(running)}</span>
+}
 
 function Transcript({ messages, isRunning }: { messages: ChatMessage[]; isRunning: boolean }) {
   const runtime = useExternalStoreRuntime({
@@ -24,6 +32,7 @@ function Transcript({ messages, isRunning }: { messages: ChatMessage[]; isRunnin
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread />
+      <RuntimeMarker />
     </AssistantRuntimeProvider>
   )
 }
@@ -92,4 +101,44 @@ describe('interim commentary does not finish a running tool (#134342)', () => {
     expect(screen.getByText('Result unavailable')).toBeTruthy()
     expect(screen.queryByRole('status', { name: 'Running' })).toBeNull()
   })
+
+  for (const ending of ['error', 'stop'] as const) {
+    it(`does not restart a previous interim tool after ${ending} when a new turn begins`, async () => {
+      startTool()
+      event('message.interim', 103, { text: 'Checking the output.' })
+
+      if (ending === 'error') {
+        event('error', 110, { message: 'Synthetic terminal failure' })
+      } else {
+        act(() => {
+          const state = stream.state(SID)
+          stream.states.set(SID, {
+            ...state,
+            messages: finalizeStoppedMessages(state.messages, state.streamId, 110),
+            busy: false,
+            awaitingResponse: false,
+            streamId: null,
+            pendingBranchGroup: null,
+            needsInput: false,
+            interrupted: true,
+            turnStartedAt: null,
+            turnLive: false
+          })
+        })
+      }
+
+      expect(stream.state(SID).busy).toBe(false)
+      const transcript = render(<Transcript isRunning={false} messages={stream.state(SID).messages} />)
+      const settledTitle = ending === 'stop' ? 'Interrupted' : 'Result unavailable'
+      expect(screen.getByText(settledTitle)).toBeTruthy()
+      // A new submitted prompt makes this same thread live again. Historical messages persist.
+      await act(async () => {
+        transcript.rerender(<Transcript isRunning messages={stream.state(SID).messages} />)
+      })
+      await waitFor(() => expect(screen.getByTestId('running-marker').textContent).toBe('true'))
+      const oldTool = transcript.container.querySelector('[data-slot="tool-block"]') as HTMLElement
+      expect(within(oldTool).queryByRole('status', { name: 'Running' })).toBeNull()
+      expect(screen.getByText(settledTitle)).toBeTruthy()
+    })
+  }
 })

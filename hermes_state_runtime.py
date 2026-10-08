@@ -271,6 +271,7 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                          [(target,) for target in affected])
         updated = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
         result = {'session_id': session_id, 'revision': updated['runtime_revision'] if updated else expected_revision + 1,
+                  'execution_generation': updated['runtime_generation'] if updated else expected_generation,
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))

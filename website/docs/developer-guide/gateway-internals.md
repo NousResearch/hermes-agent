@@ -216,8 +216,11 @@ the original result without incrementing the revision again; reusing its ID with
 different contents returns `admission_conflict`. A competing edit with a stale
 revision returns `revision_conflict`. Draining rejects new mutations and fresh
 session registration before routing or transcript creation. These edits
-do not interrupt a running turn. This RPC does not yet migrate legacy direct
-writers, expose arbitrary SQL, or implement reset, delete, or rewind.
+do not interrupt a running turn. Canonical reset, delete, rewind, model, branch,
+and compression operations use the same receipt boundary. A request disconnect
+does not cancel its owner-held mutation: the commit, live projection and queue
+wakeup finish together, and profile retirement joins that work before releasing
+the store. An exact old receipt cannot evict a newer running agent.
 
 Canonical wire models live in `tui_gateway/contracts/canonical*.py` and generate
 `CanonicalRpcMethods` plus the OpenRPC `x-canonical-methods` catalog, separately

@@ -19,7 +19,27 @@ def uncounted_runtime_work(runner):
     managed = sum(not worker.closed.is_set() for authority in authorities
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
-                for authority in authorities for sid, live, _ in executing_sessions(authority)))
+                for authority in authorities for sid, live, _ in executing_sessions(authority))
+            + sum(len(mutation_tasks(authority)) for authority in authorities))
+
+
+def mutation_tasks(authority):
+    tasks = getattr(authority, '_mutation_tasks', ())
+    return [task for task in tasks if not task.done()]
+
+
+def track_mutation(authority, operation):
+    tasks = getattr(authority, '_mutation_tasks', None)
+    if tasks is None:
+        tasks = authority._mutation_tasks = set()
+    task = asyncio.create_task(operation)
+    tasks.add(task)
+    def finished(done):
+        tasks.discard(done)
+        if not done.cancelled():
+            done.exception()  # the observer may already have disconnected
+    task.add_done_callback(finished)
+    return task
 
 
 def start_turn_worker(runner, worker, agent_holder, run_sync):
@@ -67,7 +87,7 @@ async def join_authority_work(authority, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
-        if not list(physical_workers(authority)) and not list(executing_sessions(authority)):
+        if not list(physical_workers(authority)) and not list(executing_sessions(authority)) and not mutation_tasks(authority):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

@@ -164,6 +164,8 @@ def _authority_tasks(authority):
     """Snapshot every async task family owned directly by one session authority."""
     tasks = [live.task for live in authority.sessions.values() if live.task is not None]
     tasks.extend(getattr(authority, '_bot_receipt_tasks', ()))
+    from gateway.session_runtime_workers import mutation_tasks
+    tasks.extend(mutation_tasks(authority))
     return list(dict.fromkeys(tasks))
 
 

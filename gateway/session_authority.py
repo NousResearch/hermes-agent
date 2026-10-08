@@ -34,6 +34,7 @@ class LiveSession:
     # The messaging ingress tells the platform user once per pause episode (unknown head,
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
+    mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -304,6 +305,12 @@ class SessionAuthority:
 
     async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None):
         self.authorize(actor, request.ref, 'session:submit')
+        async with self.sessions[request.ref.session_id].mutation_lock:
+            # Deletion can retire this session while the caller waits on its writer.
+            self.authorize(actor, request.ref, 'session:submit')
+            return await self._submit(actor, request, _authorize_write=_authorize_write)
+
+    async def _submit(self, actor, request, *, _authorize_write=None):
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -470,71 +477,74 @@ class SessionAuthority:
                 raise RuntimeStoreError("invalid_params")
             return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind)
 
+    async def _claim_next(self, ref, live):
+        # False asks the pump to re-read after a queued head changed during preflight.
+        async with live.mutation_lock:
+            pending = list_session_admissions(self.db, session_id=ref.session_id)
+            if any(row['status'] == 'unknown' for row in pending):
+                raise RuntimeStoreError('unknown_execution')
+            first = next((row for row in pending if row['status'] == 'queued'), None)
+            from gateway.config import Platform
+            if first is not None and live.source.platform == Platform.LOCAL:
+                from gateway.session_local_recovery import restore_local_session
+                restore_local_session(self, ref.session_id)
+                if first['request_id'].startswith('hosted:'):
+                    from gateway.session_hosted_transport import check_remote_hosted_admission
+                    if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
+                        service = getattr(self, 'hosted_room_service', None)
+                        if service is None:
+                            raise RuntimeStoreError('permission_denied')
+                        await asyncio.to_thread(service.check_admission, ref, first)
+                    # Cancellation may advance the FIFO while the source owner is awaited;
+                    # the successor must earn its own reauthorization, not inherit this one.
+                    current = get_session_admission(self.db, admission_id=first['admission_id'])
+                    if current is None or current['status'] != 'queued':
+                        return False, first
+                if 'local_automation_v1' in first['payload']:
+                    from gateway.session_automation import check_local_automation
+                    check_local_automation(self, ref, first)
+                else:
+                    from gateway.session_operator import check_local_input
+                    check_local_input(self, ref, first)
+                # The first real turn reopens a finalized row (#85303): mounts are reads, and
+                # SessionStore would route a stamped row as stale onto a FRESH session.
+                from gateway.session_local_recovery import reopen_local_session
+                reopen_local_session(self, ref)
+            if first is not None and 'native_text_v1' in first['payload']:
+                from gateway.session_envelope import check_native_route
+                await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
+                                   self.runner._adapter_for_source(live.source))
+                # Cancellation may advance FIFO while the connector is awaited.
+                # Never let the successor inherit this row's fresh verdict.
+                current = get_session_admission(self.db, admission_id=first['admission_id'])
+                if current is None or current['status'] != 'queued':
+                    return False, first
+            if first is not None and live.source.platform == Platform.API_SERVER:
+                from gateway.session_api_turn import check_api_turn
+                check_api_turn(self, ref, first['payload'])
+            self._require_admission_open()
+            row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+            return row, first
+
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission
         live = self.sessions[ref.session_id]
         while True:
             try:
-                pending = list_session_admissions(self.db, session_id=ref.session_id)
-                if any(row['status'] == 'unknown' for row in pending):
-                    self._pause(ref, 'unknown_execution')
-                    return
-                first = next((row for row in pending if row['status'] == 'queued'), None)
-                from gateway.config import Platform
-                if first is not None and live.source.platform == Platform.LOCAL:
-                    from gateway.session_local_recovery import restore_local_session
-                    restore_local_session(self, ref.session_id)
-                    if first['request_id'].startswith('hosted:'):
-                        from gateway.session_hosted_transport import check_remote_hosted_admission
-                        if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
-                            service = getattr(self, 'hosted_room_service', None)
-                            if service is None:
-                                raise RuntimeStoreError('permission_denied')
-                            await asyncio.to_thread(service.check_admission, ref, first)
-                        # Cancellation may advance the FIFO while the source owner is awaited;
-                        # the successor must earn its own reauthorization, not inherit this one.
-                        current = get_session_admission(self.db, admission_id=first['admission_id'])
-                        if current is None or current['status'] != 'queued':
-                            continue
-                    if 'local_automation_v1' in first['payload']:
-                        from gateway.session_automation import check_local_automation
-                        check_local_automation(self, ref, first)
-                    else:
-                        from gateway.session_operator import check_local_input
-                        check_local_input(self, ref, first)
-                    # The first real turn reopens a finalized row (#85303): mounts are reads, and
-                    # SessionStore would route a stamped row as stale onto a FRESH session.
-                    from gateway.session_local_recovery import reopen_local_session
-                    reopen_local_session(self, ref)
-                if first is not None and 'native_text_v1' in first['payload']:
-                    from gateway.session_envelope import check_native_route
-                    await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
-                                       self.runner._adapter_for_source(live.source))
-                    # Cancellation may advance FIFO while the connector is awaited.
-                    # Never let the successor inherit this row's fresh verdict.
-                    current = get_session_admission(self.db, admission_id=first['admission_id'])
-                    if current is None or current['status'] != 'queued':
-                        continue
-                if first is not None and live.source.platform == Platform.API_SERVER:
-                    from gateway.session_api_turn import check_api_turn
-                    check_api_turn(self, ref, first['payload'])
-                self._require_admission_open()
-                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id)
+                row, first = await self._claim_next(ref, live)
             except RuntimeStoreError as exc:
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
                 return
-            if row is None and first is not None:
-                # Not empty: a live worker (or a claim this drain does not own) blocks the head.
-                # Release the delivery waiters like any pause; the worker's finish wakes the FIFO
-                # (``wake_after_worker``) and the drain then answers through the adapter.
-                self._pause(ref, 'session_busy')
-                return
+            if row is False:
+                continue
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
-                # A viewer that left while this work ran could not end the ACP session then.
+                if first is not None:
+                    self._pause(ref, 'session_busy')
+                    return
                 from gateway.session_acp_lifecycle import end_idle_acp_session
                 end_idle_acp_session(self, ref.session_id)
                 return

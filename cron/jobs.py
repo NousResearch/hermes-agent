@@ -31,6 +31,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron.scheduler_ownership import _claim_owner_is_dead
+from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -1313,20 +1315,6 @@ def get_ticker_success_age() -> Optional[float]:
     return _epoch_file_age("ticker_last_success")
 
 
-def get_catch_up_occurrence_count() -> int:
-    """Return the profile-local stale-schedule catch-up count."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
-    try:
-        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
-    except (OSError, ValueError):
-        return 0
-
-
-def record_catch_up_occurrence() -> None:
-    """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
-
-
 def record_ticker_error(message: str) -> None:
     """Persist the latest tick failure so `cron status` (another process) can show WHY, not just
     staleness."""
@@ -1451,8 +1439,11 @@ def load_jobs() -> List[Dict[str, Any]]:
             logger.warning("%s", note)
         # Keep the shrink-merge (a degraded-lock sibling's create may have landed since the read)
         # unless disk is STILL a shape the merge would refuse: a sibling may have rewritten it.
-        save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
-        logger.warning("Auto-repaired jobs.json (%s)", repair)
+        try:
+            save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
+            logger.warning("Auto-repaired jobs.json (%s)", repair)
+        except OSError as exc:  # repaired in memory; the next load retries the persist
+            store_health.note_unwritable(exc, f"jobs.json repair ({repair}) not persisted", "load")
     _record_load_stamp(pre_read_stamp)
     return jobs
 
@@ -1606,6 +1597,7 @@ def _save_jobs_unlocked(
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
+            store_health.note_writable(jobs_file.parent)
             return
     except BaseException:
         _unlink_quiet(tmp_path)
@@ -2276,23 +2268,6 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
     })
 
 
-def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
-    """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
-    ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
-    or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
-    parts = str(claim.get("by") or "").split(":")
-    if len(parts) < 2 or not parts[1].isdigit():
-        return False
-    try:
-        import socket
-        if parts[0] != socket.gethostname():
-            return False
-        from gateway.status import _pid_exists
-        return not _pid_exists(int(parts[1]))
-    except Exception:
-        return False
-
-
 def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     """True for a well-formed claim aged within ``[0, ttl)`` whose owner is not provably dead:
     future-dated (clock/TZ skew) or malformed claims count as stale so they can never wedge a
@@ -2737,9 +2712,12 @@ def clear_run_claim(job_id: str) -> bool:
     tick" invariant that the scheduler comment promises (#86522).
     """
     def apply(jobs, _i, job):
-        if job.get("schedule", {}).get("kind") != "once" or job.get("run_claim") is None:
-            return False  # recurring, or already cleared
-        job["run_claim"] = None
+        claim = job.get("run_claim")
+        if job.get("schedule", {}).get("kind") != "once" or claim in (None, {"outage": True}):
+            return False  # recurring, already cleared, or already reduced to the outage marker
+        # Keep the outage marker (no "at": a stale claim, so it re-dispatches) or the skipped
+        # one-shot, past its grace, is retired as missed on the next scan.
+        job["run_claim"] = {"outage": True} if isinstance(claim, dict) and claim.get("outage") else None
         save_jobs(jobs)
         return True
 
@@ -2957,6 +2935,9 @@ class _DueScan:
     now: datetime
     needs_save: bool = False
     removed: Set[str] = field(default_factory=set)
+    # Miss/catch-up metrics, emitted once the save that persists the scan's repairs lands: an
+    # unwritable store re-finds the same miss every tick, so counting before the save over-counts.
+    on_saved: List[Callable[[], None]] = field(default_factory=list)
 
     def find(self, job_id: Any) -> Optional[Dict[str, Any]]:
         return next((rj for rj in self.raw_jobs if rj["id"] == job_id), None)
@@ -3193,13 +3174,14 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
             d.label, d.next_run, grace, new_next)
-        record_cron_missed(d.job)
+        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
         return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    record_catch_up_occurrence()
+    from cron.occurrences import record_catch_up_occurrence
+    d.scan.on_saved.append(record_catch_up_occurrence)
     return False
 
 
@@ -3212,10 +3194,17 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     still in flight elsewhere — skip but keep the record so its mark_job_run can land."""
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
-    if not (d.job.get("run_claim") or d.job.get("fire_claim")):
+    # Due during an outage of its store: it was skipped, not missed; fire it once on recovery.
+    if store_health.outage_covers(_current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS):
+        return False
+    claim = d.job.get("run_claim")
+    # An outage-covered claim that never reached its fire claim never started: it stays covered.
+    if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
+        return False
+    if not (claim or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])
-        record_cron_missed(d.job)
+        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
     return True
 
 
@@ -3339,6 +3328,8 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         # fixed window is not enough for a run that outlives a tick. The other process sees the
         # fresh claim and skips; mark_job_run() clears it. The TTL only covers a tick that DIES.
         claim = {"at": now.isoformat(), "by": _machine_id()}
+        if _elapsed_seconds(now, d.next_run_dt) > ONESHOT_GRACE_SECONDS:  # only an outage lets it through
+            claim["outage"] = True
         job["run_claim"] = claim
         scan.persist(job["id"], run_claim=claim)
 
@@ -3400,7 +3391,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 job.get("name") or job.get("id") or "?")
 
     if scan.needs_save:
-        save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        try:
+            save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        except OSError as exc:  # repairs live in memory; the next tick retries the persist
+            store_health.note_unwritable(exc, "due-scan repairs not persisted", "scan")
+            return due
+    # Only now is a skipped one-shot claimed or durably due on disk: normal grace applies again.
+    store_health.end_recovery_window(_current_cron_store().cron_dir)
+    for emit in scan.on_saved:
+        emit()
     return due
 
 

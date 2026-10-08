@@ -537,11 +537,11 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
   ]
 }
 
-/** Stamp the retry card on an ended turn that has no reply. A newer turn the
- *  user started meanwhile is either live (skipped) or has its own reply. */
+/** Stamp the retry card on an ended turn that has no reply, never an intentional
+ *  interruption. A newer turn is either live (skipped) or has its own reply. */
 function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
-    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
+    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
       : { ...state, messages: withNoReplyNotice(state.messages) }
   )

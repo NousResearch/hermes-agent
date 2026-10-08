@@ -1,0 +1,43 @@
+name: Promote published Docker image
+
+# Moves nousresearch/hermes-agent:stable/latest (and -desktop) onto the image a
+# published vX.Y.Z receipt tag binds. The ordered publication pass does this on
+# its own; dispatch this when that pass cannot reach the alias step.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published stable version (for example 0.21.6)'
+        required: true
+        type: string
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Move stable/latest onto the receipt-bound image
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python -m scripts.releases.docker promote --version "$VERSION"

@@ -351,6 +351,28 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
+def _workspace_is_inherited(session: dict, current: str) -> bool:
+    """Whether this chat's workspace was INHERITED rather than chosen: none at all (a detached desktop chat
+    the DB has no cwd row for), the profile's configured workspace, or the app's launch default.
+
+    The client says which it was (``cwd_chosen``, from #52589's ``cwd_explicit``); a session created before
+    that flag existed is judged on its path — anything that is not one of those was picked by hand (the
+    folder picker) or handed over by a project row, and a workspace someone picked is never re-homed by a
+    settle: stepping into a git repo to read a file is a visit, not a relocation.
+    """
+    chosen = session.get("cwd_chosen")
+
+    if chosen is not None:
+        return not chosen
+
+    if not (session.get("cwd") or "").strip():
+        return True
+
+    workspace = _profile_workspace_cwd(session.get("profile_home"))
+
+    return bool(workspace) and os.path.abspath(os.path.expanduser(str(workspace))) == current
+
+
 def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
@@ -378,19 +400,19 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     current = os.path.abspath(os.path.expanduser(_session_cwd(session)))
     if resolved == current or not os.path.isdir(resolved):
         return False
-    # A chat parked on the PROFILE's own workspace — never a workspace anyone picked, so `explicit_cwd`
-    # stays unset — has nothing to preserve: the repo the terminal settled in is the workspace it was
-    # missing. This is what files a bare new chat under the project its work turned out to be in, and
-    # keeps that chat's worktrees inside that repo. A session parked on $HOME (no configured workspace)
-    # or on a workspace the user picked keeps the same-repo rule below: stepping into a git repo to read
-    # a file is a visit, not a relocation.
-    if not session.get("explicit_cwd"):
-        workspace = _profile_workspace_cwd(session.get("profile_home"))
+    # A chat parked on the PROFILE's own workspace — or with no workspace at all (a detached desktop chat
+    # the DB has no cwd for) — has nothing to preserve: the repo the terminal settled in is the workspace it
+    # was missing. This is what files a bare new chat under the project its work turned out to be in, and
+    # keeps that chat's worktrees inside that repo. A workspace the user picked or a project row handed over
+    # is untouched: stepping into a git repo to read a file is a visit, not a relocation.
+    if _workspace_is_inherited(session, current):
         landed = git_probe.repo_root(resolved)
-        if landed and workspace and os.path.abspath(os.path.expanduser(str(workspace))) == current:
+        if landed:
             session.update(cwd=landed, explicit_cwd=True, cwd_from_settle=True)
             _register_session_cwd(session)
             _persist_session_cwd_and_schedule_git_meta(session, landed)
+            logger.info("session %s settled in %s: adopting it as the chat's workspace",
+                        session.get("session_key") or "", landed)
             return True
     # Worktree ROOTS (folding to the common root would hide the move), both in a git tree, different from each other,
     # sharing the SAME common .git dir.

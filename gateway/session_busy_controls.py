@@ -79,7 +79,7 @@ async def yolo_config(connection, ref, params, write):
     never HERMES_YOLO_MODE or approvals.mode. A ``--yolo`` launch is seeded first, so revoking it
     here is not re-enabled by the next turn's launch seeding. The write goes through the shared
     ``tools.approval_yolo.toggle_session_yolo`` contract on the route's persisted copy
-    (``SessionEntry.yolo``, re-armed every turn by ``restore_session_yolo``), like the messaging
+    (``SessionEntry.yolo``, restored by ``restore_gateway_yolo``), like the messaging
     ``/yolo``: persisted before the live flip, so an OFF here is not revived by the next turn."""
     value = params.get('value')
     if write and value is not None and str(value).strip().lower() not in _YOLO_WORDS:
@@ -91,10 +91,13 @@ async def yolo_config(connection, ref, params, write):
     live = connection.authority.sessions[ref.session_id]
     runner = connection.authority.runner
     policy = policy_for_source(runner, live.source)
-    if policy is not None and policy.yolo:
-        apply_launch_yolo(live.route)
     store = getattr(runner, 'session_store', None)
     entry = await runner.async_session_store.lookup_by_session_key(live.route) if store is not None else None
+    if entry is not None:
+        from tools.approval_yolo import restore_gateway_yolo
+        restore_gateway_yolo(live.route, entry.yolo is True)
+    elif policy is not None and policy.yolo:
+        apply_launch_yolo(live.route)
     # After a restart only the persisted copy is set until the next turn re-arms it: still ON.
     persisted = getattr(entry, 'yolo', False) is True
     enabled = is_session_yolo_enabled(live.route) or persisted

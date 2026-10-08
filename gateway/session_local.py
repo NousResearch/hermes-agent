@@ -161,7 +161,7 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     # Same clock as every other routing entry: the recovery sweeps compare against a
     # naive cutoff, and one aware entry aborts the whole iteration.
     now = _now()
-    entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
+    entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL, yolo=policy.yolo)
     commit_local_session(authority.db, epoch=authority.epoch, receipt={
         'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
         'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})

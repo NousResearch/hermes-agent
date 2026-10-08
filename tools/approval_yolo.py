@@ -71,6 +71,17 @@ def apply_launch_yolo(session_key: str) -> None:
     approval.enable_session_yolo(session_key)
 
 
+def restore_gateway_yolo(session_key: str, persisted: bool) -> None:
+    """Restore the authoritative routing value, including OFF, before frozen launch seeding."""
+    if not session_key:
+        return
+    with approval._lock:
+        if session_key in approval._launch_yolo_applied:
+            return  # after restoration, the live toggle remains authoritative in this process
+        approval._launch_yolo_applied.add(session_key)
+        (approval._session_yolo.add if persisted else approval._session_yolo.discard)(session_key)
+
+
 def transfer_session_yolo(old_key: str, new_key: str) -> None:
     """Move the live bypass when the conversation continues under a new id (compression rotation, /branch).
     The new row records it at creation (``with_session_yolo``), so nothing is written here."""

@@ -6133,6 +6133,73 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content == "Hi"
         assert resp.choices[0].finish_reason == "stop"
 
+    def test_trailing_billing_only_usage_frame_does_not_wipe_real_counts(self, agent):
+        """A trailing choices=[] frame carrying billing-only usage must not clobber real counts.
+
+        Some OpenAI-compatible relays append a final usage-only frame whose ``usage`` object
+        holds only billing fields (balance_rmb/cost_rmb) with prompt/completion/total all None,
+        while the real counts arrive on the preceding finish chunk. ``CompletionUsage.__bool__``
+        is object-existence, so ``usage_obj = usage or usage_obj`` treated that empty shell as
+        truthy and wiped the real counts — every call reported in=0 out=0 total=0 and
+        ``cache_hit_pct`` never rendered (the gateway emits it only when
+        ``session_cache_read_tokens > 0``).
+        """
+        real_usage = SimpleNamespace(
+            prompt_tokens=752,
+            completion_tokens=5,
+            total_tokens=757,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=512),
+        )
+        billing_only = SimpleNamespace(
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            balance_rmb=52.4,
+            cost_currency="CNY",
+            cost_rmb=0.0001,
+        )
+        chunks = [
+            _make_chunk(content="Hi"),
+            SimpleNamespace(
+                model="test/model",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=None), finish_reason="stop")],
+                usage=real_usage,
+            ),
+            SimpleNamespace(model="test/model", choices=[], usage=billing_only),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.usage is not None
+        assert resp.usage.prompt_tokens == 752
+        assert resp.usage.completion_tokens == 5
+        assert resp.usage.total_tokens == 757
+        assert resp.usage.prompt_tokens_details.cached_tokens == 512
+
+    def test_trailing_usage_frame_with_real_counts_still_wins(self, agent):
+        """A trailing usage-only frame that DOES carry real counts remains authoritative."""
+        finish_usage = SimpleNamespace(prompt_tokens=100, completion_tokens=1, total_tokens=101)
+        final_usage = SimpleNamespace(prompt_tokens=100, completion_tokens=9, total_tokens=109)
+        chunks = [
+            _make_chunk(content="Hi"),
+            SimpleNamespace(
+                model="test/model",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=None), finish_reason="stop")],
+                usage=finish_usage,
+            ),
+            SimpleNamespace(model="test/model", choices=[], usage=final_usage),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp.usage is not None
+        assert resp.usage.completion_tokens == 9
+        assert resp.usage.total_tokens == 109
+
     def test_named_non_json_sse_error_preserves_provider_message(self, agent):
         """SDK-level plain-text SSE errors retain their actionable message."""
         import httpx

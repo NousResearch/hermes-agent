@@ -3160,7 +3160,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 _diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
-                usage_obj = usage or usage_obj
+                # A trailing usage-only frame is not always the authoritative one. Some
+                # OpenAI-compatible relays append a final choices=[] frame whose usage carries
+                # only billing fields (balance_rmb/cost_rmb) with prompt/completion/total all
+                # None, while the real counts arrived on the preceding finish chunk.
+                # CompletionUsage.__bool__ is object-existence, so `usage or usage_obj` kept
+                # that empty shell and wiped the real counts — every call then reported
+                # in=0 out=0 total=0 and cache_hit_pct never rendered (the gateway only emits
+                # it when session_cache_read_tokens > 0). Only let a usage object with real
+                # counts replace what we already hold.
+                if usage and (usage.prompt_tokens or usage.completion_tokens or usage.total_tokens):
+                    usage_obj = usage
                 self._mark_finish_seen(_diag, finish_reason)
                 continue
 

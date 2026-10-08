@@ -1427,9 +1427,14 @@ def restore_primary_runtime(agent) -> bool:
         return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
 
     def _load_primary_pool():
-        """Load the primary provider's pool; None when absent or provider-mismatched."""
+        """Load the primary provider's pool; None when absent or provider-mismatched.
+
+        Reads ``load_pool`` off the defining module at call time so a test patching
+        ``agent.credential_pool.load_pool`` intercepts it.
+        """
+        from agent.credential_pool import load_pool as _pool_load
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        loaded = _pool_load(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0

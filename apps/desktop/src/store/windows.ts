@@ -125,6 +125,10 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
   }
 }
 
+// The one window that runs the first-run intro and holds the boot overlay for it: not an auxiliary
+// renderer, not a full peer (⌘⇧N) and not a subagent watcher.
+export const isMainWindow = (): boolean => !isAuxiliaryWindow() && !isPeerInstanceWindow() && !isWatchWindow()
+
 // Set by Electron only for an explicit "Open profile in new window". An
 // ordinary ⌘⇧N peer also carries profile/connectionId (its boot seed) but not
 // this marker, so a later device/profile selection stays the New-session

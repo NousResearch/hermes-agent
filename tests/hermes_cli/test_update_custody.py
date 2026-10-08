@@ -418,6 +418,17 @@ def _late_writer(late: Path, *, detach: bool = False, delay: float = 2.0) -> str
             f"time.sleep({delay}); pathlib.Path({str(late)!r}).touch()")
 
 
+def _heartbeat_writer(beat: Path) -> str:
+    """Python source for a detached build writer (own session, no inherited fd) that rewrites
+    ``beat`` with ``"<pid> <n>"`` every 0.1 s. Each beat lands via a temp file + ``os.replace``:
+    custody SIGKILLs this writer at an arbitrary instant, and an in-place ``write_text`` killed
+    between its truncating open and its write leaves ``beat`` empty, so the test could no longer
+    read the pid back out of it."""
+    return (f"import os, pathlib, time; os.setsid(); os.closerange(3, 4096); p = pathlib.Path({str(beat)!r})\n"  # windows-footgun: ok - Linux-only callers
+            "t = p.with_name(p.name + '.tmp')\n"
+            "for i in range(300):\n    t.write_text(f'{os.getpid()} {i}'); os.replace(t, p); time.sleep(0.1)")
+
+
 def _node_starting(writer: str, *, then: str) -> list[str]:
     """A stand-in for node: starts ``writer`` (stdio detached), then runs ``then``."""
     return [sys.executable, "-c",
@@ -473,8 +484,7 @@ def test_a_group_kill_of_the_caller_keeps_custody_until_a_detached_writer_is_gon
     import signal
 
     beat = tmp_path / "beat"
-    writer = (f"import os, pathlib, time; os.setsid(); os.closerange(3, 4096); p = pathlib.Path({str(beat)!r})\n"  # windows-footgun: ok - Linux-only test
-              "for i in range(300):\n    p.write_text(f'{os.getpid()} {i}'); time.sleep(0.1)")
+    writer = _heartbeat_writer(beat)
     caller = textwrap.dedent(f"""
         import subprocess, sys
         sys.path.insert(0, {str(REPO_ROOT)!r})
@@ -521,8 +531,7 @@ def test_a_ctrl_c_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path, 
     import signal
 
     beat, ready = tmp_path / "beat", tmp_path / "ready"
-    writer = (f"import os, pathlib, time; os.setsid(); os.closerange(3, 4096); p = pathlib.Path({str(beat)!r})\n"  # windows-footgun: ok - Linux-only test
-              "for i in range(300):\n    p.write_text(f'{os.getpid()} {i}'); time.sleep(0.1)")
+    writer = _heartbeat_writer(beat)
     # A build that cleans up for `cleanup` s after SIGINT (2 s: longer than subprocess.run's interrupt wait).
     command = [sys.executable, "-c", textwrap.dedent(f"""
         import pathlib, signal, subprocess, sys, time
@@ -561,7 +570,7 @@ def test_a_ctrl_c_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path, 
         assert beat.read_text(encoding="utf-8") == seen, "a detached build writer kept writing under the next owner"
     finally:
         contender.release()
-        with contextlib.suppress(ProcessLookupError, ValueError):
+        with contextlib.suppress(ProcessLookupError):
             os.kill(int(beat.read_text(encoding="utf-8").split()[0]), signal.SIGKILL)  # windows-footgun: ok - Linux-only test
 
 

@@ -421,7 +421,11 @@ def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
     def _all_throttled(results: List[Dict[str, Any]]) -> bool:
         return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
 
-    order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
+    order, vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
     if not order:
         return [_page_error(u, _ALL_PAID_MSG) for u in urls]
+    for row in results:
+        if not row.get("error"):
+            metadata = row.get("metadata")
+            row["metadata"] = {**(metadata if isinstance(metadata, dict) else {}), "_hermes_served_by": vendor}
     return results

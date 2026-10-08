@@ -146,7 +146,7 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
-async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str], *, facts=None) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
@@ -154,6 +154,9 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
+    from tools.web_extract_provenance import new_extract_facts, mark_fetched
+    facts = facts if facts is not None else new_extract_facts(len(fetch_urls))
+    facts["provider_call_attempted"] = True
     timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
@@ -171,14 +174,28 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
                   for u in fetch_urls]
         if not _rescue_eligible(provider):
             return failed
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+        facts["fallback_attempted"] = True
+        results = await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+        mark_fetched(results, provider.name, facts, rescued=True)
+        return results
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
         if not _rescue_eligible(provider):
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+        facts["fallback_attempted"] = True
+        results = await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+        mark_fetched(results, provider.name, facts, rescued=True)
+        return results
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        facts["fallback_attempted"] = True
+        results = await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        mark_fetched(results, provider.name, facts, rescued=True)
+        return results
+
+    mark_fetched(results, provider.name, facts)
+
+    if facts["fallback_used"]:
+        return results  # A ring fallback must not become sticky under the selected vendor's cache key.
 
     # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
     # position: providers omit failed URLs or return successes out of request order, and a positional
@@ -192,11 +209,12 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name,
+                              retrieved_at=fetched.get("_hermes_extract_retrieved_at"))
     return results
 
 
-async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str], *, facts=None) -> List[dict]:
     """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
@@ -204,6 +222,8 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
     control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
     within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
+    from tools.web_extract_provenance import new_extract_facts
+    facts = facts if facts is not None else new_extract_facts(len(safe_urls))
     from tools.website_policy import check_website_access as _check_site
     cached_results, fetch_urls, fetch_positions = {}, [], []
     for position, url in enumerate(safe_urls):
@@ -218,10 +238,11 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
             fetch_urls.append(url)
             fetch_positions.append(position)
 
+    facts["cache_status"] = "mixed" if cached_results and fetch_urls else "hit" if cached_results else "miss"
     if not fetch_urls:
         return [cached_results[i] for i in range(len(safe_urls))]
     logger.info("Web extract via %s: %d URL(s)", provider.name, len(fetch_urls))
-    results = await _dispatch_extract(provider, fetch_urls, format)
+    results = await _dispatch_extract(provider, fetch_urls, format, facts=facts)
     if not cached_results:
         return results
     return _merge_in_order(len(safe_urls), cached_results, fetch_positions, fetch_urls, results)

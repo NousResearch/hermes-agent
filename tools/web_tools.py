@@ -396,9 +396,13 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
     pointing at the stored full text; inline base64 images become ``[IMAGE: alt]``. URLs carrying secrets are
     refused before any fetch; private-network URLs are blocked per entry. Returns JSON ``{"results": [...]}``.
     """
+    from tools.web_extract_provenance import new_extract_facts, build_extract_provenance
+    facts = new_extract_facts(len(urls))
+    def with_provenance(error_json):
+        return json.dumps({"provenance": build_extract_provenance([], facts), **json.loads(error_json)}, ensure_ascii=False)
     normalized_urls, normalized_indices, invalid_urls, blocked = _validate_extract_urls(urls)
     if blocked is not None:
-        return blocked
+        return with_provenance(blocked)
     debug_call_data = {
         "parameters": {"urls": normalized_urls, "format": format, "char_limit": char_limit}, "error": None,
         "pages_extracted": 0, "pages_truncated": 0, "original_response_size": 0, "final_response_size": 0,
@@ -421,11 +425,13 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         results = []
         if safe_urls:
             backend = _get_extract_backend()
+            facts["requested_backend"] = backend
             _ensure_web_plugins_loaded()
             provider, error_json = _resolve_extract_provider(backend)
             if error_json is not None:
-                return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
+                return with_provenance(error_json)
+            facts["requested_backend"] = provider.name
+            results = await _extract_safe_urls(provider, safe_urls, format, facts=facts)
         # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
         # the order of the safe URL list they receive).
         if invalid_urls or ssrf_blocked:
@@ -437,10 +443,11 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         debug_call_data["original_response_size"] = len(json.dumps({"results": results}))
         debug_call_data["processing_applied"].append("truncate_and_store")
         _truncate_results(results, _effective_char_limit(char_limit), debug_call_data)
+        provenance = build_extract_provenance(results, facts)
         trimmed = _trim_results(results)
         result_json = (
-            json.dumps({"results": trimmed}, indent=2, ensure_ascii=False) if trimmed
-            else tool_error("Content was inaccessible or not found")
+            json.dumps({"provenance": provenance, "results": trimmed}, indent=2, ensure_ascii=False) if trimmed
+            else with_provenance(tool_error("Content was inaccessible or not found"))
         )
         # Belt-and-suspenders sweep of the serialized JSON: a provider may tuck a base64 blob in metadata.
         cleaned_result = convert_base64_images_to_links(result_json)
@@ -449,7 +456,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         _finish_debug("web_extract_tool", debug_call_data)
         return cleaned_result
     except Exception as e:
-        return _finish_debug("web_extract_tool", debug_call_data, f"Error extracting content: {str(e)}")
+        return with_provenance(_finish_debug("web_extract_tool", debug_call_data, f"Error extracting content: {str(e)}"))
 
 
 def _provider_is_ready(provider) -> bool:

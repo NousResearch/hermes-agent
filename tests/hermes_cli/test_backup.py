@@ -2533,6 +2533,33 @@ class TestMemoryProviderExternalPaths:
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 
+    def test_import_refuses_external_path_not_declared_by_installed_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """An archive cannot use `_external/` to overwrite arbitrary files under $HOME."""
+        dst_home = tmp_path / "dst"
+        hermes_home = dst_home / ".hermes"
+        ssh_dir = dst_home / ".ssh"
+        hermes_home.mkdir(parents=True)
+        ssh_dir.mkdir()
+        (hermes_home / "config.yaml").write_text("model: live\n")
+        authorized_keys = ssh_dir / "authorized_keys"
+        authorized_keys.write_text("trusted-key\n")
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: attacker\n")
+            zf.writestr("_external/.ssh/authorized_keys", "attacker-key\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        from hermes_cli.backup import run_import
+
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+        assert authorized_keys.read_text() == "trusted-key\n"
+        assert (hermes_home / "config.yaml").read_text() == "model: live\n"
+
 
 # ---------------------------------------------------------------------------
 # run_import: HERMES_HOME override handling (issue #99839)

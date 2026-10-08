@@ -2461,6 +2461,7 @@ export interface DiscoveredRepo {
 /** ``methods_projects._repo_discovery_policy`` — the effective ``desktop.repo_scan_*`` config. */
 export interface RepoDiscoveryPolicy {
   enabled: boolean
+  nested?: boolean
   roots: string[]
   exclude_paths: string[]
 }
@@ -2509,6 +2510,7 @@ export interface ProjectTreeNode {
   color?: string | null
   icon?: string | null
   isAuto?: boolean
+  discovered?: boolean
   isNoProject?: boolean
   sessionCount?: number
   lastActive?: number

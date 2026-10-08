@@ -37,12 +37,43 @@ def test_record_repos_still_rejects_an_unknown_policy_key():
     assert "discovery_policy.nestedd" in problem
 
 
+def test_record_repos_echoes_the_policy_it_recorded_under():
+    """`record_repos` returns the effective policy; `_repo_discovery_policy` reports `nested`, so the
+    result model has to declare it too or the echo is itself a violation."""
+    check_result(
+        METHODS["projects.record_repos"],
+        {
+            "accepted": True,
+            "discovery_policy": {"enabled": True, "nested": True, "roots": [], "exclude_paths": []},
+            "repos": [],
+        },
+    )
+
+
 def test_projects_list_payload_matches_the_stored_row():
     row = Project(id="p_child", slug="child", name="Child", created_at=1, parent_id="p_parent").to_dict()
 
     check_result(METHODS["projects.list"], {"projects": [row], "active_id": "p_child"})
 
     assert row["parent_id"] == "p_parent"
+
+
+def test_scanned_repo_node_is_marked_discovered():
+    """The sidebar keeps session-less rows only when the disk scan found them, so the node that
+    *is* one has to say so on the wire."""
+    from tui_gateway import project_tree as pt
+
+    tree = pt.build_tree([], [], [{"label": "lib", "root": "/www/app/vendor/lib"}], resolve=None, hydrate=False)
+
+    check_result(
+        METHODS["projects.tree"],
+        {"projects": tree["projects"], "active_id": None, "scoped_session_ids": tree["scoped_session_ids"]},
+    )
+
+    node = tree["projects"][0]
+    assert node["id"] == "/www/app/vendor/lib"
+    assert node["discovered"] is True
+    assert node["isAuto"] is True
 
 
 def test_project_info_keeps_strict_result_validation():

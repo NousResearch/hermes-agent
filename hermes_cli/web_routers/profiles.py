@@ -459,8 +459,8 @@ def get_profiles_sessions(
     source: str = None, sources: str = None, exclude_sources: str = None, full: bool = False):
     """Unified, read-only session list aggregated across ALL profiles: opens each profile's
     ``state.db`` directly (no dashboard backend per profile) and tags rows with their owning
-    ``profile``. Rows omit ``system_prompt`` / ``model_config`` unless ``full=1`` — same
-    projection as ``/api/sessions``."""
+    ``profile``. Every row uses the same public projection as ``/api/sessions``;
+    the legacy ``full`` parameter never returns raw database columns."""
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
     if order not in ("created", "recent"):
@@ -495,7 +495,7 @@ def get_profiles_sessions(
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **scoped)
+                compact_rows=True, include_pinned=True, **scoped)
             totals[name] = db.session_count(exclude_children=True, **scoped)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
@@ -503,8 +503,7 @@ def get_profiles_sessions(
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     window = _pinned_window(merged, offset, limit)
-    if not full:
-        _strip_session_list_rows(window)
+    _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
             "limit": limit, "offset": offset, "errors": errors,
             "storage": _corrupt_profile_stores(targets)}

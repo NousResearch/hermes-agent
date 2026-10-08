@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_cli.web_server_gateway import _project_session_response, _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
@@ -184,7 +184,8 @@ def get_sessions(
 
     ``order=recent`` sorts by latest activity across the compression chain, so
     a long-running chat stays on page one after it auto-compresses onto a fresh
-    id.  Rows omit ``system_prompt`` / ``model_config`` unless ``full=1``.
+    id. Rows always use the public session shape; the legacy ``full``
+    parameter is accepted without exposing raw database columns.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -218,7 +219,7 @@ def get_sessions(
                 order_by_last_active=order == "recent",
                 # Skip the system_prompt blob inside SQLite too (pairs with
                 # _strip_session_list_rows below).
-                compact_rows=not full,
+                compact_rows=True,
                 include_pinned=True,
                 **scope)
             total = db.session_count(exclude_children=True, **scope)
@@ -231,8 +232,7 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
-            if not full:
-                _strip_session_list_rows(sessions)
+            _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same
             # ``{profile: "corrupt"}`` shape as the /api/profiles/sessions* lists.
             storage = {row_profile: STORAGE_CORRUPT} if storage_state(db.db_path) == STORAGE_CORRUPT else {}
@@ -563,7 +563,9 @@ async def get_session_stats(profile: Optional[str] = None):
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     def _detail(db):
         sid = _resolve_session_id(db, session_id)
-        session = db.get_session(sid) if sid else None
+        # Reuse the list's SQL activity derivation, including validated message
+        # timestamps, without loading the rendered system-prompt blob.
+        session = db.get_session_rich_row(sid, compact_rows=True) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always stamp the owner: unowned default-profile rows made multi-profile
@@ -577,7 +579,8 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         owned = cron_run_scheduler_owned(session, profile)
         if owned is not None:
             session["scheduler_owned"] = owned
-        return session
+        session["is_active"] = _is_active(session, time.time())
+        return _project_session_response(session, detail=True)
 
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
 

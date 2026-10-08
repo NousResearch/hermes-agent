@@ -142,6 +142,74 @@ class TestMultipleSafeWriteRoots:
         assert _is_write_denied(str(inside)) is False
 
 
+class TestSafeWriteRootRemoteNamespace:
+    """An ssh backend resolves paths in the REMOTE host's namespace: the
+    Hermes-host HERMES_WRITE_SAFE_ROOT names directories that do not exist
+    there and must not veto remote writes (#132620). Every other guard stays."""
+
+    def test_remote_namespace_skips_safe_root_check(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denied_error
+
+        safe_root = tmp_path / "workspace"
+        os.makedirs(safe_root, exist_ok=True)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        # A remote-absolute path outside every host root: allowed once flagged.
+        assert get_write_denied_error("/home/remote-user/notes.txt", remote_namespace=True) is None
+        # The same call without the flag keeps today's host-side behaviour.
+        err = get_write_denied_error("/home/remote-user/notes.txt")
+        assert err is not None and "outside HERMES_WRITE_SAFE_ROOT" in err
+
+    def test_remote_namespace_keeps_nt_namespace_guard(self):
+        from agent.file_safety import get_write_denied_error
+
+        # Only the safe-root check is skipped: NT-namespace paths stay denied
+        # on any host (the raw-string check runs before anything else).
+        err = get_write_denied_error("\\\\?\\UNC\\host\\share\\x", remote_namespace=True)
+        assert err is not None and "NT/device namespace" in err
+
+    def test_remote_namespace_keeps_credential_deny(self):
+        from agent.file_safety import is_write_denied
+
+        # Only the safe-root check is skipped. A credential path that ALSO
+        # exists on the remote host (ssh to a same-layout machine: identical
+        # home paths) must stay denied — the flag never widens the denylists.
+        assert is_write_denied(os.path.expanduser("~/.ssh/id_rsa"), remote_namespace=True) is True
+
+    def test_ssh_backend_write_lands_outside_host_safe_root(self, tmp_path: Path, monkeypatch):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        # Class name carries the backend identity (same rule as
+        # file_tools_paths): a local shell standing in for the ssh one.
+        class FakeSSHRemoteEnvironment(LocalEnvironment):
+            pass
+
+        safe_root = tmp_path / "workspace"
+        os.makedirs(safe_root, exist_ok=True)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        ops = ShellFileOperations(FakeSSHRemoteEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        target = tmp_path / "remote-home" / "notes.txt"
+        result = ops.write_file(str(target), "written over ssh\n")
+        assert result.error is None, result.error
+        assert target.read_text() == "written over ssh\n"
+
+    def test_local_backend_write_still_refused_outside_safe_root(self, tmp_path: Path, monkeypatch):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        safe_root = tmp_path / "workspace"
+        os.makedirs(safe_root, exist_ok=True)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        result = ops.write_file(str(tmp_path / "outside.txt"), "must not land\n")
+        assert result.error is not None
+        assert "outside HERMES_WRITE_SAFE_ROOT" in result.error
+        assert not (tmp_path / "outside.txt").exists()
+
+
 class TestGetWriteDeniedError:
     """get_write_denied_error() should distinguish credential vs safe-root blocks."""
 

@@ -917,6 +917,20 @@ def find_windows_gateway_services(
         except RuntimeError:
             raise
         except Exception as exc:
+            if isinstance(
+                exc,
+                (
+                    getattr(psutil_module, "NoSuchProcess", ()),
+                    getattr(psutil_module, "ZombieProcess", ()),
+                ),
+            ):
+                # The PID-file identity was just verified, yet the ancestor chain is unreadable: a
+                # low-integrity sandboxed caller's kernel process view (psutil's ppid_map /
+                # NtQuerySystemInformation) lists only the sandbox's own processes, so parents()
+                # raises NoSuchProcess for a live gateway (#134880). No readable Hermes service
+                # above it means no SCM supervision to handle here — leave the profile to the
+                # ordinary pause path instead of aborting the whole update.
+                continue
             raise RuntimeError(f"Could not determine SCM ownership for gateway profile {profile_process.profile}") from exc
     return [found[name] for name in sorted(found)]
 

@@ -10,6 +10,7 @@ safe (see ``CLITuiRuntimeMixin._tui_startup_prewarm_and_warnings``).
 from __future__ import annotations
 
 import logging
+import subprocess
 import sys
 
 import pytest
@@ -494,3 +495,55 @@ def test_property_late_arrivals_surface_exactly_once(caplog):
                 assert replay_provider_load_failures() == 0
             assert _property_warned_names(caplog) == []
             _property_assert_cursor_bounded()
+
+
+_SETUP_FAILURE_PROBE = (
+    "import contextlib, io, sys\n"
+    "import hermes_logging\n"
+    "def _boom(*a, **k):\n"
+    "    raise RuntimeError('simulated setup_logging failure')\n"
+    "hermes_logging.setup_logging = _boom\n"
+    "buf = io.StringIO()\n"
+    "with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):\n"
+    "    import hermes_cli.main as _m\n"
+    "assert getattr(_m, '_replay_provider_failures', 'MISSING') != 'MISSING', (\n"
+    "    'replay name unbound after setup_logging failure (NameError at dispatch)')\n"
+    "assert _m._replay_provider_failures is None or callable(_m._replay_provider_failures)\n"
+    "_m._replay_provider_failures = None\n"
+    "import logging as _pl\n"
+    "with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):\n"
+    "    try:\n"
+    "        if _m._replay_provider_failures is not None:\n"
+    "            _m._replay_provider_failures()\n"
+    "    except Exception:\n"
+    "        _pl.getLogger('probe-dispatch').exception('buffered provider-failure replay failed')\n"
+    "assert buf.getvalue() == '', f'dispatch replay polluted stderr: {buf.getvalue()[:500]!r}'\n"
+    "sys.stdout.write('PROBE_OK')\n"
+)
+
+
+def test_setup_failure_still_binds_replay_and_dispatch_stays_quiet():
+    """setup_logging raising must not leave the dispatch replay unbound.
+
+    Regression test for the import-time NameError path: ``setup_logging()``
+    raising used to skip the ``_replay_provider_failures`` binding, so
+    ``main()``'s dispatch replay raised ``NameError`` and ``logger.exception``
+    wrote the traceback to raw stderr via ``logging.lastResort``. The probe
+    below imports ``hermes_cli.main`` fresh in a subprocess with a failing
+    ``setup_logging`` and asserts the name stays bound and the guarded
+    dispatch emits nothing.
+    """
+    import pathlib
+
+    source = pathlib.Path("hermes_cli/main.py").read_text()
+    assert "if _replay_provider_failures is not None:" in source
+
+    proc = subprocess.run(
+        [sys.executable, "-c", _SETUP_FAILURE_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    assert proc.returncode == 0, f"probe failed: {proc.stderr[-2000:]}"
+    assert proc.stdout == "PROBE_OK", f"probe output: {proc.stdout!r} {proc.stderr[-2000:]!r}"
+    assert proc.stderr == "", f"probe polluted stderr: {proc.stderr[:500]!r}"

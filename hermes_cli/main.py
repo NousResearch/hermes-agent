@@ -742,6 +742,9 @@ except Exception:
 
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.
+# Sentinel so a failed logging setup below can never leave the dispatch
+# replay unbound (NameError → lastResort traceback to raw stderr).
+_replay_provider_failures = None
 try:
     from hermes_logging import setup_logging as _setup_logging
 
@@ -764,6 +767,15 @@ try:
     _replay_provider_failures()
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
+
+# Replay import independent of logging setup: if _setup_logging raised above,
+# this standalone guard still binds the replay so the dispatch site never hits
+# NameError (which logger.exception would emit via lastResort to raw stderr).
+try:
+    if _replay_provider_failures is None:
+        from providers import replay_provider_load_failures as _replay_provider_failures
+except Exception:
+    _replay_provider_failures = None  # dispatch replay skips the flush
 
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
@@ -3608,7 +3620,8 @@ def main():
     # the import-time replay above; flush those now that dispatch — and
     # logging — is ready. Idempotent: already-replayed entries are skipped.
     try:
-        _replay_provider_failures()
+        if _replay_provider_failures is not None:
+            _replay_provider_failures()
     except Exception:
         logger.exception("buffered provider-failure replay failed")
 

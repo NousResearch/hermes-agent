@@ -24,8 +24,9 @@
 # checkout has no tags and this exits non-zero rather than silently emitting an
 # empty matrix.
 #
-# Only vYYYY.M.D[.N] release tags are considered; the repo also carries
-# backup/* and one-off tags that are not releases.
+# Release tags use either the historical vYYYY.M.D[.N] form or the current
+# semver-style vX.Y.Z[.N] form, including +canary.<timestamp> preview tags.
+# The repo also carries backup/* and one-off tags that are not releases.
 
 set -euo pipefail
 

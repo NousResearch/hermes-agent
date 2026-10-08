@@ -2430,11 +2430,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — gateway state, platforms, PID for dashboard probing (Bearer auth)."""
         from gateway.status import (
-            derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+            derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
+            parse_active_agent_details, parse_active_agents, parse_active_work_counts,
             read_runtime_status)
         runtime = read_runtime_status() or {}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
+        raw_work_counts = runtime.get("active_work_counts")
+        gw_work_counts = parse_active_work_counts(raw_work_counts)
+        if not isinstance(raw_work_counts, dict):
+            # Legacy record without source counts: attribute the aggregate to messaging.
+            gw_work_counts["messaging"] = gw_active
+        gw_active = sum(gw_work_counts.values())
+        gw_active_details = parse_active_agent_details(
+            runtime.get("active_agent_details", []))
 # Serve the live adapter's own metrics alongside the persisted platform map: the
         # heartbeat loop keeps the file fresh, but a just-booted or wedged writer would
         # otherwise show boot-time values here too (#52323).
@@ -2463,6 +2472,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "metrics_today": api_status["metrics_today"],
             "last_heartbeat": api_status["last_heartbeat"],
             "active_agents": gw_active,
+            "active_work_counts": gw_work_counts,
+            "active_agent_details": gw_active_details,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=True, gateway_state=gw_state, active_agents=gw_active),
             "gateway_drainable": derive_gateway_drainable(

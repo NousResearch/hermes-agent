@@ -189,14 +189,93 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return time.monotonic() - self.started_at
 
     # Active-work accounting
+    def _active_work_counts(self) -> dict[str, int]:
+        """One bounded count for every gateway-owned agent work source."""
+        return {
+            "messaging": max(0, self._running_agent_count()),
+            "cron": max(0, self._active_cron_job_count()),
+            "api_server": max(0, self._active_api_run_count()),
+            "deferred": max(0, self._active_deferred_agent_worker_count()),
+        }
+
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
-        return (
-            self._running_agent_count()
-            + self._active_cron_job_count()
-            + self._active_api_run_count()
-            + self._active_deferred_agent_worker_count()
-        )
+        return sum(self._active_work_counts().values())
+
+    def _active_agent_details(self) -> list[dict[str, Any]]:
+        """Return bounded, content-free diagnostics for active gateway turns."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        now = time.time()
+        running_agents = getattr(self, "_running_agents", {}) or {}
+        running_started = getattr(self, "_running_agents_ts", {}) or {}
+        session_entries = {}
+        try:
+            store = getattr(self, "session_store", None)
+            session_entries = getattr(store, "_entries", {}) or {}
+        except Exception:
+            session_entries = {}
+
+        details: list[dict[str, Any]] = []
+        for session_key, agent in running_agents.items():
+            started = running_started.get(session_key, now)
+            try:
+                elapsed = max(0, int(now - float(started)))
+            except (TypeError, ValueError):
+                elapsed = 0
+
+            row: dict[str, Any] = {
+                "session_key": session_key,
+                "elapsed_seconds": elapsed,
+                "state": (
+                    "starting"
+                    if agent is _AGENT_PENDING_SENTINEL
+                    else "running"
+                ),
+            }
+
+            entry = (
+                session_entries.get(session_key)
+                if isinstance(session_entries, dict)
+                else None
+            )
+            source = getattr(entry, "origin", None) if entry is not None else None
+            platform = getattr(source, "platform", None)
+            if platform is not None:
+                row["platform"] = getattr(platform, "value", str(platform))
+            elif isinstance(session_key, str):
+                parts = session_key.split(":")
+                if len(parts) >= 3:
+                    row["platform"] = parts[2]
+            for attr in ("chat_id", "user_id"):
+                value = getattr(source, attr, None)
+                if value:
+                    row[attr] = value
+
+            if agent is not _AGENT_PENDING_SENTINEL:
+                session_id = getattr(agent, "session_id", "")
+                model = getattr(agent, "model", "")
+                if session_id:
+                    row["session_id"] = session_id
+                if model:
+                    row["model"] = model
+                if hasattr(agent, "get_activity_summary"):
+                    try:
+                        summary = agent.get_activity_summary() or {}
+                    except Exception:
+                        summary = {}
+                    for field in (
+                        "seconds_since_activity",
+                        "last_activity_desc",
+                        "current_tool",
+                        "api_call_count",
+                        "max_iterations",
+                    ):
+                        value = summary.get(field)
+                        if value not in (None, ""):
+                            row[field] = value
+            details.append(row)
+        return details
 
     @staticmethod
     def _running_cron_job_count() -> int:

@@ -828,6 +828,7 @@ from hermes_cli.main_provider_setup import (
     _build_provider_picker_rows,
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
+    _model_choice_save_count,
     _named_custom_provider_map,
     _offer_reasoning_after_pick,
     _prompt_main_reasoning_effort,
@@ -2079,6 +2080,7 @@ def select_provider_and_model(args=None):
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
+    saves_before = _model_choice_save_count()
     from hermes_cli.observability.shared_metrics_setup import cli_provider_setup
     with cli_provider_setup(selected_provider):
         flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
@@ -2107,9 +2109,7 @@ def select_provider_and_model(args=None):
         ):
             _model_flow_api_key_provider(config, selected_provider, current_model)
 
-    # Every flow persists through _save_model_choice; a changed model.default means a pick
-    # landed, so offer its reasoning effort here once instead of inside each flow.
-    _offer_reasoning_after_pick(current_model)
+    _offer_reasoning_after_pick(current_model, saves_before)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons

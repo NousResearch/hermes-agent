@@ -1,12 +1,12 @@
 name: radio-dm-gateway
-repo: https://github.com/TakeshiTGAL/hermes-plugin-meshtastic-gateway
-sha: 148959c09e49c02fbf61452ee18a17072326521a
+repo: https://github.com/TakeshiTGAL/hermes-plugin-radio-dm-gateway
+sha: f3f8049d71dd5ec4807d6b60cca6c6e644a7ad69
 description: "Allowlisted direct messages only, when pkiEncrypted is true. Empty allowlist answers nobody. Channel packets are never answered. TCP only. Radio approval is once only. Not tried on a physical radio. Meshtastic® is a registered trademark of Meshtastic LLC. Disclosure — one URL; no allow-all; /yolo, /approvals, always, and session refused; nodes.json stores node id, direction, bytes, and time, not the text; the session still has the text; 64-200 bytes, at most 8 chunks, at most 30 an hour; no daily cap; a chunk that may have reached the radio is not sent again in the turn; tries at about 30s and about 2.5 min are refused; gateway.delivery_ledger false stops them; v0.21.4 ignores host isolation; main does not load it; not a sandbox; no cron; tests/ shipped, not loaded; meshtastic>=2.7.9,<3."
 maintainer: TakeshiTGAL
 tier: community
 category: platform
 requires_hermes: ">=0.21.4"
-docs_url: https://github.com/TakeshiTGAL/hermes-plugin-meshtastic-gateway#readme
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-radio-dm-gateway#readme
 version: "0.1.0"
 platforms: []
 capabilities:

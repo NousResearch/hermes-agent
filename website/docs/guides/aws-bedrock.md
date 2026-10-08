@@ -42,6 +42,12 @@ Use the exact model ID returned by your Mantle catalog. This endpoint uses only
 Anthropic API keys, OAuth, Claude Code credentials, or IAM signing. Other models
 selected in the API Key flow retain the named OpenAI-compatible Mantle provider.
 
+To select a Mantle workspace, add `bedrock.mantle_workspace_id: proj_YOURPROJECT`
+to `config.yaml`, or set `BEDROCK_MANTLE_WORKSPACE_ID` (takes precedence). Hermes
+sends `anthropic-workspace-id` only to HTTPS Mantle Anthropic endpoints.
+Workspace IDs must start with `proj_` followed by ASCII letters or digits;
+invalid IDs fail before client construction.
+
 ## Prerequisites
 
 - **AWS credentials** — any source supported by the [boto3 credential chain](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html):

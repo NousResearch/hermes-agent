@@ -352,9 +352,19 @@ for _provider, _alias, _canonical in (
 del _provider, _alias, _canonical
 
 
+_DOLLAR_PREFIX_RE = re.compile(r"^[ \t]*\$[ \t]*")
+
+
 def _to_decimal(value: Any) -> Optional[Decimal]:
     try:
-        return None if value is None else Decimal(str(value))
+        if value is None:
+            return None
+        # Strip a leading "$": OpenAI-compatible ``/models`` endpoints may publish rates as
+        # "$0.0000006", which Decimal() rejects outright. The values are USD, so only "$" is
+        # stripped — a "€"/"£"/"¥" prefix is left in and fails to parse, which is fail-closed
+        # (rate dropped → cost 'unknown') rather than read as a confident wrong USD price. A comma
+        # is left in place too, so a malformed decimal-comma quote → None instead of another number.
+        return Decimal(_DOLLAR_PREFIX_RE.sub("", str(value)).strip())
     except Exception:
         return None
 

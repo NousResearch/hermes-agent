@@ -537,10 +537,14 @@ export function mergeFinalAssistantText(
   return [...kept, finalPart]
 }
 
-/** Seal every still-open visible activity when the assistant turn stops. */
-export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
+/** An interim response ends prose, while its tools can outlive the bubble. */
+export function completeOpenTimelineParts(
+  parts: ChatMessagePart[],
+  completedAt: number,
+  scope: 'response' | 'turn' = 'turn'
+): ChatMessagePart[] {
   return parts.map(part =>
-    part.timestamp !== undefined && part.completedAt === undefined
+    part.timestamp !== undefined && part.completedAt === undefined && (scope === 'turn' || part.type !== 'tool-call')
       ? ({ ...part, completedAt } as ChatMessagePart)
       : part
   )

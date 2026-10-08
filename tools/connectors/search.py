@@ -17,9 +17,13 @@ def connections_in_scope(tool_defs: Iterable[dict[str, Any]]) -> bool:
 def connectors_unavailable(failure: str, *, verb: str,
                            names: Optional[list[str]] = None) -> dict[str, Any]:
     if failure == NOT_SET_UP:
-        field: dict[str, Any] = {"status": NOT_SET_UP, "hint": (
-            f"{NOT_SET_UP_MESSAGE} Hosted apps (Gmail, Calendar, Notion and more) are then searchable. "
-            "If the request is better served by the tools above, use those instead.")}
+        from tools.connectors.gateway.config import guest_setup_failure
+
+        hint = (f"{NOT_SET_UP_MESSAGE} Hosted apps (Gmail, Calendar, Notion and more) are then searchable. "
+                "If the request is better served by the tools above, use those instead.")
+        if last_failure := guest_setup_failure():
+            hint += f" The last attempt failed, so tell the user before retrying: {last_failure}"
+        field: dict[str, Any] = {"status": NOT_SET_UP, "hint": hint}
         if names:
             field["names"] = names
         return field

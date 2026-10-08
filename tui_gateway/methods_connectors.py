@@ -78,12 +78,20 @@ def _session_owner(rid, owner):
 
 
 def _account_gate_closed(rid):
-    from tools.connectors import connectors_available, ensure_guest_identity
+    from tools.connectors import connectors_available
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
-    if not connectors_available():
-        return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
-    # Opening the Connectors page is the user asking for apps: create the guest identity here.
+    if connectors_available():
+        return None
+    return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
+
+
+def _account_identity_error(rid):
+    """Opening the Connectors page or connecting from it is the user asking for apps: create the
+    guest identity here when the user has none. Operation polls never call this."""
+    from tools.connectors import ensure_guest_identity
+    from tui_gateway.contracts.connectors import ConnectorErrorReason
+
     if setup_error := ensure_guest_identity():
         return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, setup_error)
     return None
@@ -234,6 +242,8 @@ def _connector_rpc(rid, params, action):
         with _account_scope(request):
             if closed := _account_gate_closed(rid):
                 return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
+            if setup_error := _account_identity_error(rid):
+                return setup_error
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
 
     runtime_token = _current_runtime_session_record.set(session)

@@ -122,23 +122,34 @@ def guest_identity_pending() -> bool:
     return not failure or bool(failure["retryable"])
 
 
+_SETUP_FAILED = "Hosted connectors could not be set up. "
+
+
+def guest_setup_failure() -> Optional[str]:
+    """The last failed guest creation for this profile, worded with the wait still left, or None."""
+    from hermes_cli.anon_auth import anon_failure_copy, last_mint_failure
+
+    if not (failure := last_mint_failure()):
+        return None
+    return _SETUP_FAILED + anon_failure_copy(failure["error_code"], retry_after=failure["retry_after"])
+
+
 def ensure_guest_identity() -> Optional[str]:
     """Create the guest identity on the first hosted connector action, synchronously.
 
-    Returns None when an identity exists or was just created, else the failure copy for the model
-    (rate limit or portal down, with its wait)."""
+    Returns None when an identity exists or was just created, else the failure copy for the model:
+    a refusal, a rate limit or an unreachable portal, with the wait when there is one."""
     if not guest_identity_pending():
         return None
-    from hermes_cli.anon_auth import ensure_portal_identity, last_mint_failure
+    from hermes_cli.anon_auth import ensure_portal_identity
     from hermes_cli.auth_constants import AuthError
 
     try:
         if ensure_portal_identity(explicit=True, for_connectors=True) is not None:
             return None
     except AuthError as exc:
-        return str(exc)
-    # Still inside the cooldown of an earlier failure: report that one.
-    return str((last_mint_failure() or {}).get("error") or "Connectors could not be set up. Try again shortly.")
+        return _SETUP_FAILED + str(exc)
+    return guest_setup_failure() or _SETUP_FAILED + "Try again shortly."
 
 
 def operation_session_key(session_id: Optional[str]) -> str:

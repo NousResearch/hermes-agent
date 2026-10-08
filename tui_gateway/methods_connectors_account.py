@@ -21,7 +21,7 @@ def _account_method(params_model=None, *, invalid="", invalid_reason=ConnectorEr
             from pydantic import ValidationError
             from tools.connectors.gateway.errors import GatewayAuthError
 
-            if gate_error := _account_gate_closed(rid):
+            if gate_error := _account_gate_closed(rid) or _account_identity_error(rid):
                 return gate_error
             try:
                 request = params if params_model is None else params_model.model_validate(params)

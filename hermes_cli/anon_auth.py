@@ -48,9 +48,9 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 # The shared secret gates the anonymous surface during its integration phase. It is a deployment
 # secret (Sid's), read from the environment only.
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
-# Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
-# (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. Not a user preference: never written to
+# Launch gate for the free tier while it is pre-GA: exactly "1" turns it on for this process (CLI,
+# gateway, serve backend alike): the boot mint, the free model and the free-tier surfaces. A guest
+# for connectors only needs ``nous.guest`` (``guest_allowed``). Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 # Preview cohort for the free tier's connector set, sent once on account creation so the account
@@ -598,7 +598,7 @@ def _note_mint_failure(err: AuthError) -> MintFailure:
     return failure
 
 
-def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[dict[str, Any]]:
+def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False) -> Optional[dict[str, Any]]:
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
@@ -628,6 +628,10 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[dict[str, An
                 if not shared:
                     _write_shared_nous_state(profile_state)
                 return profile_state
+            # A caller queued on these locks behind a mint that just failed waits out its cooldown.
+            failure = _mint_failure_for_profile()
+            if failure and not force and time.monotonic() < failure.not_before:
+                return None
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
             with _nous_http_client(timeout_seconds, verify) as client:
                 return _mint_locked(client, portal, auth_store)
@@ -666,7 +670,7 @@ def ensure_portal_identity(
     if failure and not force and not current_nous_state() and time.monotonic() < failure.not_before:
         return None  # in cooldown (or terminal) for this profile; do not hammer the portal
     try:
-        state = _reconcile_and_provision(timeout_seconds=timeout_seconds)
+        state = _reconcile_and_provision(timeout_seconds=timeout_seconds, force=force)
     except Exception as exc:
         err = classify_mint_exception(exc)
         noted = _note_mint_failure(err)
@@ -675,7 +679,8 @@ def ensure_portal_identity(
         if err is exc:
             raise
         raise err from exc
-    _clear_mint_failure()
+    if state is not None:
+        _clear_mint_failure()
     return state
 
 

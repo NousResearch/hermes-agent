@@ -888,7 +888,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         alternation; works on any backend). A failing builder replies with a retry hint."""
         await self._send_command_ack(source, ack, name)
         try:
-            event.text = build()
+            event.text = await asyncio.to_thread(build)
         except Exception:
             return True, t("gateway.prompt_command.start_failed", command=name)
         return False, None
@@ -1010,7 +1010,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "initiate-setup", "init", "blueprint", "undo", "queue", "steer", "moa",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -1027,7 +1027,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             async with self._async_profile_scope_for_source(source):
                 return True, await plain_handler(event)
         if canonical in self._HM_CANONICAL_COMMANDS:
-            return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
+            return await getattr(self, f"_hm_cmd_{canonical.replace('-', '_')}")(event, source, _quick_key)
         return False, None
 
     async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:

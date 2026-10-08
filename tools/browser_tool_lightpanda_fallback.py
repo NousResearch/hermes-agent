@@ -153,6 +153,10 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     _session._ensure_screen_for_headed_chromium()
     browser_env = _session._agent_browser_command_env(task_socket_dir)
     _session._apply_chromium_sandbox_args(browser_env)
+    # #64867: the temp Chrome session is a background retry, so it launches
+    # headless on Windows even in headed mode (no --headed argv exists here to
+    # contradict; an explicit AGENT_BROWSER_HEADED is never overridden).
+    browser_env = _session.windows_headless_browser_options(browser_env)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         proc = _session._popen_agent_browser(base_args + [cmd] + cmd_args, browser_env, task_socket_dir, cmd)

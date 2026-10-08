@@ -223,6 +223,7 @@ voice:
 
 Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
 
+<<<<<<< HEAD
 ### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
 
 The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
@@ -258,6 +259,13 @@ Reasoning is off on voice turns by default, also when the slot is left on `auto`
 It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voice conversation, and voice notes on messaging platforms. The voice turn has the full toolset; only the model answering it changes. The next typed message goes back to the session's model, and so do memory and skill reviews after the turn. Usage is recorded under the `voice_chat` task, so the session keeps the model you picked as its own.
 
 The voice model never forces a compaction: when the conversation is already larger than its context window, that turn runs on the session's model and a one-time notice says so. GPT-Live voice chat ignores this slot, because there the voice layer already is the fast model and delegates real work to the session's model.
+=======
+### Desktop playback controls
+
+While Hermes Desktop reads aloud or speaks a voice reply, use the pause button beside **Stop playback** to hold your place. The button becomes Resume while paused. Resuming continues the same audio; Stop playback discards it. An intentional pause does not count as stalled audio.
+>>>>>>> 3372843cc5 (feat(desktop): pause and resume voice playback)
+
+In continuous voice mode with barge-in enabled, the microphone remains active while playback is paused. Speaking interrupts and discards the held reply so you can give a new instruction, just as it does during playback.
 
 ### Barge-in
 

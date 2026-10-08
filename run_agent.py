@@ -261,6 +261,7 @@ class AIAgent(
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,
+        platform_priority: str = None,
         request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
         chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,

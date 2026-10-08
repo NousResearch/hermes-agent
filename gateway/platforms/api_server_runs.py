@@ -667,7 +667,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
     route = self._resolve_route(body.get("model"))
-    agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
+    try:
+        agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_platform_priority", status=400)
     selection_error = self._request_route_conflict_error(
         session_id=session_id, gateway_session_key=gateway_session_key,
         requested_model=agent_overrides.get("requested_model"),
@@ -734,7 +737,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
-            **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
+            **{k: agent_overrides.get(k) for k in
+               ("requested_model", "requested_provider", "model_options", "platform_priority")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),

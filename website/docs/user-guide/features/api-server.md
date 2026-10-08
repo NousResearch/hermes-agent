@@ -370,6 +370,13 @@ by sending:
 - `model` — the target model id for this turn
 - `provider` — the Hermes provider slug to resolve credentials/runtime for this turn
 - `model_options` — request-scoped reasoning / service-tier controls
+- `platform_priority` — request-scoped LLM-gateway priority, `normal` or `high`. It sets
+  `X-Platform-Priority` on every API call this run makes and wins over the provider's configured
+  `extra_headers` for the life of the run (credential swaps and route changes included). Any other
+  value, `critical` included, is rejected with `400 invalid_platform_priority`: what a run may ask
+  for, and what the gateway's policy actually grants, are two different ceilings. A request that
+  omits the field keeps whatever `providers.<name>.extra_headers` configures for the profile —
+  including sending nothing at all.
 
 The same request fields are accepted on:
 

@@ -557,8 +557,11 @@ class OpenAICompatRoutesMixin:
         ``(route, agent_overrides, error_response_or_None)``."""
         from gateway.platforms.api_server import _error_response, _request_agent_overrides
         route = self._resolve_route(model_alias)
-        overrides = _request_agent_overrides(
-            body, virtual_model=self._model_name, allow_bare_model=self._direct_model_requests)
+        try:
+            overrides = _request_agent_overrides(
+                body, virtual_model=self._model_name, allow_bare_model=self._direct_model_requests)
+        except ValueError as exc:
+            return None, None, _error_response(str(exc), 400, code="invalid_platform_priority")
         err = self._request_route_conflict_error(
             session_id=session_id, gateway_session_key=gateway_session_key,
             requested_model=overrides.get("requested_model"),

@@ -27,8 +27,11 @@ from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, s
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
+from hermes_cli import config_backend as _config_backend
+from hermes_cli.config_backend import Changes, config_exists, config_version, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import file_signature, is_truthy_value
+from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
@@ -660,7 +663,7 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     with contextlib.suppress(Exception):
         from hermes_cli.config_effective import load_user_config_effective
         p = Path(profile_home) / "config.yaml"
-        return _configured_cwd_from_cfg(load_user_config_effective(p)) if p.exists() else None
+        return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
     return None
 
 
@@ -1307,11 +1310,11 @@ def _load_cfg_raw() -> dict:
     from hermes_cli.config_read_errors import FailedConfigRead
     try:
         p = _active_config_path()
-        sig = file_signature(p.stat()) if p.exists() else None
+        sig = config_version(p) if config_exists(p) else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        data = read_user_config_raw(p) if p.exists() else {}
+        data = read_user_config_raw(p) if config_exists(p) else {}
     except Exception as exc:
         return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
     with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
@@ -1335,12 +1338,23 @@ def _save_cfg(cfg: dict):
     from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
     atomic_config_replace(path, cfg)
+    if not supports_file_tooling():
+        # The backend saves what it accepts (a bulk save omits locked keys), not what was proposed:
+        # drop the cache so the next raw read returns the accepted document.
+        _drop_cfg_cache()
+        return
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_sig = file_signature(path.stat())
+            _cfg_sig = config_version(path)
         except Exception:
             _cfg_sig = None
+
+
+def _drop_cfg_cache() -> None:
+    global _cfg_cache, _cfg_sig, _cfg_path
+    with _cfg_lock:
+        _cfg_cache, _cfg_sig, _cfg_path = None, None, None
 
 
 def _session_for_key(session_key: str) -> dict | None:
@@ -1871,15 +1885,38 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         logger.warning("failed to persist model switch marker", exc_info=True)
 
 
+def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:
+    """Explicit keyed edits through a config backend without a file (remote): ONE write that sets
+    and unsets exactly these dotted keys and refuses a locked one (ConfigLockedError) instead of
+    the bulk save's silent omission, so a setter never reports a refused value as saved. Nothing is
+    applied when it raises. The file backend keeps its raw round-trip (callers branch on
+    ``supports_file_tooling()``)."""
+    try:
+        _config_backend.get_config_backend().write_changes(_active_config_path().parent, Changes(set=dict(sets), unset=tuple(unsets)))
+    finally:
+        _drop_cfg_cache()
+
+
 def _write_config_key(key_path: str, value):
+    _write_config_keys({key_path: value})
+
+
+def _write_config_keys(updates: dict) -> None:
+    """Set related dotted keys together: ONE backend write without a config file (remote), so a
+    refused key changes none of them; one raw round-trip save with the file backend."""
+    if not supports_file_tooling():
+        _write_config_changes(updates)
+        return
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = current = _load_cfg_raw()
-    *parents, leaf = key_path.split(".")
-    for key in parents:
-        if not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[leaf] = value
+    cfg = _load_cfg_raw()
+    for key_path, value in updates.items():
+        current = cfg
+        *parents, leaf = key_path.split(".")
+        for key in parents:
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[leaf] = value
     _save_cfg(cfg)
 
 
@@ -3219,43 +3256,6 @@ _pet_payload_cache_lock = threading.Lock()
 _pet_payload_cache: dict[tuple, dict] = {}
 
 
-def _pet_sheet_revision(spritesheet) -> str:
-    """Stable revision id for one spritesheet file."""
-    with contextlib.suppress(Exception):
-        stat = spritesheet.stat()
-        return f"{stat.st_mtime_ns}:{stat.st_size}"
-    return "0:0"
-
-
-def _clone_pet_payload(payload: dict) -> dict:
-    """Shallow-clone cached payloads so callers can't mutate shared state."""
-    out = dict(payload)
-    for key, kind in (("framesByState", dict), ("framesByRow", dict), ("stateRows", list)):
-        if isinstance(payload.get(key), kind):
-            out[key] = kind(payload[key])
-    return out
-
-
-def _pet_row_frame_counts(spritesheet) -> dict:
-    """Real frame count per concrete spritesheet row name."""
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        from agent.pet import constants, render
-        with Image.open(spritesheet) as opened:
-            image = opened.convert("RGBA")
-        W, H = constants.FRAME_W, constants.FRAME_H
-        cols = max(1, image.width // W)
-        row_count = max(1, image.height // H)
-        rows = constants.state_rows_for_grid(row_count)
-        out: dict[str, int] = {}
-        for row_idx, name in enumerate(rows[:row_count]):
-            top = row_idx * H
-            blank = lambda col: render._frame_is_blank(image.crop((col * W, top, col * W + W, top + H)))
-            out[name] = next((col for col in range(cols) if blank(col)), cols)  # frames before the first blank cell
-        return out
-    return {}
-
-
 def _pet_cfg() -> dict:
     """``display.pet`` from the canonical config ({} on any failure)."""
     with contextlib.suppress(Exception):
@@ -3320,17 +3320,6 @@ def _pet_active_selection():
     enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
     pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if enabled else None
     return enabled, pet, float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-
-
-def _pet_state_rows(spritesheet) -> list[str]:
-    """Row taxonomy for the concrete sheet (legacy 8-row or current 9-row atlas), in the renderer's `PetState` names."""
-    from agent.pet import constants
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        with Image.open(spritesheet) as image:
-            row_count = max(1, image.height // constants.FRAME_H)
-        return list(constants.state_rows_for_grid(row_count))
-    return list(constants.STATE_ROWS)
 
 
 def _pet_gen_root():

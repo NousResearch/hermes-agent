@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
@@ -253,19 +253,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
 BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 
-# ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
-# module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
-# a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
-# rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
-from hermes_cli.config import (  # noqa: E402
-    atomic_config_replace, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
-
-# Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
-# auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
-from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
-
-sync_plugin_provider_registry()
 
 
 def get_anthropic_key() -> str:
@@ -2427,7 +2414,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return config_path
     require_readable_config_before_write(config_path)
     config = read_raw_config()
@@ -2497,3 +2484,14 @@ def logout_command(args) -> None:
         print("Hermes will use OpenRouter for inference.")
     else:
         print("Run `hermes model` or configure an API key to use Hermes.")
+
+# LAST on purpose: importing ``hermes_cli.config`` discovers provider plugins (which may read this
+# module's registry) and, with a remote config backend, boots it through ``resolve_nous_access_token``
+# above; neither may observe a partially initialized auth module. The plugin mirror lives in the sibling
+# so it can be re-run after discovery.
+from hermes_cli.config import (  # noqa: E402
+    atomic_config_replace, config_exists, get_config_path, read_raw_config, require_readable_config_before_write)
+from hermes_cli.auth_plugin_providers import (  # noqa: E402
+    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+
+sync_plugin_provider_registry()

@@ -48,18 +48,20 @@ skills:
 """.strip(),
         encoding="utf-8",
     )
+    import utils
     parse_count = 0
-    real_yaml_load = skill_utils.yaml_load
+    real_load = utils.fast_safe_load
 
-    def counting_yaml_load(text):
+    def counting_load(stream):
         nonlocal parse_count
         parse_count += 1
-        return real_yaml_load(text)
+        return real_load(stream)
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     skill_utils._external_dirs_cache_clear()
     getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
-    monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+    # The file config backend parses through utils.fast_safe_load.
+    monkeypatch.setattr(utils, "fast_safe_load", counting_load)
 
     assert get_disabled_skill_names() == {"hidden-skill"}
     assert get_external_skills_dirs() == [external.resolve()]

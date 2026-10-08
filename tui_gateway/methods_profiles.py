@@ -522,7 +522,7 @@ def _inherit_launch_model(path) -> bool:
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
     # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
+    custom = _lazy("hermes_cli.profiles_config", "launch_model_seed")(read_user_config_raw()).get("providers")
     if custom:
         from hermes_cli.config import load_config, save_config
         with _hermes_home_scope(path):

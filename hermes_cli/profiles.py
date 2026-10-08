@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli import config_backend as _config_backend
+from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
+from hermes_cli.profiles_config import _load_config_dict, _migrate_profile_config_if_outdated, _seed_model_config
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
@@ -577,25 +580,6 @@ def remove_wrapper_script(name: str) -> bool:
     return False
 
 
-def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
-    """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
-    profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    if not (profile_dir / "config.yaml").exists():
-        return
-    # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
-    # the detailed error in the target profile.
-    with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import check_config_version, migrate_config
-        token = set_hermes_home_override(str(profile_dir))
-        try:
-            current_ver, latest_ver = check_config_version()
-            if current_ver < latest_ver:
-                migrate_config(interactive=False, quiet=True)
-        finally:
-            reset_hermes_home_override(token)
-
-
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Alias name of the wrapper activating *profile_name*, or None. For listing ALL profiles
     prefer :func:`build_alias_map`: per-profile calls re-read every wrapper N times (O(N*M)),
@@ -722,10 +706,11 @@ def _profile_file_signature(path: Path) -> Optional[tuple]:
     return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
 
-def _cached_profile_read(path: Path, kind: str, compute):
+def _cached_profile_read(path: Path, kind: str, compute, signature_of=None):
     """``compute()``'s value, reused while *path* has not changed. A missing file is never cached:
-    reading it costs nothing, and one created later must be picked up."""
-    signature = _profile_file_signature(path)
+    reading it costs nothing, and one created later must be picked up. ``signature_of(path)``
+    replaces the local stat signature for a value derived from somewhere else."""
+    signature = (signature_of or _profile_file_signature)(path)
     if signature is None:
         return compute()
     key = (str(path), kind)
@@ -753,7 +738,7 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
 def _read_config_model(profile_dir: Path) -> tuple:
     """Read model/provider from a profile's config.yaml. Returns (model, provider)."""
     config_path = profile_dir / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return None, None
 
     def _read() -> tuple:
@@ -769,38 +754,16 @@ def _read_config_model(profile_dir: Path) -> tuple:
             pass
         return None, None
 
-    return _cached_profile_read(config_path, "config-model", _read)
+    return _cached_profile_read(config_path, "config-model", _read, signature_of=_config_layer_signature)
 
 
-def launch_model_seed(source_cfg: dict) -> dict:
-    """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
-    when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that
-    provider's definition — ``model.provider: my-gateway`` alone is "Unknown provider" on the first
-    turn. ``{}`` when the launch profile has no model."""
-    model_cfg = source_cfg.get("model")
-    if not model_cfg:
-        return {}
-    seed = {"model": model_cfg}
-    providers = source_cfg.get("providers")
-    name = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
-    if isinstance(providers, dict) and name in providers:
-        seed["providers"] = {name: providers[name]}
-    return seed
-
-
-def _seed_model_config(profile_dir: Path) -> None:
-    """Copy (not link) the active profile's model block into a fresh profile so it is usable;
-    profiles stay independent islands afterwards."""
-    config_path = profile_dir / "config.yaml"
-    if config_path.exists():
-        return
-    with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
-        from hermes_constants import get_hermes_home
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
-        source = get_hermes_home() / "config.yaml"
-        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
-        if seed:
-            atomic_config_write(config_path, seed)
+def _config_layer_signature(config_path: Path) -> Optional[tuple]:
+    """The config backend's version of a profile's config layer (a remote layer changes without
+    the local file changing), or None when it cannot be read — never cached then."""
+    try:
+        return config_version(config_path)
+    except OSError:
+        return None
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
@@ -1082,13 +1045,12 @@ def profile_is_standalone(home: Path) -> bool:
     never standalone — it IS the host — and warns once per process if the key is set there."""
     global _STANDALONE_WARNED
     from hermes_yaml import YAMLError
-    from utils import file_signature
 
     home = Path(home)
     cfg_path = home / "config.yaml"
     key = str(home)
     try:
-        signature = file_signature(cfg_path.stat())
+        signature = config_version(cfg_path)
     except FileNotFoundError:
         signature = None
     except OSError as exc:
@@ -1177,6 +1139,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
+    require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
         source_dir = get_hermes_home()
@@ -1367,8 +1330,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)
     from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
-    clone_memory_provider_config(source_dir, profile_dir,
-                                 active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
+    clone_memory_provider_config(source_dir, profile_dir, active_memory_provider(_load_config_dict(source_dir)))
     if sync_imports:
         from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
@@ -2432,6 +2394,17 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
+def _refuse_rename_without_file_tooling(old_canon: str) -> None:
+    """A remote config backend keys each profile's settings by its canonical name, and the plane
+    has no rename: renaming the local home would leave the settings under the old name and read
+    another (possibly populated) level under the new one. Refused before any side effect."""
+    backend = _config_backend.get_config_backend()
+    if not backend.supports_file_tooling():
+        raise ValueError(
+            f"Cannot rename profile '{old_canon}': its config lives in the {backend.name!r} config "
+            "backend under that name, and renaming it there is not supported. Nothing was changed.")
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2446,6 +2419,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     new_canon = _canon_valid(new_name)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
+    _refuse_rename_without_file_tooling(old_canon)
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():

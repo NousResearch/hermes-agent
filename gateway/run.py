@@ -43,7 +43,9 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
+from hermes_cli.config_backend import require_file_tooling
+from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -1172,15 +1174,6 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
-def _csv_or_list_to_set(raw: Any) -> set[str]:
-    """Normalize a config list or comma-separated scalar into a string set."""
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        return {str(part).strip() for part in raw if str(part).strip()}
-    return {part.strip() for part in str(raw).split(",") if part.strip()}
-
-
 def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
@@ -1595,7 +1588,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     if profile_scoped():
         return
     config_path = home / 'config.yaml'
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         cfg = _load_bridge_config(config_path)
@@ -1617,7 +1610,7 @@ def _current_max_iterations() -> int:
     if override:
         config_path = Path(override) / 'config.yaml'
         try:
-            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+            cfg = _load_bridge_config(config_path) if config_exists(config_path) else {}
         except Exception:
             cfg = {}
         agent_cfg = cfg.get("agent")
@@ -2109,7 +2102,7 @@ def _load_bridge_config(config_path: Path) -> dict:
 
 _config_path = _hermes_home / 'config.yaml'
 _cfg: dict = {}
-if _config_path.exists():
+if config_exists(_config_path):
     try:
         _cfg = _load_bridge_config(_config_path)
         _bridge_config_to_env(_cfg)
@@ -6004,6 +5997,7 @@ def main():
 
     config = None
     if args.config:
+        require_file_tooling("gateway --config <file>")
         import hermes_yaml as yaml
         with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})

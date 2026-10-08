@@ -169,11 +169,11 @@ _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 
 def _has_named_custom_provider(name: str, home: "Path | None", hkey: str) -> bool:
-    """``has_named_custom_provider`` memoized on the home's config file signature."""
-    from utils import file_signature
+    """``has_named_custom_provider`` memoized on the home's config version."""
+    from hermes_cli.config_backend import config_version
 
     try:
-        sig = file_signature((home / "config.yaml").stat()) if home is not None else None
+        sig = config_version(home / "config.yaml") if home is not None else None
     except OSError:
         sig = None  # no readable config: nothing configured, stable until one appears
     memo = _NAMED_CUSTOM_MEMO.get(hkey)

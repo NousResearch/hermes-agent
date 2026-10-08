@@ -716,7 +716,7 @@ def _collection_enabled_now() -> Optional[bool]:
         config: Any = reader()
     except Exception:
         return None
-    if type(config) is not dict:  # FailedConfigRead: a fallback, not what the user chose
+    if not isinstance(config, dict) or hasattr(config, "read_error"):  # FailedConfigRead: a fallback, not a choice
         return None
     for key in ("telemetry", "shared_metrics"):
         config = config.get(key) if isinstance(config, dict) else None

@@ -14,12 +14,14 @@ except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
+import hashlib
 import json
 import logging
 import contextlib
 import os
 import time
 import traceback
+from collections import Counter
 from datetime import datetime
 from multiprocessing import Lock, Pool
 from pathlib import Path
@@ -344,6 +346,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                     "prompt_index": prompt_index,
                     "discarded": "no_reasoning",
                     "prompt": _entry_prompt_text(prompt_data),
+                    "entry_key": _entry_key(prompt_data),
                 })
                 continue
 
@@ -362,7 +365,8 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 "api_calls": result["api_calls"],
                 "toolsets_used": result["toolsets_used"],
                 "tool_stats": _normalize_tool_stats(raw_tool_stats),  # {tool: {count, success, failure}}
-                "tool_error_counts": _normalize_tool_error_counts(raw_error_counts)  # {tool: failure_count}
+                "tool_error_counts": _normalize_tool_error_counts(raw_error_counts),  # {tool: failure_count}
+                "entry_key": _entry_key(prompt_data),  # resume identity; stripped from trajectories.jsonl
             })
         _merge_tool_stats(batch_tool_stats, result.get("tool_stats", {}))
         _merge_reasoning_stats(batch_reasoning_stats, result.get("reasoning_stats", {}))
@@ -385,6 +389,12 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
         "discarded_no_reasoning": discarded_no_reasoning,
         "completed_prompts": completed_in_batch
     }
+
+
+def _entry_key(entry: Dict) -> str:
+    """Identity of a dataset row: its whole entry, so rows sharing a prompt but not their
+    per-row data (image, cwd, ...) stay distinct, and identical rows stay interchangeable."""
+    return hashlib.sha256(json.dumps(entry, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def _entry_prompt_text(entry: Dict) -> str:
@@ -539,14 +549,16 @@ class BatchRunner:
         else:
             atomic_json_write(self.checkpoint_file, checkpoint_data)
 
-    def _scan_completed_prompts_by_content(self) -> set:
-        """Prompt texts already processed, scanned from every ``batch_*.jsonl``.
+    def _scan_completed_prompts_by_content(self) -> Dict[str, List[Tuple[Optional[int], Optional[str]]]]:
+        """Completed prompt text -> ``(prompt_index, entry_key)`` of every row recording it,
+        scanned from every ``batch_*.jsonl`` (rows written before ``entry_key`` carry None).
 
         Matching on content rather than index lets resume recover even when indices
-        don't line up. Failed entries are skipped (retried); discard tombstones count
-        as completed (#93527) — re-running would just re-discard.
+        don't line up; one record per row keeps rows that share a prompt text apart.
+        Failed entries are skipped (retried); discard tombstones count as completed
+        (#93527) — re-running would just re-discard.
         """
-        completed_prompts = set()
+        completed_prompts: Dict[str, List[Tuple[Optional[int], Optional[str]]]] = {}
         batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
 
         if not batch_files:
@@ -563,7 +575,8 @@ class BatchRunner:
                                 continue
                             prompt_text = _entry_prompt_text(entry)
                             if prompt_text:
-                                completed_prompts.add(prompt_text)
+                                completed_prompts.setdefault(prompt_text, []).append(
+                                    (entry.get("prompt_index"), entry.get("entry_key")))
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
@@ -571,41 +584,56 @@ class BatchRunner:
 
         return completed_prompts
 
-    def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
-        """Return ``([(index, entry)] not yet completed, [skipped indices])``."""
+    def _filter_dataset_by_completed(
+            self, completed_prompts: Dict[str, List[Tuple[Optional[int], Optional[str]]]],
+    ) -> Tuple[List[Tuple[int, Dict]], List[int]]:
+        """Return ``([(index, entry)] not yet completed, [skipped indices])``.
+
+        Each completed row accounts for ONE dataset row, wherever it now sits: the first
+        unclaimed row with the same ``entry_key`` (the whole entry, so rows sharing a prompt
+        but not their image/cwd stay distinct). Rows written before ``entry_key`` fall back to
+        the row at their recorded index when it still carries their prompt text, else the
+        first unclaimed row with that text.
+        """
+        texts = [_entry_prompt_text(entry) for entry in self.dataset]
+        keys = [_entry_key(entry) for entry in self.dataset]
+        claimed: set = set()
+        by_key: Counter = Counter()
+        by_text: Counter = Counter()
+        for prompt_text, records in completed_prompts.items():
+            for idx, key in records:
+                if key is not None:
+                    by_key[key] += 1
+                elif isinstance(idx, int) and 0 <= idx < len(texts) and texts[idx] == prompt_text:
+                    claimed.add(idx)
+                else:
+                    by_text[prompt_text] += 1
         filtered_dataset = []
         skipped_indices = []
-
         for idx, entry in enumerate(self.dataset):
-            prompt_text = entry.get("prompt", "").strip()
-
-            # Also check conversations format
-            if not prompt_text:
-                conversations = entry.get("conversations", [])
-                for msg in conversations:
-                    role = msg.get("role") or msg.get("from")
-                    if role in {"user", "human"}:
-                        prompt_text = (msg.get("content") or msg.get("value", "")).strip()
-                        break
-
-            if prompt_text in completed_prompts:
+            for unplaced, identity in ((by_key, keys[idx]), (by_text, texts[idx])):
+                if idx not in claimed and unplaced[identity] > 0:
+                    unplaced[identity] -= 1
+                    claimed.add(idx)
+            if idx in claimed:
                 skipped_indices.append(idx)
             else:
                 filtered_dataset.append((idx, entry))
 
         return filtered_dataset, skipped_indices
 
-    def _apply_resume(self) -> bool:
-        """Rebuild ``self.batches`` from unprocessed prompts. False when nothing is left to run."""
+    def _apply_resume(self) -> Optional[set]:
+        """Rebuild ``self.batches`` from unprocessed prompts; return the indices (in the
+        current dataset) already completed, or None when nothing is left to run."""
         completed_prompt_texts = self._scan_completed_prompts_by_content()
         if not completed_prompt_texts:
-            return True
-        print(f"   Found {len(completed_prompt_texts)} already-completed prompts by content matching")
+            return set()
+        print(f"   Found {sum(map(len, completed_prompt_texts.values()))} already-completed rows by content matching")
         filtered_entries, skipped_indices = self._filter_dataset_by_completed(completed_prompt_texts)
 
         if not filtered_entries:
             print("\n✅ All prompts have already been processed!")
-            return False
+            return None
         self.batches = _chunk(filtered_entries, self.batch_size)
         _banner("📊 RESUME SUMMARY")
         print(f"   Original dataset size:     {len(self.dataset):,} prompts")
@@ -614,7 +642,7 @@ class BatchRunner:
         print(f"   🎯 RESUMING WITH:          {len(filtered_entries):,} prompts")
         print(f"   New batches created:       {len(self.batches)}")
         print("=" * 70 + "\n")
-        return True
+        return set(skipped_indices)
 
     def _worker_config(self) -> Dict[str, Any]:
         """Picklable agent configuration for worker processes.
@@ -735,6 +763,8 @@ class BatchRunner:
                             if data.get("discarded"):
                                 tombstone_entries += 1
                                 continue
+                            if data.pop("entry_key", None) is not None:  # resume bookkeeping only
+                                line = json.dumps(data, ensure_ascii=False) + "\n"
                             tool_stats = data.get('tool_stats', {})
                             invalid_tools = [k for k in tool_stats if k not in ALL_POSSIBLE_TOOLS]
 
@@ -798,7 +828,8 @@ class BatchRunner:
         """Run the batch pipeline; with *resume*, skip prompts already present in batch files."""
         _banner("🚀 Starting Batch Processing")
 
-        if resume and not self._apply_resume():
+        resumed_indices = self._apply_resume() if resume else set()
+        if resumed_indices is None:
             return
 
         # Load existing checkpoint (so resume doesn't clobber prior progress)
@@ -807,8 +838,10 @@ class BatchRunner:
             checkpoint_data = self._empty_checkpoint()
         config = self._worker_config()
 
-        # Index tracking is secondary to content matching (backward compatibility).
-        completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
+        # Workers skip these indices. On --resume the content match is authoritative: the
+        # checkpoint's indices name rows of the dataset as it was when they ran, so after a
+        # reorder or insert they would drop the very rows the match left pending.
+        completed_prompts_set = resumed_indices if resume else set(checkpoint_data.get("completed_prompts", []))
         start_time = time.time()
 
         # Checkpoint writes happen in the parent process; keep a lock for safety.

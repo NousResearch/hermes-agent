@@ -63,7 +63,7 @@ def test_content_scan_treats_tombstone_as_completed(tmp_path):
 
     completed = _scan_runner(tmp_path)._scan_completed_prompts_by_content()
 
-    assert completed == {"tombstoned q", "normal q"}
+    assert set(completed) == {"tombstoned q", "normal q"}
 
 
 def test_content_scan_still_skips_failed_rows(tmp_path):
@@ -73,7 +73,7 @@ def test_content_scan_still_skips_failed_rows(tmp_path):
         encoding="utf-8",
     )
 
-    assert _scan_runner(tmp_path)._scan_completed_prompts_by_content() == set()
+    assert set(_scan_runner(tmp_path)._scan_completed_prompts_by_content()) == set()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ def test_scans_skip_non_dict_lines(tmp_path):
         encoding="utf-8",
     )
     runner = _scan_runner(tmp_path)
-    assert runner._scan_completed_prompts_by_content() == {"ok q"}
+    assert set(runner._scan_completed_prompts_by_content()) == {"ok q"}
     dataset = tmp_path / "dataset.jsonl"
     dataset.write_text('"not an entry"\n' + json.dumps({"prompt": "real"}) + "\n", encoding="utf-8")
     runner.dataset_file = dataset

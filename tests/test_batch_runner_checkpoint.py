@@ -154,3 +154,75 @@ class TestBatchWorkerResumeBehavior:
 
         assert filtered_entries == [], "discarded prompt was rescheduled on resume"
         assert skipped_indices == [0]
+
+
+class _InProcessPool:
+    """Stand-in for multiprocessing.Pool: runs batch tasks in this process."""
+
+    def __init__(self, processes=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def imap_unordered(self, fn, tasks):
+        return map(fn, tasks)
+
+
+class TestResumeRowIdentity:
+    """--resume must run every dataset row that has no completed record, whatever its index."""
+
+    @pytest.fixture
+    def run_dataset(self, tmp_path, monkeypatch):
+        import batch_runner
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(batch_runner, "Pool", _InProcessPool)
+        calls, failing = [], set()
+
+        def fake_single(idx, entry, batch_num, config):
+            calls.append((idx, entry.get("image", entry["prompt"])))
+            if entry.get("image") in failing:
+                return batch_runner._failure_result(idx, batch_num, "transient 503")
+            return {"success": True, "prompt_index": idx, "completed": True, "partial": False,
+                    "trajectory": [{"from": "human", "value": entry["prompt"]}, {"from": "gpt", "value": "ok"}],
+                    "reasoning_stats": {"has_any_reasoning": True}, "tool_stats": {}, "metadata": {},
+                    "api_calls": 1, "toolsets_used": []}
+
+        monkeypatch.setattr(batch_runner, "_process_single_prompt", fake_single)
+        dataset = tmp_path / "ds.jsonl"
+
+        def run(entries, *, resume, fail=()):
+            dataset.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+            calls.clear()
+            failing.clear()
+            failing.update(fail)
+            BatchRunner(dataset_file=str(dataset), batch_size=2, run_name="rows", num_workers=1).run(resume=resume)
+            return list(calls)
+
+        return run
+
+    def test_resume_runs_prompts_added_or_moved_onto_completed_indices(self, run_dataset):
+        run_dataset([{"prompt": "A"}, {"prompt": "B"}], resume=False)  # checkpoint: indices 0, 1
+
+        # Same run, dataset edited: new prompts now sit at the checkpointed indices.
+        calls = run_dataset([{"prompt": p} for p in ("C", "D", "A", "B")], resume=True)
+
+        assert sorted(calls) == [(0, "C"), (1, "D")]
+
+    def test_resume_retries_the_failed_row_among_rows_sharing_a_prompt(self, run_dataset):
+        rows = [{"prompt": "Fix the failing tests in /repo.", "image": img} for img in ("img-a", "img-b", "img-c")]
+        run_dataset(rows, resume=False, fail={"img-b"})
+
+        assert run_dataset(rows, resume=True) == [(1, "img-b")]
+
+    def test_resume_tells_rows_sharing_a_prompt_apart_after_a_reorder(self, run_dataset):
+        """The completed img-a row now sits where the failed img-b row was recorded: resume must
+        still run img-b (and not img-a again), so identity includes the row's own data."""
+        img_a, img_b = ({"prompt": "Fix the failing tests in /repo.", "image": img} for img in ("img-a", "img-b"))
+        run_dataset([img_a, img_b], resume=False, fail={"img-b"})
+
+        assert run_dataset([img_b, img_a], resume=True) == [(0, "img-b")]

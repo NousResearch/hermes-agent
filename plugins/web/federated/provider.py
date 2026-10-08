@@ -229,7 +229,7 @@ def _probe_backend(
             return False
         try:
             return provider.is_available()
-        except Exception:
+        except Exception:  # health: allow BLE001 -- best-effort availability probe; any failure reads as unavailable
             return False
 
     # Custom HTTP backend — HEAD probe
@@ -243,7 +243,7 @@ def _probe_backend(
         # 2xx/3xx/4xx all mean the service is reachable (auth failures are
         # handled at search time, not probe time)
         return resp.status_code < 500
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort HTTP probe; any failure reads as unreachable
         return False
 
 

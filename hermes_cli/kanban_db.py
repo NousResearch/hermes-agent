@@ -32,21 +32,11 @@ _log = logging.getLogger(__name__)
 
 _PR_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _PR_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
-_PR_READ_ONLY_ACTION_RE = re.compile(
-    r"^(?:verify|review|inspect|audit|check|read)(?:_|$)", re.IGNORECASE
-)
-_PR_WRITE_ACTION_RE = re.compile(
-    r"^(?:request_changes|repair|fix|push|reply|respond|refresh|resolve|"
-    r"merge|update|edit|publish|close|reopen|approve|comment)(?:_|$)",
-    re.IGNORECASE,
-)
-_PR_MIXED_WRITE_ACTION_RE = re.compile(
-    r"(?:^|_)(?:and|then|to)_(?:request_changes|repair|fix|push|reply|"
-    r"respond|refresh|resolve|merge|update|edit|publish|close|reopen|"
-    r"approve|comment)(?:_|$)",
-    re.IGNORECASE,
-)
-
+_PR_READ_ONLY_ACTIONS = frozenset({
+    "verify", "review", "inspect", "audit", "check", "read",
+    "verify_ci_receipt", "review_exact_head_evidence", "check_mergeability",
+    "review_mergeability", "inspect_merge_conflicts", "read_credit_metadata",
+})
 
 def _pr_task_payload(body: Optional[str]) -> Optional[dict[str, Any]]:
     try:
@@ -89,12 +79,7 @@ def _classify_pr_task(body: Optional[str]) -> Optional[str]:
     if not any(field in payload for field in identity_fields):
         return None
     _validate_exact_pr_identity(payload)
-    normalized_action = action.strip()
-    if _PR_WRITE_ACTION_RE.search(normalized_action):
-        return "write"
-    if _PR_READ_ONLY_ACTION_RE.search(normalized_action):
-        return "write" if _PR_MIXED_WRITE_ACTION_RE.search(normalized_action) else "read"
-    return "write"
+    return "read" if action.strip().casefold() in _PR_READ_ONLY_ACTIONS else "write"
 
 
 def is_atomic_pr_automation_task(*, body: Optional[str]) -> bool:

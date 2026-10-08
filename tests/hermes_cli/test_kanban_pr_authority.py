@@ -615,7 +615,9 @@ def test_read_action_objects_do_not_become_write_actions(kanban_home, action):
         assert kb.get_task(conn, task_id).assignee == "read-only-reviewer"
 
 
-@pytest.mark.parametrize("action", ["review_and_approve", "check_and_comment"])
+@pytest.mark.parametrize("action", [
+    "review_and_approve", "check_and_comment", "review_push", "review_and_delete",
+])
 def test_mixed_actions_remain_write_classified(kanban_home, action):
     _write_profile(kanban_home, "read-only-reviewer", "read_only")
 

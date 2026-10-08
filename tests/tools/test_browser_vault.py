@@ -169,7 +169,7 @@ def _ctrl(**kw):
 class TestClassifier:
     def test_autocomplete_exact_match_maps_token(self):
         for token in ("username", "email", "tel", "current-password"):
-            res = classify_login_control(_ctrl(autocomplete=token))
+            res = classify_login_control(_ctrl(autocomplete=token, type="password" if token == "current-password" else "text"))
             assert res is not None and res.token == token
 
     def test_new_password_autocomplete_excluded(self):

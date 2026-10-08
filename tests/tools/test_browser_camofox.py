@@ -309,4 +309,39 @@ class TestBrowserToolRouting:
         from tools.browser_tool_install import check_browser_requirements
         assert check_browser_requirements() is True
 
+# ---------------------------------------------------------------------------
+# SEK-70: SaaS gateway (MCP-only) transport routing
+# ---------------------------------------------------------------------------
 
+
+class TestGatewayMcpRouting:
+    """When the browser backend is the SaaS gateway (non-loopback + API key),
+    verbs route through browser_mcp_transport (MCP tools/call) instead of the
+    tenant-denied REST /tabs endpoints."""
+
+    def test_gateway_detect_loopback_is_mcp_no(self, monkeypatch):
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+        assert _is_gateway_backend() is False
+
+    def test_gateway_detect_saas_with_key_is_mcp_yes(self, monkeypatch):
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.sekreto.ai")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+        assert _is_gateway_backend() is True
+
+    def test_navigate_routes_to_mcp_on_gateway(self, monkeypatch):
+        from unittest.mock import patch
+        import tools.browser_camofox as bc
+        from tools import browser_mcp_transport as t
+
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.sekreto.ai")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+
+        snap_text = 'Navigated to https://example.com\nStatus: 200\n\nSnapshot:\n- heading "Example Domain"\n- link "Learn more" [e1]'
+        fake_result = {"content": [{"type": "text", "text": snap_text}], "isError": False}
+        with patch.object(t, "_call", return_value=fake_result):
+            out = json.loads(bc.camofox_navigate("https://example.com", task_id="t_mcp"))
+        assert out["success"] is True
+        assert "Example Domain" in out.get("snapshot", "")

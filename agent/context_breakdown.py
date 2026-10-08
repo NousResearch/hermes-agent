@@ -143,6 +143,7 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
 def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]] = None) -> Dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.message_sanitization import stale_thinking_reaches_wire
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -163,7 +164,12 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "mcp": _json_tokens(mcp_tools),
         "subagent_definitions": _json_tokens(subagent_tools),
         "memory": _chars_to_tokens(_join(memory_block, user_block)),
-        "conversation": estimate_messages_tokens_rough(messages),
+        "conversation": estimate_messages_tokens_rough(
+            messages,
+            charge_stale_thinking=stale_thinking_reaches_wire(
+                *(getattr(agent, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
+            ),
+        ),
     }
     estimated_total = sum(tokens_by_id.values())
 

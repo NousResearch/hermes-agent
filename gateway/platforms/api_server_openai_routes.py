@@ -112,6 +112,23 @@ def _cap_text(text: str, keep: int) -> str:
     return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
 
 
+_HEADER_UNSAFE_CTRL = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _header_safe_error_text(err_msg: str, *, limit: int = 200) -> str:
+    """Redacted, truncated error text with control characters folded to a single space.
+
+    aiohttp refuses to send a header value containing control characters, so an error
+    message carrying a newline (OpenRouter's guardrail 404 does) would raise while the
+    headers are written and drop the connection instead of returning the error response
+    (#133848)."""
+    from gateway.platforms.api_server import _redact_api_error_text
+
+    return _HEADER_UNSAFE_CTRL.sub(
+        " ", _redact_api_error_text(err_msg, limit=limit)
+    ).strip()
+
+
 def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
     """Copy of ``history`` with tool outputs and string tool-call arguments longer than
     ``max_chars`` cut down. Only tool rows and ``tool_calls`` blobs change; user/assistant text
@@ -837,7 +854,7 @@ class OpenAICompatRoutesMixin:
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg and not presentation_muted:
-                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+                response_headers["X-Hermes-Error"] = _header_safe_error_text(err_msg)
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(

@@ -12,7 +12,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
-from .connectors_operation import CatalogAppState, CatalogTier
+from .connectors_operation import CatalogAppState
 from .registry import method
 
 
@@ -588,7 +588,6 @@ class PluginsAction(WireEnum):
     update = "update"
     remove = "remove"
     settings = "settings"
-    onboarding = "onboarding"
     presence = "presence"
 
 
@@ -718,20 +717,6 @@ class PluginActivation(Result):
     deferred: dict[str, list[str]] = Field(default_factory=dict)
 
 
-class OnboardingCatalogPlugin(Result):
-    """A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.
-    ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what
-    is missing (empty when present or unknown)."""
-
-    name: str
-    title: str
-    description: str
-    tier: CatalogTier
-    platforms: list[str]
-    app_state: CatalogAppState
-    sentence: str
-
-
 class CatalogPluginPresence(Result):
     """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
     on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
@@ -780,8 +765,6 @@ class PluginsManageResult(Result):
     delta_lines: list[str] | None = None
     error: str | None = None
     written: list[str] | None = None
-    # ``onboarding`` → the curated catalog plugins for the onboarding card.
-    onboarding: list[OnboardingCatalogPlugin] | None = None
     # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
     presence: list[CatalogPluginPresence] | None = None
 

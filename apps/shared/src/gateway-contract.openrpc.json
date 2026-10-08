@@ -20069,52 +20069,6 @@
         "title": "OkResult",
         "type": "object"
       },
-      "OnboardingCatalogPlugin": {
-        "additionalProperties": false,
-        "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "description": {
-            "title": "Description",
-            "type": "string"
-          },
-          "tier": {
-            "$ref": "#/components/schemas/CatalogTier"
-          },
-          "platforms": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Platforms",
-            "type": "array"
-          },
-          "app_state": {
-            "$ref": "#/components/schemas/CatalogAppState"
-          },
-          "sentence": {
-            "title": "Sentence",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "title",
-          "description",
-          "tier",
-          "platforms",
-          "app_state",
-          "sentence"
-        ],
-        "title": "OnboardingCatalogPlugin",
-        "type": "object"
-      },
       "OnboardingRunStateResult": {
         "additionalProperties": false,
         "description": "``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).",
@@ -22520,7 +22474,6 @@
           "update",
           "remove",
           "settings",
-          "onboarding",
           "presence"
         ],
         "title": "PluginsAction",
@@ -23025,21 +22978,6 @@
             ],
             "default": null,
             "title": "Written"
-          },
-          "onboarding": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/OnboardingCatalogPlugin"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Onboarding"
           },
           "presence": {
             "anyOf": [

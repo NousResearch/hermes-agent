@@ -56,7 +56,6 @@ directory of the hermes-agent repository, declaring:
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
-| `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
 | `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |

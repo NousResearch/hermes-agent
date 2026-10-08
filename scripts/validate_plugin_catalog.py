@@ -74,6 +74,7 @@ KNOWN_KEYS = {
     "platforms",
     "capabilities",
     "title",
+    # Ignored by Hermes; the entry lines go in a data-only PR (pinned-source-validate confines entry PRs).
     "onboarding",
     "known_issues",
 }

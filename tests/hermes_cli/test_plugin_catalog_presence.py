@@ -1,4 +1,4 @@
-"""The onboarding card's catalog plugins: curated flag, platform filter, and the pinned app declaration."""
+"""A catalog entry's app state comes from the pinned plugin.json declaration."""
 
 import pytest
 
@@ -13,35 +13,27 @@ NEEDS_APP = {"extensions": {"com.nousresearch.hermes": {"servers": {"srv": {
     "requires": {"app": True}}}}}}
 
 
-def _entry(name, *, onboarding=True, platforms=(), title=""):
+def _entry(name, *, title=""):
     return pc.entry_from_mapping({"name": name, "repo": f"https://github.com/fx/{name}", "sha": SHA,
                                   "description": f"{name} does things. More.", "maintainer": "fx",
-                                  "tier": "official", "category": "tools", "platforms": list(platforms),
-                                  "onboarding": onboarding, "title": title}, name)
+                                  "tier": "official", "category": "tools", "title": title}, name)
 
 
 @pytest.fixture
-def catalog(monkeypatch):
-    from hermes_platform.host import facts
-
-    here = {"darwin": "macos", "win32": "windows"}.get(facts.os_family(), "linux")
-    other = "windows" if here != "windows" else "macos"
-    entries = [_entry("everywhere", title="Everywhere App"), _entry("not-curated", onboarding=False),
-               _entry("here-only", platforms=[here]), _entry("elsewhere", platforms=[other])]
-    monkeypatch.setattr(pc, "load_catalog_live", lambda: entries)
-    manifests = {"everywhere": NEEDS_APP, "here-only": {"name": "here-only"}}
-    monkeypatch.setattr(presence_mod, "_pinned_manifest", lambda repo, sha, subdir: manifests.get(repo.rsplit("/", 1)[-1]))
-    return entries
+def manifests(monkeypatch):
+    found = {"everywhere": NEEDS_APP, "here-only": {"name": "here-only"}}
+    monkeypatch.setattr(presence_mod, "_pinned_manifest", lambda repo, sha, subdir: found.get(repo.rsplit("/", 1)[-1]))
 
 
-def test_onboarding_rows_are_curated_entries_this_os_runs(catalog):
-    rows = {r["name"]: r for r in presence_mod.onboarding_entries()}
-    assert set(rows) == {"everywhere", "here-only"}
-    assert rows["everywhere"]["title"] == "Everywhere App" and rows["here-only"]["title"] == "here-only"
+def test_app_state_comes_from_the_pinned_declaration(manifests):
+    missing = presence_mod.presence(_entry("everywhere", title="Everywhere App"))
+    undeclared = presence_mod.presence(_entry("here-only"))
+    # A declared app that is absent carries a reason; no declaration is unknown, never "present".
+    assert missing.state == "missing_app" and "Everywhere App" in missing.sentence
+    assert undeclared.state == "unknown" and undeclared.sentence == ""
 
 
-def test_app_state_comes_from_the_pinned_declaration(catalog):
-    rows = {r["name"]: r for r in presence_mod.onboarding_entries()}
-    # A declared app that is absent greys the row with a reason; no declaration is unknown, never "present".
-    assert rows["everywhere"]["app_state"] == "missing_app" and "Everywhere App" in rows["everywhere"]["sentence"]
-    assert rows["here-only"]["app_state"] == "unknown" and rows["here-only"]["sentence"] == ""
+def test_a_catalog_onboarding_key_is_ignored():
+    entry = pc.entry_from_mapping({"name": "old", "repo": "https://github.com/fx/old", "sha": SHA,
+                                   "maintainer": "fx", "onboarding": True}, "old")
+    assert entry is not None and "onboarding" not in entry.to_dict()

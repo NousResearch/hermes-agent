@@ -89,7 +89,6 @@ class PluginCatalogEntry:
     readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
-    onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: List[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
@@ -106,7 +105,7 @@ class PluginCatalogEntry:
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
-            "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
+            "platforms": list(self.platforms), "title": self.title,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -168,7 +167,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
-        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        title=str(data.get("title") or "").strip(),
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
@@ -489,7 +488,7 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title")
+_CURATED_FIELDS = ("title",)
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: Dict[str, Any]

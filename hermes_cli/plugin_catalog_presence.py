@@ -124,31 +124,6 @@ def presence(entry: Any) -> Presence:
     return min(found, key=lambda p: rank[p.state]) if found else UNKNOWN
 
 
-def onboarding_entries() -> list[Dict[str, Any]]:
-    """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
-    each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
-    from hermes_cli.plugin_catalog import load_catalog_live
-    from hermes_cli.plugins_cmd_catalog import normalized_platforms
-    from hermes_platform.host.facts import os_family
-
-    here = os_family()
-    rows = []
-    for entry in load_catalog_live():
-        if not entry.onboarding or (entry.platforms and here not in normalized_platforms(entry.platforms)):
-            continue
-        found = presence(entry)
-        rows.append({
-            "name": entry.name,
-            "title": entry.title or entry.name,
-            "description": _first_sentence(entry.description),
-            "tier": entry.tier,
-            "platforms": list(entry.platforms),
-            "app_state": found.state,
-            "sentence": found.sentence,
-        })
-    return rows
-
-
 def presence_for(names: list[str]) -> list[Dict[str, Any]]:
     """The named catalog plugins this OS runs, in the order asked, each with its app state and the
     catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""

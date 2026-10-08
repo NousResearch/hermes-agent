@@ -130,6 +130,7 @@ subdir: ""                  # optional; plain relative path inside the repo
 description: One-line description.
 maintainer: OwnerName
 tier: official              # official | community (default community)
+featured: false             # curated placement, independent of tier (default false)
 category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
                             # (default desktop) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
@@ -149,6 +150,19 @@ capabilities:
   provides_middleware: []
   requires_env: []
 ```
+
+`featured: true` is maintainer-curated discovery placement, not another trust
+level: an entry remains `official` or `community`. Only a YAML boolean enables
+it; omitted values default to false. On the memory shelf, feature only actual
+selectable memory providers whose catalog name is their provider name, not
+memory-related tools or context engines. Featured providers appear in memory
+setup and Desktop memory discovery; removed entries and incompatible hosts or
+Hermes versions are excluded. Browsing never installs or selects a provider.
+This combination is the provider designation: admission must verify that the
+pinned package registers a `MemoryProvider` under its catalog name and that its
+normal setup hook or schema works after PM admits its declared dependencies.
+The category alone is not a provider contract. A misclassified entry that does
+not expose that provider is never selected by memory setup.
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the

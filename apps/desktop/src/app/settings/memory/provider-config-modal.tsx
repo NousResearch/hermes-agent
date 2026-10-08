@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import type { ResolvedOwner } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -12,6 +13,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { saveMemoryProviderConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -44,14 +46,27 @@ function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderFiel
   return groups
 }
 
+// Legacy forms were active-provider-only. Explicit capability refusal never
+// falls back, and owner routing is independent of activation policy.
+export function providerConfigSavePolicy(config: MemoryProviderConfig, isActive: boolean) {
+  return {
+    allowed: config.supports_save_only === true || (config.supports_save_only === undefined && isActive),
+    activate: config.supports_save_only !== true
+  }
+}
+
 export function ProviderConfigModal({
   config,
   profile = null,
   provider,
   open,
   onOpenChange,
-  onSaved
+  onSaved,
+  owner,
+  isActive = true
 }: {
+  isActive?: boolean
+  owner?: ResolvedOwner
   config: MemoryProviderConfig
   profile?: null | string
   provider: string
@@ -59,6 +74,8 @@ export function ProviderConfigModal({
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void> | void
 }) {
+  const { t } = useI18n()
+  const policy = providerConfigSavePolicy(config, isActive)
   const activeProfile = useStore($activeGatewayProfile)
   const [values, setValues] = useState<Record<string, string>>({})
   const [seeded, setSeeded] = useState<Record<string, string>>({})
@@ -74,13 +91,17 @@ export function ProviderConfigModal({
   }, [open, config])
 
   const save = async () => {
+    if (!policy.allowed) {
+      return
+    }
+
     // Untouched keys stay unsubmitted; runtime defaults still own their values.
     const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
 
     setSaving(true)
 
     try {
-      await saveMemoryProviderConfig(provider, edited, profile)
+      await saveMemoryProviderConfig(provider, edited, profile, owner, policy.activate)
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
       await onSaved()
       onOpenChange(false)
@@ -91,14 +112,23 @@ export function ProviderConfigModal({
     }
   }
 
+  if (!policy.allowed) {
+    return open ? (
+      <p className="py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)" role="status">
+        {t.memoryDiscovery.configureElsewhere}
+      </p>
+    ) : null
+  }
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent bodyClassName="dt-portal-scrollbar" className="max-w-2xl">
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the <span className="font-medium">{profile ?? activeProfile}</span> profile.
-            Blank fields fall back to the resolved host or built-in default.
+            Every {config.label} option for the{' '}
+            <span className="font-medium">{owner?.profile ?? profile ?? activeProfile}</span> profile. Blank fields fall
+            back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

@@ -2,7 +2,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deLanguage } from './de_language'
 import { deLocalModels } from './de_local_models'
+import { deMemoryDiscovery } from './de_memory_discovery'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
@@ -12,6 +14,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  memoryDiscovery: deMemoryDiscovery,
   sharedMetrics: deSharedMetrics,
   intro: introDe,
   connectors: {
@@ -691,15 +694,7 @@ export const deOverrides = {
     next: 'Nächster Treffer',
     previous: 'Vorheriger Treffer'
   },
-  language: {
-    label: 'Sprache',
-    description: 'Wählen Sie die Sprache der Desktop-Oberfläche.',
-    saving: 'Sprache wird gespeichert…',
-    saveError: 'Sprachupdate fehlgeschlagen',
-    switchTo: 'Sprache wechseln',
-    searchPlaceholder: 'Sprachen suchen…',
-    noResults: 'Keine Sprachen gefunden'
-  },
+  language: deLanguage,
   settings: {
     subpages: {
       appearanceTheme: 'Design',

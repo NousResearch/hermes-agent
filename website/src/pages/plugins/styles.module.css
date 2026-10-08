@@ -592,6 +592,21 @@
   margin-top: 0.1rem;
 }
 
+.featuredCard .cardAccent,
+.featuredCard:hover .cardAccent {
+  opacity: 0.75;
+}
+
+.featuredCard:hover {
+  box-shadow: none;
+}
+
+.migrationNote {
+  margin: 0 0 0.75rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.85rem;
+}
+
 .versionPill {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.62rem;

@@ -92,6 +92,7 @@ class PluginCatalogEntry:
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: List[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
+    featured: bool = False       # curated discovery placement, independent of trust tier
 
     @property
     def install_identifier(self) -> str:
@@ -111,7 +112,7 @@ class PluginCatalogEntry:
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
             },
-            "known_issues": list(self.known_issues),
+            "known_issues": list(self.known_issues), "featured": self.featured,
         }
 
 
@@ -169,7 +170,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
-        known_issues=_str_list(data.get("known_issues")),
+        known_issues=_str_list(data.get("known_issues")), featured=data.get("featured") is True,
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -466,11 +467,12 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
     return False
 
 
-def load_catalog_live() -> List[PluginCatalogEntry]:
+def load_catalog_live(*, network: bool = True) -> List[PluginCatalogEntry]:
     """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
     different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
-    a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
-    data = fetch_live_catalog()
+    a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`).
+    ``network=False`` reads only the last fetched copy, for request paths that must never block."""
+    data = fetch_live_catalog() if network else _stale_live_cache(_live_cache_path())
     if data is None:
         return load_catalog()
     entries = [e for i, raw in enumerate(data["entries"])
@@ -489,7 +491,7 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title")
+_CURATED_FIELDS = ("onboarding", "title", "featured")
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: Dict[str, Any]

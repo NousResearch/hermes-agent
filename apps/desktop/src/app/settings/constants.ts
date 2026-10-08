@@ -769,7 +769,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'memory.user_profile_enabled',
       'memory.memory_char_limit',
       'memory.user_char_limit',
-      'memory.provider',
       'context.engine',
       'compression.enabled',
       'compression.threshold',

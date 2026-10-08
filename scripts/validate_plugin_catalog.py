@@ -76,6 +76,7 @@ KNOWN_KEYS = {
     "title",
     "onboarding",
     "known_issues",
+    "featured",
 }
 # Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
 # may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
@@ -139,6 +140,22 @@ def _check_requires_hermes(spec: object, errors: list[str]) -> None:
             )
 
 
+def _check_placement(data: dict, errors: list[str]) -> None:
+    """Where the entry is shown: trust tier, shelf, and curated featured placement."""
+    tier = data.get("tier", "community")
+    if tier not in TIERS:
+        errors.append(f"tier {tier!r} must be one of {list(TIERS)}")
+
+    category = data.get("category", "desktop")
+    if category not in CATEGORIES:
+        errors.append(f"category {category!r} must be one of {list(CATEGORIES)}")
+
+    # The loader enables featured placement only for a real YAML boolean; a quoted "true"
+    # would silently read as false, so refuse it here instead.
+    if "featured" in data and not isinstance(data["featured"], bool):
+        errors.append(f"featured {data['featured']!r} must be a YAML boolean (true or false)")
+
+
 def validate_entry(data: object) -> tuple[list[str], list[str]]:
     """Validate one catalog entry document. Returns (errors, warnings)."""
     errors: list[str] = []
@@ -188,13 +205,7 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
         if key in data and not _is_nonempty_str(data[key]):
             errors.append(f"{key} must be a non-empty string")
 
-    tier = data.get("tier", "community")
-    if tier not in TIERS:
-        errors.append(f"tier {tier!r} must be one of {list(TIERS)}")
-
-    category = data.get("category", "desktop")
-    if category not in CATEGORIES:
-        errors.append(f"category {category!r} must be one of {list(CATEGORIES)}")
+    _check_placement(data, errors)
 
     if "requires_hermes" in data:
         _check_requires_hermes(data["requires_hermes"], errors)

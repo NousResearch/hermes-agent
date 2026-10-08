@@ -1,12 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import type { MemoryProviderConfig } from '@/types/hermes'
+
+import { field } from './test-fixtures'
 
 const saveMemoryProviderConfig = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
+  saveMemoryProviderConfig: (...args: unknown[]) => saveMemoryProviderConfig(...args)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -23,22 +25,6 @@ vi.mock('@/store/notifications', () => ({
 // Load once at module scope so no test's 15s budget pays the heavy transform
 // + import (the first-test timeout flake under CI load).
 const { ProviderConfigModal } = await import('./provider-config-modal')
-
-function field(
-  overrides: Partial<MemoryProviderField> & Pick<MemoryProviderField, 'key' | 'kind'>
-): MemoryProviderField {
-  return {
-    label: overrides.key,
-    value: '',
-    description: '',
-    placeholder: '',
-    is_set: false,
-    inline: false,
-    group: 'Other',
-    options: [],
-    ...overrides
-  }
-}
 
 function schema(): MemoryProviderConfig {
   return {
@@ -87,6 +73,25 @@ function renderModal(open = true) {
 }
 
 describe('ProviderConfigModal', () => {
+  it.each([
+    { supports_save_only: undefined, isActive: false },
+    { supports_save_only: false, isActive: true }
+  ])('refuses unsupported saves: %j', async ({ supports_save_only, isActive }) => {
+    render(
+      <ProviderConfigModal
+        config={{ ...schema(), supports_save_only }}
+        isActive={isActive}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        open
+        provider="honcho"
+      />
+    )
+    expect(await screen.findByRole('status')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull()
+    expect(saveMemoryProviderConfig).not.toHaveBeenCalled()
+  })
+
   it('renders every field grouped, including inline ones, with kind-specific controls', async () => {
     await renderModal()
 
@@ -106,7 +111,9 @@ describe('ProviderConfigModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     // A save must never ratify rendered defaults the backend does not store.
-    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
+    await waitFor(() =>
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }, null, undefined, true)
+    )
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })

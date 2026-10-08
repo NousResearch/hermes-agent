@@ -255,37 +255,91 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
     return True
 
 
+def _install_featured_provider(entry):
+    """Install only after consent; leave memory selection to the setup flow."""
+    from hermes_cli import plugins_cmd
+    from hermes_cli.config import load_config
+    from hermes_cli.plugin_catalog import entry_capability_summary
+
+    choice = _curses_select(
+        f"Install {entry.title or entry.name}?\n{entry_capability_summary(entry)}",
+        [("Cancel", "Keep the current memory provider"),
+         ("Install and configure", f"Reviewed pin {entry.sha[:8]} · {entry.repo}")],
+        default=0, cancel_returns=_CANCELLED,
+    )
+    if choice != 1:
+        _print_cancelled_setup()
+        return None
+    # The normal install: dependency consent and PM admission, but no memory.provider
+    # write — selection happens below, only after the provider's setup succeeds.
+    plugins_cmd.cmd_install(entry.name, enable=True, select_memory=False)
+    selection = load_config().get("plugins") or {}
+    if entry.name not in (selection.get("enabled") or []) or entry.name in (selection.get("disabled") or []):
+        print("\n  Plugin was not enabled. Memory selection unchanged.\n")
+        return None
+    match = _find_provider(_get_available_providers(), entry.name)
+    if match is None:
+        print("\n  Installed, but the provider could not load. Restart Hermes and retry setup.\n")
+    return match
+
+
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
     from hermes_cli.config import load_config, save_config
 
-    providers = _get_available_providers()
-    if not providers:
-        print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
-        return
+    from hermes_cli.memory_catalog import MARKETPLACE_URL, featured_memory_entries
 
-    items = [(name, f"— {desc}") for name, desc, _ in providers]
-    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
-    builtin_idx = len(items) - 1
+    providers = _get_available_providers()
+    featured = {entry.name: entry for entry in featured_memory_entries()}
+    by_name = {row[0]: row for row in providers}
+    from plugins.memory import list_memory_provider_names
+    discovered = set(list_memory_provider_names()) | set(by_name)
+    names = list(featured) + [name for name in by_name if name not in featured]
+    items = []
+    for name in names:
+        entry = featured.get(name)
+        label = f"Featured · {entry.title or name}" if entry else name
+        if entry and entry.title and entry.title != name:
+            label += f" ({name})"
+        desc = by_name[name][1] if name in by_name else (
+            "installed — needs repair or enabling" if name in discovered else "install required")
+        items.append((label, desc))
+    builtin_idx = len(items)
+    items.append(("Built-in only", "MEMORY.md / USER.md (default)"))
+    marketplace_idx = len(items)
+    items.append(("Marketplace", MARKETPLACE_URL))
     selected = _curses_select("Memory provider setup", items, default=builtin_idx, cancel_returns=_CANCELLED)
     if selected == _CANCELLED:
         _print_cancelled_setup()
         return
-
-    config = load_config()
-    if not isinstance(config.get("memory"), dict):
-        config["memory"] = {}
-    if selected >= len(providers):
+    if selected == marketplace_idx:
+        print(f"\n  Browse memory plugins: {MARKETPLACE_URL}\n")
+        return
+    if selected == builtin_idx:
+        config = load_config()
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
         return
 
-    name, _, provider = providers[selected]
-    _clear_interactive_transition()
-    _install_dependencies(name)
+    name = names[selected]
+    match = by_name.get(name)
+    if match is None and name in discovered:
+        print(f"\n  {name} is installed but could not load. Repair its dependencies or enable it")
+        print(f"  with `hermes plugins enable {name}`, then retry setup. Selection unchanged.\n")
+        return
+    if match is None:
+        match = _install_featured_provider(featured[name])
+        if match is None:
+            return
+    else:
+        _clear_interactive_transition()
+        _install_dependencies(name)
+    name, _, provider = match
+    config = load_config()
     if _post_setup_hook(provider, config):
         return
 
@@ -297,17 +351,18 @@ def cmd_setup(args) -> None:
     if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
         return
 
-    # Write activation key to config.yaml
-    config["memory"]["provider"] = name
-    save_config(config)
-
     if provider_config and hasattr(provider, "save_config"):
         try:
             provider.save_config(provider_config, str(get_hermes_home()))
         except Exception as e:
-            print(f"  Failed to write provider config: {e}")
+            print(f"  Failed to write provider config: {e}. Memory selection unchanged.")
+            return
     if env_writes:
         _write_env_vars(env_writes)
+
+    # Native persistence must succeed before the host selects the provider.
+    config["memory"]["provider"] = name
+    save_config(config)
 
     print(f"\n  Memory provider: {name}")
     print("  Activation saved to config.yaml")

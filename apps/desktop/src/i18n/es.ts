@@ -3,7 +3,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esLanguage } from './es_language'
 import { esLocalModels } from './es_local_models'
+import { esMemoryDiscovery } from './es_memory_discovery'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
@@ -12,6 +14,7 @@ import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  memoryDiscovery: esMemoryDiscovery,
   sharedMetrics: esSharedMetrics,
   intro: introEs,
   connectors: {
@@ -694,15 +697,7 @@ export const esOverrides = {
     next: 'Siguiente coincidencia',
     previous: 'Coincidencia anterior'
   },
-  language: {
-    label: 'Idioma',
-    description: 'Elige el idioma de la interfaz de escritorio.',
-    saving: 'Guardando idioma…',
-    saveError: 'No se pudo actualizar el idioma',
-    switchTo: 'Cambiar idioma',
-    searchPlaceholder: 'Buscar idiomas…',
-    noResults: 'No se encontraron idiomas'
-  },
+  language: esLanguage,
   settings: {
     subpages: {
       appearanceTheme: 'Tema',

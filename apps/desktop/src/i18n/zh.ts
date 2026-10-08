@@ -3,7 +3,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhLanguage } from './zh_language'
 import { zhLocalModels } from './zh_local_models'
+import { zhMemoryDiscovery } from './zh_memory_discovery'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
@@ -11,6 +13,7 @@ import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zhOverrides = {
+  memoryDiscovery: zhMemoryDiscovery,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -464,15 +467,7 @@ export const zhOverrides = {
     previous: '上一个匹配'
   },
 
-  language: {
-    label: '语言',
-    description: '选择桌面界面的语言。',
-    saving: '正在保存语言…',
-    saveError: '语言更新失败',
-    switchTo: '切换语言',
-    searchPlaceholder: '搜索语言…',
-    noResults: '未找到语言'
-  },
+  language: zhLanguage,
 
   settings: {
     subpages: {

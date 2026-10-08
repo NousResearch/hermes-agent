@@ -3,7 +3,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaLanguage } from './ja_language'
 import { jaLocalModels } from './ja_local_models'
+import { jaMemoryDiscovery } from './ja_memory_discovery'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
@@ -12,6 +14,7 @@ import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const jaOverrides = {
+  memoryDiscovery: jaMemoryDiscovery,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -314,15 +317,7 @@ export const jaOverrides = {
     resetHudLayout: 'HUD のサイズと位置をリセット'
   },
 
-  language: {
-    label: '言語',
-    description: 'デスクトップインターフェイスの言語を選択します。',
-    saving: '言語を保存中…',
-    saveError: '言語の更新に失敗しました',
-    switchTo: '言語を切り替え',
-    searchPlaceholder: '言語を検索…',
-    noResults: '言語が見つかりません'
-  },
+  language: jaLanguage,
 
   settings: {
     uninstallSection: {

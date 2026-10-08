@@ -57,7 +57,17 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
 }
 
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
-export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
+export function getMemoryProviderConfig(
+  provider: string,
+  profile?: null | string,
+  owner?: ResolvedOwner
+): Promise<MemoryProviderConfig> {
+  if (owner) {
+    return hermesApiAs<MemoryProviderConfig>(owner, {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
+    })
+  }
+
   return hermesApi<MemoryProviderConfig>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
@@ -67,13 +77,23 @@ export function getMemoryProviderConfig(provider: string, profile?: null | strin
 export function saveMemoryProviderConfig(
   provider: string,
   values: Record<string, string>,
-  profile?: null | string
+  profile?: null | string,
+  owner?: ResolvedOwner,
+  activate = true
 ): Promise<{ ok: boolean }> {
+  if (owner) {
+    return hermesApiAs<{ ok: boolean }>(owner, {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
+      method: 'PUT',
+      body: { values, activate }
+    })
+  }
+
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
-    body: { values }
+    body: activate ? { values } : { values, activate: false }
   })
 }
 
@@ -81,8 +101,16 @@ export function saveMemoryProviderConfig(
 // OAuth flow). Profile-scoped: the grant lands in the active profile's config.
 export function startMemoryProviderOAuth(
   provider: string,
-  profile?: null | string
+  profile?: null | string,
+  owner?: ResolvedOwner
 ): Promise<MemoryProviderOAuthStatus> {
+  if (owner) {
+    return hermesApiAs<MemoryProviderOAuthStatus>(owner, {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
+      method: 'POST'
+    })
+  }
+
   return hermesApi<MemoryProviderOAuthStatus>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
@@ -92,8 +120,15 @@ export function startMemoryProviderOAuth(
 
 export function getMemoryProviderOAuthStatus(
   provider: string,
-  profile?: null | string
+  profile?: null | string,
+  owner?: ResolvedOwner
 ): Promise<MemoryProviderOAuthStatus> {
+  if (owner) {
+    return hermesApiAs<MemoryProviderOAuthStatus>(owner, {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
+    })
+  }
+
   return hermesApi<MemoryProviderOAuthStatus>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
@@ -104,11 +139,23 @@ export function getMemoryProviderOAuthStatus(
 // Memory data + curator (parity with `hermes memory` / `hermes curator`).
 // ---------------------------------------------------------------------------
 
-export function getMemoryStatus(): Promise<MemoryStatusResponse> {
+export const memoryDiscoveryKey = (owner: ResolvedOwner) =>
+  ['memory-discovery', owner.connectionId, owner.profile] as const
+
+export function getMemoryStatus(owner?: ResolvedOwner): Promise<MemoryStatusResponse> {
+  if (owner) {
+    return hermesApiAs<MemoryStatusResponse>(owner, { path: '/api/memory' })
+  }
+
   return hermesApi<MemoryStatusResponse>({
     ...profileScoped(),
     path: '/api/memory'
   })
+}
+
+/** Select the owner's memory provider ('' = built-in). The backend refuses a provider that is not ready. */
+export function setMemoryProvider(owner: ResolvedOwner, provider: string): Promise<{ ok: boolean }> {
+  return hermesApiAs<{ ok: boolean }>(owner, { path: '/api/memory/provider', method: 'PUT', body: { provider } })
 }
 
 export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: boolean; deleted: string[] }> {

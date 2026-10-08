@@ -338,33 +338,45 @@ describe('settings helpers', () => {
   })
 
   describe('sectionFieldEntries', () => {
-    it('renders memory.provider from config even when the backend schema omits it', () => {
+    it('renders a declared key from config even when the backend schema omits it', () => {
       const schema = { 'memory.memory_enabled': { type: 'boolean' as const } }
-      const config: HermesConfigRecord = { memory: { memory_enabled: true, provider: '' } }
+      const config: HermesConfigRecord = { memory: { memory_enabled: true }, context: { engine: 'compressor' } }
 
       const memoryKeys = (sectionFieldEntries(schema, config).get('memory') ?? []).map(([key]) => key)
 
-      expect(memoryKeys).toContain('memory.provider')
+      expect(memoryKeys).toContain('context.engine')
     })
 
     it('infers the field type from the config value when the schema omits the key', () => {
-      const config: HermesConfigRecord = { memory: { provider: '', memory_enabled: true, memory_char_limit: 2200 } }
+      const config: HermesConfigRecord = {
+        memory: { memory_enabled: true, memory_char_limit: 2200 },
+        context: { engine: 'compressor' }
+      }
 
       const fields = new Map(sectionFieldEntries({}, config).get('memory') ?? [])
 
-      expect(fields.get('memory.provider')?.type).toBe('string')
+      expect(fields.get('context.engine')?.type).toBe('string')
       expect(fields.get('memory.memory_enabled')?.type).toBe('boolean')
       expect(fields.get('memory.memory_char_limit')?.type).toBe('number')
     })
 
     it('prefers the backend schema entry over inference when both exist', () => {
+      const schema = { 'context.engine': { type: 'select' as const, options: ['compressor'] } }
+      const config: HermesConfigRecord = { context: { engine: 'compressor' } }
+
+      const field = new Map(sectionFieldEntries(schema, config).get('memory') ?? []).get('context.engine')
+
+      expect(field?.type).toBe('select')
+      expect(field?.options).toEqual(['compressor'])
+    })
+
+    it('leaves memory.provider to its own selection row, never a generic field', () => {
       const schema = { 'memory.provider': { type: 'select' as const, options: ['honcho'] } }
       const config: HermesConfigRecord = { memory: { provider: 'honcho' } }
 
-      const field = new Map(sectionFieldEntries(schema, config).get('memory') ?? []).get('memory.provider')
+      const keys = [...sectionFieldEntries(schema, config).values()].flat().map(([key]) => key)
 
-      expect(field?.type).toBe('select')
-      expect(field?.options).toEqual(['honcho'])
+      expect(keys).not.toContain('memory.provider')
     })
 
     it('hides declared keys absent from both schema and config', () => {

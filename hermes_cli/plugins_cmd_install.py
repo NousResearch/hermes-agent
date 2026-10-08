@@ -528,6 +528,7 @@ def cmd_install(
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
+    select_memory: bool = True,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -535,6 +536,8 @@ def cmd_install(
     metadata. An explicit different ``--ref`` is a custom pin. URLs/shorthand are custom sources. Every
     install is checked against the catalog kill list unless *allow_removed*.
     *enable* None prompts "Enable now? [y/N]"; True/False skip the prompt.
+    *select_memory* False enables a memory provider (dependency consent + admission) without making it
+    ``memory.provider``: ``hermes memory setup`` selects it only after its configuration succeeds.
     *yes_deps* is ``--yes-deps``: the explicit answer to the Python-deps consent
     question, so non-interactive installs (SSH automation, CI, Docker entrypoints)
     finish in one run instead of being refused and left for an ``enable`` that
@@ -642,7 +645,7 @@ def cmd_install(
     # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
     if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
-    elif is_memory_provider:
+    elif is_memory_provider and select_memory:
         _select_memory_provider(target.name, console, select=should_enable)
     elif should_enable:
         from hermes_cli.plugins_admission import AdmissionRefused

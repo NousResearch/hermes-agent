@@ -10,9 +10,11 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantMemoryDiscovery } from './zh-hant_memory_discovery'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  memoryDiscovery: zhHantMemoryDiscovery,
   skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',

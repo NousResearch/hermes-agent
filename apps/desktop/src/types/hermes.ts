@@ -253,6 +253,7 @@ export interface MemoryProviderField {
 }
 
 export interface MemoryProviderConfig {
+  supports_save_only?: boolean
   docs_url: string
   fields: MemoryProviderField[]
   label: string
@@ -1832,10 +1833,28 @@ export interface McpCatalogResponse {
   diagnostics: { name: string; kind: string; message: string }[]
 }
 
+export interface MemoryCatalogProvider {
+  name: string
+  title: string
+  description: string
+  repo: string
+  sha: string
+  subdir?: string
+  featured: boolean
+}
+
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
 export interface MemoryStatusResponse {
   active: string
-  providers: { name: string; description: string; configured: boolean }[]
+  providers: {
+    name: string
+    description: string
+    configured: boolean
+    status?: string
+    featured?: boolean
+    title?: string
+  }[]
+  catalog_providers?: MemoryCatalogProvider[]
   builtin_files: { memory: number; user: number }
 }
 

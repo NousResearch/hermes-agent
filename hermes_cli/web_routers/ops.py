@@ -499,7 +499,23 @@ async def get_memory_status(profile: Optional[str] = None):
         for fname, key in _MEMORY_FILES:
             path = mem_dir / fname
             files[key] = path.stat().st_size if path.exists() else 0
-        return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
+        from hermes_cli.memory_catalog import featured_memory_entries
+
+        providers = _discover_memory_provider_statuses()
+        # Request path: cached + in-tree catalog only, never a live fetch.
+        featured = {entry.name: entry for entry in featured_memory_entries(network=False)}
+        # Configured-but-missing rows are not installation evidence.
+        discovered = {row["name"] for row in providers if row["status"] != "missing"}
+        providers = [{**row, "featured": row["name"] in discovered and row["name"] in featured,
+                      "title": featured[row["name"]].title if row["name"] in featured else ""}
+                     for row in providers]
+        catalog_providers = [
+            {key: getattr(entry, key) for key in
+             ("name", "title", "description", "repo", "sha", "subdir", "featured")}
+            for name, entry in featured.items() if name not in discovered
+        ]
+        return {"active": active, "providers": providers, "builtin_files": files,
+                "catalog_providers": catalog_providers}
 
     return await config_scoped_to_thread(profile, _run)
 

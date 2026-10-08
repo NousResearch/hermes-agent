@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { $apiRequestScope } from '@/api/client'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
@@ -20,8 +21,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
-import { ExternalLink } from '@/lib/external-link'
-import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
 import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
@@ -33,12 +32,19 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { setSettingsScope } from '@/store/settings-scope'
+
+import { installMemoryProvider, memoryOwnerIsForeground } from './memory/memory-install'
+import { MemoryInstallConsent, MemoryInstallStatus } from './memory/memory-install-status'
+import { PluginSourceReview, ProbeWarnings } from './plugin-install-review'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
 
 type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
+const MEMORY_SETTINGS_ROUTE = '/settings?tab=config:memory&page=persistent'
 
 /** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
 function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat: boolean): string[] {
@@ -56,13 +62,12 @@ export function PluginInstallModal() {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
   const { requestGateway } = useGatewayRequest()
+  const requestScope = useStore($apiRequestScope)
   const navigate = useNavigate()
   const location = useLocation()
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
-  const profileScope = useStore($profileScope)
 
   const [repoInput, setRepoInput] = useState('')
   const [targetProfile, setTargetProfile] = useState('default')
@@ -76,9 +81,13 @@ export function PluginInstallModal() {
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
+  const [memoryResult, setMemoryResult] = useState<'discovered' | 'missing' | null>(null)
+  const installPending = useRef(false)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
+    probeToken.current += 1
+    setMemoryResult(null)
     setRepoInput('')
     setPhase('idle')
     setProbe(null)
@@ -87,7 +96,8 @@ export function PluginInstallModal() {
     setEnableAgent(true)
     setForceReinstall(false)
     setPinRef('')
-    setInstalling(false)
+    // Replacing the review must not admit another install until the old one settles.
+    setInstalling(installPending.current)
     setInstallError(null)
     setInstallUncertain(false)
   }, [])
@@ -157,24 +167,43 @@ export function PluginInstallModal() {
   )
 
   useEffect(() => {
-    if (request && onSettings) {
+    if (request && !request.memory && onSettings) {
       navigate(NEW_CHAT_ROUTE)
     }
   }, [request, onSettings, navigate])
 
-  useEffect(() => {
-    if (!request) {
-      resetState()
+  // Navigation is presentation, not a new repository inspection.
+  const openMemorySettings = useEffectEvent((profile: string) => {
+    setSettingsScope(profile)
+    navigate(MEMORY_SETTINGS_ROUTE)
+  })
 
+  useEffect(() => {
+    resetState()
+
+    if (!request) {
       return
     }
 
-    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+    if (request.memory) {
+      const { owner } = request.memory
+
+      // A slow catalog lookup must not take over a newly selected owner.
+      if (memoryOwnerIsForeground(owner)) {
+        openMemorySettings(normalizeProfileKey(owner.profile))
+      }
+    }
+
+    setTargetProfile(
+      normalizeProfileKey(
+        request.memory?.owner.profile ?? request.profile ?? $activeGatewayProfile.get() ?? $profileScope.get()
+      )
+    )
 
     if (request.repo) {
       void runProbe(request)
     }
-  }, [activeProfile, profileScope, request, resetState, runProbe])
+  }, [request, resetState, runProbe])
 
   const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
   const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
@@ -205,8 +234,60 @@ export function PluginInstallModal() {
     closePluginInstallRequest()
   }
 
+  const installMemory = async (memory: NonNullable<PluginInstallRequest['memory']>, repo: string) => {
+    installPending.current = true
+    setInstalling(true)
+    setInstallError(null)
+    setInstallUncertain(false)
+
+    try {
+      const outcome = await installMemoryProvider({
+        catalogName: request?.catalogName,
+        name: memory.name,
+        owner: memory.owner,
+        ref: pinRefTrimmed || undefined,
+        repo
+      })
+
+      if ($pluginInstallRequest.get() !== request) {
+        return
+      }
+
+      if (outcome === 'owner-changed') {
+        setInstallError(t.memoryDiscovery.ownerChanged)
+      } else if (outcome === 'timed-out') {
+        setInstallUncertain(true)
+      } else if (typeof outcome === 'object') {
+        setInstallError(outcome.error || m.agentFailed)
+      } else {
+        setMemoryResult(outcome)
+      }
+    } finally {
+      installPending.current = false
+      setInstalling(false)
+    }
+  }
+
+  const installBlocked = () =>
+    !request || !probe?.ok || installPending.current || installing || installUncertain || Boolean(memoryResult)
+
+  // Memory-discovery installs take their own, owner-pinned path; everything else is the generic flow.
+  const startInstall = () => {
+    if (installBlocked()) {
+      return
+    }
+
+    if (!request?.memory) {
+      void handleInstall()
+    } else if (probe?.agent) {
+      void installMemory(request.memory, request.repo)
+    } else {
+      setInstallError(m.selectComponent)
+    }
+  }
+
   const handleInstall = async () => {
-    if (!request || !probe?.ok || installing || installUncertain) {
+    if (!request || !probe?.ok) {
       return
     }
 
@@ -216,6 +297,7 @@ export function PluginInstallModal() {
       return
     }
 
+    installPending.current = true
     setInstalling(true)
     setInstallError(null)
     setInstallUncertain(false)
@@ -346,11 +428,14 @@ export function PluginInstallModal() {
 
       setInstallError(errors.join('\n'))
     } finally {
+      installPending.current = false
       setInstalling(false)
     }
   }
 
-  const open = request !== null && !onSettings
+  const open = request !== null && (!onSettings || Boolean(request.memory))
+  const memoryOwnerMatches = !request?.memory || memoryOwnerIsForeground(request.memory.owner, requestScope)
+
   const busy = phase === 'probing' || installing
   const pinRefTrimmed = pinRef.trim().toLowerCase()
   const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
@@ -398,49 +483,7 @@ export function PluginInstallModal() {
 
         {request?.repo && (
           <div className="space-y-4">
-            <div>
-              <div className="mb-1 text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
-                {m.repoLabel}
-              </div>
-              <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 font-mono text-[length:var(--conversation-caption-font-size)] break-all text-foreground">
-                {request.repo}
-              </div>
-              {request.catalogName && (
-                <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {m.catalogPinned(request.catalogName, request.sha?.slice(0, 8) ?? '')}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5">
-              <div className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
-                <div className="font-medium text-foreground">
-                  {request.catalogName ? m.reviewedHeading : m.securityHeading}
-                </div>
-                <p className="text-(--ui-text-secondary)">{request.catalogName ? m.reviewedIntro : m.securityIntro}</p>
-              </div>
-
-              {sourceLinks && (
-                <div className="space-y-2 border-t border-(--ui-stroke-tertiary) pt-3">
-                  <div className="font-medium text-foreground">{m.sourceHeading}</div>
-                  {sourceLinks.browseUrl && (
-                    <ExternalLink
-                      className="text-[length:var(--conversation-caption-font-size)]"
-                      href={sourceLinks.browseUrl}
-                      showExternalIcon
-                    >
-                      {sourceLinks.subdir ? m.viewPluginFiles : m.viewRepository}
-                    </ExternalLink>
-                  )}
-                  <div>
-                    <div className="mb-1 text-(--ui-text-tertiary)">{m.gitCloneLabel}</div>
-                    <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2.5 py-1.5 font-mono break-all text-foreground">
-                      {sourceLinks.gitUrl}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <PluginSourceReview request={request} sourceLinks={sourceLinks} />
 
             {phase === 'probing' && (
               <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -465,7 +508,7 @@ export function PluginInstallModal() {
                     <label className="flex items-start gap-3">
                       <Checkbox
                         checked={installAgent}
-                        disabled={busy}
+                        disabled={busy || Boolean(request.memory)}
                         onCheckedChange={value => setInstallAgent(value === true)}
                       />
                       <span className="min-w-0">
@@ -480,7 +523,11 @@ export function PluginInstallModal() {
                       <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                         {m.profileLabel}
                       </span>
-                      <Select disabled={busy || !installAgent} onValueChange={setTargetProfile} value={targetProfile}>
+                      <Select
+                        disabled={busy || !installAgent || Boolean(request.memory)}
+                        onValueChange={setTargetProfile}
+                        value={targetProfile}
+                      >
                         <SelectTrigger aria-label={m.profileLabel} className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -496,7 +543,7 @@ export function PluginInstallModal() {
                   </div>
                 )}
 
-                {probe.desktop && (
+                {probe.desktop && !request.memory && (
                   <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
                     <Checkbox
                       checked={installDesktop}
@@ -519,21 +566,10 @@ export function PluginInstallModal() {
                   </p>
                 )}
 
-                {(probe.insecure || (probe.warnings?.length ?? 0) > 0) && (
-                  <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-foreground">
-                    <AlertTriangle
-                      aria-hidden
-                      className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-                    />
-                    <span>
-                      {[...new Set([...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''])]
-                        .filter(Boolean)
-                        .join(' ')}
-                    </span>
-                  </div>
-                )}
+                <ProbeWarnings insecure={probe.insecure} warnings={probe.warnings} />
 
-                {probe.agent && (
+                {request.memory && <MemoryInstallConsent />}
+                {probe.agent && !request.memory && (
                   <label className="flex items-center justify-between gap-3">
                     <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                       {m.enableAgent}
@@ -575,6 +611,9 @@ export function PluginInstallModal() {
               </div>
             )}
 
+            {request.memory && (
+              <MemoryInstallStatus ownerMatches={memoryOwnerMatches || Boolean(installError)} result={memoryResult} />
+            )}
             {installError && (
               <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 whitespace-pre-wrap text-[length:var(--conversation-caption-font-size)] text-destructive">
                 {installError}
@@ -595,14 +634,25 @@ export function PluginInstallModal() {
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
-          {request && !request.repo ? (
+          {memoryResult === 'discovered' && memoryOwnerMatches ? (
+            <Button
+              onClick={() => {
+                closePluginInstallRequest()
+                navigate(MEMORY_SETTINGS_ROUTE)
+              }}
+            >
+              {t.memoryDiscovery.backToMemory}
+            </Button>
+          ) : request && !request.repo ? (
             <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
               {m.reviewRepository}
             </Button>
           ) : (
             <Button
-              disabled={busy || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid}
-              onClick={() => void handleInstall()}
+              disabled={
+                busy || Boolean(memoryResult) || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid
+              }
+              onClick={startInstall}
             >
               {installing ? m.installing : m.install}
             </Button>

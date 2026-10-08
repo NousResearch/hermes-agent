@@ -73,12 +73,14 @@ function highlightMatch(text: string, query: string): React.ReactNode {
 
 function PluginCard({
   plugin,
+  showFeatured,
   query,
   onPick,
   onCategoryClick,
   style,
 }: {
   plugin: CatalogPlugin;
+  showFeatured: boolean;
   query: string;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (plugin: CatalogPlugin) => void;
@@ -109,7 +111,7 @@ function PluginCard({
 
   return (
     <div
-      className={styles.card}
+      className={`${styles.card}${showFeatured && plugin.featured === true ? ` ${styles.featuredCard}` : ""}`}
       role="link"
       tabIndex={0}
       onKeyDown={(e) => {
@@ -118,7 +120,10 @@ function PluginCard({
       onClick={onCardClick}
       style={style}
     >
-      <div className={styles.cardAccent} style={{ background: tier.color }} />
+      <div
+        className={styles.cardAccent}
+        style={{ background: showFeatured && plugin.featured === true ? "var(--ifm-color-primary)" : tier.color }}
+      />
 
       {showImage ? (
         <img
@@ -169,6 +174,7 @@ function PluginCard({
         </p>
 
         <div className={styles.cardMeta}>
+          {!(showFeatured && plugin.featured === true) && (
           <span
             className={styles.tierPill}
             style={{
@@ -179,6 +185,7 @@ function PluginCard({
           >
             {tier.icon} {tier.label}
           </span>
+          )}
           {plugin.version && (
             <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
               v{plugin.version.replace(/^v/i, "")}
@@ -408,6 +415,14 @@ export default function PluginCatalogPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   const filterPanelRef = useRef<HTMLDivElement>(null);
 
+  // Read after hydration so the static page and initial client render agree.
+  useEffect(() => {
+    const kind = new URLSearchParams(window.location.search).get("kind");
+    if (kind && Object.prototype.hasOwnProperty.call(CATEGORY_CONFIG, kind)) {
+      setCategoryFilter(kind);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -489,18 +504,26 @@ export default function PluginCatalogPage() {
     return sortPlugins(matching, sort);
   }, [search, tierFilter, categoryFilter, sort, allPlugins]);
 
+  // Promotion belongs only to the Memory filter, never the general catalog.
+  const showFeatured = categoryFilter === "memory";
+  const { featured, remaining } = useMemo(() => showFeatured ? ({
+    featured: filtered.filter((p) => p.featured === true)
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
+    remaining: filtered.filter((p) => p.featured !== true),
+  }) : ({ featured: [], remaining: filtered }), [filtered, showFeatured]);
+
   // Browse mode (no search, no category picked): render one section per
   // category so Memory, Desktop, Platforms… read as distinct shelves rather
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
     const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
+    for (const p of remaining) {
       const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
       (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
     }
     return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
-  }, [filtered, search, categoryFilter]);
+  }, [remaining, search, categoryFilter]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -532,6 +555,7 @@ export default function PluginCatalogPage() {
       <PluginCard
         key={key}
         plugin={plugin}
+        showFeatured={showFeatured}
         query={search}
         onPick={pickerMode ? pickPlugin : undefined}
         onCategoryClick={pickCategory}
@@ -539,6 +563,16 @@ export default function PluginCatalogPage() {
       />
     );
   };
+
+  const featuredShelf = featured.length > 0 && (
+    <section id="featured-plugins" className={styles.categorySection} aria-label="Featured memory providers">
+      <p className={styles.migrationNote}>
+        Looking for {new Intl.ListFormat("en", { type: "disjunction" }).format(featured.map(plugin => plugin.name))}?
+        {" "}They’re now installed as plugins.
+      </p>
+      <div className={styles.grid}>{featured.map(renderCard)}</div>
+    </section>
+  );
 
   return (
     <Layout
@@ -787,26 +821,29 @@ export default function PluginCatalogPage() {
               </div>
             </div>
           ) : filtered.length > 0 && grouped ? (
-            grouped.map(([cat, plugins]) => {
-              const conf = CATEGORY_CONFIG[cat];
-              return (
-                <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
-                  <header className={styles.categoryHeader}>
-                    <h2 id={`cat-${cat}`} className={styles.categoryTitle}>
-                      <span aria-hidden="true">{conf.icon}</span> {conf.label}
-                      <span className={styles.tierCount}>{plugins.length}</span>
-                    </h2>
-                    <p className={styles.categoryBlurb}>{conf.blurb}</p>
-                    <button className={styles.categoryViewAll} onClick={() => pickCategory(cat)}>
-                      View only {conf.label} →
-                    </button>
-                  </header>
-                  <div className={styles.grid}>
-                    {plugins.map((plugin, i) => renderCard(plugin, i))}
-                  </div>
-                </section>
-              );
-            })
+            <>
+              {featuredShelf}
+              {grouped.map(([cat, plugins]) => {
+                const conf = CATEGORY_CONFIG[cat];
+                return (
+                  <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
+                    <header className={styles.categoryHeader}>
+                      <h2 id={`cat-${cat}`} className={styles.categoryTitle}>
+                        <span aria-hidden="true">{conf.icon}</span> {conf.label}
+                        <span className={styles.tierCount}>{plugins.length}</span>
+                      </h2>
+                      <p className={styles.categoryBlurb}>{conf.blurb}</p>
+                      <button className={styles.categoryViewAll} onClick={() => pickCategory(cat)}>
+                        View only {conf.label} →
+                      </button>
+                    </header>
+                    <div className={styles.grid}>
+                      {plugins.map((plugin, i) => renderCard(plugin, i))}
+                    </div>
+                  </section>
+                );
+              })}
+            </>
           ) : filtered.length > 0 ? (
             <>
               <div className={styles.resultsBar} role="status">
@@ -829,7 +866,10 @@ export default function PluginCatalogPage() {
                   Clear filters
                 </button>
               </div>
-              <div className={styles.grid}>{filtered.map((plugin, i) => renderCard(plugin, i))}</div>
+              {featuredShelf}
+              {remaining.length > 0 && (
+                <div className={styles.grid}>{remaining.map(renderCard)}</div>
+              )}
             </>
           ) : (
             <div className={styles.empty}>

@@ -3,7 +3,9 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frLanguage } from './fr_language'
 import { frLocalModels } from './fr_local_models'
+import { frMemoryDiscovery } from './fr_memory_discovery'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
@@ -12,6 +14,7 @@ import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  memoryDiscovery: frMemoryDiscovery,
   sharedMetrics: frSharedMetrics,
   intro: introFr,
   connectors: {
@@ -691,15 +694,7 @@ export const frOverrides = {
     next: 'Correspondance suivante',
     previous: 'Correspondance précédente'
   },
-  language: {
-    label: 'Langue',
-    description: "Choisissez la langue de l'interface du desktop.",
-    saving: 'Enregistrement de la langue…',
-    saveError: 'Échec de la mise à jour de la langue',
-    switchTo: 'Changer de langue',
-    searchPlaceholder: 'Rechercher des langues…',
-    noResults: 'Aucune langue trouvée'
-  },
+  language: frLanguage,
   settings: {
     subpages: {
       appearanceTheme: 'Thème',

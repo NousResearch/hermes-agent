@@ -15,6 +15,7 @@
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
+    "test": "node ../node_modules/vitest/vitest.mjs run --config vitest.config.mts",
     "typecheck": "tsc -p . --noEmit",
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },

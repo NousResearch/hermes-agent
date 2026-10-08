@@ -162,6 +162,15 @@ def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, o
         _expect_error(tmp_path, {field: value}, field)
 
 
+@pytest.mark.parametrize(("value", "ok"), [(True, True), (False, True), ("true", False), (1, False)])
+def test_featured_must_be_a_yaml_boolean(tmp_path, value, ok):
+    # The runtime loader features an entry only for `featured: true`; a quoted string would be
+    # admitted by the gate and then silently never show up.
+    result = run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, "featured": value})))
+    assert (result.returncode == 0) is ok, result.stdout + result.stderr
+    assert "unknown top-level key 'featured'" not in result.stdout + result.stderr
+
+
 def test_bad_tier_fails(tmp_path):
     _expect_error(tmp_path, {"tier": "platinum"}, "tier")
 

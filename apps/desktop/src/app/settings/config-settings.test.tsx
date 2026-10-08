@@ -78,13 +78,14 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function renderConfigSettings(activeSectionId = 'safety') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
-  render(
+  const { container } = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
@@ -92,10 +93,36 @@ function renderConfigSettings(activeSectionId = 'safety') {
     </MemoryRouter>
   )
 
-  return { importInputRef }
+  return { container, importInputRef }
 }
 
 describe('ConfigSettings autosave', () => {
+  it('mounts one provider selector instead of a generic memory.provider field', async () => {
+    getHermesConfigRecord.mockResolvedValue({ memory: { provider: 'builtin', memory_enabled: true } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: {
+        'memory.provider': { type: 'str', default: 'builtin', description: 'Provider' },
+        'memory.memory_enabled': { type: 'boolean', default: true, description: 'Memory' }
+      }
+    })
+
+    const api = vi.fn(async (_request?: { method?: string }) => ({
+      active: '',
+      providers: [],
+      builtin_files: { memory: 0, user: 0 }
+    }))
+
+    vi.stubGlobal('hermesDesktop', { api })
+    const { container } = renderConfigSettings('memory')
+    expect(await screen.findByRole('combobox', { name: 'Memory Provider' })).toBeTruthy()
+    expect(screen.getAllByRole('combobox')).toHaveLength(1)
+    expect(screen.queryByRole('region', { name: 'Featured memory' })).toBeNull()
+    expect(screen.getByRole('switch')).toBeTruthy()
+    // The palette's "Memory Provider" hit lands on this row.
+    expect(container.querySelector('[id="setting-field-memory.provider"]')).toBeTruthy()
+    expect(api.mock.calls.every(([request]) => !request?.method)).toBe(true)
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

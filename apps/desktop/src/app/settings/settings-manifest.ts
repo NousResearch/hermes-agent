@@ -234,6 +234,14 @@ export const SETTINGS_MANIFEST = {
       copy: t => ({ label: t.settings.sessions.autoArchiveTitle, description: t.settings.sessions.autoArchiveDesc })
     }
   },
+  memory: {
+    // Its own row (install, configure, connect, Use), not a generic config field.
+    provider: {
+      subpage: 'persistent',
+      keywords: ['memory', 'provider', 'plugin', 'install', 'marketplace', 'honcho', 'hindsight', 'supermemory'],
+      copy: t => ({ label: t.settings.fieldLabels['memory.provider'] })
+    }
+  },
   gateway: {
     connectionMode: {
       subpage: 'connection',
@@ -266,7 +274,7 @@ export const SETTINGS_MANIFEST = {
 export type ManifestViewKey = keyof typeof SETTINGS_MANIFEST
 
 /** Manifest keys that are config sections route as `config:<key>`; the rest are views of their own. */
-const CONFIG_SECTION_KEYS: readonly ManifestViewKey[] = ['appearance', 'chat', 'advanced']
+const CONFIG_SECTION_KEYS: readonly ManifestViewKey[] = ['appearance', 'chat', 'advanced', 'memory']
 
 export const manifestView = (key: ManifestViewKey): SettingsView =>
   CONFIG_SECTION_KEYS.includes(key) ? `config:${key}` : (key as SettingsView)

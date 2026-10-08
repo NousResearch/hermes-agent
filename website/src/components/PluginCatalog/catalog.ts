@@ -16,6 +16,8 @@ export interface CatalogPlugin {
   sha: string;
   shaShort: string;
   tier: string;
+  /** Editorial placement, independent of ownership; absent on older feeds means false. */
+  featured?: boolean;
   category: string;
   maintainer: string;
   /** URL segment of the author page (/plugins/by/<slug>); one per maintainer. */

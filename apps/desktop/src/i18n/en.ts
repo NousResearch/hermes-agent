@@ -5,7 +5,9 @@ import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enLanguage } from './en_language'
 import { enLocalModels } from './en_local_models'
+import { enMemoryDiscovery } from './en_memory_discovery'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
@@ -15,6 +17,7 @@ import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  memoryDiscovery: enMemoryDiscovery,
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',
@@ -690,15 +693,7 @@ export const en: Translations = {
     previous: 'Previous match'
   },
 
-  language: {
-    label: 'Language',
-    description: 'Choose the language for the desktop interface.',
-    saving: 'Saving language…',
-    saveError: 'Language update failed',
-    switchTo: 'Switch language',
-    searchPlaceholder: 'Search languages…',
-    noResults: 'No languages found'
-  },
+  language: enLanguage,
 
   settings: {
     subpages: {

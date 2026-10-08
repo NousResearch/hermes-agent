@@ -4,14 +4,7 @@ sha: ce51733b66291e69f616db48ae8799c0de50db43
 subdir: alans-way-computer
 version: "0.7.0"
 title: "Alan's Way Computer"
-description: >-
-  Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer
-  through the Alan's Way app, and on the VM's own desktop when the computer is offline. Needs the alans-way
-  plugin's workspace setup. Select it with computer_use.backend: alans-way-computer.
-  Disclosure: starts the workspace router from the profile's workspace_browser MCP block as a long-running
-  node child and talks to it over stdio (app screenshots, element lists and input actions); the router reaches the
-  user's computer over SSH on the user's tailnet. It never takes the focused window, and Hermes's computer_use
-  approval gate is unchanged.
+description: "Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer through the Alan's Way app, and on the VM's own desktop when the computer is offline. Needs the alans-way plugin's workspace setup. Select it with computer_use.backend: alans-way-computer. Disclosure — starts the workspace router from the profile's mcp_servers.workspace_browser block (command and args from config.yaml, with a filtered environment plus HERMES_WORKSPACE_ALLOW_DESKTOP_ACTIONS=1, which lets this private router child serve desktop input) as a long-running node child per session. It talks to the router over stdio (app lists, element trees, screenshots and input actions). The router reaches the user's computer over SSH on the user's tailnet and falls back to the VM's desktop. The provider never takes the focused window, and every input action still goes through Hermes's computer_use approval gate (cua:*:background entries in command_allowlist, which alans-way's --allow-desktop-actions adds, skip the prompt). On Hermes 0.21.5, which has no provider API, it installs and does nothing."
 maintainer: capthvnsen
 tier: community
 category: tools

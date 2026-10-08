@@ -214,8 +214,9 @@ class CredentialPoolModelCooldownMixin:
         ``{"scope": "account", "resets_at": epoch}`` when every live entry is benched credential-wide
         (the whole login is out; another model won't help), else ``{"scope": "models", "models":
         {model: epoch}}`` for the given *models* no usable entry can serve until a model cooldown
-        ends. Entitlement benches (a year: the plan lacks the model) aren't windows that reset, so
-        they're left out. Read-only: never clears or persists a cooldown.
+        ends. Entitlement benches (the plan lacks the model) last the full bounded
+        ``MODEL_ENTITLEMENT_BENCH_SECONDS``, so any window at least half that bound out is
+        treated as one and left out. Read-only: never clears or persists a cooldown.
         """
         from agent.credential_pool import STATUS_DEAD
         from agent.credential_pool_cooldowns import _exhausted_until

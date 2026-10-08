@@ -1,7 +1,7 @@
-"""Credential-pool rehydration for cached agents, split out of agent_runtime_helpers.
+"""Credential-pool rehydration and rotation revert for cached agents, split out of agent_runtime_helpers.
 
 Extracted so ``agent.agent_runtime_helpers`` stays under its code-health
-FILE_LINES cap. The helper late-imports the pool accessors from the facade so a
+FILE_LINES cap. The helpers late-import the pool accessors from the facade so a
 test patching ``agent.agent_runtime_helpers.load_pool`` still intercepts.
 """
 

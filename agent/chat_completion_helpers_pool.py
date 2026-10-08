@@ -11,10 +11,12 @@ import logging
 import time
 from typing import Optional
 
+from agent.retry_utils import RETRY_AFTER_CAP_S
+
 logger = logging.getLogger("agent.chat_completion_helpers")
 
 
-def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> "Optional[str]":
+def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> Optional[str]:
     """None when the candidate's credential pool is usable. Otherwise a short reason
     token distinguishing the two ways the pool can be unusable: "cooldown" when every
     entry sits in an exhaustion cooldown longer than the retry loop's longest wait
@@ -35,6 +37,6 @@ def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> "Optional
     until = pool.next_available_at(model=fb_model)
     if until is None:
         return "no-wait-info"
-    if until - time.time() > 600:
+    if until - time.time() > RETRY_AFTER_CAP_S:
         return "cooldown"
     return None

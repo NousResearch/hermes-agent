@@ -58,7 +58,7 @@ def _select_pool_entry(provider: str, model: Optional[str] = None) -> Tuple[bool
     try:
         return True, _call_scoped_or_unscoped(pool.select, model=model)
     except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc, exc_info=True)
         return True, None
 
 
@@ -82,5 +82,5 @@ def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
         if callable(peek_fn):
             return peek_fn()
     except Exception as exc:
-        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
+        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc, exc_info=True)
     return None

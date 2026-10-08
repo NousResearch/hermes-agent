@@ -9,6 +9,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.base_pending import release_pending_dispatch
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_pending import release_pending_dispatch
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from gateway.turn_context import TurnContext

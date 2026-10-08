@@ -1,4 +1,4 @@
-import type { ClientRect, CollisionDetection, UniqueIdentifier, useSensors } from '@dnd-kit/core'
+import type { CollisionDetection, UniqueIdentifier, useSensors } from '@dnd-kit/core'
 import {
   closestCenter,
   DndContext,
@@ -46,32 +46,30 @@ export type NestResolver = (info: NestDropInfo) => null | NestOutcome
  * `createDropClickSwallow`.
  */
 export interface NestOutcome {
-  /** The nest target's row, when the policy committed a nest. */
+  /** The element of the region the pointer was over, when the policy committed a nest: everything the
+   *  release `click` can land on inside it is covered by the swallow. */
   targetEl?: HTMLElement | null
   targetId: null | string
 }
 
 /**
- * Opt-in gate on a list's reordering: while the drag is in a "quiet" spot, nothing reflows.
+ * Opt-in reorder policy: which row the dragged item has taken the place of, read from the pointer.
  *
- * dnd-kit's default (`closestCenter`) slides the other items as soon as the pointer nears them, so a
+ * dnd-kit's default (`closestCenter`) slides the other items as soon as the pointer NEARS them, so a
  * target row can move out from under the pointer mid-drag — which reads as the row running away just
- * before you drop. A policy with its own meaning on the pointer's position (a nest target, say) needs
- * that position to mean one thing, so while `quiet` says true the list reports a drop target that is
- * the DRAGGED item itself. Pinning `over` to the active item is what keeps the dragged row under the
- * pointer: dnd-kit's sortable transform is `displaceItem ? strategy(...) : null`, and `displaceItem`
- * needs `over` — so reporting NO target (an empty collision list) does not merely stop the reflow, it
- * nulls the dragged row's transform too and drops the row back into its original slot. `over` equal to
- * the active id makes the strategy yield a zero displacement, so the row holds still instead.
+ * before you drop past it. A list whose pointer carries its own meaning (a nest target, say) needs
+ * the reflow to TRAIL the pointer rather than lead it, so it answers this instead: the policy names
+ * the row the dragged item is over, and null means "still in its own slot, nothing has moved".
  *
- * The gate has to be HYSTERETIC, not instantaneous. Entering a row pins the crossing; leaving it
- * releases the crossing only once the pointer is clear of the row's box, so passing over a project and
- * coming back does not flip the reorder twice on the way through.
+ * Null is not "no collision": an empty collision list nulls the dragged row's transform and snaps it
+ * back into its original slot (see `createReorderPin`), so the pin holds the dragged item while the
+ * policy answers null.
  *
- * `quiet` must be a PURE function of the pointer — a reflow here re-measures the rows the policy just
- * read.
+ * Must be pure in the pointer and the live geometry — the collision pass runs it on every move, and a
+ * reflow re-measures the rows it just read. State a policy needs across calls (which row it holds) it
+ * keeps itself, and starts a drag with none.
  */
-export type ReorderQuietZone = (pointer: null | { x: number; y: number }) => boolean
+export type ReorderSlotResolver = (pointer: null | { x: number; y: number }) => null | UniqueIdentifier
 
 type NestDragEvent = DragCancelEvent | DragEndEvent | DragMoveEvent | DragStartEvent
 
@@ -137,8 +135,10 @@ export function createDropClickSwallow(): DropClickSwallow {
       return true
     }
 
-    // A nest release: the pointer was over the target row, so the release click belongs to it.
-    return Boolean(nestTarget && closestWithin(target, 'data-project-row', nestTarget) === nestTarget)
+    // A nest release: the pointer was over the target's region, so the release click belongs to it —
+    // whichever row inside that region it landed on (the target's own row, one of its session rows, a
+    // nested project) must not also run its own press.
+    return Boolean(nestTarget && target instanceof Node && nestTarget.contains(target))
   }
 
   return {
@@ -169,97 +169,39 @@ export function createDropClickSwallow(): DropClickSwallow {
 }
 
 /**
- * The collision pass for a list with a `quietZone`, as a resettable object.
+ * The collision pass for a list with a `resolveSlot` policy.
  *
- * Returning NO collision is not how you hold a row still — dnd-kit takes `over` from the first
- * collision, and the sortable transform is `displaceItem ? strategy(...) : null` with `displaceItem`
- * requiring `over`. An empty list therefore nulls the dragged row's transform and it snaps back into
- * its original slot. So the dragged item always collides with ITSELF: the strategy sees
- * `index === activeIndex` and yields a zero displacement, which is exactly "held under the pointer".
+ * The policy's answer IS `over` — the row it says the dragged item has taken the place of — so the
+ * other rows move once the pointer is past them and stay moved until the pointer is past them again.
+ * `over` is what dnd-kit feeds the sorting strategy, and the strategy only displaces anything when it
+ * has one, so the policy owns the reflow completely.
  *
- * The pin is hysteretic. While the pointer is inside a claimed row the reorder is held; it is released
- * only once the pointer is past that row's box by `slop` pixels, in the direction it was travelling.
- * A pointer on its way back out spends frames inside the row it just left, and an instant gate would
- * resume the reorder inside it — swapping on the way through instead of once past the box. Requiring
- * the crossing to clear the edge is what makes "past a project and back" behave the same as the first
- * pass.
+ * While the policy answers null the dragged item collides with ITSELF instead. That keeps it under
+ * the pointer: the strategy's `index === activeIndex` branch yields a zero displacement and no other
+ * row is disturbed. Reporting NO collision would not hold it still — an empty list nulls the dragged
+ * row's transform, and the row snaps back into its original slot.
+ *
+ * A list without a policy keeps dnd-kit's own behaviour.
  */
 export interface ReorderPin {
-  clear: () => void
   detect: CollisionDetection
   /** The policy this pin was built for, so a changed policy can replace it rather than go stale. */
-  quiet: ReorderQuietZone | undefined
+  slot: ReorderSlotResolver | undefined
 }
 
-/** How far past a row's edge the pointer must go before a held reorder resumes. */
-const EDGE_SLOP = 2
-
-export function createReorderPin(
-  quietZone: ReorderQuietZone | undefined,
-  { slop = EDGE_SLOP }: { slop?: number } = {}
-): ReorderPin {
-  // The row whose box the pointer is currently inside, or has only just left.
-  let held: null | UniqueIdentifier = null
-
-  /** Has the pointer got clear of this row's box, by `slop`, on EITHER edge? */
-  const cleared = (rect: ClientRect | undefined, pointer: null | { x: number; y: number }) => {
-    if (!rect || !pointer) {
-      return true
-    }
-
-    return pointer.y < rect.top - slop || pointer.y > rect.top + rect.height + slop
-  }
-
+export function createReorderPin(resolveSlot: ReorderSlotResolver | undefined): ReorderPin {
   return {
-    clear: () => {
-      held = null
-    },
     detect: args => {
+      if (!resolveSlot) {
+        return closestCenter(args)
+      }
+
       const pointer = pointerOf(args.pointerCoordinates)
 
-      if (pointer && quietZone?.(pointer)) {
-        // Claimed. Hold the row the pointer is inside, so the pointer never has to be inside a
-        // droppable for this to work: the dragged row's own id is the fallback. Holding the ACTIVE row
-        // is what keeps the dragged row under the pointer — `over` stays valid, so the sortable
-        // transform survives, and the strategy's `index === activeIndex` branch gives it a zero
-        // displacement with no other row disturbed.
-        held = rowsAt(args.droppableRects, pointer) ?? args.active.id
-
-        return [{ id: held }]
-      }
-
-      if (held !== null) {
-        if (!cleared(args.droppableRects.get(held), pointer)) {
-          // Inside the row we held on, or within the slop of its edge. A pointer on its way back out
-          // spends frames in exactly this band, and releasing here would swap on the way THROUGH the
-          // project instead of once the pointer has crossed its box. Holding it is what makes "past a
-          // project and back again" cross each box the same way in both directions.
-          return [{ id: held }]
-        }
-
-        held = null
-      }
-
-      return closestCenter(args)
+      return [{ id: (pointer && resolveSlot(pointer)) || args.active.id }]
     },
-    quiet: quietZone
+    slot: resolveSlot
   }
-}
-
-/** The droppable whose rect contains the pointer. */
-const rowsAt = (rects: Map<UniqueIdentifier, ClientRect>, pointer: { x: number; y: number }) => {
-  for (const [id, rect] of rects) {
-    if (
-      pointer.x >= rect.left &&
-      pointer.x <= rect.left + rect.width &&
-      pointer.y >= rect.top &&
-      pointer.y <= rect.top + rect.height
-    ) {
-      return id
-    }
-  }
-
-  return null
 }
 
 // One self-contained, nesting-safe reorderable list. It owns its DndContext, so a
@@ -272,14 +214,14 @@ export function ReorderableList({
   children,
   ids,
   onReorder,
-  quietZone,
+  resolveSlot,
   resolveNest,
   sensors
 }: {
   children: React.ReactNode
   ids: string[]
   onReorder: (ids: string[]) => void
-  quietZone?: ReorderQuietZone
+  resolveSlot?: ReorderSlotResolver
   resolveNest?: NestResolver
   sensors?: ReturnType<typeof useSensors>
 }) {
@@ -302,21 +244,18 @@ export function ReorderableList({
   // One swallow per list instance (see createDropClickSwallow): the flag must not be shared.
   const swallow = useRef(createDropClickSwallow()).current
 
-  // The pin holds per-drag state, so it is rebuilt whenever the policy changes and cleared when a
-  // drag ends: a stale pin would hold the NEXT drag still before it started.
-  const pin = useRef(createReorderPin(quietZone))
+  // The pin is rebuilt whenever the policy changes: a stale one would answer for the old list. It
+  // holds no per-drag state of its own — a policy that has any starts a drag with fresh state.
+  const pin = useRef(createReorderPin(resolveSlot))
 
-  if (pin.current.quiet !== quietZone) {
-    pin.current = createReorderPin(quietZone)
+  if (pin.current.slot !== resolveSlot) {
+    pin.current = createReorderPin(resolveSlot)
   }
 
   const detectCollision = pin.current.detect
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { activatorEvent, active, over } = event
-
-    // This drag is over; the pin must not reach the next one.
-    pin.current.clear()
 
     // dnd-kit only restores focus for keyboard drags; after a pointer drop the
     // browser leaves :focus on the grab handle, which keeps a focus-within
@@ -361,7 +300,6 @@ export function ReorderableList({
       autoScroll={reorderAutoScroll}
       collisionDetection={detectCollision}
       onDragCancel={event => {
-        pin.current.clear()
         void resolveNest?.(nestInfo('cancel', event))
       }}
       onDragEnd={handleDragEnd}

@@ -266,7 +266,7 @@ export function SidebarSessionsSection({
   )
 
   const resolveProjectNest = projectNest.resolve
-  const projectQuietZone = projectNest.quiet
+  const resolveProjectSlot = projectNest.slot
 
   const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
@@ -585,11 +585,10 @@ export function SidebarSessionsSection({
           <ReorderableList
             ids={sortableProjects.map(project => project.id)}
             onReorder={onReorderProjects}
-            // Over a project row the list stops reflowing, so the row cannot slide out from under
-            // the pointer before the drop. The gap between rows stays live, and that is where
-            // reordering happens.
-            quietZone={projectQuietZone}
+            // The list's reflow follows the pointer's own crossings (see projects/project-drag.ts),
+            // so a row cannot slide out from under a nest before the drop.
             resolveNest={resolveProjectNest}
+            resolveSlot={resolveProjectSlot}
             sensors={dndSensors}
           >
             {rows}

@@ -191,7 +191,7 @@ def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
     return True
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, ...], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -199,35 +199,62 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
-    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> Optional[Tuple[str, ...]]:
+    """``(path, *file_signature)`` identity of config.yaml **plus the managed layer's**, or
+    None when both are unreadable/absent. The managed signature participates because the
+    merged view cached by ``_load_raw_config()`` must invalidate when an admin edits the
+    pinned layer, not only when the profile's own file changes (#132515)."""
+    from utils import file_signature
+
     try:
-        from utils import file_signature
-        return (str(config_path), *file_signature(config_path.stat()))
+        sig: tuple = file_signature(config_path.stat())
     except OSError:
+        sig = ()
+    try:
+        from hermes_cli.managed_scope import get_managed_dir
+
+        managed_dir = get_managed_dir()
+        msig: tuple = (
+            file_signature((managed_dir / "config.yaml").stat()) if managed_dir else ()
+        )
+    except Exception:
+        managed_dir, msig = None, ()
+    if not sig and not msig:
         return None
+    return (str(config_path), *sig, str(managed_dir or ""), *msig)
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import)."""
+    """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import).
+
+    The managed scope's admin-pinned values are overlaid on top (#132515): the
+    skill-discovery view must agree with the general config-resolution pipeline about
+    which keys exist — a pinned ``skills.external_dirs`` would otherwise be enforced
+    as immutable yet silently never scanned."""
     config_path = get_config_path()
-    if not config_path.exists():
-        return {}
     cache_key = _config_cache_key(config_path)
     cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return cached
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
+    parsed: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            loaded = yaml_load(config_path.read_text(encoding="utf-8-sig"))
+        except Exception as e:
+            logger.debug("Could not read skill config %s: %s", config_path, e)
+            loaded = None
+        if isinstance(loaded, dict):
+            parsed = loaded
+    # Lazy import: managed_scope (unlike hermes_cli.config) has no import cycle with
+    # this module, and apply_managed_overlay() deep-merges pinned leaves on top of
+    # whatever the profile itself says — fail-open, exactly like the config pipeline.
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    merged = apply_managed_overlay(parsed)
     if cache_key is not None:
         _RAW_CONFIG_CACHE.clear()
-        _RAW_CONFIG_CACHE[cache_key] = parsed
-    return parsed
+        _RAW_CONFIG_CACHE[cache_key] = merged
+    return merged
 
 
 def _skills_cfg() -> Optional[Dict[str, Any]]:
@@ -299,7 +326,7 @@ def _normalize_string_set(values) -> Set[str]:
 
 # config identity -> resolved external dirs. Called once per skill during
 # banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, ...], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -319,10 +346,9 @@ def _config_str_list(raw) -> List[str]:
 
 def get_external_skills_dirs() -> List[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
-    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped.
+    A managed-scope pin is honored even when the profile has no config.yaml at all (#132515)."""
     config_path = get_config_path()
-    if not config_path.exists():
-        return []
     full_key = _config_cache_key(config_path)
     cache_key = full_key
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None

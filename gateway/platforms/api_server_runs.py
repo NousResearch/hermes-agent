@@ -701,6 +701,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if selected_session_id:
         selected_session_id = await _resolve_live_session_id(self, str(selected_session_id))
     session_id = selected_session_id or run_id
+    route_pinned = _api_server._explicit_route_pin(body, self._model_name)
+    if route_pinned and selected_session_id and await self._live_bot_chat_owner(session_id):
+        _forget_run(self, run_id, self._run_owners)
+        return _json_error(
+            _openai_error, _api_server._LIVE_BOT_CHAT_ROUTE_ERROR,
+            code="live_owner_route_unavailable", status=409)
     # History loads for the session the request actually selected — including one resolved from
     # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
     # same-key run's context (#98619).  previous_response_id continuations keep their
@@ -739,11 +745,21 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
-    self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    try:
+        admitted = await self._admit_to_live_bot_chat(
+            session_id, user_message, turn_author, route_pinned=route_pinned) if selected_session_id else None
+    except _api_server.LiveBotChatRouteConflict:
+        self._set_run_status(run_id, "failed", error=_api_server._LIVE_BOT_CHAT_ROUTE_ERROR,
+                             reason="live_owner_route_unavailable", last_event="run.failed")
+        _drop_run_transport(self, run_id)
+        _retire_live_run(self, run_id)
+        return _json_error(
+            _openai_error, _api_server._LIVE_BOT_CHAT_ROUTE_ERROR,
+            code="live_owner_route_unavailable", status=409)
+    self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))

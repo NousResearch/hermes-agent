@@ -309,6 +309,12 @@ def _turn_body(message: str, *, message_key: str, **extra) -> dict:
     return body
 
 
+def _model_overrides(args) -> dict:
+    """Pass explicit per-turn route pins through the peer's native API."""
+    return {key: value.strip() for key in ("model", "provider")
+            if isinstance(value := getattr(args, key, None), str) and value.strip()}
+
+
 def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
     idempotency_key = (getattr(args, "idempotency_key", None) or f"peer-{uuid.uuid4().hex}").strip()
     if (not idempotency_key or len(idempotency_key) > 255
@@ -324,7 +330,8 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/v1/runs", key, method="POST",
-            body=_turn_body(message, message_key="input", session_id=session_id),
+            body=_turn_body(message, message_key="input", session_id=session_id,
+                            **_model_overrides(args)),
             headers={"Idempotency-Key": idempotency_key})
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
@@ -348,7 +355,8 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
+            method="POST", body=_turn_body(message, message_key="message",
+                                            **_model_overrides(args)), timeout=DM_TIMEOUT_S)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1
@@ -463,6 +471,8 @@ def build_peer_parser(subparsers) -> None:
             sp.add_argument("run_id", help="Run ID returned by 'hermes peer run'")
         else:
             sp.add_argument("message", nargs="?", default=None, help="Message text (or stdin)")
+            sp.add_argument("--model", default=None, help="Remote model ID for this turn")
+            sp.add_argument("--provider", default=None, help="Remote provider slug for this turn")
             if name == "run":
                 sp.add_argument(
                     "--idempotency-key", default=None, help="Stable retry key (generated when omitted)")

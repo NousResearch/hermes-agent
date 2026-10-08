@@ -219,6 +219,42 @@ async def _poll_terminal(cli, run_id, *, until=("completed", "failed", "cancelle
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["dm", "run"])
+@pytest.mark.parametrize("preflight_misses", [False, True])
+async def test_pinned_peer_turn_rejects_live_desktop_route_before_enqueue(
+    tmp_path, monkeypatch, kind, preflight_misses
+):
+    home = tmp_path.resolve()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = SessionDB(home / "state.db")
+    db.create_session("bot-chat", "desktop")
+    db.set_session_title("bot-chat", "Bot Chat")
+    from hermes_cli.active_sessions import try_acquire_active_session
+    lease, refusal = try_acquire_active_session(
+        session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
+        metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
+    assert lease is not None and refusal is None
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = db
+    if preflight_misses:
+        monkeypatch.setattr(adapter, "_live_bot_chat_owner", AsyncMock(return_value=False))
+    try:
+        app = _app(adapter) if kind == "dm" else _runs_app(adapter)
+        path = "/api/sessions/bot-chat/chat" if kind == "dm" else "/v1/runs"
+        body = {"message": "ping"} if kind == "dm" else {"input": "ping", "session_id": "bot-chat"}
+        body.update(model="gpt-5.6-luna", provider="openai-codex", author=AUTHOR)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(path, json=body)
+            result = await resp.json()
+        assert resp.status == 409, result
+        assert result["error"]["code"] == "live_owner_route_unavailable"
+        assert not list((home / "runtime" / "bot_live_delivery").glob("*.json"))
+    finally:
+        lease.release()
+        db.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("target", "receipt", "stop", "expected", "turn_ran_here"),
     [

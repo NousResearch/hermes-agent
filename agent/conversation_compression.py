@@ -3430,6 +3430,13 @@ def _finish_compaction_boundary(
     # boundary notifications attribute prior state to (old id, or same id in-place).
     _old_sid = old_session_id
     _boundary_parent = _old_sid or agent.session_id or ""
+    # Memory providers read parent_session_id="" as "no parent" (their contract
+    # default). In-place the session continues as ITSELF, so it has no lineage
+    # parent — forwarding its own id made providers (e.g. Hindsight retain) tag
+    # the session as its own parent, a lineage self-cycle (#134827). The
+    # context-engine notifications below still use _boundary_parent: same id
+    # in-place is intentional there, the boundary is real.
+    _memory_parent = _old_sid or ""
 
     # The heartbeat's terminal stamp landed on the PARENT before the id re-pointed;
     # clear labels (keep last_activity_at) so the archived row isn't falsely fresh.
@@ -3454,7 +3461,7 @@ def _finish_compaction_boundary(
     with _swallow('memory manager on_session_switch (compression): %s'):
         if (bool(_old_sid) or in_place) and agent._memory_manager:
             agent._memory_manager.on_session_switch(
-                agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
+                agent.session_id or "", parent_session_id=_memory_parent, reset=False, reason="compression"
             )
 
     # Route via _emit_status so the warning reaches gateway platforms; store it on

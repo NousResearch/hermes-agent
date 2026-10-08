@@ -432,7 +432,6 @@ export default function ChatNative() {
           />
         )}
       </div>
-      </div>
     </div>
   );
 }

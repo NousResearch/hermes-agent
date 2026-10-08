@@ -4037,12 +4037,14 @@ def _begin_compression_attempt(
     trigger = trigger or ("manual" if force else "auto")
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
+        # The agent keeps its own copy: a pre-commit restore puts the previous seed back on the compressor.
+        agent._compression_attempt_seed = {
+            "attempt_id": attempt_id, "session_id": agent.session_id or "", "trigger_source": trigger,
+        }
         from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
 
         begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))
-        agent.context_compressor._compression_telemetry_seed = {
-            "attempt_id": attempt_id, "session_id": agent.session_id or "", "trigger_source": trigger,
-        }
+        agent.context_compressor._compression_telemetry_seed = dict(agent._compression_attempt_seed)
     return _Attempt(snapshot, generation, started_at)
 
 

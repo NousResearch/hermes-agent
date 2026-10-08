@@ -235,13 +235,19 @@ text, the focus topic or error messages.
 
 - `trigger_source` names why the attempt ran: `manual`, `idle`,
   `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
-  `gateway_hygiene` or `overflow`.
+  `gateway_hygiene` or `overflow`. An automatic caller that passes no label
+  reads `auto`; a refusal before any attempt began (pool saturation) reads
+  `unknown`.
 - `route` is `hermes` for the local compressor and `codex_app_server` when the
   Codex thread owns compaction.
 - `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
   A `blocked` attempt was refused by an automatic guard; its `failure_class`
   names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
   `blocked:ineffective`).
+- `attempt_id` names this attempt and `session_id` the session it started
+  in. An attempt that stops before the compressor runs, or rolls its state
+  back, logs `method: none` and no token counts, never an earlier attempt's
+  numbers.
 - `method` says how the summary was produced: `llm_summary`,
   `aux_fallback_main` (the summary model failed and the main model wrote it),
   `deterministic_fallback` (static anchors summary; `items_dropped` counts the

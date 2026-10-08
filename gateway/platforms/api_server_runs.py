@@ -508,9 +508,15 @@ class _RunLaunch:
         return self.run_id
 
     def put_event(self, event: Optional[Dict]) -> None:
-        """Enqueue only while this run still owns live transport state."""
-        if self.owner._run_streams.get(self.run_id) is self.queue:
-            self.queue.put_nowait(event)
+        """Enqueue on the run's current transport.
+
+        ``_run_streams`` holds the transport the subscribe path currently hands out; writing
+        through this lookup (instead of the launch-time queue identity) keeps deltas and the
+        terminal event flowing after a re-attach recreated the transport (#118138 review).
+        """
+        stream = self.owner._run_streams.get(self.run_id)
+        if stream is not None:
+            stream.put_nowait(event)
 
 
 def _forget_run(self, run_id: str, *tables) -> None:
@@ -533,6 +539,30 @@ def _drop_run_transport(self, run_id: str) -> None:
         self._run_streams,
         self._run_streams_created,
     )
+
+
+def _reopen_run_transport(self, run_id: str) -> None:
+    """Re-register an SSE transport for a run this process is still executing.
+
+    The transport is expired by the idle sweep for a buffer nobody is reading — a transport
+    event, not a run event. A late subscriber (mobile PWA backgrounded by the OS, proxy idle
+    timeout) reconciles the gap from status/history by contract, so re-attaching an empty
+    transport beats 404ing it for the rest of the run (#118138).
+
+    Execution authority is ``_active_run_tasks`` alone — that entry IS "this process still has
+    a producer for these events". ``_run_statuses`` deliberately does not grant a reattach: it
+    is the status endpoint's memory, and a stale non-terminal row with no executor would hand
+    out a queue nothing writes to, hanging the subscriber on keepalives instead of telling it
+    the stream is gone (pinned by ``test_stale_non_terminal_status_without_a_task_does_not_reattach``).
+    """
+    task = self._active_run_tasks.get(run_id)
+    if task is None or task.done():
+        return
+    if run_id not in self._run_streams:
+        self._run_streams[run_id] = _RunStream()
+        # Fresh TTL: the sweep must not immediately re-expire the transport we just re-attached.
+        self._run_streams_created[run_id] = time.time()
+        logger.debug("[api_server] re-attached SSE transport for live run %s", run_id)
 
 
 async def _resolve_live_session_id(self, session_id: str) -> str:
@@ -848,15 +878,29 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
-    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue.
+
+    The event goes onto the run's *current* transport, not the queue this bridge captured at
+    launch: the idle sweep can expire the buffer while the run keeps executing (and a late
+    subscriber re-attaches a fresh one), and the pending question must stay replayable for
+    whoever subscribes next (review on #118138). With no transport left, the bridge re-arms
+    one under the same task authority the late-subscribe path uses.
+    """
+    run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
         event = _api_server._approval_request_event(run_id, approval_data)
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
+
+        def _enqueue() -> None:
+            _reopen_run_transport(self, run_id)  # no-op when a transport is already attached
+            stream = self._run_streams.get(run_id)
+            if stream is not None:
+                stream.put_nowait(event)
+
         with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+            loop.call_soon_threadsafe(_enqueue)
 
     return _approval_notify
 
@@ -1079,8 +1123,12 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             break
         await asyncio.sleep(0.05)
     else:
+        # A dropped transport is not a dead run: re-attach whenever the run is still executing
+        # here, and 404 only when it genuinely is not (#118138).
+        _reopen_run_transport(self, run_id)
+    stream = self._run_streams.get(run_id)
+    if stream is None:
         return _run_not_found(_api_server._openai_error, run_id)
-    stream = self._run_streams[run_id]
     raw_last_seq = request.headers.get("Last-Event-ID") or request.query.get("last_seq")
     try:
         last_seq = max(-1, int(str(raw_last_seq).strip())) if raw_last_seq is not None else -1

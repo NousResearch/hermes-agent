@@ -615,6 +615,10 @@ def _build_result_entry(
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
         entry["error"] = result.get("error", "Subagent did not produce a response.")
+        approval_outcome = result.get("approval_outcome")
+        from agent.approval_outcomes import APPROVAL_OUTCOMES
+        if isinstance(approval_outcome, str) and approval_outcome in APPROVAL_OUTCOMES:
+            entry["approval_outcome"] = approval_outcome
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")

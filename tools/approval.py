@@ -502,7 +502,8 @@ def _approved() -> dict:
 # ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
+from agent.approval_outcomes import APPROVAL_OUTCOMES
+_USER_SUMMARY_OUTCOMES = APPROVAL_OUTCOMES
 # ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
 _USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 

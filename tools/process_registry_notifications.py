@@ -139,6 +139,20 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
+from agent.approval_outcomes import APPROVAL_OUTCOME_NOTICES as _APPROVAL_OUTCOME_NOTICES
+
+
+def _approval_outcome_lines(results) -> "list[str]":
+    """Render bounded approval outcomes without trusting arbitrary tool text."""
+    lines = []
+    for result in results:
+        outcome = result.get("approval_outcome")
+        notice = _APPROVAL_OUTCOME_NOTICES.get(outcome) if isinstance(outcome, str) else None
+        if notice:
+            lines.append(f"Approval outcome: {notice}")
+    return lines
+
+
 def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
@@ -215,6 +229,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
     # Config-level rejection notice BEFORE the per-task wall — a rejected
     # delegation model fails every task identically and must not stay buried.
     lines += _notice_lines(results)
+    lines += _approval_outcome_lines(results)
     for r in sorted(results, key=lambda x: x.get("task_index", 0)):
         idx, r_truncated = r.get("task_index", 0), _is_truncated(r)
         r_status, r_summary, r_error = r.get("status", "?"), r.get("summary"), r.get("error")
@@ -283,6 +298,7 @@ def _format_async_delegation(evt: dict) -> str:
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
+    lines += _approval_outcome_lines([evt])
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)

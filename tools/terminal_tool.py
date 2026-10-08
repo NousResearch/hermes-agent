@@ -1019,6 +1019,7 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
     """Run the command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
+    from agent.approval_outcomes import APPROVAL_OUTCOMES
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
@@ -1039,7 +1040,10 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
             "Use the approval prompt to allow it, or rephrase the command."
         )
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {}),
+                                    **({"approval_outcome": approval["outcome"]}
+                                       if isinstance(approval.get("outcome"), str) and approval["outcome"] in APPROVAL_OUTCOMES
+                                       else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(

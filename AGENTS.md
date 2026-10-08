@@ -5,15 +5,7 @@ applies everywhere, then a routing table. Each area's `AGENTS.md` loads automati
 in that directory; read it before editing there. `python scripts/check` caps this file at 12k chars
 and every root-to-area chain at 30k, so it loads whole on 128k+ models: long form goes in the guide.
 
-**Never give up on the right solution.**
-
-## What Hermes Is
-
-Hermes is a personal AI agent that runs the same agent core across a CLI, a messaging
-gateway (Telegram, Discord, Slack, ~20 platforms), a TUI, and an Electron desktop app. It
-learns across sessions (memory + skills), delegates to subagents, runs scheduled jobs, and
-drives a real terminal and browser. It is extended primarily through **plugins and skills**,
-not by growing the core.
+## Design invariants
 
 Two invariants shape almost every design decision and are the lens for reviewing any change:
 
@@ -29,34 +21,14 @@ Two invariants shape almost every design decision and are the lens for reviewing
 
 The project's intent layer, for contributors and for the triage sweeper (which may only close on
 `implemented_on_main`, `cannot_reproduce` or `incoherent`; taste-based closes are a maintainer's
-call, and when in doubt a PR stays open). Long form with examples:
-`website/docs/developer-guide/contributing.md` § Contribution rubric.
-
-**Wanted:** real bug fixes (repro on `main`, the exact line, the whole class incl. sibling paths);
-reach at the edges (adapters, providers, models, UI features) wired into the existing setup UX;
-god-file → module refactors; extending before duplicating (3+ PRs in one category → an ABC +
-orchestrator); behaviour-contract tests; E2E with real imports against a temp `HERMES_HOME` for
-resolution, config, security and I/O changes; salvage by cherry-pick so authorship survives.
-
-**Rejected even when well-built:** hooks with no concrete consumer; new `HERMES_*` env vars for
-non-secret config (`.env` is secrets only, behaviour goes in `config.yaml`); a new core tool when
-terminal + file or a skill already does the job; `offset`/`limit` pagination on instructional tools;
-"fixes" that destroy the feature they secure; outbound telemetry without an opt-in gate;
-change-detector tests; plugins that touch core files; third-party products in the core tree (ship a
-standalone plugin repo).
-
-**Before you call it a bug,** verify the claim AND the intent (`git log -p -S "<symbol>"`): the
-isolation is often the design (profiles are islands on purpose), an absence can be load-bearing,
-and a fix that cannot point to the line where the bug manifests has an unverified premise.
+call, and when in doubt a PR stays open). Before proposing, reviewing or triaging a contribution,
+read `website/docs/developer-guide/contributing.md` § Contribution rubric — the long form with
+examples: wanted work, rejected-even-when-well-built patterns, the verify-the-premise bar, and the
+footprint ladder for new capability.
 
 **Security:** `SECURITY.md` is the scope authority. A §3.1 finding goes private (GitHub Security
 Advisories or security@nousresearch.com), never into a public issue, PR, commit or comment; §3.2
 hardening is ordinary public work. Name the §2 boundary crossed, with a repro on `main`.
-
-**Footprint ladder** (take the highest rung that solves it): extend existing code → CLI command +
-skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-session surface:
-`tools/AGENTS.md`) → plugin → MCP server in the catalog → new core tool (fundamental, broadly useful,
-unreachable otherwise).
 
 ## Development Environment
 
@@ -70,30 +42,8 @@ pulling to refresh the hook). `# noqa` does not waive a ratchet finding:
 
 ## Project Structure
 
-Counts shift constantly; the filesystem is canonical. Load-bearing entry points:
-
-```
-hermes-agent/
-├── run_agent.py          # AIAgent facade; the turn loop lives in agent/turn_*.py
-├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
-├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
-├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
-├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
-├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
-├── agent/                # turn loop phases, providers, memory, compression, prompt builder
-├── hermes_cli/           # CLI subcommands, setup, config, plugins loader, updater, web_routers/
-├── tools/                # Tool implementations (tools/registry.py) + environments/ backends
-├── gateway/              # run.py facade + run_*.py phases + session*.py + platforms/
-├── plugins/              # memory/, context_engine/, model-providers/, kanban/, image_gen/, ...
-├── skills/               # Built-in skills (by category)   optional-skills/: shipped, not active
-├── ui-tui/, tui_gateway/ # Ink terminal UI + its Python JSON-RPC backend (also serves Desktop)
-├── apps/desktop/         # Electron desktop app (+ apps/shared)   web/: dashboard SPA
-├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
-├── pm/, hermes_platform/ # dependency/environment manager; machine facts + executable lookup
-├── scripts/              # check, run_tests.sh, code_health/, ci/
-├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
-└── tests/                # Pytest suite, mirrors the source tree
-```
+Counts shift constantly; the filesystem is canonical. The routing table below routes each area to its
+governing docs.
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
 all profile-aware via `get_hermes_home()`.

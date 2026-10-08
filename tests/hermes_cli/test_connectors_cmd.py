@@ -27,6 +27,8 @@ def portal(monkeypatch):
                  "alias": "work", "active": True},
                 {"connectionId": "conn-home", "connector": "gmail", "status": "active", "label": "b@x.test",
                  "alias": "home", "active": True},
+                {"connectionId": "conn-old", "connector": "gmail", "status": "revoked", "label": "c@x.test",
+                 "alias": None, "active": False},
             ]
 
         def rename_account(self, connection_id, alias):
@@ -59,3 +61,19 @@ def test_rename_to_an_invalid_name_calls_nothing(portal, capsys):
     assert rc == 1
     assert portal == []
     assert "lowercase" in capsys.readouterr().err
+
+
+def test_reconnect_repairs_an_unnamed_account_by_its_id(portal, monkeypatch):
+    from tools.connectors import account
+
+    started: list[dict] = []
+
+    def stop_after_start(names, **kwargs):
+        started.append({"names": names, **kwargs})
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(account, "find_or_start_operation", stop_after_start)
+    with pytest.raises(KeyboardInterrupt):
+        cmd_connectors(_parse("connectors", "connect", "gmail", "--reconnect", "--alias", "c@x.test"))
+
+    assert started == [{"names": ["gmail"], "action": "reconnect", "profile_home": None, "repair_id": "conn-old"}]

@@ -136,9 +136,16 @@ def _connect(args) -> int:
     from tools.connectors.contract import SettleReason
 
     app = args.app.strip().lower()
-    alias = _valid_alias(args.alias) if args.alias else None
-    start = account.find_or_start_operation(
-        [app], action="reconnect" if args.reconnect else "connect", profile_home=None, alias=alias)
+    if args.reconnect:
+        # A repair is addressed by the account's id, which also reaches an unnamed account.
+        row = _pick_account(app, args.alias)
+        alias, name = None, _account_name(row)
+        start = account.find_or_start_operation([app], action="reconnect", profile_home=None,
+                                                repair_id=row["connectionId"])
+    else:
+        alias = _valid_alias(args.alias) if args.alias else None
+        name = alias
+        start = account.find_or_start_operation([app], action="connect", profile_home=None, alias=alias)
     try:
         account.wait_for_prepare(start)
         if start.failed:
@@ -150,7 +157,7 @@ def _connect(args) -> int:
         live.close(start.operation)
         print("\nStopped waiting.")
         return 130
-    return _report_connect(app, alias, target)
+    return _report_connect(app, name, target)
 
 
 def _rename(args) -> int:
@@ -176,10 +183,10 @@ def _rename(args) -> int:
     return 0
 
 
-def _pick_for_disconnect(app: str, alias: str | None) -> dict[str, Any]:
+def _pick_account(app: str, alias: str | None) -> dict[str, Any]:
     rows = _app_accounts(app)
     if alias:
-        return _match_named(app, rows, alias)
+        return _match_named(app, [r for r in rows if not r.get("disabled")], alias)
     live_rows = [r for r in rows if not r.get("disabled")]
     if len(live_rows) == 1:
         return live_rows[0]
@@ -192,7 +199,7 @@ def _disconnect(args) -> int:
     from tools.connectors.portal.client import PortalConnectorClient
 
     app = args.app.strip().lower()
-    row = _pick_for_disconnect(app, args.alias)
+    row = _pick_account(app, args.alias)
     name = _account_name(row)
     if not args.yes:
         if not sys.stdin.isatty():

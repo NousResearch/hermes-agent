@@ -5,8 +5,8 @@ export const ACCOUNT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 export const isValidAccountName = (name: string): boolean => ACCOUNT_NAME_RE.test(name)
 
-/** The gateway marks an account it replaced on reconnect as disabled; older backends omit the key. */
-export const isRetired = (row: ConnectorAccountRow): boolean => Boolean((row as { disabled?: boolean }).disabled)
+/** An account a reconnect replaced: kept and listed, never selectable. Older backends omit the key. */
+export const isRetired = (row: ConnectorAccountRow): boolean => Boolean(row.disabled)
 
 /** The name a row is addressed by: its alias, else the app's own account label. */
 export const accountName = (row: ConnectorAccountRow): string => row.alias || row.label

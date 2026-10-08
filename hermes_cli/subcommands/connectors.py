@@ -20,7 +20,8 @@ def build_connectors_parser(subparsers) -> None:
 
     connect = actions.add_parser("connect", help="Connect an app account in your browser")
     connect.add_argument("app", help="App to connect, for example gmail")
-    connect.add_argument("--alias", help="Name for this account, for example work")
+    connect.add_argument(
+        "--alias", help="Name for a new account (for example work); with --reconnect, the name or label to repair")
     connect.add_argument("--reconnect", action="store_true", help="Repair an account that stopped working")
 
     rename = actions.add_parser("rename", help="Rename an account")

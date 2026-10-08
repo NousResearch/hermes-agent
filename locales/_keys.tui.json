@@ -209,7 +209,6 @@
   "connectors.loading",
   "connectors.notice.browserDidNotOpen",
   "connectors.notice.connected",
-  "connectors.notice.nameBeforeReconnect",
   "connectors.notice.nameInvalid",
   "connectors.notice.nameTaken",
   "connectors.notice.notConnected",

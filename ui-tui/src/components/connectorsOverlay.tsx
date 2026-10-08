@@ -125,14 +125,16 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       .finally(() => setBusy(false))
   }
 
-  const startConnect = (app: string, alias: string, reconnect: boolean, name = alias) =>
+  // A new account is addressed by the name it will get; a repair by the account's own id, which also
+  // reaches an unnamed account.
+  const startConnect = (app: string, address: { alias: string } | { connection_id: string }, name: string) =>
     run(
       () =>
         gw.request<ConnectorsConnectResult>('connectors.connect', {
-          alias,
+          ...address,
           connectors: [app],
           owner: ACCOUNT_OWNER,
-          reconnect
+          reconnect: 'connection_id' in address
         }),
       r => {
         const target = r.targets[0] ?? null
@@ -142,7 +144,15 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
           return target ? finishLink(target, name) : setStage({ kind: 'list' })
         }
 
-        setStage({ app, deadlineAt: r.deadline_at, kind: 'link', name, opId: r.op_id, reconnect, target })
+        setStage({
+          app,
+          deadlineAt: r.deadline_at,
+          kind: 'link',
+          name,
+          opId: r.op_id,
+          reconnect: 'connection_id' in address,
+          target
+        })
       }
     )
 
@@ -268,7 +278,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       return setErr(problemText(T, problem))
     }
 
-    startConnect(app, name, false)
+    startConnect(app, { alias: name }, name)
   }
 
   const remove = (row: ConnectorAccountRow) =>
@@ -281,18 +291,10 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       }
     )
 
-  // Reconnect is addressed by name: without one the backend could only answer for the app as a whole.
-  const reconnect = (row: ConnectorAccountRow) => {
-    if (isRetired(row)) {
-      return setNotice(T.connectors.notice.retiredNoReconnect)
-    }
-
-    if (!row.alias) {
-      return setNotice(T.connectors.notice.nameBeforeReconnect)
-    }
-
-    startConnect(row.connector, row.alias, true)
-  }
+  const reconnect = (row: ConnectorAccountRow) =>
+    isRetired(row)
+      ? setNotice(T.connectors.notice.retiredNoReconnect)
+      : startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
 
   const listKey = (ch: string, key: KeyLike) => {
     if (key.escape || ch === 'q') {
@@ -416,6 +418,12 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       {T.connectors.title}
     </Text>
   )
+
+  // A prompt renders in the flow under this floating panel, so the panel draws nothing until it is
+  // answered; staying mounted keeps the selection and any open link.
+  if (promptOpen) {
+    return null
+  }
 
   if (loading) {
     return <Text color={t.color.muted}>{T.connectors.loading}</Text>

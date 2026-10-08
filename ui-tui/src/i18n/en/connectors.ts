@@ -44,7 +44,7 @@ export const connectorsEn = {
     },
     remove: {
       // {0} app, {1} name
-      confirm: (app: string, name: string) => `Remove ${app} account ${name}? This signs Hermes out of it. y/N`
+      confirm: (app: string, name: string) => `Remove ${app} account ${name}? This signs Hermes out of it.`
     },
     notice: {
       // {0} app, {1} name
@@ -57,7 +57,6 @@ export const connectorsEn = {
       nameInvalid: 'Use 1-32 lowercase letters, digits or -, starting with a letter or digit.',
       nameTaken: 'That name is already used.',
       retiredNoReconnect: 'A retired account cannot be reconnected. Add another account instead.',
-      nameBeforeReconnect: 'Name this account first (r), then reconnect it.',
       browserDidNotOpen: 'The browser did not open. Copy the link above.'
     },
     hint: 'r rename · a add · c reconnect · x remove · Tab retired · Esc/q close',

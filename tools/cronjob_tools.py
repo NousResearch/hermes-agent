@@ -1166,7 +1166,7 @@ def check_cronjob_requirements() -> bool:
 # Agent-facing arguments forwarded verbatim to cronjob(). model / provider / base_url are
 # intentionally NOT here: per-job inference pins are user-owned (dashboard, `hermes cron
 # create/edit --model`, hand-edited jobs) — the agent must not point unattended spend at a
-# different model. Programmatic callers of cronjob() itself retain the parameters.
+# different model or budget. Programmatic callers of cronjob() itself retain the parameters.
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",

@@ -26,6 +26,9 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.run_turn_runner_approval_delivery import (  # noqa: F401 — re-exported for callers/tests
+    ApprovalDeliveryError, _card_fits, _ExecApprovalDeclined, _fit_approval_description, _text_fits,
+    arm_timeout_notice, send_text_approval_prompt)
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -63,16 +66,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 # Slack click handler shows on a dead entry).
 def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
-
-
-class _ExecApprovalDeclined(RuntimeError):
-    """The connector refused the approval card's destination.
-
-    Raised (not returned) so it propagates out of `_approval_notify_sync` to
-    `_await_gateway_decision`, whose notify-failure path drops the central
-    approval queue entry and unblocks the waiting tool. A plain return
-    suppressed the text fallback but left that entry pending.
-    """
 
 
 class TurnRunner:
@@ -1455,8 +1448,7 @@ class TurnRunner:
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
-        from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
-        from gateway.run_turn_runner_approval_settle import register_timeout_notice
+        from gateway.run import _approval_send_outcome, _redact_approval_command
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1466,15 +1458,29 @@ class TurnRunner:
         self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
+        # An absent reason takes the localized default; a present but blank one is an insufficient
+        # prompt and fails closed before any send.
+        desc = approval_data["description"] if "description" in approval_data else ea_default_reason_text()
+        if not desc or not str(desc).strip():
+            raise ValueError("Approval description is empty")
+        desc = _redact_approval_command(desc)
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                card_desc = _fit_approval_description(
+                    adapter, desc, approval_data, ctx.session_key or "",
+                    lambda: _card_fits(adapter, cmd, flags["smart_denied"]))
+                if card_desc is None:
+                    # Answered or withdrawn before its card went out: no prompt; the waiter
+                    # returns the outcome already recorded.
+                    logger.info("Approval request settled before its prompt was sent; not sending it")
+                    return
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=card_desc, metadata=ctx._status_thread_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1484,9 +1490,8 @@ class TurnRunner:
                 if outcome == "sent":
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    arm_timeout_notice(self, approval_data, command=cmd,
+                                       card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1531,23 +1536,8 @@ class TurnRunner:
                 raise
             except Exception as e:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
-        # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
-            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
-            )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`).
+        send_text_approval_prompt(self, approval_data, desc=desc, command=cmd, flags=flags)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

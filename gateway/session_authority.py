@@ -210,6 +210,8 @@ class SessionAuthority:
                 'execution_generation': handle.execution_generation,
                 'revision': handle.revision,
             }, event_type='session.info')
+        from gateway.session_bot_mailbox import wake_bot_receipts
+        wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
         live = self.sessions[ref.session_id]

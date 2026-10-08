@@ -179,6 +179,6 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
 
         monkeypatch.setattr("gateway.session_bot._admit", fake_admit)
 
-        await _migrate(authority, object(), tmp_path, root)
+    await _migrate(authority, object(), tmp_path, root)
 
     assert migrated == [(healthy_key, "healthy legacy", "queued")]

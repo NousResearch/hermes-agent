@@ -24,7 +24,7 @@ def uncounted_runtime_work(runner):
 
 
 def mutation_tasks(authority):
-    tasks = getattr(authority, '_mutation_tasks', ())
+    tasks = {*getattr(authority, '_mutation_tasks', ()), *getattr(authority, '_bot_mailbox_operations', ())}
     return [task for task in tasks if not task.done()]
 
 

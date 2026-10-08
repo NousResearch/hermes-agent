@@ -14,6 +14,12 @@ class _FakeAuthority:
     def __init__(self):
         self.records = {}
 
+    def publish(self, key, **changes):
+        record = self.records[key]
+        record.update(changes)
+        with mailbox._locked(record['profile_home']) as root:
+            mailbox._write(root / f'{key}.json', record)
+
     def __call__(self, home, params):
         record = self.records.get(params["id"])
         if record is None:
@@ -60,7 +66,7 @@ def test_live_delivery_retry_keeps_receipt_across_owner_loss(tmp_path, monkeypat
         assert delivery._deliver_to_bot_chat(dict(job), "payload", profile) == pending
         assert key in authority.records and len(authority.records) == admitted_before + 1
         # The owner dies mid-execution: the authority reports the admission ambiguous.
-        authority.records[key].update(status="ambiguous", error="owner died")
+        authority.publish(key, status="ambiguous", error="owner died")
         outcome = delivery._deliver_to_bot_chat(dict(job), "payload", profile)
         assert outcome and "ambiguous" in outcome and "owner died" in outcome
         # Only a NEW execution mints a new id.
@@ -96,7 +102,6 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
         normalized_deliver="bot-chat", incident_acked=False, success=True) == "queued"
     (key,) = authority.records
     assert next(iter(queued.values()))["delivery_id"] == key
-    authority.records[key].update(status="settled", reply="done")
+    authority.publish(key, status="settled", reply="done")
     assert delivery._deliver_result(job, "payload") is None
     assert updates[-1]["last_delivery_queued"] is None
-

@@ -52,14 +52,15 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
         first = await deliver(connection, params)
         retry = await deliver(connection, params)
         assert first['admission_id'] == retry['admission_id']
-        # Re-open the actual on-disk receipt through the production readback
-        # helper; substitute only transport, then exercise the real owner gate.
+        # Poll the owner's local projection, then explicitly retry its immutable envelope.
         from tools import bot_live_delivery as live
-        monkeypatch.setattr(live, 'authority_delivery', lambda home, request: request)
+        monkeypatch.setattr(live, 'authority_delivery', lambda *a: pytest.fail('receipt poll opened RPC'))
         replay = live.read_delivery_result(tmp_path, params['id'])
         assert replay is not None
         assert replay.get('notification_category', 'result') == category
-        assert (await deliver(connection, replay))['admission_id'] == first['admission_id']
+        repeated = dict(id=replay['delivery_id'], profile='default', message=replay['message'],
+                        notification_category=replay.get('notification_category', 'result'))
+        assert (await deliver(connection, repeated))['admission_id'] == first['admission_id']
         row = get_session_admission(authority.db, admission_id=first['admission_id'])
         assert row is not None
         descriptor = row['payload']['local_automation_v1']

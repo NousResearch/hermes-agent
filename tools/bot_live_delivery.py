@@ -315,16 +315,17 @@ def cancel_queued_delivery(
 
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
-    record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
-    if record is not None and record.get('admission_id'):
-        home = Path(profile_home).resolve()
-        # Readback replays the immutable envelope; dropping category or author conflicts.
-        category = ({'notification_category': record['notification_category']}
-                    if 'notification_category' in record else {})
-        # The receipt carries the envelope's category so a producer can detect a changed retry.
-        return {**authority_delivery(home, dict(id=delivery_id,
-            profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
-            **({'author': dict(record['author'])} if record.get('author') else {}), **category)), **category}
+    key = _delivery_id(delivery_id)
+    if not _root(profile_home).is_dir():
+        return None
+    # atomic_replace can fall back to an in-place rewrite on Windows. Use the writer's
+    # short lock so local pollers never open a partially rewritten or sharing-locked file.
+    with _locked(profile_home) as root:
+        record = _read(root / f'{key}.json')
+    if record is not None and record.get('admission_id') and record.get('status') == 'canonical':
+        # Older owners used this transitional spelling. Publication/recovery updates it;
+        # a reader never dials the owner or replays an admission just to inspect its receipt.
+        return {**record, 'status': 'queued'}
     return record
 
 

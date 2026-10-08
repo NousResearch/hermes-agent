@@ -65,13 +65,13 @@ def _admissions(bot):
 
 async def _settled(bot, count):
     from gateway.session_bot import _result
-    from tools.bot_live_delivery import _read, _root
+    from tools.bot_live_delivery import read_delivery_result
     for _ in range(200):
         await asyncio.sleep(0.02)
         rows = _admissions(bot)
         if len(rows) >= count and all(r['status'] == 'terminal' for r in rows):
             await asyncio.sleep(0.05)  # let the receipt task observe the settle
-            return _result(bot.authority, _read(_root(bot.home) / f'{KEY}.json'))
+            return _result(bot.authority, (await asyncio.to_thread(read_delivery_result, bot.home, KEY)))
     raise AssertionError(f'admissions never settled: {_admissions(bot)}')
 
 
@@ -119,8 +119,8 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     await asyncio.sleep(0.1)
     assert [r['request_id'] for r in _admissions(bot)][2:] == ['bot:' + other]
     from gateway.session_bot import _result
-    from tools.bot_live_delivery import _read, _root
-    auth = _result(bot.authority, _read(_root(bot.home) / f'{other}.json'))
+    from tools.bot_live_delivery import read_delivery_result
+    auth = _result(bot.authority, (await asyncio.to_thread(read_delivery_result, bot.home, other)))
     assert (auth['status'], auth['reason']) == ('failed', 'provider_auth_or_access'), auth
 
 
@@ -131,7 +131,7 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
     row, and refuses (recorded, typed) when the DM is still the durable tail: the owner execution has
     no adoption seam, and a second copy would merge into the unanswered one."""
     from gateway.session_bot import deliver
-    from tools.bot_live_delivery import _read, _root
+    from tools.bot_live_delivery import read_delivery_result
     bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     receipt = await _settled(bot, 2)
@@ -143,7 +143,7 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
     await deliver(bot.connection, dict(id=other, profile='default', message='overflowed dm'))
     for _ in range(100):
         await asyncio.sleep(0.02)
-        record = _read(_root(bot.home) / f'{other}.json')
+        record = (await asyncio.to_thread(read_delivery_result, bot.home, other))
         if (record.get('retry') or {}).get('refused'):
             break
     assert record['retry']['refused'] == 'open_user_tail' and len(_admissions(bot)) == 3

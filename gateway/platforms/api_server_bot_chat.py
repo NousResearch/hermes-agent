@@ -80,11 +80,13 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
     loop = asyncio.get_running_loop()
     deadline = None if timeout is None else loop.time() + timeout
     while True:
-        live, interim = peer_wait_admission(authority, record)
+        live, interim = await asyncio.to_thread(peer_wait_admission, authority, record)
         # Register the waiter BEFORE re-reading: a settle between the two either shows in the read
         # or resolves this future; a settle before both would otherwise leave a future nobody pops.
         waiter = None if live is None or interim else authority.waiters.setdefault(live, loop.create_future())
         current = _receipt(authority, record)
+        if live is None and current['status'] in _PENDING:
+            continue  # The derived retry committed while the receipt was being read.
         if interim:
             current['status'] = 'claimed'  # the retry is being admitted
         if live is None or current['status'] not in _PENDING or (should_stop is not None and should_stop()):

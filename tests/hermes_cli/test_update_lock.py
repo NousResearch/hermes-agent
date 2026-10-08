@@ -678,6 +678,29 @@ class TestHandoffFromOrchestratingUpdater:
         assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == os.getpid()
 
 
+def test_marker_custodian_child_of_handoff_is_our_partner(marker, monkeypatch):
+    """The POSIX hand-off names its custodian as the marker owner while the update child
+    is a sibling of that custodian. The custodian is ours when its parent is the hand-off.
+    """
+    handoff_pid = 2000
+    custodian_pid = 3000
+    monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.update_lock._handoff_pid", lambda: handoff_pid)
+    monkeypatch.setattr(
+        "hermes_cli.update_lock._stdlib_parent_pid",
+        lambda pid: handoff_pid if pid == custodian_pid else None,
+    )
+    monkeypatch.setattr("hermes_cli.update_lock._is_ancestor_pid", lambda pid: False)
+    marker.write_text(f"{custodian_pid}\\n{int(time.time())}\\n", encoding="utf-8")
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert lock.acquired is False, "the hand-off custodian's claim is not ours to own"
+
+    lock.release()
+    assert marker.exists(), "the hand-off still owns the marker"
+
+
 class TestAncestryHandoff:
     """Staged updaters older than the HANDOFF_PID_ENV export never send it.
 

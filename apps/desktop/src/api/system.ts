@@ -11,6 +11,7 @@ import type {
   ElevenLabsVoicesResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
+  MemorySetupOperation,
   MemoryStatusResponse
 } from '@/types/hermes'
 
@@ -22,7 +23,8 @@ import {
   ownerScoped,
   type ProfileScope,
   profileScoped,
-  type ResolvedOwner
+  type ResolvedOwner,
+  resolveOwnerNow
 } from './client'
 
 export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
@@ -57,11 +59,17 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
 }
 
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
-export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
-  return hermesApi<MemoryProviderConfig>({
-    ...profileScoped(profile),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
-  })
+export function getMemoryProviderConfig(
+  provider: string,
+  profile?: null | string,
+  owner?: ResolvedOwner
+): Promise<MemoryProviderConfig> {
+  return hermesApiAs<MemoryProviderConfig>(
+    owner ?? { ...resolveOwnerNow(), ...(profile === undefined ? {} : { profile }) },
+    {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared&setup_api=1`
+    }
+  )
 }
 
 export function saveMemoryProviderConfig(
@@ -75,6 +83,78 @@ export function saveMemoryProviderConfig(
     method: 'PUT',
     body: { values }
   })
+}
+
+export interface MemorySetupRequestOptions {
+  owner?: ResolvedOwner
+  signal?: AbortSignal
+  onProgress?: (operation: MemorySetupOperation) => void
+}
+
+export class MemorySetupConfirmation extends Error {
+  constructor(
+    message: string,
+    readonly confirmation: string
+  ) {
+    super(message)
+  }
+}
+
+export async function waitMemoryProviderOperation<T>(
+  provider: string,
+  operation: MemorySetupOperation,
+  owner: ResolvedOwner,
+  options: MemorySetupRequestOptions = {}
+): Promise<T> {
+  const deadline = Date.now() + 30 * 60_000
+
+  while (operation.status === 'running') {
+    options.signal?.throwIfAborted()
+    options.onProgress?.(operation)
+
+    if (Date.now() >= deadline) {
+      throw new Error('Setup is still running. Reopen settings to check its progress.')
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    options.signal?.throwIfAborted()
+    operation = await hermesApiAs<MemorySetupOperation>(owner, {
+      path: `/api/memory/providers/${encodeURIComponent(provider)}/operations/${encodeURIComponent(operation.id ?? '')}`
+    })
+  }
+
+  options.signal?.throwIfAborted()
+
+  if (operation.status === 'confirmation_required') {
+    throw new MemorySetupConfirmation(
+      operation.message || 'Confirm this change.',
+      operation.confirmation || 'overwrite'
+    )
+  }
+
+  if (operation.status !== 'completed') {
+    throw new Error(operation.message || 'Setup failed. Check the configuration and retry.')
+  }
+
+  return operation.result as T
+}
+
+export async function runMemoryProviderAction<T>(
+  provider: string,
+  action: string,
+  payload: Record<string, unknown>,
+  profile?: null | string,
+  options: MemorySetupRequestOptions = {}
+): Promise<T> {
+  const owner = options.owner ?? { ...resolveOwnerNow(), ...(profile === undefined ? {} : { profile }) }
+
+  const operation = await hermesApiAs<MemorySetupOperation>(owner, {
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/actions/${encodeURIComponent(action)}`,
+    method: 'POST',
+    body: { payload }
+  })
+
+  return waitMemoryProviderOperation<T>(provider, operation, owner, options)
 }
 
 // Memory-provider OAuth connect (provider-keyed; 404s for providers without an

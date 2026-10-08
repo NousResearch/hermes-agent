@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { $apiRequestScope, type ResolvedOwner } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { getMemoryProviderConfig, runMemoryProviderAction, saveMemoryProviderConfig } from '@/hermes'
 import { SlidersHorizontal } from '@/lib/icons'
-import { notifyError } from '@/store/notifications'
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import { notify, notifyError } from '@/store/notifications'
+import type { MemoryProviderConfig, MemoryProviderField, MemoryProviderSummary } from '@/types/hermes'
 
 import { ListRow, Pill } from '../primitives'
 
@@ -21,31 +23,120 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
 }
 
 export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+  const scope = useStore($apiRequestScope)
+  const owner = { connectionId: scope.connectionId, profile: profile ?? scope.profile }
+
+  return <ScopedProviderConfigPanel key={JSON.stringify([owner, provider])} owner={owner} provider={provider} />
+}
+
+function ScopedProviderConfigPanel({ owner: ownerProp, provider }: { owner: ResolvedOwner; provider: string }) {
+  const [owner] = useState(ownerProp)
+  const profile = owner.profile
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const [statusRevision, setStatusRevision] = useState(0)
+  const refreshGeneration = useRef(0)
 
-  const refresh = useCallback(async () => {
-    try {
-      const next = await getMemoryProviderConfig(provider, profile)
-      const seed = seedValues(next)
-      setConfig(next)
-      setValues(seed)
-      setSaved(seed)
-      setLoadError(null)
-    } catch (err) {
-      setConfig(null)
-      setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
-    }
-  }, [profile, provider])
+  const refresh = useCallback(
+    async (propagateError = false) => {
+      const generation = ++refreshGeneration.current
 
+      try {
+        const next = await getMemoryProviderConfig(provider, profile, owner)
+
+        if (generation !== refreshGeneration.current) {
+          return
+        }
+
+        const seed = seedValues(next)
+        setConfig(next)
+        setValues(seed)
+        setSaved(seed)
+        setLoadError(null)
+        setStatusRevision(current => current + 1)
+      } catch (err) {
+        if (generation !== refreshGeneration.current) {
+          return
+        }
+
+        if (propagateError) {
+          // Let the managed form show the error without unmounting its draft.
+          throw err
+        }
+
+        setConfig(null)
+        setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
+      }
+    },
+    [profile, provider, owner]
+  )
+
+  const handleSaved = useCallback(() => refresh(true), [refresh])
+
+  // eslint-disable-next-line no-restricted-syntax -- request generation cleanup, not an atom mirror
   useEffect(() => {
     setConfig(null)
     void refresh()
+
+    return () => {
+      refreshGeneration.current += 1
+    }
   }, [refresh])
+
+  useEffect(() => {
+    const action = config?.status_action
+
+    if (!action) {
+      return
+    }
+
+    let cancelled = false
+
+    void runMemoryProviderAction<NonNullable<MemoryProviderSummary['status']>>(provider, action, {}, profile, { owner })
+      .then(status => {
+        if (cancelled) {
+          return
+        }
+
+        setConfig(current =>
+          current
+            ? {
+                ...current,
+                summary: { items: current.summary?.items ?? [], status }
+              }
+            : current
+        )
+      })
+      .catch(() => {
+        if (cancelled) {
+          return
+        }
+
+        setConfig(current =>
+          current
+            ? {
+                ...current,
+                summary: {
+                  items: current.summary?.items ?? [],
+                  status: {
+                    label: 'Unavailable',
+                    message: `${current.label} status could not be checked.`,
+                    state: 'unreachable'
+                  }
+                }
+              }
+            : current
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [config?.status_action, profile, provider, statusRevision, owner])
 
   // Autosave, matching the settings page around the panel: one-key partial PUT
   // on commit, silent on success, no full refresh (it would reset sibling drafts).
@@ -103,6 +194,90 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
   const secretFields = config.fields.filter(field => field.kind === 'secret')
   const hasFullConfig = config.fields.some(field => !field.inline)
 
+  if (config.submit_action) {
+    const status = config.summary?.status
+
+    const statusTone =
+      status?.state === 'healthy'
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : status?.state === 'unhealthy'
+          ? 'text-amber-600 dark:text-amber-400'
+          : status?.state === 'checking'
+            ? 'text-muted-foreground'
+            : 'text-destructive'
+
+    return (
+      <section className="py-1">
+        <div className="flex items-center justify-between gap-3 py-2">
+          <div className="min-w-0">
+            <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+              {config.label} settings
+            </div>
+            {config.description ? (
+              <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+                {config.description}
+              </div>
+            ) : null}
+          </div>
+          <Button onClick={() => setShowModal(true)} size="sm" type="button" variant="secondary">
+            <SlidersHorizontal className="size-3.5" />
+            Configure
+          </Button>
+        </div>
+
+        {config.summary ? (
+          <div className="@container">
+            <div
+              aria-label={`${config.label} connection summary`}
+              className="grid gap-x-6 gap-y-2 rounded-md border border-(--ui-accent-secondary)/30 px-3 py-2.5 @2xl:grid-cols-[repeat(2,minmax(0,1fr))_auto] @2xl:items-center"
+              role="group"
+            >
+              {config.summary.items.map(item => (
+                <div className="min-w-0" key={item.label}>
+                  <div className="text-[0.65rem] font-medium uppercase text-muted-foreground">{item.label}</div>
+                  <div className="mt-0.5 truncate font-mono text-xs text-foreground" title={item.value}>
+                    {item.value}
+                  </div>
+                </div>
+              ))}
+              {status ? (
+                <button
+                  aria-label={status.message || undefined}
+                  className="min-w-0 text-left @2xl:text-right"
+                  disabled={!status.message || status.state === 'healthy' || status.state === 'checking'}
+                  onClick={() =>
+                    notify({
+                      kind: status.state === 'unhealthy' ? 'warning' : 'error',
+                      title: status.label,
+                      message: status.message
+                    })
+                  }
+                  type="button"
+                >
+                  <div className="text-[0.65rem] font-medium uppercase text-muted-foreground">Status</div>
+                  <div className={`mt-0.5 inline-flex items-center gap-1.5 text-xs font-medium ${statusTone}`}>
+                    <span className="size-1.5 rounded-full bg-current" />
+                    {status.label}
+                  </div>
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        <ProviderConfigModal
+          config={config}
+          onOpenChange={setShowModal}
+          onSaved={handleSaved}
+          open={showModal}
+          owner={owner}
+          profile={profile}
+          provider={provider}
+        />
+      </section>
+    )
+  }
+
   return (
     <section className="py-1">
       <div className="flex items-center gap-2 py-2">
@@ -155,6 +330,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
           onOpenChange={setShowModal}
           onSaved={refresh}
           open={showModal}
+          owner={owner}
           profile={profile}
           provider={provider}
         />

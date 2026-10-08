@@ -277,7 +277,7 @@ own directory, so a provider installed from the plugin catalog keeps all of them
 
 | Surface | What the provider ships |
 |---|---|
-| Desktop → Capabilities → Tools → Memory (config panel) | `config_schema.py` (below) |
+| Desktop → Settings → Memory & Context → Persistent memory | `config_schema.py` (below) |
 | `hermes memory setup` wizard | `get_config_schema()` declares the fields the wizard prompts for, `save_config(config, hermes_home)` persists them, `post_setup(hermes_home, config)` runs afterwards for anything interactive (OAuth, first sync); `get_status_config()` feeds `hermes memory status` |
 | `hermes <provider> …` subcommands | `cli.py` with `register_cli(subparser)` ([Adding CLI Commands](#adding-cli-commands)) |
 | Python dependencies | `pyproject.toml` `[project] dependencies` (or `python_dependencies` in `plugin.yaml`); installed under Hermes' own pins at install time and re-applied across `hermes update` |
@@ -286,6 +286,46 @@ Your provider's name, `memory.<name>` config section, data directory and tool na
 contract with existing users. A provider that moves out of core keeps all four; Hermes then
 installs the catalog plugin automatically for anyone whose `memory.provider` still names it
 (on `hermes update`, and once at agent start when `security.allow_lazy_installs` is on).
+
+## Provider-managed Desktop setup
+
+Simple `config_schema.py` forms keep their existing field storage. Providers that
+must validate a connection or install a runtime before saving can opt into
+`PROVIDER_SETUP_API_VERSION >= 1` and `storage=STORAGE_PROVIDER_MANAGED`.
+Set `submit_action` and implement these optional `MemoryProvider` methods:
+
+- `get_desktop_config(hermes_home=...)`: return JSON `values`, `is_set`, dynamic
+  `options`, and a display `summary`. Read local state only; never return secrets.
+- `handle_desktop_config_action(action, payload, hermes_home=...)`: validate and
+  save for the supplied profile. Return JSON and use `ValueError` for a safe,
+  actionable failure message. The submit payload contains `values`,
+  `confirmations`, and the compatibility `overwrite` flag.
+
+Use `ProviderFieldCondition` for `visible_when`, `KIND_SEGMENTED` for setup
+choices, and `dynamic_options=True` with `searchable=True` for profile lists.
+These are generic form features; keep service-specific logic in the plugin.
+Validate hidden fields on the backend as well as in the form.
+
+Actions run in a background worker under the initiating profile and secret scope,
+including with plugin-host isolation. Report credential-free stage messages with
+`plugins.memory.desktop_setup.report_progress(stage, message)`. One operation runs
+per provider and profile; duplicate submissions reuse its ID. Closing the form or
+switching profiles stops the UI's polling, not the operation. A host restart loses
+job status, so setup must check existing resources safely before a retry.
+
+For confirmation, raise `MemoryProviderConfigConflictError(message,
+confirmation="replace")`. The form asks the user and resubmits with
+`confirmations["replace"] == True`. Confirmations apply to the current draft only.
+Do not activate a configuration until validation succeeds.
+
+An optional `status_action` is a bounded, read-only probe. It runs independently
+of setup so a health refresh cannot overwrite setup progress. Keep its network
+timeouts shorter than the normal API request timeout.
+
+Only the updated Desktop requests `setup_api=1`. Older clients receive no managed
+fields, and ordinary config writes are rejected for managed schemas. Plugins that
+also support older hosts should check the capability before importing the new
+types and publish `CONFIG_SCHEMA = None` when it is absent. CLI setup is separate.
 
 ## Config Schema
 

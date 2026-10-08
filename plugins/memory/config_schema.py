@@ -21,8 +21,11 @@ KIND_SECRET = "secret"
 KIND_BOOL = "bool"
 KIND_NUMBER = "number"
 KIND_JSON = "json"
+KIND_SEGMENTED = "segmented"
 
 # Storage backends understood by web_server (see its read/write dispatch).
+PROVIDER_SETUP_API_VERSION = 1
+STORAGE_PROVIDER_MANAGED = "provider_managed"
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
@@ -34,6 +37,28 @@ class ProviderFieldOption:
     value: str
     label: str
     description: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderFieldCondition:
+    """Declarative visibility condition. Multiple conditions are ANDed."""
+
+    key: str
+    values: tuple[str, ...] = ()
+    pattern: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderConfigAction:
+    """Provider-owned operation rendered by the shared Desktop form."""
+
+    name: str
+    label: str
+    description: str = ""
+    after_field: str = ""
+    payload_fields: tuple[str, ...] = ()
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    refresh_after: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +74,7 @@ class ProviderField:
     default: str = ""
     description: str = ""
     placeholder: str = ""
+    search_placeholder: str = ""
     options: tuple[ProviderFieldOption, ...] = ()
     env_key: str | None = None
     aliases: tuple[str, ...] = ()
@@ -57,6 +83,13 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
+    help_url: str = ""
+    help_label: str = ""
+    required: bool = False
+    read_only: bool = False
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    dynamic_options: bool = False
+    searchable: bool = False
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 
@@ -77,6 +110,13 @@ class ProviderConfigSchema:
     storage: str = STORAGE_FLAT_JSON
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
+    description: str = ""
+    # Atomic provider-managed forms use actions; ordinary providers keep the
+    # existing storage-backed GET/PUT path.
+    submit_action: str = ""
+    submit_label: str = "Save changes"
+    status_action: str = ""
+    actions: tuple[ProviderConfigAction, ...] = dataclass_field(default_factory=tuple)
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
     def inline_fields(self) -> tuple[ProviderField, ...]:
@@ -125,9 +165,15 @@ def _schema_from_record(record) -> ProviderConfigSchema | None:
     """Rebuild a schema that crossed the plugin-host boundary as plain data."""
     if not record:
         return None
+    def conditions(items):
+        return tuple(ProviderFieldCondition(**{**item, "values": tuple(item.get("values") or ())}) for item in items or ())
+
     fields = tuple(
         ProviderField(**{**f, "options": tuple(ProviderFieldOption(**o) for o in f.get("options") or ()),
                          "aliases": tuple(f.get("aliases") or ()),
+                         "visible_when": conditions(f.get("visible_when")),
                          "env_fallbacks": tuple(f.get("env_fallbacks") or ())})
         for f in record.get("fields") or ())
-    return ProviderConfigSchema(**{**record, "fields": fields})
+    actions = tuple(ProviderConfigAction(**{**a, "payload_fields": tuple(a.get("payload_fields") or ()),
+                         "visible_when": conditions(a.get("visible_when"))}) for a in record.get("actions") or ())
+    return ProviderConfigSchema(**{**record, "fields": fields, "actions": actions})

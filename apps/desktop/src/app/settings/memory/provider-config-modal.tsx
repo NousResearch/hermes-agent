@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import type { ResolvedOwner } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -20,6 +21,7 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 import { ListRow } from '../primitives'
 
 import { FieldControl, FieldTitle } from './field-control'
+import { ProviderManagedConfigModal } from './provider-managed-config-modal'
 
 // Secrets seed blank: values are write-only and blank keeps the stored one.
 function seedAll(config: MemoryProviderConfig): Record<string, string> {
@@ -45,6 +47,24 @@ function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderFiel
 }
 
 export function ProviderConfigModal({
+  ...props
+}: {
+  config: MemoryProviderConfig
+  owner?: ResolvedOwner
+  profile?: null | string
+  provider: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSaved: () => Promise<void> | void
+}) {
+  if (props.config.submit_action) {
+    return <ProviderManagedConfigModal {...props} />
+  }
+
+  return <StoredProviderConfigModal {...props} />
+}
+
+function StoredProviderConfigModal({
   config,
   profile = null,
   provider,
@@ -53,6 +73,7 @@ export function ProviderConfigModal({
   onSaved
 }: {
   config: MemoryProviderConfig
+  owner?: ResolvedOwner
   profile?: null | string
   provider: string
   open: boolean

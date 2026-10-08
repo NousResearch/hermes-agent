@@ -230,7 +230,7 @@ export interface EnvProviderProfile {
   url: null | string
 }
 
-export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
+export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'segmented' | 'select' | 'text'
 
 export interface MemoryProviderFieldOption {
   description: string
@@ -238,9 +238,28 @@ export interface MemoryProviderFieldOption {
   value: string
 }
 
+export interface MemoryProviderFieldCondition {
+  key: string
+  pattern: string
+  values: string[]
+}
+
+export interface MemoryProviderConfigAction {
+  after_field: string
+  description: string
+  label: string
+  name: string
+  payload_fields: string[]
+  refresh_after: boolean
+  visible_when: MemoryProviderFieldCondition[]
+}
+
 export interface MemoryProviderField {
   description: string
+  dynamic_options?: boolean
   group: string
+  help_label?: string
+  help_url?: string
   info?: string
   inline: boolean
   is_set: boolean
@@ -249,14 +268,45 @@ export interface MemoryProviderField {
   label: string
   options: MemoryProviderFieldOption[]
   placeholder: string
+  read_only?: boolean
+  required?: boolean
+  search_placeholder?: string
+  searchable?: boolean
   value: string
+  visible_when?: MemoryProviderFieldCondition[]
+}
+
+export interface MemoryProviderSummary {
+  items: Array<{ label: string; value: string }>
+  status?: {
+    label: string
+    message: string
+    state: 'checking' | 'healthy' | 'unhealthy' | 'unreachable'
+  }
+}
+
+export interface MemorySetupOperation {
+  id?: string
+  status: 'running' | 'completed' | 'confirmation_required' | 'failed' | 'busy' | 'unavailable'
+  action?: string
+  progress?: { stage: string; message: string }
+  result?: unknown
+  confirmation?: string
+  message?: string
 }
 
 export interface MemoryProviderConfig {
+  operation?: MemorySetupOperation
+  actions?: MemoryProviderConfigAction[]
+  description?: string
   docs_url: string
   fields: MemoryProviderField[]
   label: string
   name: string
+  status_action?: string
+  submit_action?: string
+  submit_label?: string
+  summary?: MemoryProviderSummary | null
 }
 
 /** Transport pinned on a custom endpoint; `''` = let the runtime auto-detect. Same

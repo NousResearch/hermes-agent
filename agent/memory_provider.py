@@ -60,6 +60,15 @@ class RecallStatus:
     glyph: str = INDICATOR_GLYPH
 
 
+class MemoryProviderConfigConflictError(ValueError):
+    """A provider action needs explicit user confirmation before retrying."""
+
+    def __init__(self, message: str, *, confirmation: str = "overwrite"):
+        super().__init__(message)
+        self.confirmation = confirmation
+
+
+
 # Prompts with no semantic signal; single source of truth for the core prefetch gate and
 # provider-side classifiers. Anchored and followed only by whitespace/punctuation, so
 # "k8s"/"yolo"/"note" do NOT match while "hi!"/"thanks :)"/"done???" do.
@@ -190,6 +199,33 @@ class MemoryProvider(ABC):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
+
+    def get_desktop_config(self, *, hermes_home: str) -> Dict[str, Any]:
+        """Return provider-owned values for a declarative Desktop form.
+
+        This must remain filesystem-only because it runs while settings load.
+        """
+        return {}
+
+    def handle_desktop_config_action(
+        self,
+        action: str,
+        payload: Dict[str, Any],
+        *,
+        hermes_home: str,
+    ) -> Dict[str, Any]:
+        """Run a provider-owned Desktop configuration operation."""
+        raise NotImplementedError(f"Provider {self.name} does not handle config action {action}")
+
+    def start_desktop_config_action(self, action: str, payload: Dict[str, Any], *, hermes_home: str) -> Dict[str, Any]:
+        """Start a profile-owned operation without holding a request or RPC open."""
+        from plugins.memory.desktop_setup import start
+        return start(self, action, payload, hermes_home=hermes_home)
+
+    def get_desktop_config_operation(self, *, hermes_home: str, operation_id: str = "") -> Dict[str, Any]:
+        """Read the latest operation, including inside an isolated plugin host."""
+        from plugins.memory.desktop_setup import status
+        return status(self, hermes_home=hermes_home, operation_id=operation_id)
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:

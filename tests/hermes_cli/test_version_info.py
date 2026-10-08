@@ -280,6 +280,62 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     assert read(unstamped)[0] == "0.0.0"
 
 
+def test_release_date_reads_the_stamp_commit_date(tmp_path):
+    """``hermes_cli.__release_date__`` dates the running build from the stamp's
+    commitDate (the tagged commit for a release) instead of the checked-in literal
+    that the tag-based release flow never bumps (#135217). A fresh interpreter,
+    since the attribute is resolved when the package is imported."""
+    import sys
+    from datetime import datetime, timezone
+
+    repo = Path(__file__).resolve().parents[2]
+    probe = (
+        f"import sys; sys.path.insert(0, {str(repo)!r}); import hermes_cli; "
+        "print(hermes_cli.__release_date__)"
+    )
+
+    def read(install_root: Path) -> str:
+        env = {**os.environ, "HERMES_INSTALL_ROOT": str(install_root)}
+        return subprocess.run(
+            [sys.executable, "-c", probe],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def stamp_dir(name: str, **extra) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        stamp = {
+            "commit": "8" * 40,
+            "baseVersion": "0.21.6",
+            "source": "ci",
+            "updateMechanism": "external",
+        }
+        stamp.update(extra)
+        (root / "install-stamp.json").write_text(json.dumps(stamp))
+        return root
+
+    dated = stamp_dir(
+        "dated", commitDate=int(datetime(2026, 10, 8, tzinfo=timezone.utc).timestamp())
+    )
+    assert read(dated) == "2026.10.8"
+
+    # Single-digit month and day must not gain zero padding.
+    jan = stamp_dir(
+        "jan", commitDate=int(datetime(2026, 1, 5, tzinfo=timezone.utc).timestamp())
+    )
+    assert read(jan) == "2026.1.5"
+
+    undated = stamp_dir("undated")
+    assert read(undated) == "2026.9.24"
+
+    unstamped = tmp_path / "unstamped"
+    unstamped.mkdir()
+    assert read(unstamped) == "2026.9.24"
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the blocking untracked scan uses a FIFO")
 def test_a_timed_out_status_probe_never_strands_index_lock(tmp_path):
     """The update opens its receipt with this probe; killed by its 3 s timeout while refreshing

@@ -2,26 +2,27 @@
 
 import sys
 
-__release_date__ = "2026.9.24"
 # Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
 __version__: str
+# Served lazily from the install stamp like __version__; the literal is only the
+# no-stamp fallback.
+__release_date__: str
+
+# Stable releases are tag-based (scripts/release.py cuts them without a repo
+# commit), so nothing in the release flow bumps a checked-in date literal: the
+# stamp's commitDate -- the tagged commit's own date -- is the date a build
+# actually shipped (#135217). Unstamped dev checkouts have no release date to
+# report and keep this placeholder.
+_RELEASE_DATE_FALLBACK = "2026.9.24"
 
 
-def __getattr__(name: str) -> str:
-    """Old-updater compat: shipped updaters import ``__version__`` after the checkout swap.
+def _read_release_stamp() -> dict:
+    """The install stamp, or ``{}`` when it is absent or unreadable.
 
-    tests/compat/old_updater_surface.json freezes that import. In-tree code resolves
-    identity through hermes_cli.version_info.get_version_info(); this reads only the
-    install stamp -- never git -- and keeps the pre-stamp placeholder when a checkout
-    has no stamp.
-
-    Lazy because ``pm`` is not importable when this package loads: a venv
-    editable-installed from a pre-PM tree maps only the top-level packages it knew
-    at install time, and the repo root reaches ``sys.path`` only once
-    ``hermes_bootstrap`` runs -- after this ``__init__``, from ``hermes_cli.main``.
+    Resolves exactly like ``__getattr__`` must (see its docstring for why pm is
+    optional here): ``pm.paths`` when importable, else the stamp beside the
+    repo root for the pre-PM editable-finder case.
     """
-    if name != "__version__":
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from hermes_cli.steward import read_install_stamp
     try:
         from pm.paths import repo_root
@@ -32,11 +33,52 @@ def __getattr__(name: str) -> str:
         import json
         from pathlib import Path
         try:
-            stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
-            return str(stamp.get("baseVersion") or "0.0.0")
-        except (OSError, ValueError, AttributeError):
-            return "0.0.0"
-    return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
+            data = json.loads(
+                (Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+    return read_install_stamp(repo_root())
+
+
+def _release_date() -> str:
+    """``YYYY.M.D`` for the stamp's commitDate, else the placeholder.
+
+    Every stamp writer records commitDate (epoch seconds) for the commit it
+    packaged -- the release tag's commit for a stable build -- formatted in UTC
+    without zero padding, matching how the literal has always read.
+    """
+    commit_date = _read_release_stamp().get("commitDate")
+    if isinstance(commit_date, int):
+        from datetime import datetime, timezone
+        moment = datetime.fromtimestamp(commit_date, tz=timezone.utc)
+        return f"{moment.year}.{moment.month}.{moment.day}"
+    return _RELEASE_DATE_FALLBACK
+
+
+def __getattr__(name: str) -> str:
+    """Old-updater compat: shipped updaters import ``__version__`` after the checkout swap.
+
+    tests/compat/old_updater_surface.json freezes that import. In-tree code resolves
+    identity through hermes_cli.version_info.get_version_info(); this reads only the
+    install stamp -- never git -- and keeps the pre-stamp placeholder when a checkout
+    has no stamp. ``__release_date__`` reads the same stamp so every banner and
+    status surface reports the date the running build was tagged, not a checked-in
+    literal the tag-based release flow never bumps.
+
+    Lazy because ``pm`` is not importable when this package loads: a venv
+    editable-installed from a pre-PM tree maps only the top-level packages it knew
+    at install time, and the repo root reaches ``sys.path`` only once
+    ``hermes_bootstrap`` runs -- after this ``__init__``, from ``hermes_cli.main``.
+    """
+    if name == "__release_date__":
+        return _release_date()
+    if name != "__version__":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return str(_read_release_stamp().get("baseVersion") or "0.0.0")
 
 
 def _ensure_utf8() -> bool:

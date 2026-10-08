@@ -2355,6 +2355,7 @@ export interface ProjectInfo {
   color?: string | null
   board_slug?: string | null
   primary_path?: string | null
+  parent_id?: string | null
   archived?: boolean
   created_at: number
   folders?: ProjectFolder[]
@@ -2476,6 +2477,7 @@ export interface RecordRepoItem {
 /** The policy the desktop scanned under (short or ``repo_scan_*`` long keys both accepted). */
 export interface RepoDiscoveryPolicyParams {
   enabled?: boolean | null
+  nested?: boolean | null
   roots?: string[] | null
   exclude_paths?: string[] | null
   repo_scan_enabled?: boolean | null

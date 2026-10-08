@@ -110,6 +110,34 @@ def _mark_background_review_read(path: Path) -> None:
         logger.debug("Could not record background-review skill read for %s", path, exc_info=True)
 
 
+_PREPROCESS_FAILURE_WARNING = (
+    "[WARNING: Skill preprocessing failed — template variables "
+    "(${HERMES_SKILL_DIR}, ${HERMES_SESSION_ID}) and inline shell snippets "
+    "(!`cmd`) in this skill were NOT resolved. Treat them as literal text.]\n\n"
+)
+
+
+def _preprocess_failure_fallback(content: str) -> str:
+    """Raw-content fallback for a raised ``preprocess_skill_content``.
+
+    Returns *content* unchanged, prefixed with a warning banner when — and
+    only when — it contains tokens the preprocessor would actually have
+    rewritten (the two supported ``${HERMES_*}`` template variables or an
+    inline ``!`cmd``` shell snippet, per ``agent/skill_preprocessing.py``).
+    Ordinary shell syntax such as ``${HOME}`` is never flagged.
+    """
+    try:
+        from agent.skill_preprocessing import has_preprocessable_tokens
+
+        if not has_preprocessable_tokens(content):
+            return content
+    except Exception:
+        # Token detection itself failing must not mask the skill content;
+        # serve it raw rather than guessing about a banner.
+        return content
+    return _PREPROCESS_FAILURE_WARNING + content
+
+
 def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args) -> str:
     """Apply the configured SKILL.md preprocessing; on failure log and serve raw."""
     try:
@@ -117,7 +145,11 @@ def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args
         return preprocess_skill_content(content, skill_dir, session_id=session_id)
     except Exception:
         logger.debug(debug_msg, *args, exc_info=True)
-        return content
+        # Surface a warning (when supported tokens are present) so the agent
+        # knows template variables and inline shell snippets were NOT
+        # resolved — otherwise it may treat ${HERMES_SKILL_DIR} as a literal
+        # path. Covers the local-skill and plugin-skill paths alike.
+        return _preprocess_failure_fallback(content)
 
 
 def _serve_plugin_skill(

@@ -43,6 +43,13 @@ _cache: dict[tuple[int, bytes], tuple[float, DashboardAuthProvider, Session | No
 _flights: dict[tuple[int, bytes], _Flight] = {}
 
 
+def _reset_for_tests() -> None:
+    """Test-only: drop all cached + in-flight refresh results."""
+    with _guard:
+        _cache.clear()
+        _flights.clear()
+
+
 def _prune(now: float) -> None:
     for key, (expires, _, _) in list(_cache.items()):
         if expires <= now:

@@ -217,6 +217,7 @@
   "connectors.notice.renamed",
   "connectors.notice.retiredNoReconnect",
   "connectors.notice.stopped",
+  "connectors.notice.waitEnded",
   "connectors.remove.confirm",
   "connectors.rename.hint",
   "connectors.rename.title",

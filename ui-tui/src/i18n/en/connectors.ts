@@ -53,6 +53,7 @@ export const connectorsEn = {
       removed: (app: string, name: string) => `Removed ${app} account ${name}.`,
       notConnected: (app: string) => `${app} did not connect. Try again.`,
       stopped: 'Stopped waiting. The link still works until it expires.',
+      waitEnded: 'Stopped waiting: the link expired. The list shows where the account stands.',
       nameInvalid: 'Use 1-32 lowercase letters, digits or -, starting with a letter or digit.',
       nameTaken: 'That name is already used.',
       retiredNoReconnect: 'A retired account cannot be reconnected. Add another account instead.',

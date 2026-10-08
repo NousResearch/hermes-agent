@@ -93,15 +93,12 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   // An agent question or a confirm owns the keyboard while it is up.
   const promptOpen = hasPromptOpen(useStore($overlayState))
 
-  // The TUI's gateway serves one profile, so account calls carry no `profile`; a launch home outside
-  // the profiles root reports `custom`, which no profile lookup can resolve.
-  const call = <R,>(method: string, params: Record<string, unknown>) => gw.request<R>(method, params)
-
   const { stdout } = useStdout()
   const width = clampOverlayWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6)), maxWidth)
 
   const load = () =>
-    call<ConnectorAccountsResult>('connectors.accounts', {})
+    gw
+      .request<ConnectorAccountsResult>('connectors.accounts', {})
       .then(r => {
         setRows(r?.accounts ?? [])
         setErr('')
@@ -131,7 +128,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   const startConnect = (app: string, alias: string, reconnect: boolean, name = alias) =>
     run(
       () =>
-        call<ConnectorsConnectResult>('connectors.connect', {
+        gw.request<ConnectorsConnectResult>('connectors.connect', {
           alias,
           connectors: [app],
           owner: ACCOUNT_OWNER,
@@ -175,7 +172,8 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     let timer: NodeJS.Timeout | undefined
 
     const tick = () =>
-      call<ConnectionOperationStatus>('connectors.operation.status', { op_id: linkOp, owner: ACCOUNT_OWNER })
+      gw
+        .request<ConnectionOperationStatus>('connectors.operation.status', { op_id: linkOp, owner: ACCOUNT_OWNER })
         .then(snapshot => {
           const target = snapshot?.targets?.[0] ?? null
 
@@ -210,8 +208,9 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     // The operation settles itself at its deadline; past it there is nothing left to wait for.
     function schedule() {
       if (linkDeadline && Date.now() / 1000 > linkDeadline) {
+        // A late reply may still have connected it, so only the wait is reported; the list shows the state.
         setStage({ kind: 'list' })
-        setNotice(T.connectors.notice.notConnected(linkApp))
+        setNotice(T.connectors.notice.waitEnded)
         void load()
 
         return
@@ -231,7 +230,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
   const openAddApp = () =>
     run(
-      () => call<ConnectorsListResult>('connectors.list', { owner: ACCOUNT_OWNER }),
+      () => gw.request<ConnectorsListResult>('connectors.list', { owner: ACCOUNT_OWNER }),
       r => {
         const apps = [...new Set((r?.connectors ?? []).map(row => row.connector))].sort()
 
@@ -249,7 +248,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
     run(
       () =>
-        call<ConnectorAccountRow>('connectors.accounts.rename', {
+        gw.request<ConnectorAccountRow>('connectors.accounts.rename', {
           alias: name,
           connection_id: row.connection_id
         }),
@@ -274,7 +273,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
   const remove = (row: ConnectorAccountRow) =>
     run(
-      () => call('connectors.accounts.remove', { connection_id: row.connection_id }),
+      () => gw.request('connectors.accounts.remove', { connection_id: row.connection_id }),
       () => {
         setStage({ kind: 'list' })
         setNotice(T.connectors.notice.removed(row.connector, accountName(row)))

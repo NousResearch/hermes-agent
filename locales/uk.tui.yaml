@@ -224,6 +224,7 @@ connectors.notice.removed: "Обліковий запис {0} «{1}» видал
 connectors.notice.renamed: "Перейменовано на «{1}» ({0})."
 connectors.notice.retiredNoReconnect: "Архівний обліковий запис не можна перепідключити. Натомість додайте інший обліковий запис."
 connectors.notice.stopped: "Очікування зупинено. Посилання працює, доки не закінчиться його термін дії."
+connectors.notice.waitEnded: "Очікування припинено: термін дії посилання минув. Стан облікового запису видно у списку."
 connectors.remove.confirm: "Видалити обліковий запис {0} «{1}»? Hermes вийде з нього. y/N"
 connectors.rename.hint: "Enter зберегти · Esc скасувати"
 connectors.rename.title: "Перейменувати обліковий запис {0} «{1}»"

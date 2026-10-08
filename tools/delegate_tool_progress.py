@@ -303,6 +303,8 @@ class _ChildProgressRelay:
         self.batch: List[str] = []
         self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
+        self._terminal_ids = set()
+        self._event_lock = threading.RLock()
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
@@ -413,7 +415,15 @@ class _ChildProgressRelay:
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:
-            getattr(self, method)(tool_name, preview, args, kwargs)
+            # A registry-forced terminal event and a late worker may race. Nested
+            # lifecycle events can override identity, so dedupe per child, not relay.
+            child_id = kwargs.get("subagent_id", self.subagent_id)
+            with self._event_lock:
+                if child_id in self._terminal_ids:
+                    return
+                if key == "subagent.complete":
+                    self._terminal_ids.add(child_id)
+                getattr(self, method)(tool_name, preview, args, kwargs)
 
 def _build_child_progress_callback(
     task_index: int, goal: str, parent_agent, task_count: int = 1, *, subagent_id: Optional[str] = None,

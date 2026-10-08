@@ -790,12 +790,15 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
-        return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
+        return acp.start_tool_call(
+            tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[],
+            raw_input=arguments if safe_name == "delegate_task" else None,
+        )
 
 
 def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
-    raw_input = None
+    raw_input = arguments if tool_name == "delegate_task" else None
     if tool_name in ("patch", "write_file") and edit_diff is not None:
         content = [acp.tool_diff_content(path=edit_diff.path, old_text=edit_diff.old_text, new_text=edit_diff.new_text)]
     elif tool_name in _START_CONTENT_BUILDERS:
@@ -826,11 +829,14 @@ def build_tool_complete(
         content = [_text(error_text)] if error_text else None
     else:
         content = _build_tool_complete_content(tool_name, result, function_args=function_args, snapshot=snapshot)
-    structured = isinstance(_json_loads_maybe(result), (dict, list))
+    parsed = _json_loads_maybe(result)
+    structured = isinstance(parsed, (dict, list))
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
         status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
-        raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
+        raw_output=(parsed if structured else result) if tool_name == "delegate_task" else (
+            None if tool_name in _POLISHED_TOOLS or structured else result
+        ),
     )
 
 

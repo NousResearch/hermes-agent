@@ -10,6 +10,8 @@ import asyncio
 import logging
 import uuid
 from collections import deque
+from contextvars import ContextVar
+from threading import Lock
 from typing import Any, Callable, Deque, Dict
 
 import acp
@@ -89,6 +91,10 @@ def close_tool_call(
         tc_id, name, result=str(result) if result is not None else None,
         function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
+    if name == "terminal" and not is_error:
+        from .background import track_background_process
+
+        track_background_process(conn, session_id, loop, tc_id, result)
     if not queue:
         tool_call_ids.pop(name, None)
     return tc_id
@@ -116,6 +122,131 @@ def flush_open_tool_calls(
     return flushed
 
 
+# Only these child events and scalar fields cross the ACP boundary. In particular,
+# subagent.tool's args belong to the CHILD tool, not the parent delegation.
+_DELEGATION_EVENTS = frozenset({
+    "subagent.spawn_requested", "subagent.start", "subagent.tool", "subagent.progress", "subagent.thinking",
+    "subagent.text", "subagent.complete",
+})
+_DELEGATION_TEXT_LIMITS = {
+    "goal": 2000, "model": 256, "status": 64, "summary": 2000, "error": 2000,
+    "subagent_id": 256, "parent_id": 256, "child_session_id": 256, "delegation_id": 256,
+}
+
+
+def _delegation_fields(kwargs: dict) -> dict:
+    fields = {}
+    for key, limit in _DELEGATION_TEXT_LIMITS.items():
+        value = kwargs.get(key)
+        if isinstance(value, str):
+            # Never truncate routing identities into collisions.
+            if key.endswith("_id") and (not value or len(value) > limit):
+                continue
+            fields[key] = value[:limit]
+    for key in ("task_index", "task_count", "depth", "tool_count"):
+        value = kwargs.get(key)
+        if type(value) is int and 0 <= value <= 2**31 - 1:
+            fields[key] = value
+    duration = kwargs.get("duration_seconds")
+    if type(duration) in (int, float) and 0 <= duration <= 1e12:
+        fields["duration_seconds"] = duration
+    return fields
+
+
+class _DelegationProgress:
+    """Carry exact ACP ownership through Hermes' copied worker ContextVars.
+
+    tool.started runs inside the invocation worker, before delegate_task creates
+    children. Hermes copies that context into async dispatch, parallel child runs,
+    and child conversation workers. A callback-local variable isolates sessions
+    and turns; background children retain their parent even after step completion.
+    Unknown contextless events are dropped, never matched by goal, args, or FIFO.
+    """
+
+    def __init__(self):
+        self.current = ContextVar("acp_delegation", default=None)
+        self.parents = {}
+        self.bindings = {}
+        self.lock = Lock()
+
+    def start(self, tc_id: str, name: str) -> None:
+        parent = None
+        if name == "delegate_task":
+            parent = {"id": tc_id, "children": {}}
+            with self.lock:
+                self.parents[tc_id] = parent
+                if len(self.parents) > 256:
+                    oldest = next(iter(self.parents))
+                    self.parents.pop(oldest)
+                    # Remove whole ambiguous bindings too: eviction must never
+                    # turn a conflicting identity into a guessed unique owner.
+                    self.bindings = {alias: owners for alias, owners in self.bindings.items()
+                                     if oldest not in owners}
+        self.current.set(parent)
+
+    def update(self, event: str, name: str, preview: str, kwargs: dict):
+        """Called under lock so per-child cumulative snapshots are emitted in order."""
+        fields = _delegation_fields(kwargs)
+        if "task_index" not in fields:
+            return None
+        aliases = [(key, fields[key]) for key in ("delegation_id", "subagent_id") if key in fields]
+        parent = self.current.get()
+        has_context = parent is not None
+        if parent is None:
+            owners = set().union(*(self.bindings.get(alias, set()) for alias in aliases))
+            if len(owners) != 1:
+                return None
+            parent = self.parents.get(next(iter(owners)))
+            if parent is None:
+                return None
+        if any(self.bindings.get(alias, {parent["id"]}) != {parent["id"]} for alias in aliases):
+            # Mark contradictory identities ambiguous for future contextless events.
+            for alias in aliases:
+                if alias in self.bindings:
+                    if parent["id"] in self.parents:
+                        self.bindings[alias].add(parent["id"])
+                    else:
+                        self.bindings.pop(alias)
+            return None
+        # A grandchild must carry its own stable identity; its task_index is local
+        # to its nested batch, not the top-level parent's child list.
+        if "subagent_id" in fields:
+            child_key = ("child", fields["subagent_id"])
+        elif "delegation_id" in fields:
+            child_key = (fields["delegation_id"], fields["task_index"])
+        elif fields.get("parent_id") or fields.get("depth", 0) > 0:
+            return None
+        else:
+            child_key = ("index", fields["task_index"])
+        children = parent["children"]
+        if child_key not in children:
+            if len(children) >= 128:
+                return None
+            children[child_key] = {"fields": {}, "streams": {}}
+        # Copied contexts keep evicted live owners valid, but must not recreate
+        # fallback bindings for parents no longer retained by this callback.
+        for alias in aliases if has_context and parent["id"] in self.parents else ():
+            if alias in self.bindings or len(self.bindings) < 2048:
+                self.bindings.setdefault(alias, set()).add(parent["id"])
+        child = children[child_key]
+        if child.get("complete"):
+            return None
+        if event == "subagent.complete":
+            child["complete"] = True
+        child["fields"].update(fields)
+        payload = dict(child["fields"], event=event)
+        text = preview if isinstance(preview, str) else ""
+        if event in {"subagent.text", "subagent.thinking"}:
+            text = (child["streams"].get(event, "") + text)[-2000:]
+            child["streams"][event] = text
+        payload["text"] = text[:2000]
+        if event == "subagent.tool" and isinstance(name, str):
+            payload["tool"] = name[:256]
+        return acp.update_tool_call(
+            parent["id"], status="in_progress", raw_output={"hermesDelegation": payload},
+        )
+
+
 def make_tool_progress_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
@@ -128,9 +259,19 @@ def make_tool_progress_cb(
     Emits ``ToolCallStart`` for ``tool.started`` and tracks IDs in a FIFO per tool
     name so parallel same-name calls complete against the right ACP tool call.
     ``tool.completed`` closes that call with its own result — the step callback
-    only fires on the *next* step, which leaves a turn's last tools open."""
+    only fires on the *next* step, which leaves a turn's last tools open.
+    Child progress carries bounded structured metadata on its originating delegate
+    call; a child completion never completes the parent ACP tool call."""
+
+    delegation = _DelegationProgress()
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type in _DELEGATION_EVENTS:
+            with delegation.lock:
+                update = delegation.update(event_type, name, preview, kwargs)
+                if update is not None:
+                    _send_update(conn, session_id, loop, update)
+            return
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True
@@ -144,6 +285,7 @@ def make_tool_progress_cb(
             return
         args = coerce_tool_args(args)
         tc_id = make_tool_call_id()
+        delegation.start(tc_id, name)
         queue = _upgrade_queue(tool_call_ids, name)
         if queue is None:
             queue = tool_call_ids[name] = deque()

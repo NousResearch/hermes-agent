@@ -357,6 +357,11 @@ instead of silently eating the click. Open-ended clarify questions render as a p
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
+When `strict_mention` or `thread_require_mention` is on, a typed reply from
+the person the bot is waiting on still answers a pending clarify prompt in
+that thread without an @mention. Authorization and `allowed_channels` still
+apply.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -657,6 +662,13 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Natural threading under strict_mention / thread_require_mention: in these
+  # channels a top-level @mention engages the thread, and later replies in
+  # that thread need no mention (also after a gateway restart). Other
+  # threads and top-level messages still need a mention.
+  # Comma-separated IDs or a list. Env: SLACK_NATURAL_THREAD_CHANNELS.
+  natural_thread_channels: ""
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -697,6 +709,7 @@ The gating options compose — each answers a different question:
 | `free_response_channels` | Which channels are exempt from `require_mention`? | none | Listed channels |
 | `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
+| `natural_thread_channels` | In which channels may an **engaged thread** continue without a mention, even under `strict_mention` / `thread_require_mention`? | none | Listed channels |
 | `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
 

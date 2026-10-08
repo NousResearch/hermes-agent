@@ -15,7 +15,7 @@ from pm.lock import Lockfile
 from pm.registry import get_package
 from pm.store import ALL_TARGETS
 from tests.pm._fixtures import make_tar
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 @pytest.fixture

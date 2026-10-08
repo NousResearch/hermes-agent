@@ -1227,7 +1227,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> List[dict]:
+    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> list[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1345,7 +1345,7 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     return results
 
 
-def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
+def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = "") -> list[dict]:
     """Add the virtual MoA provider row used by interactive model pickers.
 
     ``list_authenticated_providers()`` only returns real/auth-backed providers; the CLI inventory
@@ -1366,7 +1366,7 @@ def list_picker_providers(
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
-    probe_current_custom_provider: bool = False) -> List[dict]:
+    probe_current_custom_provider: bool = False) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
@@ -1385,7 +1385,7 @@ def list_picker_providers(
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
-    filtered: List[dict] = []
+    filtered: list[dict] = []
     for p in providers:
         if str(p.get("slug", "")).lower() == "openrouter":
             try:

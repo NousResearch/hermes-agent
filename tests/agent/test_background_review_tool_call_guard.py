@@ -27,8 +27,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import agent.background_review as bg  # noqa: E402
-from agent import review_admission  # noqa: E402
+import agent.background_review as bg
+from agent import review_admission
 
 
 @pytest.fixture(autouse=True)

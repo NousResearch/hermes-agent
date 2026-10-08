@@ -64,7 +64,7 @@ def symptom(ok: Any, message: str) -> None:
 
 def payload(result: str) -> dict[str, Any]:
     """The JSON object inside a tool result's untrusted-content wrapper."""
-    match = re.search(r"^\{.*\}$", result, re.M | re.S)
+    match = re.search(r"^\{.*\}$", result, re.MULTILINE | re.DOTALL)
     assert match, f"no JSON payload in tool result: {result!r}"
     return json.loads(match.group(0))
 

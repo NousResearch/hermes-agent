@@ -117,7 +117,7 @@ def _configure_lifecycle_connect(monkeypatch, adapter, apps):
     monkeypatch.setattr(tg_adapter, "resolve_proxy_url", lambda *args, **kwargs: None)
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(adapter, "_release_platform_lock", MagicMock())
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", MagicMock())
     return builders
 
@@ -455,7 +455,7 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
 
     adapter = _make_adapter()
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args, **kwargs: True)
-    monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    monkeypatch.setattr(adapter, "_fallback_ips", list)
     _, progress = adapter._begin_polling_generation()
 
     assert await adapter.connect() is False

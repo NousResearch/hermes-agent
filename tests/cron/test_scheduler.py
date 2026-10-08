@@ -375,7 +375,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 future.set_exception(exc)
             return future
 
@@ -440,7 +440,7 @@ class TestDeliverResultWrapping:
             future = Future()
             try:
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -1550,7 +1550,7 @@ class TestRunJobWakeGate:
         """When _run_job_script output ends with {wakeAgent: false}, the agent
         is not invoked and run_job returns the SILENT marker so delivery is
         suppressed."""
-        import cron.scheduler as scheduler
+        from cron import scheduler
         from cron import scheduler_script as sched_script
 
         with patch.object(sched_script, "_run_job_script",
@@ -1566,7 +1566,7 @@ class TestRunJobWakeGate:
     def test_wake_true_runs_agent_with_injected_output(self):
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""
-        import cron.scheduler as scheduler
+        from cron import scheduler
         from cron import scheduler_script as sched_script
 
         script_output = '{"wakeAgent": true, "data": {"new": 3}}'
@@ -2204,7 +2204,7 @@ class TestCronContinuableSurfaceInChannel:
             try:
                 import asyncio as _asyncio
                 future.set_result(_asyncio.run(coro))
-            except BaseException as _e:  # noqa: BLE001
+            except BaseException as _e:
                 future.set_exception(_e)
             return future
 
@@ -2310,7 +2310,7 @@ class TestCronContinuableSurfaceInChannel:
         in_channel IS the continuation surface: the seed must fire on origin
         match alone. attach_to_session stays the opt-in for the SEPARATE
         default-surface mirror behavior; it must not be required here."""
-        from cron.scheduler import _deliver_result  # noqa: F401 (driven via helper)
+        from cron.scheduler import _deliver_result
 
         adapter = self._slack_adapter(supports_inchannel=True)
         with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:

@@ -5,7 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import contextlib
-from hermes_cli.cli_output import line_input  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -19,7 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import setup_platforms  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli import setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -31,9 +31,9 @@ if os.name == "posix":
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
-from gateway.restart import (  # noqa: F401 — resolved lazily by siblings through the facade
+from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -45,7 +45,7 @@ from gateway.restart import (  # noqa: F401 — resolved lazily by siblings thro
     resolve_restart_exit_wait_budget,
     resolve_systemd_timeout_stop_sec,
 )
-from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
     is_managed,
@@ -56,7 +56,7 @@ from hermes_cli.config import (  # noqa: F401 — resolved lazily by siblings th
 )
 
 # display_hermes_home is imported lazily: hermes_constants may be a cached pre-update version.
-from hermes_cli.setup import (  # noqa: F401 — resolved lazily by siblings through the facade
+from hermes_cli.setup import (
     print_header,
     print_info,
     print_success,
@@ -825,7 +825,7 @@ def find_windows_gateway_services(
         return []
     try:
         if psutil_module is None:
-            import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
+            import psutil as psutil_module  # type: ignore[no-redef]
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
         from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots
@@ -3376,7 +3376,7 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     import re
     return re.sub(
         r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
-        _normalize_service_definition(text), flags=re.S,
+        _normalize_service_definition(text), flags=re.DOTALL,
     )
 
 
@@ -3394,7 +3394,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
-    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))  # noqa: E731
+    norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))
     return norm(installed) == norm(expected)
 
 
@@ -3404,7 +3404,7 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
     import re
     import tempfile
     candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S)
+    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.DOTALL)
     temp_roots = {
         Path(tempfile.gettempdir()).resolve(),
         Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
@@ -3994,7 +3994,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # =============================================================================
 
 
-from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_launchd import (
     get_launchd_label,
     _probe_launchd_domain_for_label,
     _launchd_domain,
@@ -4710,7 +4710,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
-from hermes_cli.gateway_setup_wizard import (  # noqa: E402,F401 — facade re-exports; tests patch here
+from hermes_cli.gateway_setup_wizard import (
     _PLATFORMS,
     _all_platforms,
     _platform_status,
@@ -4938,7 +4938,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     for profile in profiles:
         try:
             fn(f"gateway-{profile}")
-        except Exception as exc:  # noqa: BLE001 — report and continue
+        except Exception as exc:
             errors.append((profile, exc))
     succeeded = len(profiles) - len(errors)
     verb = "stopped" if action == "stop" else "restarted"

@@ -145,7 +145,7 @@ class TestGoalMigratesOnRotation:
         # Set a persistent goal on the parent via the real persistence path.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
             (tmp_path / ".hermes").mkdir(exist_ok=True)
-            import hermes_cli.goals as goals
+            from hermes_cli import goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):
@@ -1073,9 +1073,9 @@ class TestFallbackStreakFollowsRotation:
             side_effect=_fallback_compress,
         ):
             compressor.compression_count = 1
-            setattr(agent, "context_compressor", compressor)
+            agent.context_compressor = compressor
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
-        child = getattr(agent, "session_id")
+        child = agent.session_id
 
         assert child != parent
         assert compressor._fallback_compression_streak == 1
@@ -1731,7 +1731,7 @@ class TestTodoSnapshotScaffoldingTails:
         db.create_session(session_id, source="telegram")
         agent = _build_agent_with_db(db, session_id, platform="telegram")
         pending_task = "- [ ] pending-task. Continue after the next compaction"
-        getattr(agent, "context_compressor").compress.return_value = [
+        agent.context_compressor.compress.return_value = [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "assistant", "content": "acknowledged"},
             {

@@ -21,8 +21,8 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -53,7 +53,7 @@ class GatewayAgentCacheMixin:
         DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
         None so opting out of a non-None default still rebuilds. Includes the live tool registry
         generation: MCP reloads mutate the registry without touching config.yaml."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
             default = cfg_get(DEFAULT_CONFIG, section, key)
@@ -160,7 +160,7 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
@@ -433,6 +433,14 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            try:
+                store.set_session_yolo(session_key, False)
+            except Exception:
+                # Never fails the boundary itself, but a surviving ON would come back after a restart.
+                logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh, monotonically increasing run generation token (NEVER reset): a late result
@@ -626,13 +634,13 @@ class GatewayAgentCacheMixin:
             # Legacy 3-tuple keeps its 3-element shape for callers indexing ``cached[2]``.
             _cache[session_key] = (cached[0], cached[1], _live) + (() if _snapshot_sid is None else (_snapshot_sid,))
 
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
+    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: list[str]) -> None:
         """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
         if not session_key or not notes:
             return
         self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
-    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
+    def _consume_pending_turn_sidecar_notes(self, session_key: str) -> list[str]:
         state = self._peek_session_state(session_key) if session_key else None
         if state is None:
             return []
@@ -1034,7 +1042,7 @@ class GatewayAgentCacheMixin:
         # refs) — len(plan) is 0 once the daemon thread finishes, hence the pre-captured count.
         return evicted_count
 
-    def _release_pressure_batch(self, plan: List[tuple]) -> None:
+    def _release_pressure_batch(self, plan: list[tuple]) -> None:
         """Release a pressure-evicted batch sequentially on one daemon thread, then ``malloc_trim`` so
         RSS actually falls. The plan is drained (``pop`` + ``del``), not iterated, so no local
         reference pins evicted agents during ``gc.collect`` + trim (else the valve over-evicts)."""
@@ -1094,7 +1102,7 @@ class GatewayAgentCacheMixin:
             return 0
         now = time.time()
         idle_ttl = self._agent_cache_idle_ttl()
-        to_evict: List[tuple] = []
+        to_evict: list[tuple] = []
         running_ids = self._running_agent_ids()
         with _lock:
             for key, entry in list(_cache.items()):

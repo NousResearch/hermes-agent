@@ -579,12 +579,12 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # Extracted sections, re-exported so callers and test patches keep resolving through
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
-from hermes_cli.setup_tts import setup_tts  # noqa: E402
-from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
-from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
-from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
-from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section  # noqa: E402
-from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
+from hermes_cli.setup_tts import setup_tts
+from hermes_cli.setup_terminal import setup_terminal_backend
+from hermes_cli.setup_platforms import setup_gateway
+from hermes_cli.setup_summary import _print_setup_summary
+from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section
+from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
 
 
 # ── Main Wizard Orchestrator ──

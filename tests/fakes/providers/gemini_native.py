@@ -462,7 +462,7 @@ class GeminiFake:
         self._thread.start()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=10)
@@ -587,10 +587,10 @@ class GeminiFake:
             protocol_version = "HTTP/1.1"
             tunneled = False
 
-            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - base signature
+            def log_message(self, format: str, *args: Any) -> None:
                 return
 
-            def do_CONNECT(self) -> None:  # noqa: N802 - http.server naming
+            def do_CONNECT(self) -> None:
                 host = self.path.split(":", 1)[0].lower()
                 if self.tunneled or host != GEMINI_HOST:
                     with fake._lock:
@@ -621,12 +621,12 @@ class GeminiFake:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 if not self.tunneled:
                     return self._refuse_plain()
                 fake._handle(self, "GET")
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 if not self.tunneled:
                     return self._refuse_plain()
                 fake._handle(self, "POST")

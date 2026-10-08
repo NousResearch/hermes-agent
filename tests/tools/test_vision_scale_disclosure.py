@@ -22,10 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 PIL = pytest.importorskip("PIL")
-from PIL import Image  # noqa: E402
+from PIL import Image
 
-from tools.computer_use.tool import _shrink_capture_for_vision  # noqa: E402
-from tools.vision_tools import _build_scale_note, vision_analyze_tool  # noqa: E402
+from tools.computer_use.tool import _shrink_capture_for_vision
+from tools.vision_tools import _build_scale_note, vision_analyze_tool
 
 
 ORIG_W, ORIG_H = 3024, 1964

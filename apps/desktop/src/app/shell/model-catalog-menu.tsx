@@ -171,6 +171,8 @@ interface ModelCatalogMenuProps {
   controller: ModelMenuController
   /** Rows appended under the catalog (Refresh Models, Edit Models, …). */
   footer?: ReactNode
+  /** Rows above the search, outside the keyboard list (the local-setup offer). */
+  header?: ReactNode
   gateway?: HermesGateway
   /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
    *  a tile's menu queries the session owner's backend, not chrome's. */
@@ -194,6 +196,35 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
+function queryErrorMessage(error: unknown): null | string {
+  return error ? (error instanceof Error ? error.message : String(error)) : null
+}
+
+function useDownloadRows(owner: LocalModelsOwner, localModelsEnabled: boolean) {
+  const downloadsKey: string = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): string =>
+      localModelsEnabled
+        ? runningModelDownloads(jobs)
+            .map(job => `${job.job_id}\u0000${job.target}`)
+            .join('\u0001')
+        : '',
+    localModelsEnabled
+  )
+
+  return useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+}
+
 /**
  * THE model catalog menu: searchable, provider-grouped, `-fast` families
  * collapsed to one row, per-row hover submenu for thinking/effort/fast, full
@@ -204,6 +235,7 @@ interface ProviderGroup {
 export function ModelCatalogMenu({
   controller,
   footer,
+  header,
   gateway,
   includeMoa = false,
   ownerConnectionId,
@@ -255,7 +287,7 @@ export function ModelCatalogMenu({
   // (it unmounts on close); errors read as "nothing loading" — remote-only
   // installs have no local-models routes.
   const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
-  const localStatus = useLocalModelsStatus(owner, localModelsEnabled)
+  const localStatus = useLocalModelsStatus(owner, localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 
@@ -267,34 +299,9 @@ export function ModelCatalogMenu({
   // (breaking open submenus and focus — the #72163 class). Subscribe to a
   // STABLE identity projection instead: it changes only when a download
   // starts or ends. Each row selects its own percent scalar.
-  const downloadsKey: string = useLocalRuntimeJobs(
-    owner,
-    (jobs: readonly LocalRuntimeJob[]): string =>
-      localModelsEnabled
-        ? runningModelDownloads(jobs)
-            .map(job => `${job.job_id}\u0000${job.target}`)
-            .join('\u0001')
-        : '',
-    localModelsEnabled
-  )
+  const downloads = useDownloadRows(owner, localModelsEnabled)
 
-  const downloads = useMemo(
-    () =>
-      downloadsKey === ''
-        ? []
-        : downloadsKey.split('\u0001').map(pair => {
-            const [jobId, target] = pair.split('\u0000')
-
-            return { jobId, target }
-          }),
-    [downloadsKey]
-  )
-
-  const error = modelOptions.error
-    ? modelOptions.error instanceof Error
-      ? modelOptions.error.message
-      : String(modelOptions.error)
-    : null
+  const error = queryErrorMessage(modelOptions.error)
 
   const providers = modelOptions.data?.providers
 
@@ -673,6 +680,7 @@ export function ModelCatalogMenu({
 
   return (
     <>
+      {header}
       <DropdownMenuSearch
         aria-label={copy.search}
         onKeyDown={event => {

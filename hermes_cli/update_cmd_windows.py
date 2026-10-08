@@ -666,7 +666,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
 
 def _win_service(name: str):
     """``(psutil, service)`` for the named SCM service (psutil imported here so tests can stub the module)."""
-    import psutil  # noqa: PLC0415
+    import psutil
     return psutil, psutil.win_service_get(name)
 
 
@@ -949,7 +949,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if not _m()._is_windows():
         return None
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
-        import gateway.status  # noqa: F401 — fail before the first stop, not half-way through it
+        import gateway.status
         from hermes_cli.gateway import _capture_gateway_argv
     from hermes_cli import update_pause_record as pause_record
     with _abort_on_error("Could not read the gateways an earlier update paused"):
@@ -1299,7 +1299,7 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
 
 def _service_running(name: str) -> bool:
     try:
-        import psutil  # noqa: PLC0415 -- the same module _win_service resolves (tests stub it)
+        import psutil
     except ImportError:
         return False
     try:

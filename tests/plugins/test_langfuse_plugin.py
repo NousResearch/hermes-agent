@@ -2148,8 +2148,8 @@ class TestCanonicalCostExport:
         import agent.usage_pricing as pricing
 
         entry = pricing.PricingEntry(
-            input_cost_per_million=Decimal("1"),
-            output_cost_per_million=Decimal("2"),
+            input_cost_per_million=Decimal(1),
+            output_cost_per_million=Decimal(2),
             cache_read_cost_per_million=Decimal("0.5"),
             cache_write_cost_per_million=Decimal("1.5"),
             source="custom_contract",
@@ -2176,8 +2176,8 @@ class TestCanonicalCostExport:
         import agent.usage_pricing as pricing
 
         entry = pricing.PricingEntry(
-            input_cost_per_million=Decimal("1"),
-            output_cost_per_million=Decimal("2"),
+            input_cost_per_million=Decimal(1),
+            output_cost_per_million=Decimal(2),
             cache_read_cost_per_million=Decimal("0.5"),
             cache_write_cost_per_million=Decimal("1.5"),
             request_cost=Decimal("0.01"),
@@ -2216,8 +2216,8 @@ class TestCanonicalCostExport:
         import agent.usage_pricing as pricing
 
         entry = pricing.PricingEntry(
-            input_cost_per_million=Decimal("1"),
-            output_cost_per_million=Decimal("2"),
+            input_cost_per_million=Decimal(1),
+            output_cost_per_million=Decimal(2),
             cache_read_cost_per_million=None,
             source="provider_models_api",
         )

@@ -262,8 +262,8 @@ class TurnLeaseAdmission:
     """Outcome of ``admit_durable_turn_lease``: exactly one of ``lease`` / ``early_result`` may be set."""
 
     lease: Optional[DurableTurnLease] = None
-    early_result: Optional[Dict[str, Any]] = None
-    conversation_history: Optional[List[Dict[str, Any]]] = None
+    early_result: Optional[dict[str, Any]] = None
+    conversation_history: Optional[list[dict[str, Any]]] = None
 
 
 def _committed_lease_expiry(db, session_id: str, holder: str, floor: float) -> float:
@@ -296,8 +296,8 @@ def _durable_session_exists(db, session_id: str) -> Optional[bool]:
 
 
 def admit_durable_turn_lease(
-    agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
-    conversation_history: Optional[List[Dict[str, Any]]],
+    agent, *, session_id: str, relay_turn_id: str, task_context: dict[str, Any],
+    conversation_history: Optional[list[dict[str, Any]]],
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease (the row need not exist yet); build (not start) its threads.
 
@@ -408,8 +408,8 @@ def admit_durable_turn_lease(
 
 
 def carry_unadmitted_user_message(
-    early_result: Dict[str, Any], user_message: Any, persist_user_message: Any, *,
-    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[Dict[str, Any]],
+    early_result: dict[str, Any], user_message: Any, persist_user_message: Any, *,
+    timestamp: Optional[float], display_kind: Optional[str], display_metadata: Optional[dict[str, Any]],
     platform_id: Optional[str],
 ) -> None:
     """A follow-up that interrupted the lease wait must not consume the accepted input: append it to
@@ -427,7 +427,7 @@ def carry_unadmitted_user_message(
         not isinstance(user_message, list) or isinstance(persist_user_message, list)
     ):
         durable_content = persist_user_message
-    deferred_user: Dict[str, Any] = {
+    deferred_user: dict[str, Any] = {
         "role": "user", "content": durable_content, _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
     }
     if isinstance(user_message, str) and user_message != durable_content:
@@ -441,7 +441,7 @@ def carry_unadmitted_user_message(
     append_message(early_result["messages"], deferred_user, timestamp=timestamp)
 
 
-def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:
+def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> dict[str, Any]:
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)

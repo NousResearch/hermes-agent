@@ -16,7 +16,7 @@ import pytest
 
 
 def _fake_key(tag: str) -> str:
-    return "-".join((("tts", tag, "test", "key")))
+    return "-".join(("tts", tag, "test", "key"))
 
 
 @pytest.fixture(autouse=True)

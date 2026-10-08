@@ -73,6 +73,7 @@ from hermes_state_wal import (
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
+from hermes_state_tool_retries import SessionToolRetriesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -204,7 +205,7 @@ def _default_db_path() -> Path:
 # ``hermes_state._STATE_DB_GUARD_BYPASS`` (``@pytest.mark.live_system_guard_bypass`` escape hatch)
 # and ``_EXTRA_DENY_ROOTS`` (the pre-sandbox root, so custom-HERMES_HOME deployments are covered).
 _STATE_DB_GUARD_BYPASS = False
-_STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
+_STATE_DB_GUARD_EXTRA_DENY_ROOTS: tuple[Path, ...] = ()
 
 
 def _ensure_test_isolation(db_path: Path) -> None:
@@ -306,7 +307,7 @@ _REVIEW_HARNESS_PREFIXES = (
 )
 
 
-def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
+def _is_background_review_harness_message(msg: dict[str, Any]) -> bool:
     """Persisted harness prompt (older builds wrote the forked curator's turns
     into real sessions; replaying them hijacks the session)."""
     if not isinstance(msg, dict) or msg.get("role") not in {"user", "system"}:
@@ -315,11 +316,11 @@ def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
     return isinstance(content, str) and content.lstrip().startswith(_REVIEW_HARNESS_PREFIXES)
 
 
-def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_background_review_harness(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop harness messages and the curator-mode assistant reply that immediately followed each."""
     if not messages:
         return messages
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     skip_next_assistant = False
     previous_was_harness = False
     for msg in messages:
@@ -343,7 +344,7 @@ def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dic
 _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
 
-def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
+def _is_stale_tool_call_marker_message(msg: dict[str, Any]) -> bool:
     """Assistant tool-call turn whose content is a bare ``[marker]`` (an older
     conversation_loop persisted a local template's marker as the final response)."""
     if not isinstance(msg, dict) or msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -352,7 +353,7 @@ def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:
     return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
 
 
-def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_stale_tool_call_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Blank stale ``[marker]`` assistant content (replaying it teaches the model
     to keep emitting it); tool_call/result pairing stays intact."""
     repaired = 0
@@ -446,7 +447,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
 
 # Process-wide shared SessionDB registry: long-lived in-process callers share ONE writer
 # connection per resolved path via hermes_state_registry.acquire(); one-shots use SessionDB() + close().
-def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
     """Compatibility delegate to the state-holder authority."""
     return _state_holders.foreign_state_db_holders(db_path)
 
@@ -461,7 +462,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -469,7 +470,7 @@ class SessionDB(
     # sources have their own lifecycle owners; unknown sources fail closed.
     # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
     # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
-    _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
+    _AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = (
         "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
     )
 
@@ -527,7 +528,7 @@ class SessionDB(
         )
 
     @staticmethod
-    def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    def _session_row_dict(row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         for column in ("system_prompt", "tool_names"):
             if f"_{column}_resolved" in data:
@@ -619,7 +620,7 @@ class SessionDB(
         # replace cannot limp through in-place surgery (inode: mv/new-file; application_id: cp).
         self._db_file_identity: Optional[tuple] = None
         self._db_file_application_id: int = 0
-        self._db_sidecar_identity: Dict[str, tuple] = {}
+        self._db_sidecar_identity: dict[str, tuple] = {}
         self._db_replaced = self._db_wal_generation_lost = False
         # Durable capture of a lost WAL generation (see _capture_retired_generation): once per handle.
         self._retired_generation_capture: Optional[Path] = None
@@ -1132,7 +1133,7 @@ class SessionDB(
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
         return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchone())
 
-    def _read_all(self, sql: str, params: Any = ()) -> List[sqlite3.Row]:
+    def _read_all(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
         """``fetchall()`` of one read-only statement via ``_read_ctx``."""
         return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall())
 
@@ -1447,7 +1448,7 @@ class SessionDB(
         time.sleep(min(jitter, max(deadline - now, 0.001)))
         return True
 
-    def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
+    def _foreign_state_db_holders(self) -> list[tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
 
@@ -1691,7 +1692,7 @@ class SessionDB(
             tuple(lineage))
         return bool(rows)
 
-    def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
+    def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
         """``[(key, value), ...]`` for state_meta keys starting with the literal
         ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""
         if not prefix:

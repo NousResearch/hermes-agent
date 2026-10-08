@@ -75,7 +75,7 @@ class TestSnapshotRealProfile:
         assert err is None
         assert dst == str(home / "browser-profile" / "chrome")
         # Auth files present
-        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies"
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "sqlite-cookies"
         assert (home / "browser-profile" / "chrome" / "Default" / "Network" / "Cookies").exists()
         assert (home / "browser-profile" / "chrome" / "Default" / "Login Data").exists()
         assert (home / "browser-profile" / "chrome" / "Local State").exists()
@@ -101,7 +101,7 @@ class TestSnapshotRealProfile:
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst
-        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies-v2"
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "sqlite-cookies-v2"
         assert copy_history.read_text() == "agent-session-history"
 
     def test_missing_source_fails_closed(self, tmp_path, monkeypatch):
@@ -734,9 +734,9 @@ class TestReviewBugFixes:
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # The copy's Default must carry PROFILE 6's session, not Default's.
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies")
         assert got == "PROFILE6-SESSION-AUTH"
-        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Login Data")) == "profile6-logins"
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Login Data") == "profile6-logins"
 
     def test_last_used_falls_back_to_default(self, tmp_path):
         import hermes_cli.browser_connect as bc
@@ -755,7 +755,7 @@ class TestReviewBugFixes:
         _auth_db((src / "Profile 6" / "Cookies"), "PROFILE6-REFRESHED")
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
         assert err is None
-        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-REFRESHED"
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "PROFILE6-REFRESHED"
 
     # ── Bug 3: private-URL sidecar must NOT carry the real profile ──
     def test_sidecar_never_uses_real_profile(self):
@@ -823,7 +823,7 @@ class TestReviewRound3:
         d, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # Rebuilt from the active profile, not treated as populated.
-        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "PROFILE6-SESSION"
+        assert _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies") == "PROFILE6-SESSION"
         assert os.path.isfile(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
 
     # ── ④ only the active profile is copied, never the others ──
@@ -839,7 +839,7 @@ class TestReviewRound3:
         assert err is None
         copy = home / "browser-profile" / "chrome"
         # Active profile (Profile 6) landed in Default; other profiles absent.
-        assert _auth_db((copy / "Default" / "Cookies")) == "PROFILE6-SESSION"
+        assert _auth_db(copy / "Default" / "Cookies") == "PROFILE6-SESSION"
         assert not (copy / "Profile 3").exists()
         assert not (copy / "Profile 6").exists()
 

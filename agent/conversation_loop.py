@@ -37,6 +37,7 @@ from agent.surface_switch import (
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
@@ -80,7 +81,7 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 
 
 def _midturn_request_pressure_tokens(
-    agent: Any, api_messages: List[Dict[str, Any]], effective_system: str, approx_tokens: int
+    agent: Any, api_messages: list[dict[str, Any]], effective_system: str, approx_tokens: int
 ) -> int:
     """Token figure the mid-turn pre-API compression guard compares: the pruned
     native-Responses estimate when native compaction eligibility is proven (the generic
@@ -192,7 +193,7 @@ def _log_refused_review_first_request(agent: Any) -> None:
     logger.info("Background review skipped (owner=%s): %s", owner, REASON_INPUT_BUDGET_REFUSED)
 
 
-def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
+def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
     Appends to the NEWEST ``role:"tool"`` message (cache-safe, like /steer); latches
@@ -228,7 +229,7 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
 
 
 def _restore_user_after_reference_handoff(
-    messages: List[Dict[str, Any]], user_message: Any
+    messages: list[dict[str, Any]], user_message: Any
 ) -> bool:
     """Re-append this turn's real user ask when compaction left only a handoff (#80622).
     Returns True when a restore append happened."""
@@ -246,7 +247,7 @@ def _restore_user_after_reference_handoff(
 
 
 def _should_skip_model_call_for_reference_handoff(
-    messages: List[Dict[str, Any]], user_message: Any
+    messages: list[dict[str, Any]], user_message: Any
 ) -> bool:
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
     from agent.context_compressor import reference_handoff_would_drive_next_model_call
@@ -362,7 +363,7 @@ def _continuation_overlap_length(previous: str, continuation: str) -> int:
     return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
 
 
-def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
+def _join_truncated_parts(parts: list[tuple[str, bool]]) -> str:
     """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
     previous_was_partial_stub = False
@@ -390,7 +391,7 @@ def _moa_reference_metrics_for_hook(agent: Any) -> Any:
         return None
 
 
-def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
+def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn so role alternation
     holds and cached messages stay byte-identical. INVARIANTS: raw chain-of-thought never enters
     replayable content (inlined CoT reads as a prefill jailbreak and bricks the session with
@@ -539,7 +540,7 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
             getattr(agent, "model", "") or "", base_url=base_url,
             session_tokens=int(request_tokens), current_window=current_window,
         )
-    except Exception as exc:  # noqa: BLE001 — growth must never break a turn
+    except Exception as exc:
         logger.debug("local window growth check failed: %s", exc)
         return None
 
@@ -1002,7 +1003,7 @@ _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1059,7 +1060,7 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 # each iteration). Sound because canonicalization is pure; malformed strings raise before
 # being stored, so the repair fallback is never memoized. The byte budget exists because
 # argument strings can run 100KB+, so a count bound alone does not bound memory.
-_CANON_ARGS_CACHE: Dict[str, str] = {}
+_CANON_ARGS_CACHE: dict[str, str] = {}
 _CANON_ARGS_CACHE_MAX = 4096
 _CANON_ARGS_CACHE_MAX_BYTES = 32 * 1024 * 1024
 _canon_args_cache_bytes = 0
@@ -1135,8 +1136,8 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
 
 
 def _content_policy_blocked_result(
-    messages: List[Dict], api_call_count: int, *, final_response: str, error_detail: str
-) -> Dict[str, Any]:
+    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str
+) -> dict[str, Any]:
     """Terminal turn result for a content-policy block (deterministic for the unchanged
     prompt, so no retry); shared by the HTTP-200 and exception paths."""
     return {
@@ -1147,8 +1148,8 @@ def _content_policy_blocked_result(
 
 
 def _partial_turn_result(
-    final_response: str, messages: List[Dict], api_call_count: int, **flags: Any
-) -> Dict[str, Any]:
+    final_response: str, messages: list[dict], api_call_count: int, **flags: Any
+) -> dict[str, Any]:
     """Incomplete-turn result whose ``error`` mirrors ``final_response``; ``flags`` add the
     recovery-contract keys (``failed``, ``compression_deferred``, ...)."""
     return {
@@ -1157,7 +1158,7 @@ def _partial_turn_result(
     }
 
 
-def _compression_deferred_result(agent, messages: List[Dict], api_call_count: int, reason: str = "lock") -> Dict[str, Any]:
+def _compression_deferred_result(agent, messages: list[dict], api_call_count: int, reason: str = "lock") -> dict[str, Any]:
     """Soft turn result for a transiently-deferred compression. Both reasons must end as
     ``compression_deferred``, never ``compression_exhausted`` — the gateway wipes the
     session on exhaustion (#9893/#35809). ``failed`` stays False; the turn persists."""
@@ -1193,9 +1194,9 @@ def _compression_deferred_result(agent, messages: List[Dict], api_call_count: in
 
 
 def _provider_overflow_exhausted_result(
-    agent, messages: List[Dict], conversation_history, api_call_count: int,
+    agent, messages: list[dict], conversation_history, api_call_count: int,
     request_pressure_tokens: int, max_compression_attempts: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fail closed when a rebuilt request is still too large after recovery."""
     agent._flush_status_buffer()
     logger.error(
@@ -1272,19 +1273,19 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     reconstruct_static_prefix(agent, system_message=system_message, log_label="failover redecoration")
 
 
-def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Dict[str, Any]]:
+def _peel_moa_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
     """Remove MoA reference guidance attached by ``_attach_reference_guidance``."""
     from agent.moa_loop import peel_reference_guidance
     return peel_reference_guidance(messages, guidance)
 
 
 def _redecorate_prompt_cache_for_provider(
-    agent, api_messages: List[Dict[str, Any]], *, system_message=None,
-    moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    agent, api_messages: list[dict[str, Any]], *, system_message=None,
+    moa_prepared: Optional[dict[str, Any]] = None, tools_for_api: Optional[list[dict[str, Any]]] = None,
+) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]], list[dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
-    messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
+    messages: list[dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
     prepared = moa_prepared
     guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
     if guidance:
@@ -1346,9 +1347,9 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
 
 
 def _apply_context_engine_selection(
-    agent: Any, api_messages: List[Dict[str, Any]], conversation_messages: List[Dict[str, Any]],
-    incoming_message: Optional[Dict[str, Any]], *, logger: Any,
-) -> List[Dict[str, Any]]:
+    agent: Any, api_messages: list[dict[str, Any]], conversation_messages: list[dict[str, Any]],
+    incoming_message: Optional[dict[str, Any]], *, logger: Any,
+) -> list[dict[str, Any]]:
     """Run the optional per-turn ``ContextEngine.select_context()`` hook, fail-open: any
     exception or invalid return yields ``api_messages`` unchanged; history is never mutated."""
     engine = getattr(agent, "context_compressor", None)
@@ -1396,7 +1397,7 @@ def _apply_context_engine_selection(
 
 
 def _notify_context_engine_turn_complete(
-    agent: Any, messages: List[Dict[str, Any]], *, usage: Optional[Dict[str, Any]] = None, logger: Any, **meta: Any
+    agent: Any, messages: list[dict[str, Any]], *, usage: Optional[dict[str, Any]] = None, logger: Any, **meta: Any
 ) -> None:
     """Notify the active context engine that a user turn has finished (fail-open; the engine
     gets a copy so it cannot mutate the persisted transcript)."""
@@ -1429,7 +1430,7 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     return user_message, None, persist_user_message
 
 
-def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any]:
+def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any]:
     """Typed recovery result when turn-start preflight compression timed out (#98424): no
     provider call was sent, and surfaces would otherwise hide the actionable guidance."""
     logger.warning(
@@ -1491,7 +1492,7 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
+    truncated_response_parts: list[tuple[str, bool]] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after
@@ -1538,7 +1539,7 @@ _CTX_FIELDS = frozenset({
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
-_PHASE_PARAMS: Dict[Any, tuple] = {}
+_PHASE_PARAMS: dict[Any, tuple] = {}
 # Verdict fields the loop latches (only ever sets True) instead of copying back:
 # ``handle_api_error`` reports overflow recovery per call and must not clear an earlier arm.
 _LATCHED_VERDICT_FIELDS = {"handle_api_error": frozenset({"_provider_overflow_recovery_pending"})}
@@ -1565,7 +1566,7 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     return verdict
 
 
-def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
+def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     """One API call with its retry/recovery loop (guard → build → call → check, error handlers).
 
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
@@ -1612,22 +1613,41 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
+    """The codex app-server's result for this turn, or None when its failure activated a fallback and the
+    generic loop retries the same user turn."""
+    codex_result = agent._run_codex_app_server_turn(
+        user_message=s.user_message, original_user_message=s.original_user_message,
+        messages=s.messages, effective_task_id=s.effective_task_id,
+        should_review_memory=s._should_review_memory,
+    )
+    from agent.turn_recovery import activate_codex_app_server_fallback
+    if not activate_codex_app_server_fallback(agent, codex_result):
+        return codex_result
+    # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+    # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+    s.api_call_count = int(codex_result.get("api_calls") or 0)
+    s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    return None
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
     system_message: str = None,
-    conversation_history: List[Dict[str, Any]] = None,
+    conversation_history: list[dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
-    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    persist_user_display_metadata: Optional[dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
-    turn_author: Optional[Dict[str, Any]] = None,
+    turn_author: Optional[dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
-) -> Dict[str, Any]:
+    prelude: Optional[Prelude] = None,
+) -> dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
@@ -1636,7 +1656,8 @@ def _run_conversation_turn(
     ``title_user_message``: optional pre-injection text for titles only (None uses the
     model-facing message; an empty string suppresses titling for this turn).
     ``persist_user_display_*``:
-    display-only event rendering; the model still receives the message unchanged."""
+    display-only event rendering; the model still receives the message unchanged.
+    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``)."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1705,21 +1726,15 @@ def _run_conversation_turn(
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        codex_result = agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
-        from agent.turn_recovery import activate_codex_app_server_fallback
-        if not activate_codex_app_server_fallback(agent, codex_result):
-            return codex_result
-        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
-        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
-        s.api_call_count = int(codex_result.get("api_calls") or 0)
-        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
+        return codex_result
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
+    if _prelude_action == "return":
+        return _prelude_result
+    while _prelude_action != "break" and (
+        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
+    ):
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1784,18 +1799,19 @@ def run_conversation(
     agent,
     user_message: Any,
     system_message: str = None,
-    conversation_history: List[Dict[str, Any]] = None,
+    conversation_history: list[dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
-    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    persist_user_display_metadata: Optional[dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
-    turn_author: Optional[Dict[str, Any]] = None,
+    turn_author: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
-) -> Dict[str, Any]:
+    prelude: Optional[Prelude] = None,
+) -> dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
     Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
@@ -1807,6 +1823,8 @@ def run_conversation(
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
+    # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
+    agent._turn_user_intervened = False
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
@@ -1826,10 +1844,13 @@ def run_conversation(
                 moa_config=moa_config,
                 turn_author=turn_author,
                 title_user_message=title_user_message,
+                prelude=prelude,
             )
         finally:
             end_voice_turn_route(agent)
     result = export_current_turn_boundary(agent, result, user_message)
+    if isinstance(result, dict):
+        result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)
     return result
 

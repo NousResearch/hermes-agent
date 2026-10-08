@@ -89,7 +89,6 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
 
     def fake_deliver(job, content, **kwargs):
         delivered.append(content)
-        return None
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)

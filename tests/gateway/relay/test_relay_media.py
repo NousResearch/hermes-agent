@@ -205,7 +205,7 @@ async def test_download_sends_a_user_agent_on_every_request():
         def __exit__(self, *_a):
             return False
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+    def _fake_urlopen(req, timeout=None):
         seen.append(dict(req.headers))
         return _Resp()
 
@@ -276,7 +276,7 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
         def __exit__(self, *_a):
             return False
 
-    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+    def _fake_urlopen(req, timeout=None):
         seen.append(dict(req.headers))
         return _Resp()
 

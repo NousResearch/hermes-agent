@@ -194,7 +194,7 @@ class SessionUsageMixin:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: List[Tuple[str, Dict[str, Any]]]) -> None:
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
         """Apply queued deltas in order, coalescing where safe. Never raises."""
         try:
             coalesced = self._coalesce_token_deltas(batch)
@@ -209,10 +209,10 @@ class SessionUsageMixin:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
 
-    def _coalesce_token_deltas(self, batch: List[Tuple[str, Dict[str, Any]]]) -> List[Tuple[str, Dict[str, Any]]]:
+    def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
         sessions and /model switches is preserved exactly. absolute=True never merges."""
-        groups: List[Tuple[Optional[tuple], str, Dict[str, Any]]] = []
+        groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
         for session_id, kwargs in batch:
             key = None
             if not kwargs.get("absolute"):
@@ -390,7 +390,7 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
-    def auxiliary_usage_by_task(self, session_id: str) -> Dict[str, Dict[str, float]]:
+    def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed
         over the session's compression lineage. Aux calls bill to the id the turn STARTED with while
         compression mints child ids mid-turn, so a single-id read misses rows (#112848)."""
@@ -419,11 +419,11 @@ class SessionUsageMixin:
         )
         return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
 
-    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
+    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""
         where = ["parent_session_id IS NULL", "message_count >= ?"]
-        params: List[Any] = [min_message_count]
+        params: list[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")
         row = self._read_one(f"""

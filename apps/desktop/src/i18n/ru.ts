@@ -1,9 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
+import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
@@ -29,7 +30,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
   return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
 }
 
-export const ru = defineLocale({
+export const ruOverrides = {
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -1035,7 +1036,13 @@ export const ru = defineLocale({
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
+      developerTitle: 'Для разработчиков',
+      resetOnboardingTitle: 'Сбросить первоначальную настройку',
+      resetOnboardingDesc:
+        'Удалить чаты настройки, пересоздать профиль настройки и снова запустить первоначальную настройку. Ваши профили, чаты и плагины сохранятся.',
+      resetOnboardingAction: 'Сбросить',
+      resetOnboardingFailed: 'Не удалось сбросить первоначальную настройку'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -2411,6 +2418,7 @@ export const ru = defineLocale({
     last: 'Последний:',
     next: 'Следующий:',
     noRuns: 'Запусков пока не было',
+    queuedRun: 'Запуск в очереди',
     manage: 'Управлять',
     showRuns: 'Показать запуски',
     hideRuns: 'Скрыть запуски',
@@ -2678,6 +2686,20 @@ export const ru = defineLocale({
     },
     markAllRead: 'Отметить все как прочитанные'
   },
+  handoffTour: {
+    profileTitle: 'Первая задача выполняется в профиле по умолчанию',
+    profileText:
+      'Эта панель переключает профили. Сейчас подсвечен default — там сессия задачи. Другой — профиль настройки, там приветственный чат.',
+    sessionsTitle: 'У каждого профиля свои сессии',
+    sessionsText:
+      'Этот список относится к профилю default. «Новая сессия» создаёт её в выбранном профиле. Переключите профиль на панели — и список сменится.',
+    stayTitle: 'Hermes в одном клике',
+    stayText:
+      'Переключитесь на профиль настройки и откройте «Добро пожаловать в Hermes», когда понадобится помощь. Он остаётся там.',
+    localTitle: 'Этот компьютер может запускать модели локально',
+    localText: (model: string) =>
+      `${model} подходит для вашего оборудования. Работает бесплатно, а чаты не покидают ваш компьютер. Выберите её здесь, в меню моделей, когда захотите.`
+  },
   composer: {
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
@@ -2833,6 +2855,12 @@ export const ru = defineLocale({
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
+    localSetup: {
+      title: 'Это может работать на вашем компьютере',
+      text: (model: string) =>
+        `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
+      action: 'Показать'
+    },
     queueEdit: 'Изменить',
     queueExpand: 'Раскрыть',
     queueCollapse: 'Свернуть',
@@ -3210,10 +3238,6 @@ export const ru = defineLocale({
     bundleOutOfSyncAction: 'Скачать установщик',
     checkingShort: 'Проверка…'
   },
-  guidedGreeting: {
-    line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
-    nameSuggestion: (name: string) => `(Могу звать вас просто ${name}, если так удобнее.)`
-  },
   install: {
     stageStates: {
       pending: 'Ожидает',
@@ -3287,83 +3311,7 @@ export const ru = defineLocale({
     copyOutput: 'Копировать вывод',
     reloadRetry: 'Перезагрузить и повторить'
   },
-  onboarding: {
-    headerTitle: 'Настроим для вас Hermes Agent',
-    headerDesc: 'Подключите провайдера модели, чтобы начать общение. Большинство вариантов — в один клик.',
-    preparingInstall: 'Hermes завершает установку. Обычно это занимает меньше минуты при первом запуске.',
-    starting: 'Запускаем Hermes…',
-    lookingUpProviders: 'Ищем провайдеров...',
-    collapse: 'Свернуть',
-    otherProviders: 'Другие провайдеры',
-    haveApiKey: 'У меня есть API-ключ',
-    chooseLater: 'Выберу провайдера позже',
-    recommended: 'Рекомендуется',
-    connected: 'Подключено',
-    featuredPitch: 'Одна подписка, 300+ передовых моделей — рекомендуемый способ запускать Hermes',
-    fireworksPitch: 'Прямой API моделей — передовые модели на хостинге Fireworks',
-    openRouterPitch: 'Один ключ, сотни моделей — надёжный вариант по умолчанию',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'прямой API моделей',
-        description: 'Прямой доступ к моделям на хостинге Fireworks AI.'
-      },
-      openrouter: {
-        short: 'один ключ, много моделей',
-        description: 'Сотни моделей за одним ключом. Хороший вариант по умолчанию для новых установок.'
-      },
-      openai: { short: 'модели класса GPT', description: 'Прямой доступ к моделям OpenAI.' },
-      gemini: { short: 'модели Gemini', description: 'Прямой доступ к моделям Google Gemini.' },
-      xai: { short: 'модели Grok', description: 'Прямой доступ к моделям xAI Grok.' },
-      local: {
-        short: 'self-hosted',
-        description:
-          'Укажите Hermes локальный или self-hosted OpenAI-совместимый endpoint (vLLM, llama.cpp, Ollama и т.д.).'
-      }
-    },
-    backToSignIn: 'Назад ко входу',
-    getKey: 'Получить ключ',
-    replaceCurrent: 'Заменить текущее значение',
-    pasteApiKey: 'Вставьте API-ключ',
-    localApiKeyPlaceholder: 'API-ключ (необязательно — только если ваш endpoint его требует)',
-    couldNotSave: 'Не удалось сохранить учётные данные.',
-    connecting: 'Подключение',
-    update: 'Обновить',
-    flowSubtitles: {
-      pkce: 'Откроет браузер для входа, затем продолжит здесь',
-      device_code: 'Откроет страницу подтверждения в браузере — Hermes подключится автоматически',
-      external: 'Войдите один раз в терминале, затем вернитесь в чат'
-    },
-    startingSignIn: provider => `Начинаем вход для ${provider}...`,
-    verifyingCode: provider => `Проверяем ваш код через ${provider}...`,
-    connectedProvider: provider => `${provider} подключён`,
-    connectedPicking: provider => `${provider} подключён. Выбираем модель по умолчанию...`,
-    signInFailed: 'Вход не удался. Попробуйте снова.',
-    pickDifferentProvider: 'Выбрать другого провайдера',
-    signInWith: provider => `Войти через ${provider}`,
-    openedBrowser: provider => `Мы открыли ${provider} в вашем браузере.`,
-    authorizeThere: 'Авторизуйте Hermes там.',
-    copyAuthCode: 'Скопируйте код авторизации и вставьте его ниже.',
-    pasteAuthCode: 'Вставьте код авторизации',
-    reopenAuthPage: 'Открыть страницу авторизации снова',
-    autoBrowser: provider =>
-      `Мы открыли ${provider} в вашем браузере. Авторизуйте Hermes там, и подключение произойдёт автоматически — ничего копировать и вставлять не нужно.`,
-    reopenSignInPage: 'Открыть страницу входа снова',
-    waitingAuthorize: 'Ждём вашей авторизации...',
-    externalPending: provider =>
-      `${provider} входит через собственный CLI. Выполните эту команду в терминале, затем вернитесь и выберите «Я вошёл»:`,
-    signedIn: 'Я вошёл',
-    deviceCodeOpened: provider => `Мы открыли ${provider} в вашем браузере. Введите там этот код:`,
-    reopenVerification: 'Открыть страницу подтверждения снова',
-    copy: 'Копировать',
-    defaultModel: 'Модель по умолчанию',
-    freeTier: 'Бесплатный тариф',
-    pro: 'Pro',
-    free: 'Free',
-    price: (input, output) => `${input} вход / ${output} выход за Mtok`,
-    change: 'Изменить',
-    startChatting: 'Начать',
-    docs: provider => `Документация ${provider}`
-  },
+  onboarding: ruOnboarding,
   modelPicker: {
     title: 'Сменить модель',
     current: 'текущая:',
@@ -3850,9 +3798,35 @@ export const ru = defineLocale({
       confirmAndContinueLabel: 'Подтвердить и продолжить',
       singleSelectHint: 'Выберите один',
       multiSelectHint: 'Выберите все подходящие',
+      oneQuestion: '1 вопрос',
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       notDelivered:
         'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Акцентный цвет',
+        connectors: 'Приложения',
+        layout: 'Раскладка',
+        plugins: 'Плагины',
+        theme: 'Оформление'
+      },
+      loading: 'Загружаю варианты…',
+      unavailable: 'Этот список сейчас недоступен. Ответьте в чате.',
+      findApp: 'Найти приложение',
+      customColor: 'Свой цвет',
+      plugin: 'Плагин',
+      startsLater: 'Мы настроим это, когда вы начнёте.'
+    },
+    startChat: {
+      starting: title => `Запускаю «${title}»…`,
+      startingUntitled: 'Запускаю чат…',
+      untitled: 'Новый чат',
+      notStarted: 'Чат не запустился',
+      retry: 'Повторить',
+      inProfile: profile => `В ${profile}`,
+      open: 'Открыть',
+      openFailed: 'Не удалось открыть чат'
     },
     catalogInstall: {
       preparing: 'Готовим установку…',
@@ -3996,6 +3970,12 @@ export const ru = defineLocale({
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
+        setup_choose: {
+          done: 'Задан вопрос о настройке',
+          pending: 'Задаю вопрос о настройке',
+          pendingAction: 'Спрашиваю'
+        },
+        start_chat: { done: 'Чат запущен', pending: 'Запускаю чат', pendingAction: 'Запускаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {
@@ -4137,5 +4117,15 @@ export const ru = defineLocale({
       description: 'Показывает мобильную боковую панель.',
       toggle: open => `${open ? 'Показать' : 'Скрыть'} боковую панель`
     }
+  },
+  freeTier: {
+    offer: {
+      heading: 'Продолжайте с Hermes',
+      body: 'Вы пользуетесь бесплатным лимитом. Если продолжите работать с Hermes, скоро начнёте упираться в ограничения. Войдите с бесплатной учётной записью Nous, чтобы получить больший лимит.',
+      signIn: 'Войти',
+      notNow: 'Не сейчас'
+    }
   }
-})
+} satisfies TranslationOverrides
+
+export const ru = defineLocale(ruOverrides)

@@ -46,14 +46,14 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         raise
 
 
-def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
-    """Fire session lifecycle hooks with CLI parity."""
+def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> list[str]:
+    """Fire session lifecycle hooks with CLI parity; returns plugin ``on_session_finalize`` user messages."""
     with contextlib.suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session, invoke_hook
+        from hermes_cli.lifecycle import finalize_session, invoke_hook, session_end_messages
         if event_type == "on_session_finalize":
-            finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform))
-        else:
-            invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+            return session_end_messages(finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform)))
+        invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+    return []
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
@@ -395,7 +395,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    # Returned to the client by ``session.close`` (the TUI shows them after its /new reset); reaper paths have no client.
+    session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session)) or []
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.

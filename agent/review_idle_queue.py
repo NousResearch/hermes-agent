@@ -30,13 +30,13 @@ _POLL_INTERVAL_S = 5.0  # poll cadence while non-empty; the thread parks when em
 _MAX_AGE_DEFAULT_S = 30.0 * 60.0  # dispatch regardless of idleness past this age
 
 
-def defer_mode(task_cfg: Optional[Dict[str, Any]]) -> str:
+def defer_mode(task_cfg: Optional[dict[str, Any]]) -> str:
     """'auto' (default) or 'never' from auxiliary.background_review.defer."""
     raw = str((task_cfg or {}).get("defer", "auto")).strip().lower()
     return raw if raw in ("auto", "never") else "auto"
 
 
-def defer_max_age_s(task_cfg: Optional[Dict[str, Any]]) -> float:
+def defer_max_age_s(task_cfg: Optional[dict[str, Any]]) -> float:
     try:
         value = float((task_cfg or {}).get("defer_max_age_s", _MAX_AGE_DEFAULT_S))
     except (TypeError, ValueError):
@@ -44,7 +44,7 @@ def defer_max_age_s(task_cfg: Optional[Dict[str, Any]]) -> float:
     return value if value > 0 else _MAX_AGE_DEFAULT_S
 
 
-def review_targets_managed_local(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool:
+def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]]) -> bool:
     """Would this review fork decode on the llama-server WE manage? Exact netloc match against the
     supervisor state file; any failure reads False (immediate spawn is the safe default). The cheap
     TTL-cached netloc probe runs FIRST so cloud-only installs skip runtime resolution on the turn's tail."""
@@ -57,7 +57,7 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[Dict[str, Any]])
 
         runtime = _resolve_review_runtime(agent, task_cfg)
         return _is_managed_local_endpoint(runtime.get("base_url"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -65,7 +65,7 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[Dict[str, Any]])
 class _PendingReview:
     agent: Any
     session_key: Hashable
-    kwargs: Dict[str, Any]
+    kwargs: dict[str, Any]
     enqueued_at: float
     context: contextvars.Context
 
@@ -82,7 +82,7 @@ class ReviewIdleQueue:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._pending: Dict[Hashable, _PendingReview] = {}
+        self._pending: dict[Hashable, _PendingReview] = {}
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._live_turns = 0
@@ -107,7 +107,7 @@ class ReviewIdleQueue:
         self,
         agent: Any,
         session_key: Hashable,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
         *,
         replace_existing: bool = True,
         reason: str = REASON_DEFERRED,
@@ -179,7 +179,7 @@ class ReviewIdleQueue:
                 item = self._pop_dispatchable()
                 if item is not None:
                     self._dispatch_item(item)
-            except Exception:  # noqa: BLE001 — dispatcher must survive anything
+            except Exception:
                 logger.warning("Deferred review dispatch failed", exc_info=True)
             if item is None:
                 time.sleep(_POLL_INTERVAL_S)
@@ -211,7 +211,7 @@ class ReviewIdleQueue:
             from agent.background_review import load_background_review_settings
 
             return load_background_review_settings()[0]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return True
 
 
@@ -236,7 +236,7 @@ def _managed_server_idle() -> bool:
         return not any(
             s.get("is_processing") for mid in loaded for s in _get(f"/slots?model={quote(mid)}") if isinstance(s, dict)
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return True
 
 

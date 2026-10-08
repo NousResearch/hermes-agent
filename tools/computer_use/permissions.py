@@ -86,11 +86,23 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     """OS-aware readiness for the desktop card; key order is an API payload contract. ``ready`` is the single signal the
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
+    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
-    plat, binary = sys.platform, resolve_cua_driver_cmd(driver_cmd)
+    plat, name = sys.platform, configured_backend_name()
+    binary = resolve_cua_driver_cmd(driver_cmd) if name == DEFAULT_BACKEND else None
     out: Dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
                            "installed": bool(binary), "version": None, "ready": None, "can_grant": plat == "darwin",
                            "checks": [], "source": None, "error": None, **{k: None for k in _BOOLS}}
+    if name != DEFAULT_BACKEND:  # another driver is selected: cua-driver probes and TCC grants do not apply
+        out.update(platform_supported=True, can_grant=False)
+        try:
+            provider = get_active_provider()
+        except LookupError as e:
+            out["error"] = str(e)
+            return out
+        out.update(installed=True, version=f"{provider.display_name} (computer_use.backend: {provider.name})",
+                   ready=provider.is_available())
+        return out
     if not binary:
         return out
     with suppress(Exception):
@@ -126,11 +138,3 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
     except Exception as exc:  # pragma: no cover - defensive
         print(f"cua-driver permissions grant failed: {exc}", file=sys.stderr)
         return 2
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

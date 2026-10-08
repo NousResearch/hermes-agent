@@ -1,4 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
@@ -47,6 +47,21 @@ export interface AudioTtsLeaseResponse {
   provider?: string
   /** Resident local models dropped (release path). */
   released?: number
+  error?: string
+}
+
+/** `POST /api/audio/stt-lease` — local STT pre-load driven by voice-input sessions. */
+export interface AudioSttLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
+  action?: string
+  /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */
+  warmed?: boolean
+  provider?: string
   error?: string
 }
 
@@ -149,7 +164,7 @@ export interface OAuthPollResponse {
 export interface FreeTierStatus {
   /** An identity exists AND the free tier is on: connectors ride on it, and so
    *  does inference when nothing else carries it. Whether inference actually
-   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier_route`). */
   available: boolean
   enabled: boolean
   has_guest: boolean
@@ -166,6 +181,10 @@ export interface FreeTierStatus {
   error_code?: string
   retryable?: boolean
   retry_after?: number
+  /** Present while the backend is waiting on a browser challenge. */
+  challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -308,6 +327,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean
   is_password: boolean
   is_set: boolean
   key: string
@@ -315,6 +336,8 @@ export interface MessagingEnvVarInfo {
   redacted_value: null | string
   required: boolean
   url: null | string
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {
@@ -467,6 +490,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -486,6 +510,7 @@ export interface HermesConfig {
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown
+    barge_in?: unknown
     barge_in_threshold_multiplier?: unknown
     silence_duration?: unknown
   }
@@ -566,6 +591,12 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
+   *  never-closed run — its in-flight execution is held by a live process.
+   *  Unlike {@link is_active} (a 300s activity window) it stays true through a
+   *  long tool call and is false for a zombie whose process died (#88443).
+   *  Undefined against older backends and for non-cron rows. */
+  scheduler_owned?: boolean
   last_active: number
   message_count: number
   model: null | string
@@ -579,6 +610,10 @@ export interface SessionInfo {
   _reset_from?: null | string
   /** Parent of a genuine /branch fork. The sidebar nests only these. */
   _branched_from?: null | string
+  /** True for an internal delegate_task child. Exact-id endpoints return these
+   *  rows for direct watch/resume, but ordinary session lists must not surface
+   *  them. Undefined against backends predating the projection. */
+  is_internal_child?: boolean
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -637,6 +672,7 @@ export type TimelineDisplayMetadata =
   | { display_text: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
+  | { error?: string; error_surface?: unknown }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -831,6 +867,8 @@ export interface UsageStats {
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number
+  /** Successful context compressions in the current live agent runtime. */
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_estimated?: boolean
@@ -1005,6 +1043,7 @@ export interface CronJobCreatePayload {
   name?: string
   prompt: string
   provider?: string
+  repeat?: number
   schedule: string
 }
 
@@ -1062,6 +1101,10 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
@@ -1084,8 +1127,6 @@ export interface ProfileInfo {
   name: string
   path: string
   provider: null | string
-  /** Backend-assigned role from profile.yaml; `setup` marks the onboarding guide's profile. */
-  role?: 'setup' | null
   skill_count: number
 }
 
@@ -1158,8 +1199,9 @@ export interface SkillInfo {
   name: string
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
-  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
-  provenance?: 'agent' | 'bundled' | 'hub'
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
+   * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
+  provenance?: 'agent' | 'bundled' | 'external' | 'hub'
 }
 
 /** One entry of the built-in optional-skills catalog (optional-skills/ in the
@@ -1218,6 +1260,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1235,6 +1280,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1445,7 +1494,7 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  product-default | best-quality-resident | speed-gated-quality | fastest-resident |
    *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
@@ -1511,6 +1560,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {
@@ -1550,10 +1604,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */
@@ -1625,6 +1690,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string
@@ -1752,8 +1822,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1762,7 +1830,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

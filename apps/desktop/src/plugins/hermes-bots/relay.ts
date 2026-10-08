@@ -10,6 +10,7 @@
 import { host, LruCache } from '@hermes/plugin-sdk'
 
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import { ID } from './shared'
 import type { ProfileRoute, RosterRow } from './types'
 
@@ -36,35 +37,6 @@ const RELAY_ROSTER_INTERVAL_MS = 60_000
 // poll WAS the delivery path, which (before route retention) also meant a
 // fresh WebSocket dial + teardown per registered connection every 4s.
 const RELAY_DRAIN_INTERVAL_MS = 30_000
-// #93911: a delivered turn runs on the target gateway, so the client must
-// outlive the backend's own bound. Without this the call fell to the pool's
-// generic 30s deadline and every long turn (Computer Use, deep research) came
-// back as an unclassified failure.
-//
-// The backend's MAXIMUM WORK budget is spelled out below. The client deadline
-// must be strictly GREATER than it: after those bounded waits the handler still
-// has to classify the failure, build and run the retry, classify/serialize the
-// terminal result, unwind the temp-file and lock scopes, and get the JSON-RPC
-// response back through the event loop. A call that consumes nearly all of the
-// work budget would otherwise lose the race to this timer by milliseconds and
-// reproduce #93911 at the upper boundary — the backend knowing a typed reason
-// while Desktop reports its generic timeout first.
-//
-// These three are mirrors of backend values, so a change there must not
-// silently invalidate this constant: relay-deliver-budget.test.ts reads
-// hermes_cli/config_defaults.py and tools/bot_relay.py and fails if the
-// mirrors drift or the margin stops being positive.
-const RELAY_TURN_LOCK_WAIT_MS = 120_000 // bot_mode.turn_wait_seconds default
-const RELAY_TURN_ATTEMPT_MS = 600_000 // tools/bot_relay.py TURN_ATTEMPT_TIMEOUT_SECONDS
-const RELAY_TURN_MAX_ATTEMPTS = 2 // first attempt + the policy-gated re-run
-
-const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
-
-// Settlement + transport headroom on top of the ceiling, so a backend that
-// answers at its own limit still wins the race against this timer.
-const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000
-// tools/bot_relay.py REPLY_WAIT_SECONDS rebuilds this sum and waits past it for the timeout reply below.
-const RELAY_DELIVER_TIMEOUT_MS = RELAY_DELIVER_BACKEND_CEILING_MS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
 // to ONE drain. The interval poll above stays as the backstop for older
@@ -83,6 +55,8 @@ interface RelayLifecycle {
   pushDebounceTimer: null | ReturnType<typeof setTimeout>
   pushUnsub: (() => void) | null
   rosterBusy: boolean
+  /** Invalidates pending roster reads when the relay stops or restarts. */
+  rosterGeneration: number
   /** Id of the sole connection whose roster clear went out; null once the peer set relays again. */
   rosterClearedFor: null | string
   rosterTimer: null | ReturnType<typeof setInterval>
@@ -96,6 +70,7 @@ const relay: RelayLifecycle = {
   pushDebounceTimer: null,
   pushUnsub: null,
   rosterBusy: false,
+  rosterGeneration: 0,
   rosterClearedFor: null,
   rosterTimer: null
 }
@@ -157,6 +132,60 @@ interface RelayAgentRow {
   handle: string
   profile: string
   title: string
+}
+
+/** Remove the mandatory local registry source only when Electron identifies
+ * one unambiguous REMOTE primary. Older or inconsistent route inventories
+ * fail open to the prior peer set. Distinct remote peers always remain. */
+function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
+  const routesByConnection = new Map<string, ProfileRoute[]>()
+
+  for (const route of routes) {
+    if (
+      !route ||
+      typeof route.connectionId !== 'string' ||
+      !route.connectionId ||
+      (route.mode !== 'local' && route.mode !== 'remote') ||
+      (route.primary !== undefined && route.primary !== true)
+    ) {
+      return routes
+    }
+
+    const grouped = routesByConnection.get(route.connectionId) || []
+
+    grouped.push(route)
+    routesByConnection.set(route.connectionId, grouped)
+  }
+
+  const primaryGroups = [...routesByConnection.entries()].filter(([, grouped]) =>
+    grouped.some(route => route.primary === true)
+  )
+
+  if (primaryGroups.length !== 1) {
+    return routes
+  }
+
+  const [primaryId, primaryRoutes] = primaryGroups[0]
+
+  if (primaryRoutes.some(route => route.mode !== 'remote' || route.primary !== true)) {
+    return routes
+  }
+
+  const localGroups = [...routesByConnection.entries()].filter(([, grouped]) =>
+    grouped.some(route => route.mode === 'local')
+  )
+
+  if (
+    localGroups.length !== 1 ||
+    localGroups[0][1].some(route => route.mode !== 'local') ||
+    localGroups[0][0] === primaryId
+  ) {
+    return routes
+  }
+
+  const localId = localGroups[0][0]
+
+  return routes.filter(route => route.connectionId !== localId)
 }
 
 /** A queued cross-connection message drained from a gateway's outbox. */
@@ -221,10 +250,11 @@ async function relayConnections(): Promise<RelayConnection[]> {
   }
 
   try {
-    const routes = await host.profileRoutes()
+    const rawRoutes = await host.profileRoutes()
+    const routes = relayEligibleRoutes(Array.isArray(rawRoutes) ? rawRoutes : [])
     const byConnection = new Map<string, ProfileRoute>()
 
-    for (const route of Array.isArray(routes) ? routes : []) {
+    for (const route of routes) {
       const id = String(route?.connectionId || '')
 
       if (id && !byConnection.has(id)) {
@@ -275,14 +305,18 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id
 
-    return profiles
+    const rows = profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),
@@ -292,9 +326,30 @@ async function relayAgentsOn(
         description: String(profile?.description || '')
       }))
       .filter(row => row.profile)
+
+    host.traceIdentityChange?.('bot-relay', `rows ${connection.id}`, rosterTrace(rows, String(res?.install_id || '')))
+
+    return rows
   } catch {
     return null
   }
+}
+
+/** Which connection last answered from each install: a second connection
+ *  answering from the same machine is a misrouted request (or one machine
+ *  registered twice) and is flagged in the trace. */
+const answeringInstall = new Map<string, string>()
+
+function rosterTrace(rows: RelayAgentRow[], installId: string): string {
+  const connectionId = rows[0]?.connection_id ?? ''
+  const other = installId ? answeringInstall.get(installId) : undefined
+  const flag = other && other !== connectionId ? `MISROUTED (same install as ${other}) ` : ''
+
+  if (installId && connectionId && !flag) {
+    answeringInstall.set(installId, connectionId)
+  }
+
+  return `${flag}install=${installId.slice(0, 8) || '-'} n=${rows.length} [${rows.map(row => `${row.connection_id}/${row.profile}=${JSON.stringify(row.title)}`).join(' ')}]`
 }
 
 /** Last good agent rows per connection id — reused when a fetch blips so a
@@ -313,10 +368,31 @@ async function syncRelayRosters() {
   }
 
   relay.rosterBusy = true
+  const generation = relay.rosterGeneration
+  const isCurrent = () => !relay.disposed && relay.rosterGeneration === generation && relayBotModeOn()
 
   try {
     const connections = await relayConnections()
+
+    if (!isCurrent()) {
+      return
+    }
+
+    // A connection removed and re-added under a new id answers from the same
+    // install; remembering the departed id flagged the replacement MISROUTED.
+    const live = new Set(connections.map(connection => connection.id))
+
+    for (const [install, connectionId] of answeringInstall) {
+      if (!live.has(connectionId)) {
+        answeringInstall.delete(install)
+      }
+    }
+
     const labels = await connectionLabels()
+
+    if (!isCurrent()) {
+      return
+    }
 
     if (connections.length < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
@@ -328,6 +404,10 @@ async function syncRelayRosters() {
       if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
         const cleared = await Promise.all(
           connections.map(async connection => {
+            if (!isCurrent()) {
+              return false
+            }
+
             try {
               await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
 
@@ -342,7 +422,7 @@ async function syncRelayRosters() {
         )
 
         // Spend it only once every gateway has actually forgotten.
-        if (cleared.every(Boolean)) {
+        if (isCurrent() && cleared.every(Boolean)) {
           relay.rosterClearedFor = connections[0].id
         }
       }
@@ -357,6 +437,10 @@ async function syncRelayRosters() {
       connections.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
 
+        if (!isCurrent()) {
+          return
+        }
+
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this
           // connection (or contribute nothing this cycle) so the pushed
@@ -370,6 +454,10 @@ async function syncRelayRosters() {
       })
     )
 
+    if (!isCurrent()) {
+      return
+    }
+
     // Connections gone from profileRoutes are genuinely disconnected — drop
     // their cache so a later reconnect starts from live data.
     const liveIds = new Set(connections.map(connection => connection.id))
@@ -382,6 +470,10 @@ async function syncRelayRosters() {
 
     await Promise.all(
       connections.map(async connection => {
+        if (!isCurrent()) {
+          return
+        }
+
         const others: RelayAgentRow[] = []
 
         for (const [id, agents] of agentsByConnection) {
@@ -400,7 +492,9 @@ async function syncRelayRosters() {
       })
     )
   } finally {
-    relay.rosterBusy = false
+    if (relay.rosterGeneration === generation) {
+      relay.rosterBusy = false
+    }
   }
 }
 
@@ -649,6 +743,8 @@ export function startBotRelay() {
 
 export function stopBotRelay() {
   relay.disposed = true
+  relay.rosterGeneration += 1
+  relay.rosterBusy = false
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relay.drainRerun = false

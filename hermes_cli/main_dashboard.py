@@ -36,22 +36,22 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
         _scan_dashboard_processes,
     )
     pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
-    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
-    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    # The scan also selects the caller's own wrapper shell (``bash -c 'hermes dashboard --stop'``);
+    # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
-    """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
-        if any(pattern in command for pattern in patterns):
-            mode = candidate
-            break
-    if mode is None:
+    """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
+
+    The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
+    backend inventory (a kill + kickstart path) and ``--status`` (#121156).
+    """
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    mode = _hermes_holder_subcommand(command)
+    if mode not in ("dashboard", "serve"):
         return None
 
     port = 9119
@@ -515,10 +515,11 @@ def _install_hangup_protection(gateway_mode: bool = False):
 
     # Any failure here is non-fatal; we just skip the wrap.
     try:
-        # Late-bound import so tests can monkeypatch
-        # hermes_cli.config.get_hermes_home to simulate setup failure.
-        from hermes_cli.config import get_hermes_home as _get_hermes_home
-        logs_dir = _get_hermes_home() / "logs"
+        # Late-bound import so tests can monkeypatch it to simulate setup failure. The ROOT
+        # home, never a sticky profile's: the update mutates the shared checkout, and the
+        # Desktop and the hand-off scripts read <root>/logs/update.log.
+        from hermes_constants import get_default_hermes_root as _get_root_home
+        logs_dir = _get_root_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
 
@@ -926,7 +927,9 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+    from hermes_cli.url_utils import format_url_host
+
+    url = f"http://{format_url_host(hr.dial_host(record))}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")

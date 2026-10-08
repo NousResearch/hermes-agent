@@ -186,6 +186,23 @@ def _quarantine_stamp_ms(stale: Path) -> int | None:
         return None
 
 
+def _recover_update_debts_on_startup() -> None:
+    """The startup half of a previous update, run on every launch before dispatch."""
+    # Dependency recovery already ran before imports. Report any fleet restart
+    # still owed by a previous update without restarting services here.
+    if "update" not in sys.argv[1:]:
+        try:
+            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
+
+            _warn_pending_fleet_restart_on_startup()
+        except Exception:  # a startup warning never blocks the launch it warns about
+            logger.debug("pending fleet restart check failed", exc_info=True)
+    from hermes_cli.update_pause_record import recover as _recover_paused_gateways
+    # Unconditional: recover() itself skips the PARSED `update`/`gateway run` commands; a raw argv
+    # value equal to "update" (`--resume update`) is no reason to strand paused gateways.
+    _recover_paused_gateways()  # a killed `hermes update` left gateways paused (Windows)
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep — and where necessary RESCUE — ``hermes.exe.old.*`` from updates.
 
@@ -203,6 +220,11 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     scripts_dir = scripts_dir if scripts_dir is not None else _venv_scripts_dir()
     if scripts_dir is None:
         return
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_cli.update_lock import update_in_progress
+
+    if update_in_progress(PROJECT_ROOT):
+        return  # every quarantine may be that update's own, mid rename-back
     _cleanup_pending_shim_renames(scripts_dir)
     now = _time.time()
     try:
@@ -227,13 +249,14 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
             pass  # still locked or in use — try again next run
 
 
-def _configured_features_missing_deps() -> list[tuple[str, str]]:
+def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
     """Check configured platforms/MCP in the fresh, selected update-build child.
 
     PM preserves recorded extras atomically, but configuration can reference an
     unselected SDK. Never call this in the updater's stale import graph (#10651).
+    Rows are ``(label, hint, candidate extra)``: a platform's SDK is the extra named after it.
     """
-    missing: list[tuple[str, str]] = []
+    missing: list[tuple[str, str, str]] = []
     try:
         from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
@@ -241,7 +264,8 @@ def _configured_features_missing_deps() -> list[tuple[str, str]]:
         for platform in load_gateway_config().get_connected_platforms():
             entry = platform_registry.get(platform.value)
             if entry is not None and not entry.check_fn():
-                missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+                missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support.",
+                                entry.name))
     except Exception as exc:
         logger.debug("configured-platform dependency check skipped: %s", exc)
     try:
@@ -249,17 +273,38 @@ def _configured_features_missing_deps() -> list[tuple[str, str]]:
         from hermes_cli.config import load_config_readonly
 
         if (load_config_readonly().get("mcp_servers") or {}) and importlib.util.find_spec("mcp") is None:
-            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support."))
+            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", "mcp"))
     except Exception as exc:
         logger.debug("configured-MCP dependency check skipped: %s", exc)
     return missing
 
 
-def _warn_configured_features_missing_deps() -> None:
+def _install_configured_features_missing_deps(project_root: Path) -> None:
+    """Add the extras configured features need to the dependency environment (#124228).
+
+    Recorded extras never follow config, so an enabled platform whose SDK is not
+    selected would come up without its adapter after the gateway restart.
+    """
+    import pm
+    from pm.extras import extra_supported
+    from pm.features import declared_extras
+
     missing = _configured_features_missing_deps()
+    if not missing:
+        return
+    declared = set(declared_extras(project_root))
+    extras = sorted({extra for *_, name in missing
+                     if (extra := name.replace("_", "-")) in declared and extra_supported(extra)})
+    if extras:
+        try:
+            pm.sync_venv(extras, explicit=True, project_root=project_root, evict_incompatible_plugins=True)
+        except Exception as exc:  # noqa: BLE001 — a feature install never fails the update; warn below
+            print(f"  ⚠ Could not install {', '.join(extras)} for configured features: {exc}")
+        else:
+            missing = [row for row in missing if row[2].replace("_", "-") not in extras]
     if missing:
         print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
-        for feature, hint in missing:
+        for feature, hint, _extra in missing:
             print(f"    - {feature}: {hint}")
 
 

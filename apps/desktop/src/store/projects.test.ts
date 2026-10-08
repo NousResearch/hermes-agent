@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
+import { $dismissedAutoProjectIds, $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import { deferred } from '@/test/deferred'
@@ -19,6 +19,7 @@ import {
   addProjectFolders,
   applyRenamedSessionTitle,
   createProject,
+  defaultRepoScanRoot,
   deleteProject,
   enterProject,
   fetchProjectSessions,
@@ -827,6 +828,18 @@ describe('project writes while viewing all profiles', () => {
       expect($projects.get()).toEqual([])
     }
   )
+
+  it('hides the deleted project folder from auto-discovery, so its row does not come back', async () => {
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $dismissedAutoProjectIds.set([])
+
+    await deleteProject(project.id)
+
+    // The folder is unowned now, which is exactly what the auto tiers key on (leftover sessions,
+    // and the disk scan): without the dismissal the project you just deleted returns as an auto row.
+    expect($dismissedAutoProjectIds.get()).toEqual(['/srv/ws'])
+  })
 })
 
 describe('projects RPC capability', () => {
@@ -926,6 +939,57 @@ describe('repository discovery policy', () => {
       profile: 'default',
       repos: []
     })
+  })
+
+  it("scans the profile's working directory when no roots are configured", async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [] }
+        : { accepted: true, repos: [] }
+    )
+
+    gatewayWith(request)
+    const scanRepos = vi.fn().mockResolvedValue([{ label: 'pasei', root: '/Users/dev/pasei' }])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '~/Developer/pasei' }
+    })
+
+    await scanAndRecordRepos()
+
+    expect(scanRepos).toHaveBeenCalledWith(['~/Developer/pasei'], {
+      enabled: true,
+      excludePaths: [],
+      nested: false
+    })
+    // The workspace is where the scan LOOKS, not a configured root: the recorded policy must keep
+    // the user's own list, or the backend's cache key would drift from this one.
+    expect(request).toHaveBeenCalledWith('projects.record_repos', {
+      discovery_policy: { enabled: true, exclude_paths: [], nested: false, roots: [] },
+      profile: 'default',
+      repos: [{ label: 'pasei', root: '/Users/dev/pasei' }]
+    })
+  })
+
+  it('scans nothing when the profile has no working directory of its own', async () => {
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? { active_id: null, projects: [], scoped_session_ids: [] }
+        : { accepted: true, repos: [] }
+    )
+
+    gatewayWith(request)
+    const scanRepos = vi.fn().mockResolvedValue([])
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: { repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_roots: [] },
+      terminal: { cwd: '.' }
+    })
+
+    await scanAndRecordRepos()
+
+    expect(scanRepos).toHaveBeenCalledWith([], { enabled: true, excludePaths: [], nested: false })
   })
 
   it('passes custom roots and exclusions to Electron and records on the origin gateway', async () => {
@@ -1122,6 +1186,27 @@ describe('repository discovery policy', () => {
     })
     expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.objectContaining({ profile: 'coder' }))
     expect($projectTree.get()).toEqual([])
+  })
+})
+
+describe('defaultRepoScanRoot', () => {
+  it.each([['.'], [''], ['~'], ['/'], ['/Users'], ['/home'], ['   ']])(
+    'refuses %j: a path that is not a workspace',
+    cwd => {
+      expect(defaultRepoScanRoot({ terminal: { cwd } })).toBeNull()
+    }
+  )
+
+  it.each([
+    ['~/Developer/pasei', '~/Developer/pasei'],
+    ['/Users/dev/pasei/', '/Users/dev/pasei']
+  ])('keeps %s as the scan root', (cwd, expected) => {
+    expect(defaultRepoScanRoot({ terminal: { cwd } })).toBe(expected)
+  })
+
+  it('has nothing to say about a config with no terminal section', () => {
+    expect(defaultRepoScanRoot({ desktop: {} })).toBeNull()
+    expect(defaultRepoScanRoot(null)).toBeNull()
   })
 })
 

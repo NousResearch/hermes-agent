@@ -859,3 +859,103 @@ class TestStackedSkillCommands:
         assert loaded == ["skill-a"]
         assert missing == ["gone"]
         assert "gone" in msg
+
+
+def test_core_command_collision_warns_once_per_process(tmp_path, caplog):
+    """A skill colliding with a core command warns on the FIRST scan only (#127976).
+
+    Scans re-run on every session start and index rebuild, so a per-scan warning repeats for the
+    lifetime of the process — the bundled ``plan`` skill was observed warning 6 times in 4 minutes.
+    The first occurrence keeps its WARNING (the condition is real and actionable); repeats are
+    dropped."""
+    import logging
+
+    import agent.skill_commands as sc
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        skill = tmp_path / "plan"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\nname: plan\ndescription: Collides with the core /plan command.\n---\n\nBody.\n"
+        )
+        sc._SCAN_WARNED.clear()
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                published = scan_skill_commands()
+                scan_skill_commands()
+                scan_skill_commands()
+        finally:
+            sc._SCAN_WARNED.clear()
+
+    warnings = [r for r in caplog.records if "collides with a core" in r.getMessage()]
+    assert len(warnings) == 1, f"collision warning repeated: {len(warnings)} times"
+    # The skill is still skipped for the slash command, and stays reachable via /skill.
+    assert published.get("/plan") is None
+
+
+def test_inter_skill_slug_collision_warns_once_per_process(tmp_path, caplog):
+    """The sibling scan warning (two skills normalizing to one slug) dedupes the same way."""
+    import logging
+
+    import agent.skill_commands as sc
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        first = tmp_path / "a-first"
+        first.mkdir()
+        (first / "SKILL.md").write_text("---\nname: git_helper\ndescription: First.\n---\n\nBody.\n")
+        second = tmp_path / "z-second"
+        second.mkdir()
+        (second / "SKILL.md").write_text("---\nname: git-helper\ndescription: Second.\n---\n\nBody.\n")
+        sc._SCAN_WARNED.clear()
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                scan_skill_commands()
+                scan_skill_commands()
+        finally:
+            sc._SCAN_WARNED.clear()
+
+    warnings = [r for r in caplog.records if "already claimed" in r.getMessage()]
+    assert len(warnings) == 1, f"slug collision warning repeated: {len(warnings)} times"
+
+
+def test_slug_collision_warns_again_when_the_incumbent_changes(tmp_path, caplog):
+    """A new slug incumbent is new information, not a repeat of the old warning (#127985).
+
+    ``git_helper`` / ``git-helper`` / ``git helper`` all normalize to ``/git-helper``. Scan 1
+    lets ``git_helper`` win; with that winner removed the hyphenated skill is usurped by the
+    spaced one. The warning's value is telling the operator *who now owns* the slash command,
+    so the incumbent is part of the dedup key — a changed owner must warn again even though the
+    losing skill and the slug are unchanged.
+    """
+    import logging
+
+    import agent.skill_commands as sc
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        winner = tmp_path / "a-winner"
+        winner.mkdir()
+        (winner / "SKILL.md").write_text("---\nname: git_helper\ndescription: First.\n---\n\nBody.\n")
+        hyphen = tmp_path / "b-hyphen"
+        hyphen.mkdir()
+        (hyphen / "SKILL.md").write_text("---\nname: git-helper\ndescription: Second.\n---\n\nBody.\n")
+        spaced = tmp_path / "c-spaced"
+        spaced.mkdir()
+        (spaced / "SKILL.md").write_text("---\nname: git helper\ndescription: Third.\n---\n\nBody.\n")
+        sc._SCAN_WARNED.clear()
+        try:
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                scan_skill_commands()  # git_helper claims /git-helper
+                scan_skill_commands()  # same loser, same incumbent — deduped
+                (winner / "SKILL.md").unlink()  # the incumbent goes away
+                scan_skill_commands()  # new incumbent, hyphenated skill loses again
+                scan_skill_commands()  # and stays deduped while nothing changes
+        finally:
+            sc._SCAN_WARNED.clear()
+
+    warnings = [r for r in caplog.records if "already claimed" in r.getMessage()]
+    # Both losing skills warn once against the original incumbent, stay quiet while it holds
+    # the slug, and the remaining loser warns once against the NEW incumbent.
+    assert len(warnings) == 3, f"expected one warning per distinct fact, got {len(warnings)}"
+    assert "already claimed by 'git_helper'" in warnings[0].getMessage(), warnings[0].getMessage()
+    assert "already claimed by 'git_helper'" in warnings[1].getMessage(), warnings[1].getMessage()
+    assert "already claimed by 'git-helper'" in warnings[2].getMessage(), warnings[2].getMessage()

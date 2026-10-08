@@ -183,6 +183,7 @@ class RepoDiscoveryPolicy(Result):
     """``methods_projects._repo_discovery_policy`` — the effective ``desktop.repo_scan_*`` config."""
 
     enabled: bool
+    nested: bool = False
     roots: list[str]
     exclude_paths: list[str]
 
@@ -289,6 +290,8 @@ class ProjectTreeNode(Result):
     color: str | None = None
     icon: str | None = None
     isAuto: bool = False
+    # A repo root the disk scan found (`desktop.repo_scan_*`) rather than one inferred from sessions.
+    discovered: bool = False
     isNoProject: bool = False
     sessionCount: int = 0
     lastActive: float = 0.0

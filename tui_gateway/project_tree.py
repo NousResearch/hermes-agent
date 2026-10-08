@@ -421,7 +421,8 @@ def _project_node(
     pid: str, label: str, path: Optional[str], repos: list[dict], session_count: int,
     last_active: float, preview_sessions: list[dict], sessions: Optional[list[dict]] = None,
     **flags: Any) -> dict:
-    """``flags`` overrides ``color``/``icon``/``isAuto``/``isNoProject``; key order = wire shape."""
+    """``flags`` overrides ``color``/``icon``/``isAuto``/``isNoProject``/``discovered``; key order =
+    wire shape."""
     rows = sessions or []
     node = {
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
@@ -565,7 +566,7 @@ def build_tree(
         label = repo.get("label") or base_name(root) or root
         result.append(_project_node(
             root, label, root, [_repo_node(root, label)], int(repo.get("sessions") or 0),
-            float(repo.get("last_active") or 0), [], isAuto=True))
+            float(repo.get("last_active") or 0), [], isAuto=True, discovered=True))
 
     # Auto-project basename labels can collide; explicit projects keep their user-chosen names.
     _disambiguate_labels([p for p in result if p.get("isAuto")])

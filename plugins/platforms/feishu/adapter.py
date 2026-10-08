@@ -342,6 +342,7 @@ class FeishuBatchState:
 # --- Admission: policy types ---
 
 RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+_RULE_UNSET = object()
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -365,6 +366,30 @@ def _escape_markdown_text(text: str) -> str:
 
 def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
+
+
+def _rule_id_set(values: Any) -> set[str]:
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return set()
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _parse_group_rule(rule_cfg: dict[str, Any]) -> FeishuGroupRule:
+    return FeishuGroupRule(
+        policy=str(rule_cfg.get("policy", "open")).strip().lower(),
+        allowlist=_rule_id_set(rule_cfg.get("allowlist")),
+        blacklist=_rule_id_set(rule_cfg.get("blacklist")),
+        require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
+    )
+
+
+def _merge_group_rule(base: FeishuGroupRule, overlay: dict[str, Any]) -> FeishuGroupRule:
+    return FeishuGroupRule(
+        policy=str(overlay["policy"]).strip().lower() if "policy" in overlay else base.policy,
+        allowlist=_rule_id_set(overlay["allowlist"]) if "allowlist" in overlay else set(base.allowlist),
+        blacklist=_rule_id_set(overlay["blacklist"]) if "blacklist" in overlay else set(base.blacklist),
+        require_mention=_to_boolean(overlay["require_mention"]) if "require_mention" in overlay else base.require_mention,
+    )
 
 
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
@@ -1297,6 +1322,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Lifecycle — init / settings / connect / disconnect ---
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
+        from plugins.platforms.feishu.feishu_group_rules import HotGroupRules
+        self._hot_group_rules = HotGroupRules(get_hermes_home() / "feishu_group_rules.json")
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
@@ -1348,9 +1375,6 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
-        def _id_set(values: Any) -> set[str]:
-            return {str(u).strip() for u in values if str(u).strip()}
-
         def _secret(name: str, default: str = "") -> str:
             return _get_scoped_secret(name, default).strip()
 
@@ -1365,13 +1389,7 @@ class FeishuAdapter(BasePlatformAdapter):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
-                group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist=_id_set(rule_cfg.get("allowlist", [])),
-                    blacklist=_id_set(rule_cfg.get("blacklist", [])),
-                    # Only override when explicitly set — missing vs false must not collapse.
-                    require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
-                )
+                group_rules[str(chat_id)] = _parse_group_rule(rule_cfg)
 
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
         # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
@@ -1395,7 +1413,7 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
             verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
             group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
-            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
+            allowed_group_users=frozenset(_rule_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
             bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
             bot_user_id=_secret("FEISHU_BOT_USER_ID"),
             bot_name=_secret("FEISHU_BOT_NAME"),
@@ -1412,7 +1430,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
-            admins=frozenset(_id_set(extra.get("admins", []))),
+            admins=frozenset(_rule_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
@@ -3386,7 +3404,8 @@ class FeishuAdapter(BasePlatformAdapter):
         is_bot = _is_bot_sender(sender)
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
-        require_mention = is_group and self._require_mention_for(chat_id)
+        group_rule = self._group_rule_for(chat_id) if is_group else None
+        require_mention = is_group and self._require_mention_for(chat_id, group_rule)
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
         if self_ids and sender_ids & self_ids:
@@ -3409,7 +3428,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if self._allow_all_dm or not self._allowed_group_users:
                 return None
             return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
-        if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
+        if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot, rule=group_rule):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
@@ -3435,18 +3454,18 @@ class FeishuAdapter(BasePlatformAdapter):
             self._warned_empty_allowlist_deny = True
             logger.warning(text)
 
-    def _require_mention_for(self, chat_id: str) -> bool:
-        rule = self._group_rules.get(chat_id) if chat_id else None
+    def _require_mention_for(self, chat_id: str, rule: FeishuGroupRule | None | object = _RULE_UNSET) -> bool:
+        rule = self._group_rule_for(chat_id) if rule is _RULE_UNSET else rule
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
 
-    def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
+    def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False, rule: FeishuGroupRule | None | object = _RULE_UNSET) -> bool:
         """Per-group policy gate for non-DM traffic."""
         sender_ids = {getattr(sender_id, "open_id", None), getattr(sender_id, "user_id", None)} - {None}
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True
-        rule = self._group_rules.get(chat_id) if chat_id else None
+        rule = self._group_rule_for(chat_id) if rule is _RULE_UNSET else rule
         if rule:
             policy, allowlist, blacklist = rule.policy, rule.allowlist, rule.blacklist
         else:
@@ -3462,6 +3481,18 @@ class FeishuAdapter(BasePlatformAdapter):
         if policy == "blacklist":
             return bool(sender_ids and not (sender_ids & blacklist))
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
+
+    def _group_rule_for(self, chat_id: str) -> FeishuGroupRule | None:
+        if not chat_id:
+            return None
+        hot_rules = getattr(self, "_hot_group_rules", None)
+        if hot_rules is None:
+            return self._group_rules.get(chat_id)
+        overlay = hot_rules.load().get(chat_id)
+        if overlay is None:
+            return self._group_rules.get(chat_id)
+        base = self._group_rules.get(chat_id) or FeishuGroupRule(policy=self._default_group_policy or self._group_policy, allowlist=set(self._allowed_group_users), require_mention=None)
+        return _merge_group_rule(base, overlay)
 
     def _mentions_self(self, message: Any) -> bool:
         # @_all is Feishu's @everyone placeholder.

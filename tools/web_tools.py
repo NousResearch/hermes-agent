@@ -352,7 +352,8 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
     would make the one-shot ring fallback sticky for a whole TTL."""
-    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
+    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response, ttl_seconds, utc_now_iso
+    from tools.web_tools_provenance import _inject_search_provenance, _search_web_count, _validate_search_provider_response
 
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
@@ -363,6 +364,10 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             if served is None:
                 raise
             return served, True
+        validated = _validate_search_provider_response(resp)
+        if validated is not resp and validated.get("success") is False:
+            return validated, False
+        resp = validated
         if not resp.get("success"):
             served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
             if served is not None:
@@ -377,16 +382,35 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             return fallback
         return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
-    response_data = search_memo.lookup(provider.name, query, limit)
-    if response_data is None:
+    cache_status, cache_age, was_rescued = "miss", None, False
+    cache_ttl = ttl_seconds()
+    hit = search_memo.lookup_with_metadata(provider.name, query, limit)
+    if hit is None:
         with search_memo.flight_lock(provider.name, query, limit):
-            # Re-check inside the lock: a concurrent identical call may have stored.
-            response_data = search_memo.lookup(provider.name, query, limit)
-            if response_data is None:
+            hit = search_memo.lookup_with_metadata(provider.name, query, limit)
+            if hit is None:
                 response_data, was_rescued = _paid_search()
+                response_data = _validate_search_provider_response(response_data)
+                retrieved_at = utc_now_iso()
                 if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
-    return slice_search_response(response_data, limit)
+                    search_memo.store(provider.name, query, limit, response_data, retrieved_at=retrieved_at)
+    if hit is not None:
+        response_data, retrieved_at, cache_age, cache_ttl = hit
+        cache_status = "hit"
+    elif was_rescued:
+        cache_status = "bypass"
+    else:
+        from tools.web_result_cache import cache_enabled
+        if not cache_enabled():
+            cache_status = "bypass"
+    fetched_count = _search_web_count(response_data)
+    response_data = slice_search_response(response_data, limit)
+    return _inject_search_provenance(
+        response_data, requested_backend=provider.name, requested_limit=limit,
+        fetched_result_count=fetched_count, retrieved_at=retrieved_at,
+        cache_status=cache_status, cache_age_seconds=cache_age,
+        cache_ttl_seconds=cache_ttl, fallback_used=was_rescued,
+    )
 
 
 async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Optional[int] = None) -> str:

@@ -50,9 +50,23 @@ class _Browser:
     # PATH names tried by chromium_executable() when they differ from linux_bins
     # (channel/alias binaries are launch candidates only).
     linux_exec: tuple[str, ...] | None = None
+    # False for builds that serve --remote-debugging-port but never write the
+    # DevToolsActivePort file (Dia). Real-profile launch then claims an explicit free
+    # port and probes the HTTP endpoint instead of watching the file. Default True keeps
+    # every other browser on the file-driven discovery path.
+    writes_devtools_port: bool = True
+    # True for builds that append ``User Data`` to whatever ``--user-data-dir`` they are
+    # given (Dia: its real layout is ``Dia/`` -> ``User Data/``, the Chromium profile). The
+    # snapshot must then reproduce that nesting, or Dia appends onto an empty dir inside the
+    # copy and boots a brand-new signed-out profile. Default False = Chromium's flat layout.
+    nests_user_data_dir: bool = False
+    # True when the browser must be driven on its real profile directory rather than a copy —
+    # its identity lives in product-level state beside the profile, which a snapshot does not
+    # carry, so a copy shows first-run onboarding. Implies the browser must be fully quit.
+    use_profile_in_place: bool = False
 
 
-# Launch-candidate order (chrome, chromium, brave, brave-origin, edge) is the tuple
+# Launch-candidate order (chrome, dia, chromium, brave, brave-origin, edge) is the tuple
 # order. ``brave-origin`` is Brave's standalone paid build: same Chromium core but a
 # fully distinct install identity (Brave-Origin product path, ``BraveOHTML`` ProgId,
 # ``com.brave.Browser.origin`` bundle id) that installs side-by-side with Brave. Its
@@ -69,6 +83,16 @@ _BROWSERS = (
         ("google-chrome", "google-chrome-stable"),
         ("/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"),
         "google-chrome"),
+    # Dia (The Browser Company) — Chromium-based, macOS-only. Its profile nests one level
+    # deeper than the Chromium standard: the real user-data-dir is ``Dia/User Data``, not
+    # the ``Dia`` product dir itself (which also holds AgentServer/, ToolPromptDescriptors/).
+    # Bundle id ``company.thebrowser.dia`` is a distinct product identity from Arc
+    # (``company.thebrowser.Browser``) and must never be conflated with it.
+    _Browser(
+        "dia", "/Applications/Dia.app/Contents/MacOS/Dia",
+        ("Dia", "User Data"), (), (), (), (), (),
+        "", writes_devtools_port=False, nests_user_data_dir=True,
+        use_profile_in_place=True),
     _Browser(
         "chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ("Chromium",), ("chromium.exe", "chromium"),
@@ -163,7 +187,10 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"),
+    # Dia (The Browser Company). Exact match, so it never swallows Arc's
+    # ``company.thebrowser.Browser`` — Arc is not supported and must fail closed.
+    ("company.thebrowser.dia", "dia"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
@@ -189,8 +216,12 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *b.mac_support)
     if system == "Windows":
+        if not b.win_profile:
+            return None  # no build for this platform: fail closed, never a bare parent dir
         local = os.environ.get("LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")
         return ntpath.join(local, *b.win_profile)
+    if not b.linux_config:
+        return None  # ditto
     config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
     linux_parts = b.linux_config.split("/")
     candidates = [posixpath.join(config, *linux_parts)]
@@ -204,6 +235,22 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
 
 def _first_present(paths) -> str | None:
     return next((p for p in paths if p and os.path.isfile(p)), None)
+
+
+def browser_writes_devtools_port(browser: str | None) -> bool:
+    """False when ``browser`` serves CDP on an explicit port but never writes the
+    ``DevToolsActivePort`` bootstrap file (Dia). Unknown/None defaults True, keeping the
+    file-driven discovery path for every build that honours it."""
+    b = _BROWSER_BY_KEY.get(browser or "")
+    return True if b is None else b.writes_devtools_port
+
+
+def free_tcp_port() -> int:
+    """An unused loopback TCP port. Inherently racy, but the caller confirms the endpoint
+    answers on it before trusting it, and a lost race fails closed rather than mis-attaching."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 def chromium_executable(browser: str, system: str | None = None) -> str | None:
@@ -385,6 +432,60 @@ _AUTH_REFRESH_PROFILE_FILES = (
 def real_profile_copy_dir(browser: str) -> str:
     """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
     return str(get_hermes_home() / "browser-profile" / browser)
+
+
+def browser_nests_user_data_dir(browser: str | None) -> bool:
+    """True when ``browser`` appends ``User Data`` to the ``--user-data-dir`` it is given.
+    The snapshot must mirror that nesting or the browser resolves a different, empty dir."""
+    b = _BROWSER_BY_KEY.get(browser or "")
+    return False if b is None else b.nests_user_data_dir
+
+
+def real_profile_snapshot_dir(browser: str) -> str:
+    """Where the snapshot's PROFILE lives, mirroring how ``browser`` resolves its own dir.
+
+    Chromium takes ``--user-data-dir`` as the profile dir, so the snapshot goes flat at the
+    copy root. Dia appends ``User Data`` to whatever it is handed, so its snapshot must sit at
+    ``<copy>/User Data`` — otherwise Dia appends onto an empty dir and opens a signed-out
+    profile beside a correct snapshot nobody reads.
+    """
+    root = real_profile_copy_dir(browser)
+    return os.path.join(root, "User Data") if browser_nests_user_data_dir(browser) else root
+
+
+def browser_uses_profile_in_place(browser: str | None) -> bool:
+    """True when ``browser`` must be driven on its OWN profile directory instead of a copy.
+
+    Copying is the default because it keeps the agent out of the user's live session and
+    sidesteps Chromium's default-profile debugging block. Dia cannot be satisfied that way: it
+    resolves identity through product-level state that lives BESIDE ``User Data`` and does not
+    survive a snapshot of the profile alone, so a copy renders as a fresh install and shows
+    first-run onboarding. Such a browser is driven in place, which requires it to be fully quit.
+    """
+    b = _BROWSER_BY_KEY.get(browser or "")
+    return False if b is None else b.use_profile_in_place
+
+
+def real_profile_product_dir(browser: str) -> str | None:
+    """The product dir ``--user-data-dir`` is pointed at for an in-place browser.
+
+    Dia appends ``User Data`` to the value, so the value is the product dir (``.../Dia``), not
+    the profile (``.../Dia/User Data``). Derived from ``mac_support`` with the profile segment
+    dropped, so it stays correct if the layout is renamed. None when the platform has no build.
+    """
+    b = _BROWSER_BY_KEY.get(browser)
+    if b is None or not b.use_profile_in_place or len(b.mac_support) < 2:
+        return None
+    home = os.path.expanduser("~")
+    return posixpath.join(home, "Library", "Application Support", *b.mac_support[:-1])
+
+
+def browser_profile_is_running(browser: str) -> bool:
+    """True when a process holds ``browser``'s real profile open. An in-place launch cannot
+    proceed: the browser is single-instance and would hand our flags to the already-running
+    instance, which is ignored."""
+    procs = list(_processes_holding_profile(real_profile_data_dir(browser) or ""))
+    return bool(procs)
 
 
 def _last_used_profile(src: str) -> str:
@@ -701,7 +802,8 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir; returns ``(dst, err)``.
     Copies ``Local State`` plus the active profile's auth files into the copy's ``Default``. The
     completion marker is written only after full success, so a torn first copy (disk full, Ctrl+C)
-    never looks "already populated" — it is redone from scratch."""
+    never looks "already populated" — it is redone from scratch. ``dst`` is the LAUNCH dir (the
+    copy root) to hand ``--user-data-dir``; the profile itself may sit nested beneath it."""
     src = src or real_profile_data_dir(browser)
     if not src or not os.path.isdir(src):
         return None, (
@@ -710,7 +812,12 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     source_profile, resolve_err = _resolve_source_profile(src)
     if resolve_err or not source_profile:
         return None, resolve_err
-    dst = real_profile_copy_dir(browser)
+    dst = real_profile_snapshot_dir(browser)
+    # The snapshot's PROFILE lives at ``dst`` (nested for a browser that appends ``User Data``),
+    # but the value returned is the LAUNCH dir — the copy root — because that is what
+    # ``--user-data-dir`` must receive: a nesting browser appends its own segment, so handing it
+    # ``dst`` would nest twice and it would create a fresh profile inside the snapshot.
+    launch_dir = real_profile_copy_dir(browser)
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
     # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
     # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
@@ -747,7 +854,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         _secure_snapshot(dst, contents=True)
     except OSError as e:
         return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
-    return dst, None
+    return launch_dir, None
 
 
 def cleanup_real_profile_snapshots() -> None:

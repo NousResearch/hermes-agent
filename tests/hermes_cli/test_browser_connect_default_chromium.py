@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+import os
 import posixpath
+import socket
 
 import hermes_cli.browser_connect as bc
 
@@ -151,6 +153,8 @@ class TestDetectDefaultDarwin:
         "bundle,expected",
         [
             ("com.google.Chrome", "chrome"),
+            ("company.thebrowser.Dia", "dia"),
+            ("company.thebrowser.Browser", None),
             ("com.brave.Browser", "brave"),
             ("com.brave.Browser.origin", "brave-origin"),
             ("com.microsoft.edgemac", "edge"),
@@ -237,3 +241,74 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestDiaBrowser:
+    """Dia (The Browser Company) is Chromium-based but macOS-only, and differs from Chrome in
+    two ways that each broke real-profile browsing: it never writes the DevToolsActivePort
+    bootstrap file, and it has no Windows/Linux build."""
+
+    def test_bundle_map_hits_dia(self):
+        assert bc._classify_default("company.thebrowser.dia", bc._DARWIN_CHANNEL_BUNDLES,
+                                    bc._DARWIN_BUNDLE_MAP, str.__eq__) == "dia"
+
+    def test_arc_bundle_does_not_alias_dia(self):
+        """Arc shares The Browser Company's prefix and is NOT supported: exact match, not prefix."""
+        assert bc._classify_default("company.thebrowser.browser", bc._DARWIN_CHANNEL_BUNDLES,
+                                    bc._DARWIN_BUNDLE_MAP, str.__eq__) is None
+
+    def test_profile_nests_under_user_data(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert bc.real_profile_data_dir("dia", "Darwin") == str(
+            tmp_path / "Library" / "Application Support" / "Dia" / "User Data")
+
+    @pytest.mark.parametrize("system", ["Windows", "Linux"])
+    def test_no_profile_dir_off_mac(self, system, tmp_path, monkeypatch):
+        """Off-macOS must be None, never LOCALAPPDATA / ~/.config themselves — snapshotting a
+        parent dir is the wrong-principal bug."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        assert bc.real_profile_data_dir("dia", system) is None
+
+    @pytest.mark.parametrize("system", ["Windows", "Linux"])
+    def test_no_executable_off_mac(self, system):
+        assert bc.chromium_executable("dia", system) is None
+
+    def test_never_writes_devtools_port(self):
+        """The launch path picks an explicit port and probes HTTP for Dia; the file-driven
+        bootstrap would poll for a file Dia never creates and time out."""
+        assert bc.browser_writes_devtools_port("dia") is False
+
+    @pytest.mark.parametrize("browser", ["chrome", "chromium", "brave", "brave-origin", "edge"])
+    def test_other_browsers_keep_file_bootstrap(self, browser):
+        assert bc.browser_writes_devtools_port(browser) is True
+
+    def test_unknown_browser_defaults_to_file_bootstrap(self):
+        assert bc.browser_writes_devtools_port(None) is True
+        assert bc.browser_writes_devtools_port("nonexistent") is True
+
+    def test_free_tcp_port_is_usable(self):
+        port = bc.free_tcp_port()
+        assert 1024 <= port <= 65535
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))
+
+    def test_dia_nests_user_data(self):
+        """Dia appends ``User Data`` to the dir it is handed, so its snapshot must nest or the
+        browser resolves an empty child and boots signed out beside a correct snapshot."""
+        assert bc.browser_nests_user_data_dir("dia") is True
+
+    @pytest.mark.parametrize("browser", ["chrome", "chromium", "brave", "brave-origin", "edge"])
+    def test_chromium_family_does_not_nest(self, browser):
+        """Chromium treats --user-data-dir as the profile dir itself."""
+        assert bc.browser_nests_user_data_dir(browser) is False
+
+    def test_unknown_browser_does_not_nest(self):
+        assert bc.browser_nests_user_data_dir(None) is False
+        assert bc.browser_nests_user_data_dir("nonexistent") is False
+
+    def test_snapshot_dir_nests_only_for_dia(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        root = str(tmp_path / "browser-profile")
+        assert bc.real_profile_snapshot_dir("dia") == os.path.join(root, "dia", "User Data")
+        assert bc.real_profile_snapshot_dir("chrome") == os.path.join(root, "chrome")

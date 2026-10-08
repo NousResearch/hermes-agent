@@ -81,6 +81,15 @@ def maybe_append_network_breakpoint(
 ) -> Optional[Dict[str, Any]]:
     """Append the typed receipt when *error* classifies as a local network failure.
 
+    *history* must be the AUTHORITATIVE, persisted message list — i.e. the
+    agent's ``_session_messages`` — NOT the CLI's ``conversation_history``.
+    On the turn-error path ``conversation_history`` is reassigned from
+    ``turn.result["messages"]`` (empty) by ``_chat_settle_turn`` and the SQLite
+    flush writes rows from ``_session_messages`` while treating
+    ``conversation_history`` as an already-durable skip-set; a receipt parked in
+    ``conversation_history`` is therefore wiped before any reader (and never
+    reaches the DB). Appending to ``_session_messages`` makes it survive both.
+
     Returns the appended message (for tests / logging), or None when the error
     is not network-class or the inputs are malformed. Never raises — a receipt
     failure must not break the error path it decorates (A6 zero-network spec).

@@ -760,7 +760,8 @@ class TestProcessQuotedContext:
         adapter = self._make_adapter()
         d = {"message_type": 0, "content": "hi"}
         out = await adapter._process_quoted_context(d)
-        assert out == {"quote_block": "", "image_urls": [], "image_media_types": []}
+        assert out == {"quote_block": "", "image_urls": [], "image_media_types": [],
+                       "document_urls": [], "document_media_types": []}
 
 
     @pytest.mark.asyncio

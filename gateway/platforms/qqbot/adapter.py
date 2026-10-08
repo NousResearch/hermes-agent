@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -830,22 +831,31 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if att["attachment_info"]:
             text = self._append_block(text, att["attachment_info"])
         image_urls, image_media_types = att["image_urls"], att["image_media_types"]
+        document_urls, document_media_types = att["document_urls"], att["document_media_types"]
         if verbose:
-            logger.info("[%s] After processing: images=%d, voice=%d", self._log_tag, len(image_urls), len(voice_transcripts))
+            logger.info(
+                "[%s] After processing: images=%d, documents=%d, voice=%d",
+                self._log_tag, len(image_urls), len(document_urls), len(voice_transcripts))
 
         quoted = await self._process_quoted_context(d)
         text = self._merge_quote_into(text, quoted["quote_block"])
-        if quoted["image_urls"]:
-            image_urls = image_urls + quoted["image_urls"]
-            image_media_types = image_media_types + quoted["image_media_types"]
-        if not text.strip() and not image_urls:
+        image_urls = image_urls + quoted["image_urls"]
+        image_media_types = image_media_types + quoted["image_media_types"]
+        document_urls = document_urls + quoted["document_urls"]
+        document_media_types = document_media_types + quoted["document_media_types"]
+        if not text.strip() and not image_urls and not document_urls:
             return
 
         self._chat_type_map[chat_id] = qq_chat_type
+        # Documents ride media_urls so the gateway's shared document note tells the agent to
+        # extract them (read_file converts PDF/Office); their text is never inlined here.
         event = MessageEvent(
             source=self.build_source(chat_id=chat_id,** source_kwargs), text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
-            message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
+            message_type=(MessageType.DOCUMENT if document_urls
+                          else self._detect_message_type(image_urls, image_media_types)),
+            raw_message=d, message_id=msg_id,
+            media_urls=image_urls + document_urls, media_types=image_media_types + document_media_types,
+            media_text_inlined=[None] * len(image_urls) + [False] * len(document_urls),
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -856,9 +866,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Process the quoted message a user is replying to (``message_type == 103``;
         referenced content + attachments live in ``msg_elements``). Quoted attachments
         go through _process_attachments so quoted voice gets STT and quoted images are
-        cached identically. Returns ``{"quote_block", "image_urls", "image_media_types"}``;
-        quote_block is "" when nothing is quoted."""
-        empty = {"quote_block": "", "image_urls": [], "image_media_types": []}
+        cached identically. Returns ``{"quote_block", "image_urls", "image_media_types",
+        "document_urls", "document_media_types"}``; quote_block is "" when nothing is quoted."""
+        empty = {"quote_block": "", "image_urls": [], "image_media_types": [],
+                 "document_urls": [], "document_media_types": []}
         try:
             is_quote = int(d.get("message_type", 0) or 0) == 103
         except (TypeError, ValueError):
@@ -873,18 +884,22 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             a for e in elements if isinstance(e.get("attachments"), list) for a in e["attachments"] if isinstance(a, dict)]
         att_result = await self._process_attachments(all_attachments)
         quoted_images = att_result.get("image_urls") or []
+        quoted_documents = att_result.get("document_urls") or []
 
         lines: List[str] = [" ".join(quoted_text_parts)] if quoted_text_parts else []
         lines.extend(att_result.get("voice_transcripts") or [])
         if att_result.get("attachment_info"):
             lines.append(att_result["attachment_info"])
-        if not lines and not quoted_images:
+        if not lines and not quoted_images and not quoted_documents:
             return empty
-        # Images-only quote still gets a marker so the LLM knows context was referenced.
+        # Attachment-only quote still gets a marker so the LLM knows context was referenced.
+        marker = "(image)" if quoted_images else "(file)"
         return {
-            "quote_block": "[Quoted message]:\n" + "\n".join(lines) if lines else "[Quoted message]: (image)",
+            "quote_block": "[Quoted message]:\n" + "\n".join(lines) if lines else f"[Quoted message]: {marker}",
             "image_urls": quoted_images,
-            "image_media_types": att_result.get("image_media_types") or []}
+            "image_media_types": att_result.get("image_media_types") or [],
+            "document_urls": quoted_documents,
+            "document_media_types": att_result.get("document_media_types") or []}
 
     @staticmethod
     def _merge_quote_into(text: str, quote_block: str) -> str:
@@ -913,10 +928,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _process_attachments(self, attachments: Any) -> Dict[str, Any]:
         """Process inbound attachments uniformly. Returns ``{"image_urls",
-        "image_media_types", "voice_transcripts", "attachment_info"}`` (cached image
-        paths + MIME types, "[Voice] ..." transcripts, text description of other files)."""
+        "image_media_types", "document_urls", "document_media_types", "voice_transcripts",
+        "attachment_info"}`` (cached image / document paths + MIME types, "[Voice] ..."
+        transcripts, text description of videos)."""
         image_urls: List[str] = []
         image_media_types: List[str] = []
+        document_urls: List[str] = []
+        document_media_types: List[str] = []
         voice_transcripts: List[str] = []
         other_attachments: List[str] = []
 
@@ -954,9 +972,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 continue
             if not cached_path:
                 continue
-            if not is_image:
-                label = "video" if ct.startswith("video/") else "file"
-                other_attachments.append(f"[{label}: {filename or ct} ({cached_path})]")
+            if ct.startswith("video/"):
+                other_attachments.append(f"[video: {filename or ct} ({cached_path})]")
+            elif not is_image:
+                document_urls.append(cached_path)
+                document_media_types.append(self._document_mime(ct, filename or cached_path))
             elif os.path.isfile(cached_path):
                 image_urls.append(cached_path)
                 image_media_types.append(ct or "image/jpeg")
@@ -966,8 +986,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return {
             "image_urls": image_urls,
             "image_media_types": image_media_types,
+            "document_urls": document_urls,
+            "document_media_types": document_media_types,
             "voice_transcripts": voice_transcripts,
             "attachment_info": "\n".join(other_attachments)}
+
+    @staticmethod
+    def _document_mime(content_type: str, filename: str) -> str:
+        """QQ labels uploads ``content_type="file"``; only a real MIME is kept, else guess from the name."""
+        if "/" in content_type:
+            return content_type
+        return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     @staticmethod
     def _opt_str(value: Any) -> Optional[str]:

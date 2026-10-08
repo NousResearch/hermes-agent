@@ -2539,9 +2539,9 @@ def _build_document_context_note(
     return (
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
         f"Its text is not inlined here (it's a binary format such as PDF or DOCX). "
-        f"To read it, extract the document's text yourself — for example with the "
-        f"terminal tool or the ocr-and-documents skill — before answering, instead "
-        f"of asking the user to paste the contents.]")
+        f"To read it, extract the document's text yourself — read_file converts PDF, "
+        f"Office and OpenDocument files to text — before answering, instead of asking "
+        f"the user to paste the contents.]")
 
 
 def _format_duration(seconds: float) -> str:

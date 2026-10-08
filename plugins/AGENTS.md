@@ -17,8 +17,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 ## What may live in this tree (policy)
 
 - **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (byterover,
-  holographic, openviking, retaindb stay; bug fixes welcome). hindsight (Sep 2026), honcho,
-  supermemory and mem0 (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
+  holographic, retaindb stay until their Oct 15 2026 removal). hindsight (Sep 2026), honcho,
+  supermemory, mem0 and openviking (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
   `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
   catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
   rename / update-sync hooks) resolves the provider's modules through

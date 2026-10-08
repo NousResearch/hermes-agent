@@ -48,6 +48,7 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
 
     store = _memory_store()
     assert json.loads(memory_tool("add", content="prefers tabs", store=store))["success"]
+    assert json.loads(memory_tool("patch", pattern="tabs", content="spaces", store=store))["success"]
     memory_tool("replace", content="x", store=store)  # refused before the store: no old_text
     memory_tool("replace", content="x", old_text="no such entry", store=store)  # the store could not apply it
     memory_tool("explode", store=store)  # unknown action
@@ -61,6 +62,7 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
     base = {"provider": "builtin", "origin": "foreground"}
     assert rows == {
         tuple(sorted({**base, "op": "add", "outcome": "success", "failure_class": "none"}.items())): 1,
+        tuple(sorted({**base, "op": "patch", "outcome": "success", "failure_class": "none"}.items())): 1,
         tuple(sorted({**base, "op": "replace", "outcome": "rejected", "failure_class": "missing_old_text"}.items())): 1,
         tuple(sorted({**base, "op": "replace", "outcome": "failed", "failure_class": "no_match"}.items())): 1,
         tuple(sorted({**base, "op": "other", "outcome": "rejected", "failure_class": "invalid_args"}.items())): 1,

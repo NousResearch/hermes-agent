@@ -77,6 +77,7 @@ _MEMORY_OP_WORDS = {
         ("add", "conclude", "create", "ingest", "remember", "retain", "save", "store", "upload"), "add"
     ),
     **dict.fromkeys(("edit", "replace", "update"), "replace"),
+    **dict.fromkeys(("patch",), "patch"),
     **dict.fromkeys(("delete", "forget", "remove"), "remove"),
     **dict.fromkeys(("probe", "query", "reason", "reasoning", "recall", "related", "search"), "search"),
     **dict.fromkeys(("context", "get", "list", "profile", "read"), "read"),

@@ -870,7 +870,11 @@ class MemoryManager:
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are
     # filtered by ``notify_memory_tool_write`` first.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove", "patch"}
+    # Providers filter on the three documented action names, so a literal
+    # "patch" would be dropped. Mirror it as replace with source_action/pattern
+    # in metadata and the full rewritten entry as content.
+    _MIRRORED_ACTION_ALIASES = {"patch": "replace"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -908,7 +912,17 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
+                content = str(op.get("content") or op.get("new_text") or "")
                 field = {"replace": "replaced", "remove": "removed"}.get(action)
+                if action == "patch":
+                    metadata["source_action"] = "patch"
+                    pattern = op.get("pattern")
+                    if pattern:
+                        metadata["pattern"] = str(pattern)
+                    patched = result.get("patched_entry") if isinstance(result, dict) else None
+                    if isinstance(patched, str) and patched:
+                        content = patched
+                    field = "replaced"
                 if field:
                     if batched:
                         entries = result.get(f"{field}_entries", {})
@@ -917,7 +931,9 @@ class MemoryManager:
                         previous = result.get(f"{field}_entry")
                     if isinstance(previous, str) and previous:
                         metadata["previous_content"] = previous
-                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
+                self.on_memory_write(
+                    self._MIRRORED_ACTION_ALIASES.get(action, action),
+                    target, content, metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 

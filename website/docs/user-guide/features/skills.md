@@ -264,6 +264,16 @@ Use it from a skill when:
 
 Platforms without a separate document path (e.g. SMS) fall back to whatever attachment mechanism they have.
 
+### Hiding a Skill from the Agent
+
+Set the Claude Code / Agent Skills key `disable-model-invocation` for skills that should only start when asked for:
+
+```yaml
+disable-model-invocation: true
+```
+
+The skill is left out of the system-prompt skill index and `skills_list()`, so the agent does not pick it on its own and it costs no index space. It still loads by exact name: `/skill-name`, `hermes -s skill-name`, and `skill_view(name)` (for example from a wrapper skill that delegates to it). Name resolution is unchanged: a hidden skill still owns its name, so a same-named skill in a lower-precedence directory stays shadowed.
+
 ### Conditional Activation (Fallback Skills)
 
 Skills can automatically show or hide themselves based on which tools are available in the current session. This is most useful for **fallback skills** — free or local alternatives that should only appear when a premium tool is unavailable.

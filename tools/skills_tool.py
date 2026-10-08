@@ -119,6 +119,8 @@ skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 # Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
+# ``disable-model-invocation``: offer-time for the model only (index, skills_list); explicit loads bypass it.
+skill_model_invocable = _skill_utils_delegate("skill_model_invocable")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
@@ -217,9 +219,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                     "description": _truncate_description(description),
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
-                    "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
-                                                      and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
+                    "path": skill_md, "model_invocable": skill_model_invocable(frontmatter),
+                    "visible": bool(skill_matches_platform(frontmatter)
+                                    and skill_matches_environment(frontmatter)
+                                    and skill_matches_apps(frontmatter))})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -232,12 +235,14 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, model_offer: bool = False) -> List[Dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
-    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI);
+    ``model_offer=True`` also leaves out ``disable-model-invocation`` skills (what the model is offered)."""
     return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
-            for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
+            for s in _skill_catalog(skip_disabled=skip_disabled)
+            if s["load_name"] and (s.get("model_invocable", True) or not model_offer)]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -249,13 +254,14 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
+        all_skills = _find_all_skills(model_offer=True)
         try:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+                if (not skill_matches_platform(frontmatter) or not skill_model_invocable(frontmatter)
+                        or _is_skill_disabled(plugin_skill["name"])):
                     continue
                 all_skills.append(plugin_skill)
         except Exception:
@@ -517,7 +523,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
-        available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        available = [s["name"] for s in _sort_skills(_find_all_skills(model_offer=True))[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md

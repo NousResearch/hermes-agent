@@ -69,6 +69,18 @@ _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 # See #24767.
 _local_model_lock = threading.Lock()
+# Serializes the actual faster-whisper DECODE (not the load): a live partial transcript
+# (tools.voice_partial) and the final turn transcription may both be in flight while the user
+# is speaking. faster-whisper's CT2 backend is not documented safe for two ``model.transcribe``
+# iterators on one model at once, so every decode goes through this lock. Held across the
+# transcribe() call AND the segment iteration (faster-whisper is lazy — the decode happens on
+# the first next(), #103793). Kept separate from _local_model_lock (which guards load only) to
+# avoid a load<->inference inversion deadlock.
+_stt_inference_lock = threading.Lock()
+# Set while the idle-unload watcher is swapping the cached model out. A partial worker checks
+# it (under _stt_inference_lock) and skips its tick rather than racing the unload: the watcher
+# never takes the inference lock (it would deadlock against a decode that outlives its wait()).
+_model_unload_in_progress = False
 
 # Idle unload: one daemon thread releases the model (hundreds of MB of RAM/VRAM) after a
 # configurable idle period, then exits; the next voice message reloads and restarts it.
@@ -279,13 +291,23 @@ def _get_provider(stt_config: dict) -> str:
 
 # ---- Provider: local (faster-whisper) -----------------------------------
 def _unload_local_model() -> None:
-    """Release the cached local whisper model. Thread-safe via the model lock."""
-    global _local_model, _local_model_name
+    """Release the cached local whisper model. Thread-safe via the model lock.
+
+    Sets ``_model_unload_in_progress`` for the swap so a live-partial worker (which holds
+    ``_stt_inference_lock`` across its decode) skips its tick instead of reloading the model
+    the watcher is retiring. The watcher never takes the inference lock — a decode can outlive
+    the watcher's wait, and lock-order inversion would deadlock it.
+    """
+    global _local_model, _local_model_name, _model_unload_in_progress
     with _local_model_lock:
         if _local_model is not None:
-            logger.info("Unloading local whisper model '%s' after idle timeout", _local_model_name or "unknown")
-            _local_model = None
-            _local_model_name = None
+            _model_unload_in_progress = True
+            try:
+                logger.info("Unloading local whisper model '%s' after idle timeout", _local_model_name or "unknown")
+                _local_model = None
+                _local_model_name = None
+            finally:
+                _model_unload_in_progress = False
 
 
 def _configured_idle_unload_seconds() -> int:
@@ -390,24 +412,27 @@ def _transcribe_local(
             transcribe_kwargs.pop("language", None)
         if prompt:
             transcribe_kwargs["initial_prompt"] = prompt
-        try:
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
-            # faster-whisper's transcribe() is lazy: the decode (and with it the
-            # dlopen-on-first-use of the CUDA runtime on Windows) happens while
-            # ITERATING segments, after this call has already returned (#103793).
-            # Consume inside the guard so a first-use cuBLAS/cuDNN load failure
-            # retries on CPU exactly like a load-time failure does.
-            segments = list(segments)
-        except Exception as exc:
-            # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
-            # cached model, reload on CPU and retry once, else every later message fails.
-            if not _looks_like_cuda_lib_error(exc):
-                raise
-            logger.warning("faster-whisper CUDA runtime failed mid-transcribe (%s) — "
-                           "evicting cached model and retrying on CPU (int8).", exc)
-            model = _replace_cached_model_on_cpu(model_name)
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
-            segments = list(segments)
+        with _stt_inference_lock:
+            try:
+                segments, info = model.transcribe(file_path, **transcribe_kwargs)
+                # faster-whisper's transcribe() is lazy: the decode (and with it the
+                # dlopen-on-first-use of the CUDA runtime on Windows) happens while
+                # ITERATING segments, after this call has already returned (#103793).
+                # Consume inside the guard so a first-use cuBLAS/cuDNN load failure
+                # retries on CPU exactly like a load-time failure does. The guard also
+                # serializes decodes: a live partial (tools.voice_partial) and this final
+                # pass must not drive the CT2 model at the same time.
+                segments = list(segments)
+            except Exception as exc:
+                # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
+                # cached model, reload on CPU and retry once, else every later message fails.
+                if not _looks_like_cuda_lib_error(exc):
+                    raise
+                logger.warning("faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                               "evicting cached model and retrying on CPU (int8).", exc)
+                model = _replace_cached_model_on_cpu(model_name)
+                segments, info = model.transcribe(file_path, **transcribe_kwargs)
+                segments = list(segments)
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)

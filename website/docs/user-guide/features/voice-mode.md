@@ -191,9 +191,29 @@ stt:
 | `openai` | Realtime transcription session | Needs your own `OPENAI_API_KEY`; the Nous-managed audio gateway serves file transcription only |
 | `xai` | `wss://api.x.ai/v1/stt` | Needs `XAI_API_KEY` (the Grok OAuth login is not used for live STT) |
 | `elevenlabs` | Scribe v2 realtime | `ELEVENLABS_API_KEY` |
+| `local` | Re-decodes the capture tail | Offline: no realtime wire exists, so a worker re-transcribes a capped window of the running capture. Tuning under `voice.partial` |
 | plugin | `TranscriptionProvider.streaming_capable` | Plugins opt in with `open_stream_session()` |
 
-Live transcription covers CLI and TUI voice mode and Desktop dictation. Local whisper, Groq, Mistral and DeepInfra keep using the file path. If a live session can't open, or fails mid-recording, Hermes transcribes the recording as usual, so turning this on never loses a take.
+Live transcription covers CLI and TUI voice mode and Desktop dictation. Groq, Mistral and DeepInfra keep using the file path. If a live session can't open, or fails mid-recording, Hermes transcribes the recording as usual, so turning this on never loses a take.
+
+#### Local live transcription (`voice.partial`)
+
+Local faster-whisper has no realtime endpoint, so `stt.streaming: true` answers it by re-decoding
+the recent tail of the capture on a cadence. Each partial is a **preview**: the recording is always
+transcribed in full when you stop, and that pass is what the turn sees. Decodes are serialized with
+the final pass, and a tick that lands while a decode is running is skipped rather than queued.
+
+```yaml
+voice:
+  partial:
+    tail_seconds: 20.0      # how much of the running capture each re-decode reads
+    interval_seconds: 2.0   # re-decode cadence; slower decodes simply skip ticks
+    min_seconds: 1.5        # don't re-decode until this much audio exists
+```
+
+A re-decode is a full whisper pass, so the cadence you can afford depends on the model: `base` on
+CPU keeps up comfortably, `medium` costs roughly one decode per interval, `large-v3` will drop most
+ticks. Raise `interval_seconds` (or lower `tail_seconds`) if partials lag your speech.
 
 ### Streaming TTS
 

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { Markdown } from "@/components/Markdown";
+import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api, type SessionMessage, type SessionSearchResult } from "@/lib/api";
 import { GatewayClient } from "@/lib/gatewayClient";
@@ -56,6 +57,9 @@ export default function ChatNative() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query.trim();
@@ -329,7 +333,17 @@ export default function ChatNative() {
         )}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 justify-end">
+        <div className="flex shrink-0 items-center justify-end gap-2">
+          {modelNotice && (
+            <span className="truncate text-xs text-text-secondary">{modelNotice}</span>
+          )}
+          <button
+            type="button"
+            onClick={() => setModelOpen(true)}
+            className="rounded border border-current/20 px-2 py-1 text-xs text-text-secondary hover:text-midground"
+          >
+            Model
+          </button>
           <button
             type="button"
             onClick={exportChat}
@@ -381,7 +395,43 @@ export default function ChatNative() {
           )}
           <div ref={bottomRef} />
         </div>
-        <ChatBar onSend={send} disabled={!gwSessionId || sending} profile={profile} />
+        <ChatBar
+          key={modelRefreshKey}
+          onSend={send}
+          disabled={!gwSessionId || sending}
+          profile={profile}
+        />
+        {modelOpen && (
+          <ModelPickerDialog
+            loader={() => api.getModelOptions(profile)}
+            alwaysGlobal
+            onApply={async ({ provider, model, confirmExpensiveModel }) => {
+              setModelNotice(null);
+              const result = await api.setModelAssignment(
+                {
+                  confirm_expensive_model: confirmExpensiveModel,
+                  scope: "main",
+                  provider,
+                  model,
+                },
+                profile,
+              );
+              if (!result.confirm_required) {
+                setModelOpen(false);
+                setModelRefreshKey((k) => k + 1);
+                setModelNotice(
+                  `Model set to ${model.split("/").slice(-1)[0]}. New chats use it.`,
+                );
+              }
+              return result;
+            }}
+            onClose={() => {
+              setModelOpen(false);
+              setModelRefreshKey((k) => k + 1);
+            }}
+          />
+        )}
+      </div>
       </div>
     </div>
   );

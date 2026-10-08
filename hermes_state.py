@@ -923,7 +923,22 @@ class SessionDB(
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
-        degradation: slower beats EMFILE, which the supervisor cannot see."""
+        degradation: slower beats EMFILE, which the supervisor cannot see.
+
+        A structural-corruption error off the yielded connection latches
+        self.db_path here: this is the one chokepoint every read passes through,
+        so direct ``_read_ctx`` consumers publish the same health fact the
+        ``_read_*`` helpers publish. note_storage_error only latches structural
+        damage — busy, IOERR and malformed-schema errors pass through unlatched."""
+        try:
+            with self._read_ctx_conn() as conn:
+                yield conn
+        except sqlite3.DatabaseError as exc:
+            note_storage_error(self.db_path, exc)
+            raise
+
+    @contextmanager
+    def _read_ctx_conn(self) -> Iterator[sqlite3.Connection]:
         conn = self._checkout_read_conn()
         if conn is not None:
             try:

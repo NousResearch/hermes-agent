@@ -475,7 +475,8 @@ async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, defaul
 
     tier = runner._resolve_session_service_tier(session_key=session_key)
     model, runtime = runner._resolve_session_agent_runtime(source=event.source)
-    route = runner._resolve_turn_agent_config("hi", model, runtime)
+    # The session's next turn is an external user turn; classify it explicitly.
+    route = runner._resolve_turn_agent_config("hi", model, runtime, internal=False)
     if accepted:
         assert tier == "ultrafast" and "only available" not in response
         assert route["request_overrides"] == {"service_tier": "ultrafast"}

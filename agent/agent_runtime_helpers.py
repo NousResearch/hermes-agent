@@ -3195,10 +3195,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return _realign_tool_result_names(messages)
 
 
-_ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
+_ACK_FUTURE_RE = re.compile(
+    r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
+    r"|i am now|i'm now|i am currently|i'm currently)\b")
 _ACK_ACTION_MARKERS = (
     "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
     "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
+    "compiling", "writing", "generating", "creating", "building", "preparing", "assembling",
+    "putting together",
 )
 _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
@@ -3362,6 +3366,42 @@ def looks_like_codex_intermediate_ack(
         or "/" in user_text
         or any(marker in assistant_text for marker in _ACK_WORKSPACE_MARKERS)
     )
+
+
+# Post-work progress narration (#74604): after real tool work the model announces it is
+# assembling the deliverable ("I am now compiling the complete answer.") and stops with
+# ``finish_reason=stop`` — a silent abandonment the trailing-continue-intent detector
+# cannot see (the "now" markers target a FUTURE action; this shape claims one in
+# progress). First-person-present marker + an output-production gerund over the WHOLE
+# (short) message: a narration that then delivers the answer exceeds the length cap and
+# stays terminal.
+_POST_WORK_NARRATION_RE = re.compile(
+    r"\A(?:\bi(?:['’])?m (?:now|currently)\b|\bi am (?:now|currently)\b)"
+    r"[^.!?\n]{0,120}"
+    r"(compiling|writing|generating|creating|building|preparing|assembling|putting together"
+    r"|finalizing|finalising|summarizing|summarising|drafting|composing)"
+    r"[^.!?\n]{0,80}[.!:\u2026]?\s*\Z",
+    re.IGNORECASE,
+)
+
+# Narrations longer than this are substantive replies, not dangling progress notes.
+_POST_WORK_NARRATION_MAX_CHARS = 240
+
+
+def post_work_narration_intent(text: str) -> bool:
+    """Whether ``text`` reads as a mid-delivery progress note that ends the turn after tool work (#74604).
+
+    Fires on the issue's reported shape — "~35 tool calls, then 'I am now compiling the
+    complete answer.', then stop" — and its sibling "I'm currently generating the report."
+    variant. Guardrails: short (a substantive reply is an answer regardless of first-person
+    verbs; the whole message must be the narration, not a long reply ending on one) and
+    requires BOTH the present-progressive first-person marker and an output-production
+    action, so terse real answers and reasoning-style planning monologue stay terminal.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > _POST_WORK_NARRATION_MAX_CHARS:
+        return False
+    return bool(_POST_WORK_NARRATION_RE.search(t))
 
 
 # Degenerate-final detector (#103483): after real tool work a text stop whose ENTIRE answer is a

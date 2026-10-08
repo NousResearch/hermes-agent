@@ -55,7 +55,12 @@ def _is_gateway_backend() -> bool:
     host = url.split("//", 1)[-1].split("/", 1)[0]
     loopback = host.split(":")[0] in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
     # Gateway + user-supplied key = tenant mode (REST denied server-side).
-    return bool(not loopback and (get_secret("CAMOFOX_API_KEY", "") or "").strip())
+    # Credential names in priority order: CAMOFOX_API_KEY (fleet browser lane)
+    # then SEKRETO_API_KEY (SaaS lane — kinyras-style profiles carry only this).
+    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
+        get_secret("SEKRETO_API_KEY", "") or ""
+    ).strip()
+    return bool(not loopback and key)
 
 
 def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
@@ -74,8 +79,11 @@ def _call(tool: str, arguments: Dict[str, Any], timeout: Optional[int] = None) -
             "arguments": arguments,
         },
     }
+    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip() or (
+        get_secret("SEKRETO_API_KEY", "") or ""
+    ).strip()
     headers = {
-        "Authorization": f"Bearer {(get_secret('CAMOFOX_API_KEY', '') or '').strip()}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "Mcp-Method": "tools/call",

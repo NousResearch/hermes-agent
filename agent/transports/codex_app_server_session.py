@@ -528,10 +528,10 @@ class CodexAppServerSession:
                 if not _notification_belongs_to_turn(pending, thread_id=self._thread_id, turn_id=result.turn_id):
                     logger.debug("ignoring foreign codex notification while draining server request: method=%s", pending.get("method"))
                     continue
-                proj, aborted = self._absorb_notification(result, projector, pending)
-                if proj.is_tool_iteration:
-                    last_tool_completion_at = time.monotonic()
-                turn_complete = turn_complete or aborted
+                # Completion may be queued alongside an approval request; consume it through the
+                # same terminal-status handler rather than losing it in transcript-only projection.
+                pending_complete = on_note(pending, pending.get("method", ""))
+                turn_complete = turn_complete or pending_complete
             self._handle_server_request(sreq)
             # An approval round-trip is live signal — don't let it trip the quiet warning.
             last_tool_completion_at = None
@@ -548,15 +548,17 @@ class CodexAppServerSession:
                 return aborted
             turn_obj = (note.get("params") or {}).get("turn") or {}
             turn_status = turn_obj.get("status")
-            if turn_status and turn_status not in {"completed", "interrupted"} and turn_obj.get("error"):
-                err_msg = _format_responses_error(turn_obj["error"], str(turn_status))
+            if turn_status == "interrupted":
+                result.interrupted = True
+            elif turn_status and turn_status != "completed":
+                err_msg = _format_responses_error(turn_obj.get("error"), str(turn_status))
                 self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
             return True
 
         self._drive_turn(
             result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
             timeout_label="turn", before_poll=warn_if_quiet, on_server_request=on_server_request,
-            on_note=on_note, accept_final_text_at_deadline=True,
+            on_note=on_note,
         )
         with self._active_turn_lock:
             self._active_turn_id = None
@@ -566,7 +568,6 @@ class CodexAppServerSession:
         timeout_label: str, on_server_request: Callable[[dict], bool],
         on_note: Callable[[dict, str], bool], before_poll: Optional[Callable[[], bool]] = None,
         pre_scope_filter: Optional[Callable[[dict, str], bool]] = None,
-        accept_final_text_at_deadline: bool = False,
     ) -> None:
         """Shared poll loop for run_turn / compact_thread until turn/completed or deadline.
 
@@ -607,18 +608,15 @@ class CodexAppServerSession:
                 continue
             turn_complete = on_note(note, method)
 
-        if accept_final_text_at_deadline and not turn_complete and not result.interrupted and result.final_text and result.error is None:
-            logger.warning(
-                "codex app-server turn reached deadline after a completed assistant message but before "
-                "turn/completed; accepting the assistant text as the terminal response"
-            )
-            turn_complete = True
-
+        # An item/completed agentMessage can be commentary, or precede more tool work. Its
+        # text is retained as partial progress, never proof that the turn itself completed.
         if not turn_complete and not result.interrupted:
             self._issue_interrupt(result.turn_id)
             result.interrupted = True
             if not result.error:
-                result.error = self._format_error_with_stderr(f"{timeout_label} timed out after {turn_timeout}s")
+                result.error = self._format_error_with_stderr(
+                    f"{timeout_label} timed out after {turn_timeout}s without turn/completed; task incomplete",
+                )
             result.should_retire = True
 
     def compact_thread(

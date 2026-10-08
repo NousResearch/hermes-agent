@@ -33,7 +33,7 @@ def _fmt_pending_list(subsystem: str) -> str:
 
 
 def handle_pending_subcommand(
-    subsystem: str, args: List[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
+    subsystem: str, args: list[str], *, memory_store=None, set_mode_fn=None) -> Optional[str]:
     """Dispatch a /memory or /skills write-approval subcommand.
 
     ``memory_store`` applies approved memory writes (CLI passes its live store; gateway a freshly
@@ -61,7 +61,7 @@ def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
 
 
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
+def _approve(subsystem: str, rest: list[str], memory_store) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
@@ -102,7 +102,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     return "\n".join(out)
 
 
-def _changed_entries(result: dict, kind: str) -> List[str]:
+def _changed_entries(result: dict, kind: str) -> list[str]:
     """Full text of every entry a memory replace overwrote (``kind="replaced"``) or remove
     deleted (``"removed"``), single-op or batch shape."""
     single = result.get(f"{kind}_entry")
@@ -110,7 +110,7 @@ def _changed_entries(result: dict, kind: str) -> List[str]:
     return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
 
 
-def _matched_entries(payload) -> List[str]:
+def _matched_entries(payload) -> list[str]:
     """The full entry each staged memory replace/remove is pinned to: the summary shows only
     the old_text search string, and approval applies to this entry, not to that search."""
     from tools.memory_tool import destructive_ops
@@ -136,7 +136,7 @@ def _apply_one(subsystem: str, rec, memory_store):
         return False, str(e), {}
 
 
-def _reject(subsystem: str, rest: List[str]) -> str:
+def _reject(subsystem: str, rest: list[str]) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
@@ -148,7 +148,7 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     return f"No pending {subsystem} write with id '{target}'."
 
 
-def _diff(rest: List[str]) -> str:
+def _diff(rest: list[str]) -> str:
     if not rest:
         return "Usage: /skills diff <id>"
     rec = wa.get_pending(wa.SKILLS, rest[0])
@@ -162,7 +162,7 @@ _APPROVAL_VALUES = {
     **dict.fromkeys(("off", "false", "no", "0", "disable", "disabled"), False)}
 
 
-def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
+def _set_approval(subsystem: str, rest: list[str], set_mode_fn) -> str:
     """Turn the approval gate on/off for a subsystem."""
     if not rest:
         return (f"{_fmt_state(subsystem)}\n"

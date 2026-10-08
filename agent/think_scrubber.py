@@ -20,12 +20,12 @@ __all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THIN
 # these; a tag added here is covered everywhere. Consumers match case-insensitively, so the
 # literal tags are lowercase. The CJK names cover models (MiniMax-M3) that emit Chinese reasoning
 # tags: 思考 (think), 反思 (reflect), 推理 (reason), 推敲 (deliberate).
-THINK_TAG_NAMES: Tuple[str, ...] = (
+THINK_TAG_NAMES: tuple[str, ...] = (
     "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
     "思考", "反思", "推理", "推敲",
 )
-THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
-THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
+THINK_OPEN_TAGS: tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
+THINK_CLOSE_TAGS: tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
 
 class StreamingThinkScrubber:
@@ -37,9 +37,9 @@ class StreamingThinkScrubber:
     """
 
     # Literal tags so the hot path does string ops, not regex per feed().
-    _OPEN_TAGS: Tuple[str, ...] = THINK_OPEN_TAGS
-    _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
-    _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
+    _OPEN_TAGS: tuple[str, ...] = THINK_OPEN_TAGS
+    _CLOSE_TAGS: tuple[str, ...] = THINK_CLOSE_TAGS
+    _ALL_TAGS: tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
@@ -111,7 +111,7 @@ class StreamingThinkScrubber:
         self.last_hidden = "".join(hidden)
         return "".join(out)
 
-    def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:
+    def _hold_partial(self, buf: str, tags: tuple[str, ...]) -> str:
         """Move a trailing partial-tag prefix of *buf* into ``_buf``; return the remainder."""
         held = self._max_partial_suffix(buf, tags)
         self._buf = buf[-held:] if held else ""
@@ -131,7 +131,7 @@ class StreamingThinkScrubber:
     # ── internal helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Tuple[int, int]:
+    def _find_first_tag(buf: str, tags: tuple[str, ...]) -> tuple[int, int]:
         """Return (earliest_index, tag_length) over *tags* (case-insensitive), or (-1, 0)."""
         buf_lower = buf.lower()
         hits = [(idx, len(tag)) for tag in tags if (idx := buf_lower.find(tag)) != -1]
@@ -148,7 +148,7 @@ class StreamingThinkScrubber:
                 pairs.append((open_idx, close_idx + len(close_tag)))
         return min(pairs) if pairs else None
 
-    def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> Tuple[int, int]:
+    def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> tuple[int, int]:
         """Return the earliest block-boundary open-tag (idx, len), or (-1, 0)."""
         buf_lower = buf.lower()
         hits = []
@@ -172,7 +172,7 @@ class StreamingThinkScrubber:
         return (prior_newline if last_nl == -1 else True) and preceding[last_nl + 1:].strip() == ""
 
     @classmethod
-    def _max_partial_suffix(cls, buf: str, tags: Tuple[str, ...]) -> int:
+    def _max_partial_suffix(cls, buf: str, tags: tuple[str, ...]) -> int:
         """Longest buf-suffix that is a strict prefix of any tag (full matches are real tags, handled elsewhere)."""
         buf_lower = buf.lower()
         for i in range(min(len(buf_lower), cls._MAX_TAG_LEN - 1), 0, -1):

@@ -71,7 +71,7 @@ def _registry_call(func_name: str, default, *args):
     try:
         import agent.web_search_registry as registry_mod
         return getattr(registry_mod, func_name)(*args)
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:
         logger.debug("web provider registry %s%r failed: %s", func_name, args, exc)
         return default
 
@@ -91,7 +91,7 @@ def _probe(provider, method: str, context: str = "") -> Optional[bool]:
     appended to the debug log line, e.g. " during readiness check")."""
     try:
         return bool(getattr(provider, method)())
-    except Exception as exc:  # noqa: BLE001 — a broken provider is "unavailable"
+    except Exception as exc:
         name = getattr(provider, "name", provider)
         logger.debug("web provider %r.%s() raised%s: %s", name, method, context, exc)
         return None
@@ -150,18 +150,20 @@ def _keyless_backend() -> Optional[str]:
                 provider = _registered_web_provider(name)
                 if provider is not None and _probe(provider, "is_keyless_available"):
                     return name
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:
         logger.debug("keyless fallback walk failed: %s", exc)
     return None
 
 
 def _managed_web_search() -> bool:
-    """True when web_search is on the managed Nous route: the stored ``nous`` selection, or a
-    never-configured install whose autodetect lands on the gateway — the entitled Firecrawl gateway, or
-    free Perplexity fast search for any Nous identity when nothing else is configured (search-only: the
-    extract ladder is untouched). A stored vendor selection never is."""
-    if _configured_backend("search_backend"):
-        return False
+    """True when web_search is on the managed Nous route: the stored ``nous`` selection (a
+    ``web.search_backend: nous`` pin, else the shared one), or a never-configured install whose
+    autodetect lands on the gateway — the entitled Firecrawl gateway, or free Perplexity fast search
+    for any Nous identity when nothing else is configured (search-only: the extract ladder is
+    untouched). A stored vendor selection never is."""
+    search_pin = _configured_backend("search_backend")
+    if search_pin:
+        return search_pin == NOUS_MANAGED_PROVIDER
     selected = read_selection("web")
     if selected is not None:
         return selected == NOUS_MANAGED_PROVIDER
@@ -174,20 +176,25 @@ def _managed_web_search() -> bool:
 
 def _get_search_backend() -> str:
     """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect.
-    The managed Nous route serves search from Perplexity (extract stays on Firecrawl); managed Firecrawl
-    is the per-call fallback, see ``_memoized_search``."""
-    return _configured_backend("search_backend") or ("perplexity" if _managed_web_search() else _get_backend())
+    The managed Nous route (a ``nous`` pin or shared selection) serves search from Perplexity (extract
+    stays on Firecrawl); managed Firecrawl is the per-call fallback, see ``_memoized_search``."""
+    pin = _configured_backend("search_backend")
+    if pin and pin != NOUS_MANAGED_PROVIDER:
+        return pin
+    return "perplexity" if _managed_web_search() else _get_backend()
 
 
 def _get_extract_backend() -> str:
-    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("extract_backend") or _get_backend()
+    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
+    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
+    pin = _configured_backend("extract_backend")
+    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
 
 
 def _ddgs_package_importable() -> bool:
     """ddgs is the only backend gated on package presence; single symbol so tests can patch it."""
     try:
-        import ddgs  # noqa: F401
+        import ddgs
         return True
     except ImportError:
         return False
@@ -277,7 +284,7 @@ def _ensure_web_plugins_loaded() -> None:
     try:
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Warning, not debug: a broken plugin import is otherwise invisible.
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
@@ -337,7 +344,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         _finish_debug("web_search_tool", debug_call_data)
         return result_json
     except Exception as e:
-        return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {str(e)}")
+        return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
 
 
 def _memoized_search(provider, query: str, limit: int) -> dict:
@@ -351,7 +358,7 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
         fetch_limit = bucket_limit(limit)
         try:
             resp = provider.search(query, fetch_limit)
-        except Exception as exc:  # noqa: BLE001 — candidate for fallback / rescue
+        except Exception as exc:
             served = _served_after_failure(str(exc), fetch_limit)
             if served is None:
                 raise
@@ -382,7 +389,7 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     return slice_search_response(response_data, limit)
 
 
-async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Optional[int] = None) -> str:
+async def web_extract_tool(urls: list[Any], format: str = None, char_limit: Optional[int] = None) -> str:
     """Extract clean page content (no LLM) from URLs via the configured backend.
 
     Pages over ``char_limit`` (default web.extract_char_limit or 15000) are head+tail truncated with a footer
@@ -442,7 +449,7 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
         _finish_debug("web_extract_tool", debug_call_data)
         return cleaned_result
     except Exception as e:
-        return _finish_debug("web_extract_tool", debug_call_data, f"Error extracting content: {str(e)}")
+        return _finish_debug("web_extract_tool", debug_call_data, f"Error extracting content: {e!s}")
 
 
 def _provider_is_ready(provider) -> bool:
@@ -497,7 +504,7 @@ def check_web_api_key() -> bool:
             if _provider_is_ready(provider):
                 return True
         return False
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+    except Exception as exc:
         logger.debug("web provider registry availability check failed: %s", exc)
         return False
 

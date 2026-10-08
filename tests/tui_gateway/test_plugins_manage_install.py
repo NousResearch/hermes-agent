@@ -36,7 +36,7 @@ def test_plugins_manage_install_failure():
 
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
-    import hermes_cli.plugins_cmd as plugins_cmd
+    from hermes_cli import plugins_cmd
 
     plugins_root = tmp_path / "plugins"
     (plugins_root / "plain-git-plugin").mkdir(parents=True)
@@ -83,9 +83,9 @@ def test_plugins_manage_list_resolves_the_live_catalog_once_per_listing(tmp_path
     per-candidate cost ``resolved_removed_entries()`` exists to eliminate."""
     import json
 
-    import hermes_cli.plugin_catalog as plugin_catalog
-    import hermes_cli.plugins_cmd as plugins_cmd
-    import hermes_cli.plugins_cmd_catalog as plugins_cmd_catalog
+    from hermes_cli import plugin_catalog
+    from hermes_cli import plugins_cmd
+    from hermes_cli import plugins_cmd_catalog
     from hermes_cli.plugin_catalog import PluginCatalogEntry
 
     rows = []

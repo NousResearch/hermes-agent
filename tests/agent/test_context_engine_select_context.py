@@ -32,7 +32,7 @@ class _MinimalEngine(ContextEngine):
     def name(self) -> str:
         return "minimal"
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         pass
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
@@ -40,10 +40,10 @@ class _MinimalEngine(ContextEngine):
 
     def compress(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         return messages
 
 
@@ -158,7 +158,6 @@ def test_engine_mutating_inputs_cannot_corrupt_persisted_state():
                     conversation_messages[0]["content"] = "TAMPERED"
             if isinstance(incoming_message, dict):
                 incoming_message["content"] = "TAMPERED"
-            return None
 
     agent = _agent_with(_Engine())
     _apply_context_engine_selection(

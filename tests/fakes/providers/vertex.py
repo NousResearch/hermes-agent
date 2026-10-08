@@ -196,7 +196,7 @@ def verify_jwt_assertion(assertion: str, sa: ServiceAccount) -> tuple[dict[str, 
         head_b64, body_b64, sig_b64 = assertion.split(".")
         header, claims = json.loads(_b64url_decode(head_b64)), json.loads(_b64url_decode(body_b64))
         sa.public_key.verify(_b64url_decode(sig_b64), f"{head_b64}.{body_b64}".encode(), padding.PKCS1v15(), hashes.SHA256())
-    except Exception as exc:  # noqa: BLE001 - any parse/verify failure is Google's "Invalid JWT Signature."
+    except Exception as exc:
         return None, f"Invalid JWT Signature. ({type(exc).__name__})"
     now = time.time()
     problems = {
@@ -514,7 +514,7 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
         protocol_version = "HTTP/1.1"
         tunnel_host: str | None = None
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
         def _send(self, status: int, body: bytes, headers: dict[str, str] | None = None) -> None:
@@ -528,7 +528,7 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
             self.wfile.flush()
 
         # proxy
-        def do_CONNECT(self) -> None:  # noqa: N802
+        def do_CONNECT(self) -> None:
             host, _, port = self.path.partition(":")
             allowed = host == fake.host and port == "443"
             with fake._lock:
@@ -553,7 +553,7 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
             self.close_connection = False
 
         # token endpoint (plain loopback) and Vertex (inside the TLS tunnel)
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             if self.tunnel_host is None:
                 if self.path != "/token":
@@ -565,7 +565,7 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
                 return
             self._vertex(raw)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             self._send(404, _vertex_error(404, f"The requested URL {self.path} was not found on this server."))
 
         def _vertex(self, raw: bytes) -> None:

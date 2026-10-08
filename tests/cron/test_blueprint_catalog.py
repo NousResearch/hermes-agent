@@ -122,7 +122,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs as jobs
+    from cron import jobs
     importlib.reload(jobs)
     return jobs
 

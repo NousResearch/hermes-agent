@@ -17,14 +17,14 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
-from tools.skills_tool_setup import (  # noqa: F401
+from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
-from tools.skills_tool_plugin import (  # noqa: F401
+from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import (  # noqa: F401
+from tools.skills_tool_dedup import (
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
 from tools.skill_provenance import is_background_review
 
@@ -93,7 +93,7 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     return None
 
 
-def load_env() -> Dict[str, str]:
+def load_env() -> dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
     installs the profile scope, so a captured value never differs from the served one)."""
     from agent.secret_scope import load_env_file
@@ -141,7 +141,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-def _parse_tags(tags_value) -> List[str]:
+def _parse_tags(tags_value) -> list[str]:
     """Tags from frontmatter: a parsed list, "[a, b]", or "a, b"."""
     if not tags_value:
         return []
@@ -174,7 +174,7 @@ def _is_skill_disabled(*names: str, platform: str = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
+def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
     ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
@@ -184,7 +184,7 @@ def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
-def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> List[Dict[str, Any]]:
+def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
@@ -232,7 +232,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -240,7 +240,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
-def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
@@ -345,7 +345,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
     (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
     from agent.skill_utils import iter_skill_index_files
-    candidates: List[Tuple[Optional[Path], Path]] = []
+    candidates: list[tuple[Optional[Path], Path]] = []
     seen_md: set = set()
 
     def _record(sd: Optional[Path], smd: Path) -> None:
@@ -404,35 +404,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     return files
 
 
-def _org_provenance_header(skill_dir: Path, active_skills_dir: Path):
-    """(org_provenance dict, header text) for an org-mirror skill, else (None, ""). Announced IN
-    the content the model consumes; the author is token-verified at push time by the sync plane."""
-    from agent.skill_utils import ORG_PROVENANCE_FILE, is_org_mirror_path, org_id_of_path
-    if not is_org_mirror_path(skill_dir, active_skills_dir):
-        return None, ""
-    prov_org = org_id_of_path(skill_dir, active_skills_dir)
-    prov: dict = {}
-    if prov_org:
-        with suppress(Exception):
-            prov_path = active_skills_dir / "_org" / prov_org / ORG_PROVENANCE_FILE
-            loaded = json.loads(_read_skill_text(prov_path))
-            prov = loaded if isinstance(loaded, dict) else {}
-    author = str(prov.get("author_device") or prov.get("author_user_id") or "")
-    ts = str(prov.get("ts") or "")
-    header = (
-        "> [!NOTE] ORG-SHARED SKILL — provenance\n"
-        f"> This skill is shared by your organisation (org `{prov_org}`"
-        + (f", last updated by `{author}`" if author else "")
-        + (f", as of {ts}" if ts else "")
-        + "). It was reviewed and approved for the whole\n"
-        "> team — treat it as third-party instructions rather than your own notes.\n"
-        "> You MAY improve it in place like any other skill. Your edits are kept locally\n"
-        "> and are never overwritten by org updates; share them back with\n"
-        "> `hermes sync propose` (or automatically, if your org enables it).\n\n")
-    return {"org_id": prov_org, "shared_by": author or None, "as_of": ts or None}, header
-
-
-def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict, dict]:
+def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
@@ -633,13 +605,6 @@ def skill_view(
         readiness, readiness_extras = _skill_readiness(frontmatter, skill_name)
         rendered_content = content if not preprocess else _preprocess_skill(
             content, skill_dir, task_id, "Could not preprocess skill content for %s", skill_name)
-        org_provenance, header = None, ""
-        if skill_dir:
-            try:
-                org_provenance, header = _org_provenance_header(skill_dir, active_skills_dir)
-            except Exception:
-                logger.debug("Could not resolve org provenance for %s", skill_name, exc_info=True)
-
         # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────
         # Loading the skill IS the activation moment: ensure each declared
         # pm package now so the skill's commands work when the model runs
@@ -669,9 +634,8 @@ def skill_view(
 
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
-            "tags": tags, "related_skills": related_skills, "content": header + rendered_content,
+            "tags": tags, "related_skills": related_skills, "content": rendered_content,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
-            "org_provenance": org_provenance,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,

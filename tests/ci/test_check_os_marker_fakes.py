@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
 
-from check_os_marker_fakes import find_unmarked_fakes  # noqa: E402
+from check_os_marker_fakes import find_unmarked_fakes
 
 
 def _write(root: Path, name: str, body: str) -> None:

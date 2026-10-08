@@ -27,7 +27,7 @@ from hermes_cli import (
     portal_cli,
     status_auth,
 )
-from hermes_cli.auth import _load_auth_store  # noqa: F401  (store import name kept for parity with core tests)
+from hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
@@ -226,7 +226,7 @@ def test_cli_chat_status_names_the_free_tier(isolated_store):
         reasoning_config=None,
         show_reasoning=None,
         session_key="cli:free-tier-status",
-        _get_status_bar_snapshot=lambda: {},
+        _get_status_bar_snapshot=dict,
         _console_print=lambda text, **_kwargs: rendered.append(text),
     )
     CLISessionMixin._show_session_status(cli)

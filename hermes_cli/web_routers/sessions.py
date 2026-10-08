@@ -124,7 +124,7 @@ def _prune_sessions(body: SessionPrune):
 _ACTIVE_WINDOW_S = 300
 
 
-def _csv(value: Optional[str]) -> List[str]:
+def _csv(value: Optional[str]) -> list[str]:
     """Split a comma-separated query param into stripped, non-empty items."""
     return [s.strip() for s in (value or "").split(",") if s.strip()]
 
@@ -427,6 +427,34 @@ async def search_sessions(
                 add_lineage_result(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
+
+            # Title matches fill any remaining slots (#66242): the FTS index
+            # only covers message content, so a term that lives solely in a
+            # manually-set sessions.title would otherwise return nothing. The
+            # DB layer already knows how to LIKE-match titles across the whole
+            # compression chain (list_sessions_rich(search_query=) — the same
+            # helper the sidebar listing uses), so reuse it rather than adding
+            # a second title query path here. Best-effort: an old/odd store
+            # that rejects the call just skips the lane.
+            if len(seen) < safe_limit:
+                try:
+                    title_rows = db.list_sessions_rich(
+                        search_query=q.strip(), include_archived=True, order_by_last_active=True,
+                        source=source_filter, sources=source_list or None,
+                        exclude_sources=exclude_list or None, limit=safe_limit)
+                except Exception:  # health: allow BLE001 -- best-effort supplement lane: an old/odd store that rejects the search_query read must not fail the id+content results already collected
+                    _log.debug("Title-match supplement skipped for %r", q[: 200])
+                    title_rows = []
+                for row in title_rows:
+                    if len(seen) >= safe_limit:
+                        break
+                    sid = row.get("id")
+                    if not sid:
+                        continue
+                    preview = (row.get("preview") or "").strip()
+                    add_lineage_result(
+                        sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
+                                         None, row.get("started_at")))
             return {"results": list(seen.values())}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
@@ -441,6 +469,12 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     Per :meth:`SessionDB.delete_sessions`: unknown ids are skipped (``deleted``
     reports what really happened), children are orphaned, active/archived rows
     ARE deleted (hand-picked), on-disk cleanup is left to the next prune.
+
+    Compression chains are deleted whole: the sessions list shows one row per
+    logical conversation carrying the chain *tip's* id, so deleting only that
+    row would leave the root to resurface as the previous chain link on the
+    next reload (#57543). ``deleted`` still counts the selected rows, not the
+    expanded chain links.
     """
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
@@ -448,7 +482,8 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
     skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
     deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
-        body.ids, exclude_active_write_guards=True, skipped_ids=skipped), read_only=False)
+        body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
+        include_compression_chain=True), read_only=False)
     return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
@@ -507,9 +542,12 @@ async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
     def _stats(db):
         out = {
-            "total": db.session_count(include_archived=True),
-            "active_store": db.session_count(include_archived=False),
-            "archived": db.session_count(archived_only=True), "messages": db.message_count(),
+            # exclude_children=True: the dashboard Sessions page pairs these counts with
+            # list_sessions_rich rows, which collapse compression chains to one row carrying
+            # the tip's id — the raw row count is inflated by the hidden chain links (#54298).
+            "total": db.session_count(include_archived=True, exclude_children=True),
+            "active_store": db.session_count(include_archived=False, exclude_children=True),
+            "archived": db.session_count(archived_only=True, exclude_children=True), "messages": db.message_count(),
             "by_source": {}}
         try:
             out["by_source"] = db.session_count_by_source(
@@ -799,7 +837,12 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         if not sid:
             return {"ok": True, "already_absent": True}
         try:
-            db.delete_session(sid, sessions_dir=_session_files_dir(profile), exclude_active_write_guards=True)
+            # Chain-aware like bulk-delete: the list row the user clicked represents the
+            # whole compression chain (and carries the tip's id), so deleting just this
+            # physical row would resurface the conversation as the previous chain link
+            # on reload (#57543).
+            db.delete_session(sid, sessions_dir=_session_files_dir(profile),
+                              exclude_active_write_guards=True, include_compression_chain=True)
         except SessionActiveWriteGuardError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"ok": True}

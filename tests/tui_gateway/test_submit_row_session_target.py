@@ -276,7 +276,7 @@ def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, 
         # _adopt_out_of_band_turns reads _message_row_id, which methods_prompt publishes onto server's
         # globals at bind_module time (prompt_turn's own module never imports it). Importing the module
         # here runs that binding — the same order server.py's own import loop produces.
-        from tui_gateway import methods_prompt  # noqa: F401
+        from tui_gateway import methods_prompt
         assert hasattr(server, "_message_row_id"), "the bind seam must publish _message_row_id"
         # Stamp the in-memory history with the row ids the rotation actually created, so `seen` is the
         # newest row the agent's own flush wrote and the foreign row is strictly newer.

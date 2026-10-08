@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"

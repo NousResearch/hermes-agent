@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from hermes_platform.resolver.app import AppDef
+from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
     "AppSpec",
@@ -104,17 +104,56 @@ def _location_is_rooted(location: str, osf: str) -> bool:
     return location.startswith("/")
 
 
+def _is_relative_name(value: Any, *, allow_dirs: bool) -> bool:
+    """Checks the stripped value, the one later joined: an empty part rejects a leading / or \\, a colon rejects a drive."""
+    if not isinstance(value, str) or not value.strip() or "://" in value:
+        return False
+    parts = value.strip().replace("\\", "/").split("/")
+    return ".." not in parts and "" not in parts and (allow_dirs or len(parts) == 1) and ":" not in parts[0]
+
+
+def _parse_location(where: str, osf: str, presence: str, label: str, raw: Any) -> AppLocation:
+    """A string is a path, where `*` may stand for a versioned folder; a mapping names a location kind."""
+    if isinstance(raw, str):
+        path = raw.strip()
+        if not path:
+            raise DeclarationError(f"{where}: {label} is required")
+        if not _location_is_rooted(path, osf) or "**" in path:
+            raise DeclarationError(
+                f"{where}: {label} must be absolute or start with ~ / %VAR% / $VAR, without '..', '**' or a URL scheme")
+        return AppLocation("path", path)
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str) or raw["kind"] not in LOCATION_KINDS:
+        raise DeclarationError(f"{where}: {label} must be a path or a mapping with kind one of {sorted(LOCATION_KINDS)}")
+    kind = raw["kind"]
+    spec = LOCATION_KINDS[kind]
+    if spec.only_on and spec.only_on != osf:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} is only valid under app.{spec.only_on}")
+    if spec.yields != presence:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} needs app.{osf}.presence {spec.yields}")
+    value = raw.get(spec.key)
+    if not _is_relative_name(value, allow_dirs=False):
+        raise DeclarationError(f"{where}: {label}.{spec.key} must be a bare name")
+    file = raw.get("file", "")
+    if spec.needs_file and not _is_relative_name(file, allow_dirs=True):
+        raise DeclarationError(f"{where}: {label}.file must be a relative path inside the install folder")
+    return AppLocation(kind, value.strip(), str(file).strip())
+
+
 def _parse_app_os(where: str, name: str, osf: str, raw: Any) -> AppDef:
     _require_mapping(where, f"app.{osf}", raw)
     presence = raw.get("presence")
     if presence not in _APP_PRESENCE:
         raise DeclarationError(f"{where}: app.{osf}.presence must be one of {_APP_PRESENCE}")
     location = raw.get("location")
-    if not isinstance(location, str) or not location.strip():
+    if isinstance(location, list):
+        if not location:
+            raise DeclarationError(f"{where}: app.{osf}.location is required")
+        locations = tuple(_parse_location(where, osf, presence, f"app.{osf}.location[{i}]", item)
+                          for i, item in enumerate(location))
+    elif isinstance(location, str):
+        locations = (_parse_location(where, osf, presence, f"app.{osf}.location", location),)
+    else:
         raise DeclarationError(f"{where}: app.{osf}.location is required")
-    if not _location_is_rooted(location.strip(), osf):
-        raise DeclarationError(
-            f"{where}: app.{osf}.location must be absolute or start with ~ / %VAR% / $VAR, without '..' or a URL scheme")
     version = raw.get("version") or {"kind": "none"}
     _require_mapping(where, f"app.{osf}.version", version)
     vkind = version.get("kind", "none")
@@ -135,7 +174,7 @@ def _parse_app_os(where: str, name: str, osf: str, raw: Any) -> AppDef:
     if lkind == "server_json" and not lpath:
         raise DeclarationError(f"{where}: app.{osf}.liveness.path is required for server_json")
     return AppDef(
-        app_id=name, os_family=osf, presence=presence, location=location.strip(),
+        app_id=name, os_family=osf, presence=presence, locations=locations,
         version_kind=vkind, version_arg=varg,
         liveness_kind=lkind, liveness_path=lpath,
         liveness_pid_key=str(liveness.get("pid_key") or "pid"),
@@ -181,7 +220,10 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
         if not needs_app:
             raise DeclarationError(f"{where}: requires.min_version needs requires.app: true")
         assert app is not None
-        unversioned = sorted(osf for osf, d in app.per_os.items() if d.version_kind == "none")
+        # Linux has no version source, so a Linux block is gated on presence only; Windows and macOS must read
+        # one, and a Linux-only declaration has nothing to compare.
+        unversioned = [osf for osf in sorted(app.per_os) if app.per_os[osf].version_kind == "none"
+                       and (osf != "linux" or len(app.per_os) == 1)]
         if unversioned:
             raise DeclarationError(
                 f"{where}: requires.min_version needs a version source under app.{unversioned[0]} (kind is none)")
@@ -194,7 +236,7 @@ def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str)
     return Declaration(name=name, app=app, requires=parse_requires(raw_requires, app, where=where))
 
 
-_REGISTRY: Dict[str, Declaration] = {}
+_REGISTRY: dict[str, Declaration] = {}
 _REGISTRY_LOCK = threading.Lock()
 on_change: Optional[Callable[[], None]] = None
 

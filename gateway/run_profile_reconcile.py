@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
 _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+# Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
+# read it can end in has no timeout of its own — on Windows the named pipe stalls there until
+# its peer answers — so the await needs one. A healthy identify answers in milliseconds.
+_OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
 def profile_serve_signature(home: "Path") -> tuple:
@@ -45,10 +49,11 @@ def profile_serve_signature(home: "Path") -> tuple:
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
-    _served_profile_homes: Optional[Dict[str, "Path"]] = None
-    _served_profile_signatures: Optional[Dict[str, tuple]] = None
+    _served_profile_homes: Optional[dict[str, "Path"]] = None
+    _served_profile_signatures: Optional[dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
+    _profile_probe_timeout_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -91,12 +96,12 @@ class GatewayProfileReconcileMixin:
 
     # ── reconcile ─────────────────────────────────────────────────────────────────────────────────
 
-    async def reconcile_served_profiles(self, *, reason: str = "request") -> Dict[str, Any]:
+    async def reconcile_served_profiles(self, *, reason: str = "request") -> dict[str, Any]:
         """Diff ``profiles/`` against the served set: start adapters for new profiles, tear down and
         unroute deleted ones, (re)build adapters for served profiles whose config/.env changed. Other
         profiles' adapters are never touched. Returns ``{"added", "removed", "rescanned", "served_profiles"}``."""
         from gateway.run import _multiplex_profile_homes
-        result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
+        result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
         if not self._running or self._served_profile_homes is None:
@@ -109,17 +114,40 @@ class GatewayProfileReconcileMixin:
             from gateway.status import live_gateway_pid_for_home
 
             blocked = set()
+            timed_out = set()
             warned = self._profile_own_gateway_warned or set()
+            timeout_warned = self._profile_probe_timeout_warned or set()
             for name in list(current):
                 if name == active or name in known:
                     continue
-                if live_gateway_pid_for_home(current[name]) is not None:
+                # The probe can end in a control-socket read that has no timeout of its own
+                # (a Windows named pipe stalls there until its peer answers). Inline on the
+                # loop thread it parked shutdown_watchdog liveness probes and the multiplexer
+                # was hard-killed with exit 75 (#132547). Probe off the loop, bounded: a
+                # stalled probe only wedges one bounded housekeeping worker for this cycle
+                # (wait_for cancels the still-queued await), never the event loop.
+                try:
+                    pid = await asyncio.wait_for(
+                        self._run_housekeeping_in_executor(live_gateway_pid_for_home, current[name]),
+                        timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
+                except asyncio.TimeoutError:
+                    # Unprovable is not "own gateway running": skip it this cycle without
+                    # warning about (or remembering) a gateway that may not exist. Warn once
+                    # per stall; a peer that stays wedged repeats at DEBUG every cycle.
+                    timed_out.add(name)
+                    log = logger.debug if name in timeout_warned else logger.warning
+                    log("[MULTIPLEX] Own-gateway probe for profile '%s' timed out; "
+                        "not serving it this cycle", name)
+                    del current[name]
+                    continue
+                if pid is not None:
                     blocked.add(name)
                     if name not in warned:
                         logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
                                        "stop it before the host can serve this profile", name)
                     del current[name]
             self._profile_own_gateway_warned = blocked
+            self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
             added = [n for n in current if n not in known and n != active]
             removed = [n for n in known if n not in current and n != active]
@@ -182,7 +210,7 @@ class GatewayProfileReconcileMixin:
         result["served_profiles"] = self.served_profile_names()
         return result
 
-    def _live_resource_claims(self, active: str) -> Dict[tuple, str]:
+    def _live_resource_claims(self, active: str) -> dict[tuple, str]:
         """Startup's ``claimed`` map rebuilt from what is live now: primary claims plus every connected
         secondary's credential/listener, so a hot-added profile reusing a token is parked, never a
         second poller."""
@@ -414,7 +442,7 @@ def migrate_profile_identity_verb(runner):
         acquired = []
         try:
             from hermes_state_registry import acquire, release_or_close
-            db_counts: Dict[str, Dict[str, int]] = {}
+            db_counts: dict[str, dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
                 db_counts["routing"] = routing_db.rekey_profile_state(old, new)
@@ -459,7 +487,7 @@ def purge_profile_identity_verb(runner):
         if store is None:
             return {"ok": False, "error": "live gateway has no session store"}
         try:
-            db_counts: Dict[str, Dict[str, int]] = {}
+            db_counts: dict[str, dict[str, int]] = {}
             routing_db = getattr(store, "_routing_db", None)
             if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
                 db_counts["routing"] = routing_db.purge_profile_state(name)

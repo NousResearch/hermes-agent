@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import pm.paths as paths
-import pm.registry as registry
+from pm import paths
+from pm import registry
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, compose_env
 from pm.packages import BinaryPackage, Venv
@@ -474,7 +474,7 @@ def test_gc_keeps_used_removes_orphans(pm_env):
 def _hold(monkeypatch, *prefixes):
     """Model a Windows hold (a running process mapping the old interpreter's
     DLLs): removal under these names fails past every retry; rename still works."""
-    import pm.install as install
+    from pm import install
 
     real_remove = install._remove_entry
     held = {"on": True}
@@ -547,7 +547,7 @@ def test_held_displacement_does_not_fail_restore_and_gc_spares_interrupted_one(p
     """A restore that succeeded leaves the displaced tree as garbage; a held one
     must not fail the install. An interrupted restore's displacement is never
     set aside, so gc keeps it."""
-    import pm.install as install
+    from pm import install
     from pm.cli import cmd_gc
 
     _, runtime, *_ = pm_env

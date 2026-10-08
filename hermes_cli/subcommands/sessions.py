@@ -12,6 +12,32 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+def _add_prune_parser(sessions_subparsers, add_filter_args: Callable) -> None:
+    """Register ``hermes sessions prune`` and its selection flags."""
+    sessions_prune = sessions_subparsers.add_parser(
+        "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
+    add_filter_args(
+        sessions_prune, "Delete sessions older than AGE — days if bare number, or a duration "
+        "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
+        "defaults to 90 days; any filter matches all ages)")
+    _flag(sessions_prune, "--include-archived",
+        help="Also delete archived sessions (excluded by default)")
+    _flag(sessions_prune, "--include-pinned",
+        help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
+    sessions_prune.add_argument(
+        "--selection-file",
+        type=Path,
+        help="Delete exactly the physical session IDs in a hermes-session-plan/v2 file",
+    )
+    _flag(sessions_prune, "--never-active",
+        help="Instead of ended sessions, delete keyed gateway rows that were "
+            "opened and never used (no messages, tokens, tool calls or title) "
+            "and are older than AGE (default 30 days). Ordinary prune can "
+            "never reach these — it only ever selects ended sessions")
+    _flag(sessions_prune, "--force",
+        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -103,23 +129,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
 
-    sessions_prune = sessions_subparsers.add_parser(
-        "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
-    _add_session_filter_args(
-        sessions_prune, "Delete sessions older than AGE — days if bare number, or a duration "
-        "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
-        "defaults to 90 days; any filter matches all ages)")
-    _flag(sessions_prune, "--include-archived",
-        help="Also delete archived sessions (excluded by default)")
-    _flag(sessions_prune, "--include-pinned",
-        help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
-    _flag(sessions_prune, "--never-active",
-        help="Instead of ended sessions, delete keyed gateway rows that were "
-            "opened and never used (no messages, tokens, tool calls or title) "
-            "and are older than AGE (default 30 days). Ordinary prune can "
-            "never reach these — it only ever selects ended sessions")
-    _flag(sessions_prune, "--force",
-        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
+    _add_prune_parser(sessions_subparsers, _add_session_filter_args)
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive", help="Bulk-archive (soft-hide) sessions matching filters — no deletion")

@@ -554,6 +554,7 @@ def _looks_like_compaction_summary(msg: Dict[str, Any], content: str) -> bool:
     if (
         not content.rstrip().endswith(_SUMMARY_END_MARKER)
         or content.startswith(_MERGED_PRIOR_CONTEXT_HEADER)
+        or _MERGED_SUMMARY_DELIMITER in content
         or role == "tool"
         or (role in ("user", "assistant") and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY))
     ):
@@ -4893,6 +4894,40 @@ Write only the summary body. Do not include any preamble or prefix."""
             and rest.removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).strip()
         )
 
+    @staticmethod
+    def _is_inflight_restatement(message: Any) -> bool:
+        """A standalone user row re-stating an unfinished request after a handoff (#131104).
+
+        It keeps the original's ``message_uid``; the model needs it, a transcript shows the
+        request once (the original where that row is in the same read, else this text unframed).
+        """
+        return (
+            isinstance(message, dict) and message.get("role") == "user"
+            and _content_text_for_contains(message.get("content")).lstrip().startswith(_INFLIGHT_TASK_REPLAY_HEADER)
+        )
+
+    @staticmethod
+    def _without_inflight_replay_header(message: Dict[str, Any]) -> Dict[str, Any]:
+        """A copy of *message* whose leading in-flight replay header is removed (text or first text part)."""
+        content = message.get("content")
+        if isinstance(content, str):
+            return {**message, "content": content.lstrip().removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).lstrip()}
+        if not isinstance(content, list):
+            return message.copy()
+        parts = list(content)
+        for index, item in enumerate(parts):
+            text = _part_text(item)
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if text.lstrip().startswith(_INFLIGHT_TASK_REPLAY_HEADER):
+                rest = text.lstrip().removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).lstrip()
+                if rest:
+                    parts[index] = _with_part_text(item, rest)
+                else:
+                    parts.pop(index)
+            break
+        return {**message, "content": parts}
+
     @classmethod
     def _find_inflight_user_task(
         cls, messages: List[Dict[str, Any]]
@@ -5559,10 +5594,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             # Old tail content is kept as delimited reference BEFORE the summary; the end marker goes last.
             suffix = "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n" + summary + "\n\n" + _SUMMARY_END_MARKER
-            msg["content"] = _append_text_to_content(
-                _append_text_to_content(old_content, suffix, prepend=False),
-                _MERGED_PRIOR_CONTEXT_HEADER + "\n", prepend=True,
-            )
+            merged = _append_text_to_content(old_content, suffix, prepend=False)
+            # An assistant carrier is the model's own previous turn: a bracketed header at its start is
+            # what weak models copy as the opening of their next reply, followed by the old text (#131104).
+            # Its own words need no "not a new message" label; the delimiter alone marks where they end.
+            if msg.get("role") != "assistant":
+                merged = _append_text_to_content(merged, _MERGED_PRIOR_CONTEXT_HEADER + "\n", prepend=True)
+            msg["content"] = merged
         # Frontends use this to detect a summary-prefixed message.
         msg[COMPRESSED_SUMMARY_METADATA_KEY], msg[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = True, bool(self._summary_has_user_turn)
         # Rewritten content: drop the stale api_content sidecar so replay can't resend pre-merge bytes.

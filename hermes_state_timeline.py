@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 
-from agent.compaction_display import project_compaction_message_for_display
+from agent.compaction_display import project_compaction_message_for_display, restates_inflight_request
 from agent.context_compressor import user_originated_turn_view
 from hermes_state_messages import DISPLAY_VISIBLE_SQL
 
@@ -19,10 +19,14 @@ _SYNTHETIC_PROMPT = re.compile(
 
 
 def _prompt_preview(db, content, display_kind, summary):
-    message = project_compaction_message_for_display({
+    row = {
         "role": "user", "content": db._decode_content(content),
         "display_kind": display_kind, "_compressed_summary": bool(summary),
-    })
+    }
+    # The index reads lineage (archived rows too), so a re-stated request's original is its entry (#131104).
+    if restates_inflight_request(row):
+        return ""
+    message = project_compaction_message_for_display(row)
     if message is None or user_originated_turn_view(message) is None:
         return ""
     content = message.get("content")

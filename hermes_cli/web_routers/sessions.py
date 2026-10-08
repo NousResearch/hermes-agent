@@ -652,7 +652,7 @@ def _is_untyped_scaffold_notice(message) -> bool:
     return isinstance(content, str) and content.lstrip().startswith("[System:")
 
 
-def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
+def _project_for_display(messages: list, *, home=None, inline_images: bool = True, lineage: bool = False) -> list:
     """Replace compaction summaries with their display-only projection and hide untyped
     gateway-scaffold notices.
 
@@ -664,7 +664,8 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     every retry (``refusing truncation without fallback``). Hide them the same way the
     Desktop collapses other display-only rows; typed notices stay for the timeline.
     """
-    from agent.compaction_display import project_compaction_message_for_display
+    from agent.compaction_display import (
+        project_compaction_message_for_display, restatements_shown_elsewhere, restates_inflight_request)
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
@@ -683,8 +684,10 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 return {**message, "content": _coerce_message_text(message["content"], image_urls=False)}
             return message
 
+    # A re-stated in-flight request is hidden only where the reader also gets its original (#131104).
+    shown_elsewhere = restatements_shown_elsewhere(messages, lineage=lineage)
     projected_messages = []
-    for message in messages:
+    for index, message in enumerate(messages):
         message = _with_tool_call_labels(message)
         if coerce is not None:
             message = coerce(message)
@@ -703,9 +706,14 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 steer_text := _extract_steer_text_from_message(message)):
             message = {**message, "display_content": steer_text}
         if not is_compaction_summary_message(message):
+            if index in shown_elsewhere:
+                message = {**message, "display_kind": "hidden"}
+            elif restates_inflight_request(message):
+                # The only copy of a re-stated request: its words, without the model-only frame.
+                message = {**message, "display_content": project_compaction_message_for_display(message)["content"]}
             projected_messages.append(message)
             continue
-        display_view = project_compaction_message_for_display(message)
+        display_view = None if index in shown_elsewhere else project_compaction_message_for_display(message)
         projected = message.copy()
         if display_view is None:
             if not projected.get("display_kind"):
@@ -754,7 +762,7 @@ async def get_session_messages(
     sid, _limit, messages = result
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile),
-        inline_images=inline_images)
+        inline_images=inline_images, lineage=include_compacted)
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the
@@ -823,7 +831,7 @@ async def get_session_messages_around(
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     result["messages"] = await asyncio.to_thread(
-        _project_for_display, result["messages"], home=_history_profile_home(profile))
+        _project_for_display, result["messages"], home=_history_profile_home(profile), lineage=True)
     return result
 
 

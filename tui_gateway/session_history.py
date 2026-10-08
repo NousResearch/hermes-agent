@@ -287,10 +287,14 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
 
+    from agent.compaction_display import restatements_shown_elsewhere
+
     messages = []
     tool_call_args = {}
-    for m in history:
-        if not isinstance(m, dict):
+    # A re-stated in-flight request is dropped where its original row is in the same history (#131104).
+    shown_elsewhere = restatements_shown_elsewhere(history)
+    for index, m in enumerate(history):
+        if not isinstance(m, dict) or index in shown_elsewhere:
             continue
         m = project_compaction_message_for_display(m)
         if m is None:

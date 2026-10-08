@@ -374,9 +374,10 @@ def _is_compressed_summary_message(message: Any) -> bool:
     return is_compaction_summary_message(message)
 
 
-def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
+def _project_client_message(message: Dict[str, Any], *, shown_elsewhere: bool = False) -> Dict[str, Any]:
     """Strip compaction scaffolding: standalone handoffs become hidden empty rows (stable
-    ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
+    ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped.
+    ``shown_elsewhere``: a re-stated request whose original the reader also gets (#131104)."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
     if (message.get("display_kind") == "hidden"
@@ -385,7 +386,7 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in message.items() if k in {
             "id", "session_id", "role", "timestamp", "display_kind", "platform_message_id",
         }} | {"content": ""}
-    projected = project_compaction_message_for_display(message)
+    projected = None if shown_elsewhere else project_compaction_message_for_display(message)
     if projected is None:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
         projected["content"] = ""
@@ -3018,8 +3019,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
-        message = _project_client_message(message)
+    def _message_response(message: Dict[str, Any], *, shown_elsewhere: bool = False) -> Dict[str, Any]:
+        message = _project_client_message(message, shown_elsewhere=shown_elsewhere)
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
@@ -3294,9 +3295,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
+        from agent.compaction_display import restatements_shown_elsewhere
+        shown_elsewhere = restatements_shown_elsewhere(messages, lineage=include_compacted)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m, shown_elsewhere=i in shown_elsewhere) for i, m in enumerate(messages)],
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),

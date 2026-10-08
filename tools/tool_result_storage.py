@@ -13,9 +13,9 @@ import re
 import shlex
 import tempfile
 import threading
-import time
 
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+from utils import unlink_files_older_than
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -45,20 +45,7 @@ def get_spillover_dir():
 def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
     """Delete spillover files older than *max_age_hours*; returns count removed (same
     contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    try:
-        entries = list(get_spillover_dir().iterdir())
-    except OSError:
-        return 0
-    for f in entries:
-        try:
-            if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
-        except OSError:
-            pass
-    return removed
+    return unlink_files_older_than(get_spillover_dir(), "*", max_age_hours * 3600)
 
 
 def _prune_spillover_once() -> None:

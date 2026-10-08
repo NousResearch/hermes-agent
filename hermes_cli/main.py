@@ -1836,7 +1836,7 @@ def cmd_gateway(args):
 
     from hermes_cli.gateway import gateway_command
 
-    gateway_command(args)
+    return gateway_command(args)
 
 
 def cmd_proxy(args):

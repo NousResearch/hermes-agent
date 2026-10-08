@@ -85,6 +85,7 @@ Or in-session:
 | `todo` | `todo_list` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |
 | `vision` | `vision_analyze` | Image analysis via vision-capable models. |
+| `wake` | `schedule_wake` | One-shot self-wake: the agent arms a deadline so an idle session re-enters its loop with no user input (see [Self-Wake](../user-guide/features/self-wake.md)). Hidden on surfaces that cannot fire it (cron, API server, Kanban workers, ACP). |
 | `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
 | `web` | `web_extract`, `web_search` | Web search and page content extraction. |
 | `x_search` | `x_search` | Read-only public X discovery via xAI's built-in `x_search` Responses tool. Use the `xurl` skill for authenticated X API reads and account actions. Off by default; opt in via `hermes tools`. Schema only registered when xAI credentials (SuperGrok OAuth or `XAI_API_KEY`) are configured. |
@@ -97,8 +98,8 @@ Platform toolsets define the complete tool configuration for a deployment target
 | Toolset | Differences from `hermes-cli` |
 |---------|-------------------------------|
 | `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal, web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, cronjob, session_search, clarify, computer_use, and the kanban tools (all check_fn-gated at runtime). |
-| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `text_to_speech`, `computer_use`, and the kanban tools. Focused on coding tasks in IDE context. |
-| `hermes-api-server` | Drops `clarify`, `text_to_speech`, `computer_use`, and the kanban tools. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
+| `hermes-acp` | Drops `clarify`, `schedule_wake`, `cronjob`, `image_generate`, `text_to_speech`, `computer_use`, and the kanban tools. Focused on coding tasks in IDE context. |
+| `hermes-api-server` | Drops `clarify`, `schedule_wake`, `text_to_speech`, `computer_use`, and the kanban tools. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |
 | `hermes-telegram` | Same as `hermes-cli`. |
 | `hermes-discord` | Adds `discord` and `discord_admin` on top of `hermes-cli`. |

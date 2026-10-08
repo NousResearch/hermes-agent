@@ -85,6 +85,7 @@ CONFIGURABLE_TOOLSETS = [
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("connections",     "🔌 Connections",               "remote connector tools and account authorization"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
+    ("wake",            "⏰ Self-Wake",                 "schedule_wake — the agent arms a one-shot deadline to re-enter an idle session"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
@@ -434,7 +435,7 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
 #: toolset on a checklist, an unchecking user's config is byte-identical to one saved before it existed and this
 #: rule would turn the opt-out back on (stuck checkbox). ``check_fn``-gated toolsets cost nothing here; never
 #: probe a remote service from this path — it runs on every CLI start, gateway session and cron tick.
-_RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset()
+_RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset({"wake"})  # shipped with schedule_wake; empty in the next release
 
 
 def _enable_recently_shipped_toolsets(enabled_toolsets: set[str], config: dict, platform: str) -> None:

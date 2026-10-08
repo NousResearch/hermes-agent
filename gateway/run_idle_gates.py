@@ -53,6 +53,12 @@ def profile_has_active_loop(profile_home: Path) -> bool:
     return _gate(profile_home, store_has_active_loop)
 
 
+def profile_has_armed_wake(profile_home: Path) -> bool:
+    from hermes_cli.wake import store_has_armed_wake
+
+    return _gate(profile_home, store_has_armed_wake)
+
+
 def profile_has_pending_handoff(profile_home: Path) -> bool:
     return _gate(profile_home, lambda db: db.has_pending_handoffs())
 

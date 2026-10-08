@@ -644,6 +644,30 @@ class CLILoopsMixin:
             except Exception:
                 pass
 
+    def _maybe_fire_wake(self) -> None:
+        """Idle hook run from process_loop: fire an armed one-shot wake deadline (#122444)
+        so the loop re-enters without user input. One-shot: consumed on fire. Throttled
+        like the loop tick - the idle poll runs at ~10 Hz and every check reads the DB. A wake
+        armed inside a messaging chat (route carries platform+chat_id) belongs to the gateway's
+        wake watcher; this driver never consumes it."""
+        now = time.time()
+        if now - getattr(self, "_last_wake_check", 0.0) < 2.0:
+            return
+        self._last_wake_check = now
+        try:
+            if not self._pending_input.empty():
+                return
+            from hermes_cli.wake import due_wake_prompt, load_wake, route_is_gateway_chat
+            sid = getattr(self, "session_id", "") or ""
+            state = load_wake(sid)
+            if state is None or not state.is_due(now) or route_is_gateway_chat(state.route):
+                return
+            prompt = due_wake_prompt(sid, now)
+            if prompt:
+                self._pending_input.put(prompt)
+        except Exception:  # health: allow BLE001 -- idle-hook boundary; a wake read error must never kill the REPL loop (loop/goal hooks do the same)
+            logging.debug("wake fire check failed", exc_info=True)
+
     def _last_assistant_response_text(self) -> str:
         """Text of the most recent assistant message ("" when none); multimodal parts are flattened."""
         try:

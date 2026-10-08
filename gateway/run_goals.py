@@ -510,3 +510,10 @@ class GatewayGoalsMixin:
             except Exception as exc:
                 logger.debug("loop wakeup watcher error: %s", exc)
             await asyncio.sleep(interval)
+
+    async def _wake_watcher(self, interval: float = 15.0) -> None:
+        """Fire due one-shot ``schedule_wake`` deadlines armed inside messaging chats
+        (``gateway/run_wake_watcher.py``); the loop watcher's sibling for ``wake:*`` rows."""
+        from gateway.run_wake_watcher import wake_watcher
+
+        await wake_watcher(self, interval=interval)

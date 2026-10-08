@@ -23,13 +23,13 @@ from cron.scheduler import _resolve_cron_disabled_toolsets
 # agent-scheduling gate says: messaging/clarify are interactive-only.
 # ``memory`` is intentionally NOT here — cron agents get memory like any
 # other agent run.
-ALWAYS_DISABLED = ["messaging", "clarify"]
+ALWAYS_DISABLED = ["messaging", "clarify", "wake"]
 
 
 class TestGateOffDefault:
     def test_empty_config_denies_cronjob(self):
         assert _resolve_cron_disabled_toolsets({}) == [
-            "cronjob", "messaging", "clarify",
+            "cronjob", "messaging", "clarify", "wake",
         ]
 
 

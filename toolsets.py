@@ -24,6 +24,7 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
+    "schedule_wake",
     "execute_code", "delegate_task",
     "cronjob_manage",
     "kanban_show", "kanban_list",
@@ -154,6 +155,11 @@ TOOLSETS = {
         platforms=frozenset({"desktop"}),
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
+    "wake": _ts(
+        "One-shot self-wake: arm a deadline so an idle session re-enters its loop with "
+        "no user input (#122444)",
+        ["schedule_wake"],
+    ),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "kanban": _ts(
@@ -198,12 +204,13 @@ TOOLSETS = {
     "hermes-acp": _ts(
         "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without "
         "messaging, audio, or clarify UI",
-        [t for t in _CODING_TOOLS if t != "clarify"],
+        [t for t in _CODING_TOOLS if t not in ("clarify", "schedule_wake")],
     ),
     "hermes-api-server": _ts(
         "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
-        "interactive UI tools like clarify or send_message)",
-        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
+        "interactive UI tools like clarify or send_message; no schedule_wake — the "
+        "client owns the next turn)",
+        _core_without("text_to_speech", "clarify", "computer_use", "schedule_wake", kanban=False),
     ),
     "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 

@@ -3254,20 +3254,19 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
 
 
 def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
-    """Migrate /goal, /heartbeat, /loop state, rejected-thinking fingerprints and the title from the parent to the child.
-    Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
-    is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
-    transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
-    """
+    """Migrate /goal, /heartbeat, wake, /loop state, rejected-thinking fingerprints and the title from the parent to
+    the child (each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary).
+    The title is carried unchanged (renumbering per rotation made one session look like many); its provenance is read
+    BEFORE the transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable."""
     with _swallow('Could not migrate goal on compression: %s'):
-        # Carry a persistent /goal onto the continuation session. Compression mints a fresh child id;
-        # load_goal does a flat per-session lookup with no parent walk, so without this an active goal
-        # silently dies at the boundary (#33618).
+        # Compression mints a fresh child id and load_goal has no parent walk: without this an
+        # active /goal silently dies at the boundary (#33618).
         from hermes_cli.goals import migrate_goal_to_session
         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
-    with _swallow('Could not migrate heartbeat on compression: %s'):
-        from hermes_cli.heartbeat import migrate_heartbeat_to_session
-        migrate_heartbeat_to_session(old_session_id, agent.session_id)
+    with _swallow('Could not migrate heartbeat/wake on compression: %s'):
+        from hermes_cli import heartbeat, wake
+        heartbeat.migrate_heartbeat_to_session(old_session_id, agent.session_id)
+        wake.migrate_wake_to_session(old_session_id, agent.session_id)
     with _swallow('Could not migrate loop on compression: %s'):
         from hermes_cli.loops import migrate_loop_to_session
         migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")

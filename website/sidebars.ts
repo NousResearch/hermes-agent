@@ -115,6 +115,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/goals',
             'user-guide/features/heartbeat',
             'user-guide/features/loops',
+            'user-guide/features/self-wake',
             'user-guide/features/code-execution',
             'user-guide/features/hooks',
             'user-guide/features/batch-processing',

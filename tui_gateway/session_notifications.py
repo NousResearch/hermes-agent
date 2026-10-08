@@ -262,6 +262,39 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _maybe_fire_tui_wake(sid: str, session: dict) -> None:
+    """Fire a due one-shot ``schedule_wake`` for an idle TUI/Desktop/dashboard session (#122444).
+
+    Same driver shape as ``_maybe_fire_tui_heartbeat_tick``: the tool only persists the deadline,
+    so the session-owner process must re-enter the live session through ``_run_prompt_submit``
+    once it passes. Claim the idle session first (a racing user prompt wins); a dispatch that
+    never starts a turn rewinds the persisted fire so the wake stays armed. A wake armed inside a
+    messaging chat carries a gateway route and belongs to the gateway's wake watcher.
+    """
+    from hermes_cli.wake import abandon_wake_fire, due_wake_prompt, load_wake, route_is_gateway_chat
+
+    if not (sid_key := session.get("session_key") or ""):
+        return
+    state = load_wake(sid_key)
+    if state is None or not state.is_due() or route_is_gateway_chat(state.route):
+        return
+    if not _notif_claim_turn(session):
+        return  # busy — stays armed, next poll retries
+    if not (prompt := due_wake_prompt(sid_key)):
+        _notif_release_turn(session)
+        return
+    started = False
+    try:
+        _emit("status.update", sid, {"kind": "wake", "text": "⏰ scheduled wake firing…"})
+        started = bool(_run_prompt_submit(f"__wake__{int(time.time() * 1000)}", sid, session, prompt))
+    except Exception as exc:  # health: allow BLE001 -- dispatch boundary; logged via _notif_log_failure and the fire is refunded below
+        _notif_log_failure("wake dispatch failed", exc)
+    if not started:
+        _notif_release_turn(session)
+        with contextlib.suppress(Exception):
+            abandon_wake_fire(sid_key)
+
+
 def _loop_route_is_gateway_chat(state) -> bool:
     """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
     (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
@@ -741,7 +774,8 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick),
+                               ("wake", _maybe_fire_tui_wake)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

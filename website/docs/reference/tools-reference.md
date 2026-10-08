@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `apply_layout` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `apply_layout` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `schedule_wake`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -55,6 +55,13 @@ Per-surface behavior:
 - **Messaging platforms** (Telegram, Discord, …) ask the questions one at a time, one card per question. Reply `skip` to skip one question. If the user stops responding, the remaining questions are not sent.
 
 If the prompt times out part-way, answers the user already locked are kept: the tool result carries them with `"outcome": "timed_out"` and marks the rest `"status": "unanswered"`, so the agent can distinguish a deliberate skip from an absent user. On messaging platforms the result also carries a `"notice"` saying why the wait ended (`[user did not respond within Nm]`, or `[clarify prompt could not be delivered]` when the platform rejected the card — Hermes first retries the question as a plain numbered-list message, and only reports this when that fails too; `[clarify prompt could not be delivered: no chat surface]` when the run has no chat to prompt in), so an undelivered prompt is never reported as user inactivity.
+
+
+## `wake` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `schedule_wake` | Arm a ONE-SHOT self-wake for this session: at the deadline the prompt is injected as a user message (rendered as `[Wake — one-shot instruction you scheduled for yourself]`) and the session's loop re-enters with no human input — keeps a long orchestration (delegation batches, gated pipelines, waiting on an external process) alive instead of sleeping forever. `delay_secs` or `at_iso`, both ≥ 60s out; one wake per session (latest wins); consumed on fire, so the agent re-arms from the wake turn while work is outstanding. A per-session fire budget (`wake.max_fires`, default 100) refuses runaway re-arming. Refused for subagents; hidden where no driver can fire it (cron, API server, Kanban, ACP). | — |
 
 ## `connections` toolset
 

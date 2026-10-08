@@ -471,6 +471,34 @@ class TestSessionLink:
     def test_link_carries_the_named_profile(self):
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 
+    def test_non_desktop_results_keep_titles_without_internal_links(self, db):
+        _seed_modpack_sessions(db)
+        for args in ({"query": "modpack"}, {}, {"session_id": "s_oldest"}):
+            telegram = json.loads(session_search(db=db, platform="telegram", **args))
+            desktop = json.loads(session_search(db=db, platform="desktop", **args))
+            assert telegram["success"] and desktop["success"]
+            for visible, internal in zip(telegram.get("results", [telegram]), desktop.get("results", [desktop])):
+                assert "link" not in visible
+                assert internal["link"].startswith("@session:")
+                assert visible.get("title") == internal.get("title")
+            assert "plain text" in telegram["link_hint"]
+            assert "@session:" not in telegram["link_hint"]
+            from tools.registry import registry
+            routed = json.loads(registry.dispatch("session_search", args, db=db, platform="telegram"))
+            assert all("link" not in entry for entry in routed.get("results", [routed]))
+
+    def test_inline_executor_forwards_active_platform(self, db):
+        from types import SimpleNamespace
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        _seed_modpack_sessions(db)
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current", platform="telegram")
+        ctx = InlineToolContext(effective_task_id="task", tool_call_id="call")
+        result = json.loads(INLINE_TOOL_EXECUTORS["session_search"](agent, {"query": "modpack"}, ctx))
+        assert result["success"] and result["results"]
+        assert all("link" not in entry for entry in result["results"])
+        assert "plain text" in result["link_hint"]
+
 
     def test_every_discovery_result_links_to_its_own_session(self, db):
         _seed_modpack_sessions(db)

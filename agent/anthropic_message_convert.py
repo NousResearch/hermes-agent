@@ -570,7 +570,9 @@ def _keep_valid_thinking(content: List[Any], signature_dead: bool) -> List[Any]:
     return new_content
 
 
-def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
+def _manage_thinking_signatures(
+    result: List[Dict[str, Any]], base_url: str | None, model: str | None, *, preserve_thinking: bool = False,
+) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
@@ -594,7 +596,7 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif route == "third_party" or (idx != last_assistant_idx and not preserve_prior):
+        elif (route == "third_party" and not preserve_thinking) or (idx != last_assistant_idx and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
             new_content = _keep_valid_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
@@ -712,7 +714,7 @@ def _convert_system_content(content: Any) -> Any:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict], base_url: str | None = None, model: str | None = None
+    messages: List[Dict], base_url: str | None = None, model: str | None = None, *, preserve_thinking: bool = False,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
@@ -734,7 +736,7 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(result, base_url, model, preserve_thinking=preserve_thinking)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

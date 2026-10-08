@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zh_hantCoding } from './zh-hant_coding'
 
 export const zhHantChat = {
   composer: {
@@ -326,52 +327,7 @@ export const zhHantChat = {
       dismissError: '關閉錯誤',
       add: '新增'
     },
-    coding: {
-      title: '工作區',
-      noBranch: '無分支',
-      detached: '分離 HEAD',
-      clean: '乾淨',
-      changed: count => `${count} 處變更`,
-      ahead: count => `領先 ${count}`,
-      behind: count => `落後 ${count}`,
-      review: '審查',
-      close: '關閉',
-      openChanges: '開啟變更',
-      openFile: '開啟檔案',
-      stage: '暫存',
-      unstage: '取消暫存',
-      stageAll: '全部暫存',
-      viewAsTree: '樹狀檢視',
-      viewAsList: '清單檢視',
-      revert: '還原',
-      revertAll: '全部還原',
-      revertConfirm: '捨棄對此檔案的變更並將其還原至已提交狀態？此操作無法復原。',
-      revertAllConfirm: '捨棄所有變更並將檔案還原至已提交狀態？此操作無法復原。',
-      staged: '已暫存',
-      noChanges: '沒有變更',
-      notRepo: '不是 Git 儲存庫',
-      noDiff: '沒有可顯示的差異',
-      scopeUncommitted: '未提交',
-      scopeBranch: '分支',
-      scopeLastTurn: '上一輪',
-      readOnlyScope: '唯讀檢視 — 暫存、還原和提交操作僅適用於「未提交」',
-      commit: '提交',
-      commitAndPush: '提交並推送',
-      commitPlaceholder: shortcut => `訊息（${shortcut} 提交）`,
-      generateCommitMessage: '產生提交訊息',
-      stopGenerating: '停止產生',
-      createPr: '建立 PR',
-      openPr: '開啟 PR',
-      ghMissing: '安裝 GitHub CLI (gh) 並登入後可開啟 PR',
-      agentShip: '讓 Hermes 提交並開 PR',
-      agentShipUnavailable: '擁有這些變更的對話目前不在畫面上。',
-      agentShipPrompt: '檢查目前的變更，使用清晰的約定式提交訊息提交，推送分支，並開啟一個拉取請求。',
-      newBranch: '新增分支',
-      branchOffFrom: base => `從 ${base} 建立新分支`,
-      switchTo: branch => `切換到 ${branch}`,
-      switchFailed: branch => `無法切換到 ${branch}`,
-      worktrees: '工作樹'
-    }
+    coding: zh_hantCoding
   },
 
   prompts: {

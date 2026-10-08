@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaCoding } from './ja_coding'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -2767,53 +2768,7 @@ export const jaOverrides = {
       dismissError: 'エラーを閉じる',
       add: '追加'
     },
-    coding: {
-      title: 'ワークツリー',
-      noBranch: 'ブランチなし',
-      detached: 'デタッチ',
-      clean: 'クリーン',
-      changed: count => `${count} 件変更`,
-      ahead: count => `${count} 先行`,
-      behind: count => `${count} 遅延`,
-      review: 'レビュー',
-      close: '閉じる',
-      openChanges: '変更を開く',
-      openFile: 'ファイルを開く',
-      stage: 'ステージ',
-      unstage: 'ステージ解除',
-      stageAll: 'すべてステージ',
-      viewAsTree: 'ツリー表示',
-      viewAsList: 'リスト表示',
-      revert: '取り消し',
-      revertAll: 'すべて取り消し',
-      revertConfirm: 'このファイルの変更を破棄してコミット済みの状態に戻しますか？この操作は元に戻せません。',
-      revertAllConfirm: 'すべての変更を破棄してコミット済みの状態に戻しますか？この操作は元に戻せません。',
-      staged: 'ステージ済み',
-      noChanges: '変更なし',
-      notRepo: 'Git リポジトリではありません',
-      noDiff: '表示する差分がありません',
-      scopeUncommitted: '未コミット',
-      scopeBranch: 'ブランチ',
-      scopeLastTurn: '前のターン',
-      readOnlyScope: '読み取り専用ビュー — ステージ・復元・コミットは「未コミット」のみ対象です',
-      commit: 'コミット',
-      commitAndPush: 'コミットしてプッシュ',
-      commitPlaceholder: shortcut => `メッセージ（${shortcut} でコミット）`,
-      generateCommitMessage: 'コミットメッセージを生成',
-      stopGenerating: '生成を停止',
-      createPr: 'PR を作成',
-      openPr: 'PR を開く',
-      ghMissing: 'PR を開くには GitHub CLI (gh) をインストールしてサインインしてください',
-      agentShip: 'Hermes にコミットと PR を任せる',
-      agentShipUnavailable: 'この変更を持つチャットが画面にありません。',
-      agentShipPrompt:
-        '現在の変更を確認し、分かりやすい Conventional Commits 形式でコミットし、ブランチをプッシュして、プルリクエストを作成してください。',
-      newBranch: '新しいブランチ',
-      branchOffFrom: base => `${base} から新しいブランチ`,
-      switchTo: branch => `${branch} に切り替え`,
-      switchFailed: branch => `${branch} に切り替えできませんでした`,
-      worktrees: 'ワークツリー'
-    }
+    coding: jaCoding
   },
 
   updates: {

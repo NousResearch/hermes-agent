@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCoding } from './zh_coding'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
@@ -3679,52 +3680,7 @@ export const zhOverrides = {
       dismissError: '关闭错误',
       add: '添加'
     },
-    coding: {
-      title: '工作区',
-      noBranch: '无分支',
-      detached: '分离头指针',
-      clean: '干净',
-      changed: count => `${count} 处更改`,
-      ahead: count => `领先 ${count}`,
-      behind: count => `落后 ${count}`,
-      review: '审查',
-      close: '关闭',
-      openChanges: '打开更改',
-      openFile: '打开文件',
-      stage: '暂存',
-      unstage: '取消暂存',
-      stageAll: '全部暂存',
-      viewAsTree: '树状视图',
-      viewAsList: '列表视图',
-      revert: '还原',
-      revertAll: '全部还原',
-      revertConfirm: '放弃对此文件的更改并将其恢复到已提交状态？此操作无法撤销。',
-      revertAllConfirm: '放弃所有更改并将文件恢复到已提交状态？此操作无法撤销。',
-      staged: '已暂存',
-      noChanges: '没有更改',
-      notRepo: '不是 Git 仓库',
-      noDiff: '没有可显示的差异',
-      scopeUncommitted: '未提交',
-      scopeBranch: '分支',
-      scopeLastTurn: '上一轮',
-      readOnlyScope: '只读视图 — 暂存、还原和提交操作仅适用于“未提交”',
-      commit: '提交',
-      commitAndPush: '提交并推送',
-      commitPlaceholder: shortcut => `信息（${shortcut} 提交）`,
-      generateCommitMessage: '生成提交信息',
-      stopGenerating: '停止生成',
-      createPr: '创建 PR',
-      openPr: '打开 PR',
-      ghMissing: '安装 GitHub CLI (gh) 并登录后可打开 PR',
-      agentShip: '让 Hermes 提交并开 PR',
-      agentShipUnavailable: '拥有这些更改的会话当前不在屏幕上。',
-      agentShipPrompt: '检查当前更改，使用清晰的约定式提交信息提交，推送分支，并开启一个拉取请求。',
-      newBranch: '新建分支',
-      branchOffFrom: base => `从 ${base} 新建分支`,
-      switchTo: branch => `切换到 ${branch}`,
-      switchFailed: branch => `无法切换到 ${branch}`,
-      worktrees: '工作树'
-    }
+    coding: zhCoding
   },
 
   updates: {

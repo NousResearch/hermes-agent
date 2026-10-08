@@ -547,6 +547,11 @@ def delegate_task(
     if err:
         return tool_error(err)
 
+    from tools.delegation_graph import build_dependency_plan
+    dependency_plan, err = build_dependency_plan(task_list)
+    if err:
+        return tool_error(err)
+
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
@@ -567,6 +572,9 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
         home=_live_home,
     )
+    if dependency_plan.enabled and not live_deleg_id:
+        from tools.async_delegation import _new_delegation_id
+        live_deleg_id = _new_delegation_id()
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
@@ -579,6 +587,7 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        dependency_plan=dependency_plan,
         live_home=_live_home,
     )
     return _run_batch(batch, background)
@@ -736,6 +745,13 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "id": _p("string", "Stable unique task ID. Required on every task when any task uses depends_on."),
+                        "depends_on": _p(
+                            "array", "IDs of prerequisite tasks in this call. Start only after all succeed; their bounded "
+                            "summaries are passed forward. Failed prerequisites block descendants. Connected tasks return "
+                            "together; explicit groups can join additional tasks for delivery without adding execution dependencies.",
+                            items={"type": "string"},
                         ),
                     },
                     "required": ["goal"],

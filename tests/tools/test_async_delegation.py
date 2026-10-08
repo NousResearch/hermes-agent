@@ -66,6 +66,159 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
+def test_independent_batch_group_delivers_fast_component_without_waiting():
+    slow_gate = threading.Event()
+
+    def fast_runner():
+        return {
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "fast result",
+                }
+            ],
+            "total_duration_seconds": 0.01,
+        }
+
+    def slow_runner():
+        slow_gate.wait(timeout=60)
+        return {
+            "results": [
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "slow result",
+                }
+            ],
+            "total_duration_seconds": 1.0,
+        }
+
+    result = ad.dispatch_async_delegation_batches(
+        batches=[
+            {
+                "goals": ["Return the fast result"],
+                "role": "leaf",
+                "model": "m",
+                "session_key": "session",
+                "runner": fast_runner,
+                "delegation_id": "deleg_fast_component",
+                "batch_metadata": {
+                    "adaptive_scheduling": True,
+                    "cluster_index": 1,
+                    "cluster_count": 2,
+                    "task_indices": [0],
+                    "task_ids": ["fast"],
+                },
+            },
+            {
+                "goals": ["Return the slow result"],
+                "role": "leaf",
+                "model": "m",
+                "session_key": "session",
+                "runner": slow_runner,
+                "delegation_id": "deleg_slow_component",
+                "batch_metadata": {
+                    "adaptive_scheduling": True,
+                    "cluster_index": 2,
+                    "cluster_count": 2,
+                    "task_indices": [1],
+                    "task_ids": ["slow"],
+                },
+            },
+        ],
+        max_async_children=1,
+    )
+
+    assert result["status"] == "dispatched"
+    fast_event = _drain_for("deleg_fast_component")
+    assert fast_event is not None
+    assert fast_event["results"][0]["summary"] == "fast result"
+    assert fast_event["batch_metadata"]["cluster_count"] == 2
+    assert ad.active_count() == 1
+
+    slow_gate.set()
+    slow_event = _drain_for("deleg_slow_component")
+    assert slow_event is not None
+    assert slow_event["results"][0]["summary"] == "slow result"
+
+
+def test_adaptive_component_notification_uses_local_order_and_dependencies():
+    text = format_process_notification(
+        {
+            "type": "async_delegation",
+            "delegation_id": "deleg_component",
+            "is_batch": True,
+            "goals": ["Combine both values"],
+            "results": [
+                {
+                    "task_index": 2,
+                    "task_id": "combine",
+                    "depends_on": ["alpha", "beta"],
+                    "status": "completed",
+                    "summary": "combined=5",
+                    "duration_seconds": 0.1,
+                }
+            ],
+            "batch_metadata": {
+                "adaptive_scheduling": True,
+                "cluster_index": 1,
+                "cluster_count": 2,
+                "task_indices": [2],
+                "task_ids": ["combine"],
+                "dependencies": {"combine": ["alpha", "beta"]},
+            },
+        }
+    )
+
+    assert "Dependency cluster 1/2" in text
+    assert "TASK 1/1 [combine]" in text
+    assert "Depends on: alpha, beta" in text
+    assert "TASK 3/1" not in text
+
+
+def test_batch_group_capacity_rejection_starts_nothing():
+    blocker_gate = threading.Event()
+    started = []
+
+    def blocker_runner():
+        blocker_gate.wait(timeout=60)
+        return {"status": "completed", "summary": "released"}
+
+    blocker = ad.dispatch_async_delegation(
+        goal="occupy one slot",
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="session",
+        runner=blocker_runner,
+        max_async_children=1,
+    )
+    assert blocker["status"] == "dispatched"
+
+    result = ad.dispatch_async_delegation_batches(
+        batches=[
+            {
+                "goals": ["component one"],
+                "runner": lambda: started.append("one") or {"results": []},
+            },
+            {
+                "goals": ["component two"],
+                "runner": lambda: started.append("two") or {"results": []},
+            },
+        ],
+        max_async_children=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["required_slots"] == 1
+    assert result["available_slots"] == 0
+    assert started == []
+
+    blocker_gate.set()
+
+
 def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
     """The delegation ledger is a guest in state.db, not its mode owner."""
     conn = sqlite3.connect(tmp_path / "state.db")

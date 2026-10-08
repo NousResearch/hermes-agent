@@ -71,7 +71,8 @@ def _(rid, params: dict) -> dict:
         live = enabled.get(cls.name)
         rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
                      "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
-                     "installed": is_installed(cls.name)})
+                     "installed": is_installed(cls.name),
+                     "manual_unlock": cls.manual_unlock, "setup_hint": cls.setup_hint})
     return _ok(rid, {"sources": rows})
 
 
@@ -90,7 +91,7 @@ def _(rid, params: dict) -> dict:
     cfg = load_config()
     section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
     if enabled:
-        section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
+        section["enabled"] = True  # supports opt-in sources too
     else:
         section["enabled"] = False
     if not enabled:
@@ -110,6 +111,8 @@ def _(rid, params: dict) -> dict:
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
         return _err(rid, 5095, f"{name} is not an enabled password manager")
+    if backend.manual_unlock:
+        return _err(rid, 5095, backend.setup_hint)
     if not password:
         return _err(rid, 5095, "master password is required")
     try:
@@ -128,6 +131,10 @@ def _(rid, params: dict) -> dict:
     from agent.vault_backends.unlock import lock
 
     name = params.get("name")
+    from agent.vault_backends.base import external_backend_classes
+    manual = next((cls for cls in external_backend_classes() if cls.name == name and cls.manual_unlock), None)
+    if manual is not None:
+        return _err(rid, 5095, manual.setup_hint)
     lock(str(name) if name else None)
     return _ok(rid, {"locked": True})
 

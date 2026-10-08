@@ -30,6 +30,9 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    manual_unlock: bool = False
+    automatic_otp: bool = True
+    setup_hint: str = ""
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
@@ -97,7 +100,8 @@ def _cfg() -> Dict:
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    from agent.vault_backends.dashlane import DashlaneLoginBackend
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, DashlaneLoginBackend)
 
 
 def is_installed(name: str) -> bool:
@@ -105,6 +109,13 @@ def is_installed(name: str) -> bool:
     import shutil
     section = _cfg().get(name) or {}
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
+    if name == "dashlane":
+        from hermes_platform.resolver import locate_command
+        explicit = section.get("binary_path", "") if isinstance(section, dict) else ""
+        if not isinstance(explicit, str) or (explicit and (not Path(explicit).is_absolute()
+                or any(ord(c) < 32 or ord(c) == 127 for c in explicit))):
+            return False
+        return bool(locate_command(explicit or "dcli").command)
     if explicit:
         return Path(explicit).is_file()
     if name == "onepassword":
@@ -117,6 +128,9 @@ def is_enabled(name: str) -> bool:
     """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
     Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
     section = _cfg().get(name) or {}
+    # Dashlane requires explicit opt-in; never probe its Keychain merely because installed.
+    if name == "dashlane" and (not isinstance(section, dict) or section.get("enabled") is not True):
+        return False
     if isinstance(section, dict) and section.get("enabled") is False:
         return False
     return is_installed(name)

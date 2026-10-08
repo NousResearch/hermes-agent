@@ -226,30 +226,64 @@ def browser_vault_list() -> str:
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
 
-    items, locked, errors = [], [], []
+    items, locked, errors, unfillable = [], [], [], []
     for backend in enabled_backends():
-        if backend.needs_unlock and not backend.is_unlocked():
+        # Dashlane's listing performs its own typed status/configuration checks;
+        # is_unlocked() intentionally collapses those failures to a boolean.
+        if backend.name != "dashlane" and backend.needs_unlock and not backend.is_unlocked():
             locked.append({"backend": backend.name, "display_name": backend.display_name,
-                           "unlock": "browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session"})
+                           "unlock": "manual_cli" if backend.manual_unlock else ("browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session")})
+            if backend.manual_unlock:
+                locked[-1]["hint"] = backend.setup_hint
             continue
         try:
             metas = backend.list_items()
         except Exception as exc:
-            errors.append({"backend": backend.name, "error": str(exc)[:200]})
+            message = ("Dashlane listing failed; check configuration, account/lock state and search limits"
+                       if backend.name == "dashlane" else str(exc)[:200])
+            error = {"backend": backend.name, "error": message}
+            if backend.name == "dashlane":
+                from agent.vault_backends.dashlane import listing_diagnostic
+                from agent.vault_backends.base import UnlockRequired
+                error.update(listing_diagnostic(exc))
+                if isinstance(exc, UnlockRequired):
+                    locked.append({"backend": backend.name, "display_name": backend.display_name,
+                                   "unlock": "manual_cli", "hint": backend.setup_hint})
+            errors.append(error)
             continue
+        if backend.name == "dashlane":
+            from agent.vault_backends.dashlane import DashlaneLoginBackend
+            assert isinstance(backend, DashlaneLoginBackend)
+            unfillable.extend(backend.unfillable_candidates)
+            for diagnostic in backend.listing_errors:
+                errors.append({"backend": "dashlane",
+                               "error": "Dashlane listing failed; check configuration, account/lock state and search limits",
+                               **diagnostic})
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
-            if meta.has_otp or backend.needs_unlock:
+            if meta.has_otp or (backend.needs_unlock and backend.automatic_otp):
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}
-    if not items:
+    dashlane_choices = [item for item in items if item["backend"] == "dashlane"]
+    if len(dashlane_choices) > 1:
+        out["selection_required"] = (
+            "Multiple Dashlane logins: ask the user to select the identifier and exact saved origin; "
+            "never choose the first match. Fill only the selected handle.")
+    if unfillable:
+        out["unfillable_candidates"] = unfillable
+        out["binding_required"] = (
+            "These saved bare-host records have no usable origin and no fill handle. "
+            "Select the exact source_id and identifier, then obtain explicit authorization "
+            "for its destination origin before configuring an items source_host binding. "
+            "Never infer HTTPS or rebind automatically; multiple records require user selection.")
+    if not items and not unfillable:
         out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
                        "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
     if locked:
@@ -269,6 +303,8 @@ def browser_vault_unlock(backend_name: str) -> str:
         return json.dumps({"success": False, "error": f"No unlockable vault backend named {backend_name!r}."})
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
+    if backend.manual_unlock:
+        return json.dumps({"success": False, "error_type": "manual_unlock_required", "error": backend.setup_hint})
     if not can_prompt_here():
         return json.dumps({"success": False, "error_type": "unlock_unavailable",
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
@@ -373,9 +409,15 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():
+            guidance = (
+                "This source does not support automatic codes. Complete verification manually "
+                "or use an interactive session to enter the code through the secure prompt."
+                if backend is not None and not backend.automatic_otp else
+                "Save an authenticator key for this login so codes can be generated automatically."
+            )
             return json.dumps({"success": False, "error_type": "prompt_unavailable",
                                "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
-                                         "Save an authenticator key for this login so codes can be generated automatically.")})
+                                         + guidance)})
         code = (prompt(site, "") or "").strip().replace(" ", "").replace("-", "")
         if not code:
             return json.dumps({"success": False, "error_type": "code_declined",
@@ -417,7 +459,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, VaultError, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -431,6 +473,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
+    except VaultError:
+        return json.dumps({"success": False, "error_type": "vault_unavailable",
+                           "error": "Credential source refused the login; check enrollment and lock state."})
     if meta is None:
         return json.dumps(
             {
@@ -513,6 +558,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
+    except VaultError:
+        return json.dumps({"success": False, "error_type": "vault_unavailable",
+                           "error": "Credential source refused the login; check enrollment and lock state."})
     if not fills:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
@@ -593,7 +641,8 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
         "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
-        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
+        "(1Password, Bitwarden are detected automatically; Dashlane requires opt-in enrollment). "
+        "For Dashlane manual_cli, follow the returned hint; Hermes cannot unlock it. A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
         "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
         "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
@@ -608,11 +657,12 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
     "description": (
         "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
+        "Dashlane returns manual_unlock_required with terminal instructions; no password prompt. "
         "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
+        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden", "dashlane"],
                                    "description": "Backend name from browser_vault_list `locked`."}},
         "required": ["backend"],
     },
@@ -634,7 +684,7 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "properties": {
             "handle": {
                 "type": "string",
-                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
+                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden, dl:… Dashlane)",
             }
         },
         "required": ["handle"],

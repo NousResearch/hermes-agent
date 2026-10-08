@@ -37,7 +37,7 @@ export const vaultOwnerKey = (connectionId: null | string, profile: string) => `
 const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
 const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
-export type VaultSourceName = 'bitwarden' | 'local' | 'onepassword'
+export type VaultSourceName = 'bitwarden' | 'dashlane' | 'local' | 'onepassword'
 
 /** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
 export interface VaultSource {
@@ -47,6 +47,8 @@ export interface VaultSource {
   needs_unlock: boolean
   unlocked: boolean
   installed: boolean
+  manual_unlock?: boolean
+  setup_hint?: string
 }
 
 export type VaultKind = 'address' | 'login' | 'payment'
@@ -479,6 +481,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               action={
                 <span className="flex items-center justify-end gap-2">
                   {source.enabled &&
+                    !source.manual_unlock &&
                     (source.unlocked ? (
                       <Button
                         className="gap-1.5"
@@ -517,13 +520,15 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
                 </span>
               }
               description={
-                !source.installed
-                  ? v.sources.notInstalled(source.display_name)
-                  : source.enabled
-                    ? source.unlocked
-                      ? v.sources.unlockedDesc
-                      : v.sources.lockedDesc
-                    : v.sources.disabledDesc
+                source.manual_unlock && source.installed
+                  ? source.setup_hint
+                  : !source.installed
+                    ? v.sources.notInstalled(source.display_name)
+                    : source.enabled
+                      ? source.unlocked
+                        ? v.sources.unlockedDesc
+                        : v.sources.lockedDesc
+                      : v.sources.disabledDesc
               }
               key={source.name}
               title={

@@ -151,10 +151,10 @@ class TestForkPath:
         assert out == "digest"
         fork.assert_not_called()
 
-    def test_fork_denies_tools_and_replays_snapshot(self):
-        """_answer_via_fork wires the empty whitelist, replays the trimmed
-        snapshot, runs the fork, attributes usage, and tears down."""
-        from agent.side_question import _answer_via_fork
+    def test_fork_allows_only_read_tools_and_replays_snapshot(self):
+        """_answer_via_fork wires the READ-ONLY whitelist (not the old empty one), replays the
+        trimmed snapshot, runs the fork, attributes usage, and tears down."""
+        from agent.side_question import SIDE_QUESTION_READ_TOOLS, _answer_via_fork
 
         calls = {}
 
@@ -189,8 +189,28 @@ class TestForkPath:
             answer = _answer_via_fork(object(), "which file?", history)
 
         assert answer == "it was foo.py"
-        assert whitelists == [set()]  # every tool denied at dispatch
+        assert whitelists == [set(SIDE_QUESTION_READ_TOOLS)]  # reads allowed, everything else denied
         assert calls["history"] == history  # full snapshot replayed verbatim
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
         assert calls.get("shutdown") and calls.get("closed")
+
+    def test_read_whitelist_blocks_every_mutating_tool_at_dispatch(self):
+        """Invariant: with the /btw whitelist installed on this thread, the real dispatch gate
+        blocks anything that can change state and passes the read-only lookups."""
+        from agent.side_question import SIDE_QUESTION_READ_TOOLS
+        from hermes_cli.plugins import (
+            _get_pre_tool_call_directive_details, clear_thread_tool_whitelist, set_thread_tool_whitelist,
+        )
+
+        set_thread_tool_whitelist(set(SIDE_QUESTION_READ_TOOLS), deny_msg_fmt="denied {tool_name}")
+        try:
+            with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
+                for name in ("terminal", "write_file", "patch", "memory", "skill_manage", "send_message",
+                             "delegate_task", "browser_exec", "execute_code"):
+                    d = _get_pre_tool_call_directive_details(name, {})
+                    assert d.action == "block" and d.message == f"denied {name}", name
+                for name in SIDE_QUESTION_READ_TOOLS:
+                    assert _get_pre_tool_call_directive_details(name, {}).action is None, name
+        finally:
+            clear_thread_tool_whitelist()

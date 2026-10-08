@@ -292,6 +292,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
+            record.pop("_db_row_pending", None)  # row committed: transcript reads go to the DB
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
@@ -314,6 +315,7 @@ def _seed_row(record: dict) -> None:
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
                 db.delete_session(key)
+        record["_db_row_pending"] = True  # compensation delete: draft again until the first prompt
         return
     try:
         if title := record.get("pending_title"):
@@ -399,10 +401,14 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
-            "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
+            "running": False, "session_key": key,             "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
-            "auth_user_id": _transport_auth_user_id(current_transport())}
+            "auth_user_id": _transport_auth_user_id(current_transport()),
+            # No row exists yet (the lazy branches below may persist one immediately); the REST
+            # layer reports 200-empty for transcript reads until the row lands — a 404 here
+            # fail-latches the renderer's post-create hydration on a brand-new chat.
+            "_db_row_pending": True}
         _register_session_cwd(_sessions[sid])
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;

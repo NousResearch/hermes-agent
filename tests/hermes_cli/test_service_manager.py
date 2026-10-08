@@ -7,11 +7,17 @@ implementation in this same file once that phase ships.
 """
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from hermes_cli.service_manager import (
     S6ServiceManager,
+    validate_env_key,
+    validate_profile_name,
 )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +229,41 @@ def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
     )
 
 
+def test_validate_env_key_accepts_valid_identifiers() -> None:
+    for valid in ("FOO", "BAR_BAZ", "_PRIVATE", "API_KEY_123", "a", "A_1"):
+        validate_env_key(valid)
+
+
+def test_validate_env_key_rejects_invalid_identifiers() -> None:
+    for invalid in ("", "1FOO", "FOO BAR", "FOO=BAR", "FOO\nBAR", "FOO;rm", "FOO-BAR", "$FOO", "FOO`id`", None, 123):
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            validate_env_key(invalid)  # type: ignore
+
+
+def test_render_run_script_interpolates_valid_extra_env() -> None:
+    val = "secret'val"
+    text = S6ServiceManager._render_run_script("coder", {"API_KEY": val, "PORT": "8642"})
+    assert f"export API_KEY={shlex.quote(val)}" in text
+    assert f"export PORT={shlex.quote('8642')}" in text
+
+
+def test_render_run_script_rejects_malicious_extra_env_keys() -> None:
+    bad_keys = [
+        "FOO\nrm -rf /",
+        "FOO; touch /tmp/pwned;",
+        "FOO=bar",
+        "1BAD",
+        "FOO`whoami`",
+        "FOO$(id)",
+    ]
+    for bad_key in bad_keys:
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            S6ServiceManager._render_run_script("coder", {bad_key: "val"})
 
 
 def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
+
+
     """Behavioral: the rendered finish script, executed for each run-exit
     code, must exit 125 (no restart) for clean exit 0 and EX_CONFIG 78,
     and exit 0 (restart) for genuine crashes (#76435 — restart-on-normal-

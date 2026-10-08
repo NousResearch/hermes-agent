@@ -24,6 +24,7 @@ from __future__ import annotations
 import calendar
 import errno
 import logging
+import math
 import os
 import re
 import secrets
@@ -295,7 +296,18 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        if recorded is None:
+            return False
+        if abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+            return True
+        # The POSIX hand-off (scripts/desktop-update/marker.sh) can only read
+        # ``ps -o lstart=`` — whole seconds — so a delegate line it writes for
+        # our pid carries our creation time truncated to the second. A
+        # whole-second claim that matches our whole second IS us (macOS does
+        # not reuse a pid within the same second, and the sub-second residue
+        # the 5 ms rule guards is unknown to that writer). A fractional claim
+        # still demands the exact incarnation.
+        return recorded.is_integer() and math.floor(w.ct) == recorded
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)

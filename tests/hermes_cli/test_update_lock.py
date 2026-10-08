@@ -17,6 +17,7 @@ disk.
 from __future__ import annotations
 
 import errno
+import math
 import os
 import subprocess
 import sys
@@ -32,6 +33,7 @@ from hermes_cli.update_lock import (
     checkout_lock_fds,
     checkout_lock_path,
     describe_holder,
+    incarnation_live,
     process_create_time,
     read_live_update,
     update_in_progress,
@@ -189,6 +191,55 @@ def test_v2_marker_naming_our_pid_at_a_nearby_creation_time_is_a_killed_update(m
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True and lock.acquired is True, "adopted a killed update's claim"
     assert marker.read_text(encoding="utf-8-sig").splitlines()[2] == f"ct:{process_create_time():.3f}"
+    lock.release()
+
+
+def test_whole_second_delegate_claim_of_our_pid_is_ours(marker):
+    """The macOS POSIX hand-off (marker.sh) reads ``ps -o lstart=`` — whole seconds — so the
+    delegate line it writes for our pid truncates our creation time to the second. Measured in
+    production (~0.552 s residue), the 5 ms rule read our own delegate as a foreign claim, the
+    hand-off refused to adopt its own update, and the custodian had no partner to follow. A
+    whole-second claim that matches our whole second IS us; a fractional claim still demands
+    the exact incarnation."""
+    ct = process_create_time()
+    assert ct is not None
+    now = time.time()
+    truncated = f"{os.getpid()}\n{int(now)}\nct:{math.floor(ct)}.000\n"
+    marker.write_text(truncated, encoding="utf-8", newline="")
+
+    assert incarnation_live(os.getpid(), math.floor(ct)) is True
+    assert read_live_update(path=marker) is not None
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is False, "our own truncated delegate is a partner"
+    lock.release()
+
+
+def test_whole_second_claim_off_by_a_second_is_not_us(marker):
+    """A whole-second claim is ours only at our own second: one second off is a stale or
+    fabricated line (a pid could be reused between two different seconds), not an admission."""
+    ct = process_create_time()
+    assert ct is not None
+    now = time.time()
+    wrong_second = f"{os.getpid()}\n{int(now)}\nct:{math.floor(ct) - 1}.000\n"
+    marker.write_text(wrong_second, encoding="utf-8", newline="")
+
+    assert read_live_update(path=marker) is None, "a dead incarnation's whole-second claim is live"
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is True, "adopted a stale whole-second claim"
+    lock.release()
+
+
+def test_fractional_delegate_claim_still_demands_the_exact_incarnation(marker):
+    """Only the shell writer can only produce whole seconds: a fractional ct that misses our
+    creation time by more than the 5 ms rule is a different incarnation, ours or not."""
+    ct = process_create_time()
+    assert ct is not None and ct % 1 > 0, "precondition: our own creation time carries a sub-second residue"
+    marker.write_text(f"{os.getpid()}\n{int(time.time())}\nct:{ct + 0.25:.3f}\n", encoding="utf-8")
+
+    assert incarnation_live(os.getpid(), ct + 0.25) is False
+    assert read_live_update(path=marker) is None
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is True
     lock.release()
 
 
@@ -420,21 +471,23 @@ def test_withdrawing_a_torn_claim_never_deletes_a_replacement(marker, monkeypatc
     assert marker.read_bytes().startswith(f"{other_pid}\n".encode())
 
 
-def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):
+def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch, tmp_path):
     """Contract A1: a live pid whose creation time cannot be read (Windows denies it for
     elevated/other-user pids) is live only within the legacy ceiling: it may be a reused pid."""
     from hermes_cli import update_lock
 
+    # install_root=tmp_path keeps the checkout-lock fallback off the real checkout, so a
+    # concurrent `hermes update` holding that lock mid-suite cannot turn a dead claim "held".
     _claim_v2(marker, other_pid)
     fresh = marker.read_text(encoding="utf-8")
     monkeypatch.setattr(update_lock, "process_create_time", lambda pid=None: None)
-    assert read_live_update(path=marker) is not None
+    assert read_live_update(path=marker, install_root=tmp_path) is not None
     _claim_v2(marker, other_pid, started_at=time.time() - UPDATE_MARKER_MAX_AGE_SECONDS - 300)
     monkeypatch.undo()
     aged = marker.read_text(encoding="utf-8")
-    assert read_live_update(path=marker) is not None, "a matching creation time is live at any age"
+    assert read_live_update(path=marker, install_root=tmp_path) is not None, "a matching creation time is live at any age"
     monkeypatch.setattr(update_lock, "process_create_time", lambda pid=None: None)
-    assert read_live_update(path=marker) is None and not marker.exists(), (fresh, aged)
+    assert read_live_update(path=marker, install_root=tmp_path) is None and not marker.exists(), (fresh, aged)
 
 
 def test_stale_marker_is_removed_on_read(marker):

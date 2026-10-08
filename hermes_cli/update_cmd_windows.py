@@ -1548,7 +1548,7 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     # ``unregister`` is a no-op when this function was never registered.
     import atexit
     atexit.unregister(_resume_windows_gateways_after_update)
-    if not _m()._is_windows():
+    if not _m()._is_windows() and token.get("platform") != "posix":
         token["resume_needed"] = False
         return
     # Startup recovery runs ahead of an unrelated command whose stdout may be parsed (``--json``):
@@ -1582,6 +1582,9 @@ def _resume_paused_set(token: dict) -> None:
     """Bring every paused runtime back; each one is retired from *token* only on its own verified
     start, and one failure (an SCM service, a profile) never keeps the others stopped."""
     from hermes_cli.update_cmd import _m
+    if token.get("platform") == "posix":  # Linux/macOS pre-swap pause (update_cmd_posix_pause)
+        from hermes_cli.update_cmd_posix_pause import resume_paused_set
+        return resume_paused_set(token)
     # Regenerate launcher scripts before respawning so a legacy pythonw-era
     # autostart entry comes back on the current design at next login too.
     _m()._refresh_windows_gateway_launchers()

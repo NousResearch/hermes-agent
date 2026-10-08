@@ -131,7 +131,7 @@ def _previous_authority(claims, body):
     return room_authority({**claims, **previous})
 
 
-def _record_invitation(self, claims, body):
+def _record_invitation(self, claims, body, *, db_path=None):
     from gateway import hosted_rooms
     from gateway.platforms.api_server_run_authority import room_authority
     authority = room_authority(claims)
@@ -141,7 +141,7 @@ def _record_invitation(self, claims, body):
         return
     previous = _previous_authority(claims, body)
     previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
-    db_path = hosted_rooms.default_db_path()
+    db_path = db_path or hosted_rooms.default_db_path()
     # Every participant takes the grant writer before the RunStore lock. Holding
     # both through grant commit closes the captured-writer publication window.
     with hosted_rooms._transaction(db_path, immediate=True) as conn:

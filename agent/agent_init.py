@@ -644,6 +644,7 @@ _STREAM_STATE: Dict[str, Any] = {
     "_stream_context_scrubber": StreamingContextScrubber,
     "_stream_think_scrubber": StreamingThinkScrubber,
     "_current_streamed_assistant_text": "",  # so a later completed interim isn't re-sent
+    "_current_streamed_assistant_reasoning": "",  # persisted onto an interrupted row (#134946)
     "_delivered_interim_texts": set,  # interims this user turn (spans Codex continuations)
     # Single-writer guard for the delta sink: each attempt claims a monotonic writer token and
     # the sink drops chunks from threads holding a stale one, so a superseded stream can't

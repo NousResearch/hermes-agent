@@ -328,7 +328,8 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
-    if is_runaway_repetition(visible):
+    _runaway = is_runaway_repetition(visible)
+    if _runaway:
         # Runaway shape only (a correct batch-style partial stays replayable): the looped bytes must
         # reach neither the replayed correction nor the placeholder below (empty ``visible`` takes
         # the hidden shape).
@@ -346,8 +347,17 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     # is substituted back into content on replay (#81841).
     if not (messages and messages[-1].get("role") == "assistant"):
         # Hidden row with a neutral api_content (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
-        # as assistant text the model echoes it (#81841).
-        append_message(messages, {"role": "assistant", "content": visible} if visible else hidden_interrupt_placeholder_row())
+        # as assistant text the model echoes it (#81841). Reasoning streamed before the
+        # redirect survives in ``reasoning_content`` (#134946); dropped on runaway, whose
+        # looped bytes must not be re-seeded.
+        _reasoning = "" if _runaway else (getattr(agent, "_current_streamed_assistant_reasoning", "") or "").strip()
+        if visible:
+            _row = {"role": "assistant", "content": visible}
+            if _reasoning:
+                _row["reasoning_content"] = _reasoning
+            append_message(messages, _row)
+        else:
+            append_message(messages, hidden_interrupt_placeholder_row(reasoning=_reasoning))
     # Transcript shows the user's own words; the provider replays the scaffolded form.
     append_message(messages, {"role": "user", "content": text, "api_content": correction})
 
@@ -355,9 +365,10 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     # alone can't survive chunk boundaries because the block regex needs both tags in one string.
     # Stateful scrubber for reasoning/thinking tags in streamed deltas (#17924). Replaces the per-delta
     # _strip_think_blocks regex that destroyed downstream state (e.g. MiniMax-M2.7 streaming '<think>' as
-    # delta1 and 'Let me check' as delta2 — the regex erased delta1, so downstream state machines never
+    # delta1 and 'Let me check' as delta2 — the regex erased delta1 and downstream state machines never
     # learned a block was open and leaked delta2 as content).
     agent._current_streamed_assistant_text = ""
+    agent._current_streamed_assistant_reasoning = ""
     agent._stream_needs_break = True
 
 

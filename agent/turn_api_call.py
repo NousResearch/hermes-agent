@@ -194,6 +194,9 @@ def handle_api_interrupt(
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
+    # Reasoning streamed before the interrupt persists on the row (#134946); like the text
+    # accumulator it covers this attempt only and is reset per request.
+    _reasoning = (getattr(agent, "_current_streamed_assistant_reasoning", "") or "").strip()
     if _partial and is_runaway_repetition(_partial):
         # The interrupted row is replayed next turn; looped bytes there re-seed the loop
         # (#112764). Same hidden shape as the redirect placeholder: nothing visible in the
@@ -201,10 +204,16 @@ def handle_api_interrupt(
         append_message(messages, hidden_interrupt_placeholder_row())
         final_response = REPETITION_LOOP_INTERRUPTED
     elif _partial:
-        append_message(messages, {
-            "role": "assistant", "content": _partial, "display_metadata": {"interrupted": True},
-        })
+        _row = {"role": "assistant", "content": _partial, "display_metadata": {"interrupted": True}}
+        if _reasoning:
+            _row["reasoning_content"] = _reasoning
+        append_message(messages, _row)
         final_response = _partial
+    elif _reasoning:
+        # Nothing visible streamed, but the model was mid-thought: keep the reasoning
+        # recoverable after reload/session switch on the hidden row instead of dropping it.
+        append_message(messages, hidden_interrupt_placeholder_row(reasoning=_reasoning))
+        final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
     else:
         final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
     agent._persist_session(messages, conversation_history)

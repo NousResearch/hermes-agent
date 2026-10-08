@@ -21,7 +21,6 @@ import {
   formatStars,
   pinUrl,
   pluginPagePath,
-  pluginTitle,
   repoUrl,
   tierOf,
 } from "../../components/PluginCatalog/catalog";
@@ -145,9 +144,9 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle} title={pluginTitle(plugin)}>
+            <h3 className={styles.cardTitle} title={plugin.name}>
               <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
-                {highlightMatch(pluginTitle(plugin), query)}
+                {highlightMatch(plugin.name, query)}
               </Link>
             </h3>
             {typeof plugin.stars === "number" && (
@@ -352,7 +351,6 @@ function PluginCard({
 function buildSearchHaystack(p: CatalogPlugin): string {
   return [
     p.name,
-    p.title,
     p.description,
     p.maintainer,
     p.tier,

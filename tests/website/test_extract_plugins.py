@@ -94,21 +94,6 @@ def test_valid_entry_is_extracted_with_install_command(mod, tmp_path):
     assert e["installCommand"] == "hermes plugins install example-plugin"
 
 
-@pytest.mark.parametrize("title", ["Readable Brand", None])
-def test_display_title_keeps_install_identity(mod, tmp_path, title):
-    catalog = tmp_path / "plugin-catalog"
-    catalog.mkdir()
-    _write_entry(catalog, "example-plugin", title=title)
-
-    entry = mod.load_catalog_entries(catalog)[0]
-
-    assert entry["title"] == (title or "")
-    assert entry["name"] == "example-plugin"
-    assert entry["installCommand"] == "hermes plugins install example-plugin"
-    assert entry["readmeUrl"].endswith("/README.md")
-    assert "/example-plugin/" in entry["readmeUrl"]
-
-
 def test_entries_missing_required_fields_are_skipped(mod, tmp_path, capsys):
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()

@@ -8,9 +8,10 @@ image: https://raw.githubusercontent.com/volcengine/OpenViking/ef255cf2767b91572
 description: >-
   Long-term memory for Hermes. Capture conversations, recall useful facts across sessions
   and search your knowledge. Choose Quick Local, OpenViking Service (managed cloud) or your own server.
-  Disclosure - Sends conversation turns, tool results and memory-file edits to your
-  OpenViking server. Quick Local downloads a server and local embedding model, saves
-  your Hermes model credentials for extraction and runs after Hermes exits. Extraction
+  Disclosure — Sends conversation turns, tool results and memory-file edits to your
+  OpenViking server. Quick Local installs the newest compatible OpenViking 0.4.x
+  release from PyPI and downloads a local embedding model. It saves supported Hermes
+  model credentials for extraction and runs after Hermes exits. Extraction
   can use a remote model. Custom connections can start a local server with a filtered
   profile environment.
 maintainer: volcengine

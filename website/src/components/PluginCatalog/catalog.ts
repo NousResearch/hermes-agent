@@ -11,8 +11,6 @@ export interface PluginCapabilities {
 
 export interface CatalogPlugin {
   name: string;
-  /** Human display label; URLs and install commands keep the catalog name. */
-  title?: string;
   description: string;
   repo: string;
   sha: string;
@@ -62,10 +60,6 @@ export const SUBMIT_PLUGIN_URL = "/developer-guide/plugins/catalog-submission";
  *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
 export function desktopInstallLink(name: string): string {
   return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
-}
-
-export function pluginTitle(plugin: Pick<CatalogPlugin, "name" | "title">): string {
-  return plugin.title || plugin.name;
 }
 
 /** Site route of an entry's page (Docusaurus prefixes baseUrl/locale via <Link>). */

@@ -11,7 +11,6 @@ import {
   formatDate,
   formatStars,
   pinUrl,
-  pluginTitle,
   repoUrl,
   splitDisclosure,
   tierOf,
@@ -67,7 +66,6 @@ function platformLabel(p: string): string {
 
 export default function PluginPage({ data }: { data: PluginPageData }) {
   const { plugin, readmeHtml, author, moreByAuthor } = data;
-  const title = pluginTitle(plugin);
   const tier = tierOf(plugin);
   const category = categoryOf(plugin);
   const caps = plugin.capabilities || {};
@@ -81,10 +79,10 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
     : null;
   const added = formatDate(plugin.addedAt);
   const updated = formatDate(plugin.updatedAt);
-  const metaDescription = (prose || plugin.description || `${title} — a Hermes Agent plugin`).slice(0, 160);
+  const metaDescription = (prose || plugin.description || `${plugin.name} — a Hermes Agent plugin`).slice(0, 160);
 
   return (
-    <Layout title={`${title} · Plugin Catalog`} description={metaDescription}>
+    <Layout title={`${plugin.name} · Plugin Catalog`} description={metaDescription}>
       <Head>
         <meta property="og:type" content="website" />
         {plugin.image && <meta property="og:image" content={plugin.image} />}
@@ -95,7 +93,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
           <span aria-hidden="true">/</span>
           <span>{category.label}</span>
           <span aria-hidden="true">/</span>
-          <span className={styles.crumbCurrent}>{title}</span>
+          <span className={styles.crumbCurrent}>{plugin.name}</span>
         </nav>
 
         <header className={styles.hero}>
@@ -113,7 +111,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               <span className={styles.heroIcon} aria-hidden="true" title={category.label}>
                 {category.icon}
               </span>
-              <h1 className={styles.title}>{title}</h1>
+              <h1 className={styles.title}>{plugin.name}</h1>
               <span
                 className={styles.tierPill}
                 style={{ color: tier.color, background: tier.bg, borderColor: tier.border }}
@@ -199,7 +197,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
                       <a key={src} href={src} target="_blank" rel="noopener noreferrer" className={styles.shot}>
                         <img
                           src={src}
-                          alt={`${title} screenshot ${i + 1}`}
+                          alt={`${plugin.name} screenshot ${i + 1}`}
                           loading="lazy"
                           decoding="async"
                           referrerPolicy="no-referrer"

@@ -246,7 +246,6 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
         subdir = str(raw.get("subdir") or "").strip()
         entries.append({
             "name": name,
-            "title": str(raw.get("title") or "").strip(),
             "description": str(raw.get("description") or "").strip(),
             "repo": repo,
             "sha": sha,

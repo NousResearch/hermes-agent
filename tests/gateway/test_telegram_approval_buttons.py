@@ -1,6 +1,7 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
 import os
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -356,3 +357,169 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
 
+
+class TestTelegramApprovalResolutionKeepsPrompt:
+    """Resolving an approval appends the decision to the original prompt text
+    instead of replacing it, so the chat keeps audit context (#128982)."""
+
+    def _query(self, data, user="Norbert"):
+        query = AsyncMock()
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = user
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        return query, update, MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_resolved_edit_keeps_command_text(self):
+        adapter = _make_adapter()
+        prompt_html = "⚠️ <b>Header</b>\n\n<pre>rm -rf /important</pre>\n\ndeadline line"
+        adapter._approval_state[7] = {
+            "session_key": "agent:main:telegram:group:12345:99", "text": prompt_html}
+        query, update, context = self._query("ea:once:7")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "HTML" in repr(edit_kwargs["parse_mode"])
+        assert edit_kwargs["reply_markup"] is None
+        assert "rm -rf /important" in edit_kwargs["text"]
+        assert "Approved once" in edit_kwargs["text"]
+        assert "Norbert" in edit_kwargs["text"]
+        assert utf16_len(edit_kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_expired_edit_keeps_command_text(self):
+        adapter = _make_adapter()
+        prompt_html = "⚠️ <b>Header</b>\n\n<pre>rm -rf /important</pre>"
+        adapter._approval_state[8] = {
+            "session_key": "agent:main:telegram:group:12345:99", "text": prompt_html}
+        query, update, context = self._query("ea:once:8")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "rm -rf /important" in edit_kwargs["text"]
+        assert "expired" in edit_kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_legacy_plain_state_falls_back_to_short_edit(self):
+        """Pre-fix in-memory shape (bare session key) keeps the old short edit."""
+        adapter = _make_adapter()
+        adapter._approval_state[9] = "agent:main:telegram:group:12345:99"
+        query, update, context = self._query("ea:once:9")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
+        assert "rm -rf" not in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_stores_prompt_text(self):
+        """The send path keeps the exact HTML shown to the user."""
+        from types import SimpleNamespace
+
+        adapter = _make_adapter()
+        adapter._send_control_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=77))
+        prompt = SimpleNamespace(
+            text="⚠️ <b>H</b>\n\n<pre>ls</pre>",
+            session_key="agent:main:telegram:dm:1:2",
+            actions=[("Allow Once", "once", None), ("Deny", "deny", None)],
+            chat_id="12345", metadata={})
+
+        result = await adapter._send_exec_approval_prompt(prompt)
+
+        assert result.success is True
+        approval_id = next(iter(adapter._approval_state))
+        stored = adapter._approval_state[approval_id]
+        assert stored["session_key"] == "agent:main:telegram:dm:1:2"
+        assert stored["text"] == "⚠️ <b>H</b>\n\n<pre>ls</pre>"
+
+
+class TestApprovalResolutionHtml:
+    """Unit contract for the prompt + decision composition."""
+
+    def test_empty_prompt_returns_none(self):
+        assert _make_adapter()._approval_resolution_html("", "x") is None
+
+    def test_short_prompt_appends_escaped_decision(self):
+        out = _make_adapter()._approval_resolution_html(
+            "<pre>ls</pre>", "Approved once by Alice_Bob")
+        assert out.startswith("<pre>ls</pre>")
+        assert out.endswith("— Approved once by Alice_Bob")
+
+    def test_over_budget_cut_keeps_cap_and_valid_html(self):
+        adapter = _make_adapter()
+        body = "<pre>" + "x" * 4050 + "&amp;" + "y" * 60 + "</pre>\n\ntail"
+        out = adapter._approval_resolution_html(body, "Approved once by Norbert")
+        assert utf16_len(out) <= adapter.MAX_MESSAGE_LENGTH
+        assert out.endswith("— Approved once by Norbert")
+        assert "…" in out
+        assert out.count("<pre>") == out.count("</pre>")
+        assert "&am…" not in out and "&a…" not in out
+
+    def test_cut_sweep_never_splits_tag_or_entity(self):
+        """Pin the #129161 cut-boundary defect: over prompt lengths x
+        first_name lengths, no cut may land inside a tag (``</b…``) or an
+        entity, and the ``b``/``pre`` tags stay balanced and nested."""
+        adapter = _make_adapter()
+        prompts = set()
+        for reps in range(150, 260):
+            prompts.add(adapter._format_exec_approval(
+                "python -c " + "print('x'); " * reps, "Looks destructive", True))
+        cut, checked, failures = 0, 0, []
+        for prompt in sorted(prompts):
+            for fn_len in range(1, 65):
+                out = adapter._approval_resolution_html(
+                    prompt, "Approved once by " + "x" * fn_len)
+                assert out is not None
+                checked += 1
+                assert utf16_len(out) <= adapter.MAX_MESSAGE_LENGTH
+                if "…" not in out:
+                    continue
+                cut += 1
+                problems = []
+                tag_frag = re.search(r"<[^>…]*…", out)
+                if tag_frag:
+                    problems.append(f"cut-in-tag:{tag_frag.group(0)[-12:]}")
+                ent_frag = re.search(r"&[^;\s]*…", out)
+                if ent_frag:
+                    problems.append(f"cut-in-entity:{ent_frag.group(0)}")
+                stack = []
+                for m in re.finditer(r"<", out):
+                    tok = re.match(r"</?(?:b|pre)>", out[m.start():])
+                    if tok is None:
+                        problems.append(f"partial-tag:{out[m.start():m.start() + 12]}")
+                        break
+                    if tok.group(0).startswith("</"):
+                        if not stack or f"<{tok.group(0)[2:-1]}>" != stack[-1]:
+                            problems.append(f"mismatch:{tok.group(0)}")
+                            break
+                        stack.pop()
+                    else:
+                        stack.append(tok.group(0))
+                if stack:
+                    problems.append(f"unclosed:{stack}")
+                for m in re.finditer(r"&", out):
+                    if not re.compile(r"&(#\d+|#x[0-9a-fA-F]+|[A-Za-z]+);").match(out, m.start()):
+                        problems.append(f"bad-entity:{out[m.start():m.start() + 12]}")
+                        break
+                if problems and len(failures) < 5:
+                    idx = out.find("…")
+                    failures.append((fn_len, problems, out[max(0, idx - 40):idx + 20]))
+        assert cut > 0, "sweep produced no over-budget cuts"
+        assert not failures, f"{len(failures)} malformed payloads of {cut} cuts ({checked} checked)"

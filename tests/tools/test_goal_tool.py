@@ -94,3 +94,24 @@ def test_agent_tool_setting_is_strict_bool(monkeypatch):
     for raw, want in (({"goals": {"agent_tool": True}}, True), ({"goals": {"agent_tool": "false"}}, False), ({}, False)):
         monkeypatch.setattr("hermes_cli.config.load_config", lambda raw=raw: raw)
         assert g.agent_goal_tool_enabled() is want
+
+
+def test_agent_acceptance_criteria_become_the_contract(monkeypatch):
+    """Muse parity: the agent states acceptance criteria on create; they are the audited contract,
+    and the judge's drafted contract never overrides them."""
+    monkeypatch.setattr(goals_mod, "draft_contract",
+                        lambda objective, **kw: goals_mod.GoalContract(outcome="DRAFTED - must not win"))
+    r = _call(action="create", objective="Ship the release notes page for v1.3",
+              acceptance_criteria="docs.example.com/v1.3 returns 200 and lists every merged PR",
+              verification="curl -s -o /dev/null -w '%{http_code}' https://docs.example.com/v1.3")
+    assert r["created"]
+    assert r["contract"]["outcome"].startswith("docs.example.com/v1.3 returns 200")
+    assert r["contract"]["verification"].startswith("curl")
+    assert "DRAFTED" not in json.dumps(r)
+
+
+def test_create_without_criteria_falls_back_to_drafted_contract(monkeypatch):
+    monkeypatch.setattr(goals_mod, "draft_contract",
+                        lambda objective, **kw: goals_mod.GoalContract(outcome="drafted outcome"))
+    r = _call(action="create", objective="Ship the release notes page for v1.3")
+    assert r["contract"]["outcome"] == "drafted outcome"

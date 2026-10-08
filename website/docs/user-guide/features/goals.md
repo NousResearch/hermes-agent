@@ -243,7 +243,7 @@ session goes quiet — nothing drives it to the finish line. `agent_tool: true` 
 Meta's Muse Code does: the agent gets a `goal` tool and declares the goal itself.
 
 - `goal(action="get")` — is there a goal on this session, and is it mine or the user's?
-- `goal(action="create", objective=...)` — declare the end state when committing to multi-step work.
+- `goal(action="create", objective=..., acceptance_criteria=..., verification=...)` — declare the end state when committing to multi-step work. The agent states the acceptance criteria itself; they become the completion contract the audit checks. When it gives none, the judge drafts one (same as `/goal draft`).
   Refused while any goal is active or the user set one with `/goal`; the user always wins.
 - `goal(action="complete", evidence=...)` — claim done. The handler runs the same completion audit
   the post-turn judge uses, against the evidence cited, and refuses anything but DONE.

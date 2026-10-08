@@ -239,7 +239,8 @@ USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
 # per conversation; the live goal text comes back from goal(action="get"), never from the system prompt.
 GOAL_TOOL_GUIDANCE = (
     "You own this session's goal. At the start of a turn that commits you to a multi-step outcome, call "
-    "goal(action=\"get\"); if none is set, declare the outcome with goal(action=\"create\") before working. "
+    "goal(action=\"get\"); if none is set, declare the outcome with goal(action=\"create\", objective=..., "
+    "acceptance_criteria=...) before working — you state the acceptance criteria, the audit checks them. "
     "Keep working toward it until goal(action=\"complete\") passes with evidence; a refused completion means "
     "keep going, not re-phrase. Plain answers and cancelled work get no goal."
 )

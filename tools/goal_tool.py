@@ -41,7 +41,8 @@ GOAL_SCHEMA = {
         "Your session goal: one durable objective this conversation is working toward, judged "
         "after each of your replies and driven forward on the heartbeat until it is done. "
         "Call `get` first. Call `create` when you commit to a multi-step outcome the user wants "
-        "and no goal is set — state the outcome, not the next step. Call `complete` only when "
+        "and no goal is set — state the outcome, not the next step, plus the acceptance criteria "
+        "the audit will check. Call `complete` only when "
         "you can cite evidence the outcome exists; the completion audit refuses otherwise. "
         "Never create a goal for a plain question, a one-shot answer, or work the user cancelled; "
         "a user-set /goal always wins and cannot be replaced here."
@@ -54,9 +55,20 @@ GOAL_SCHEMA = {
                 "type": "string",
                 "description": "For create: the outcome in one sentence, verifiable, 12–600 chars.",
             },
+            "acceptance_criteria": {
+                "type": "string",
+                "description": (
+                    "For create: the observable end state the completion audit checks — what must be true, "
+                    "where it can be seen. Write it yourself from the user's ask; do not leave it to inference."
+                ),
+            },
+            "verification": {
+                "type": "string",
+                "description": "For create: how the audit confirms the criteria (commands, URLs, checks).",
+            },
             "evidence": {
                 "type": "string",
-                "description": "For complete: what proves the outcome exists (commands run, URLs, ids).",
+                "description": "For complete: what proves the acceptance criteria are met (commands run, URLs, ids).",
             },
             "max_turns": {
                 "type": "integer",
@@ -95,7 +107,23 @@ def _state_view(mgr) -> Dict[str, Any]:
     return view
 
 
+def _build_contract(objective: str, acceptance_criteria: str, verification: str):
+    """The agent's own acceptance criteria are the contract (Muse parity). The judge drafts one
+    only when the agent gave none; it never overrides what the agent stated."""
+    from hermes_cli.goals import GoalContract, draft_contract
+    acceptance_criteria = (acceptance_criteria or "").strip()
+    verification = (verification or "").strip()
+    if acceptance_criteria:
+        return GoalContract(outcome=acceptance_criteria, verification=verification)
+    try:
+        return draft_contract(objective)
+    except Exception as exc:  # contract is a quality aid, never a blocker
+        logger.info("goal tool: draft_contract failed (%s)", exc)
+        return None
+
+
 def goal_tool(action: str, *, objective: str = "", evidence: str = "", max_turns: Optional[int] = None,
+              acceptance_criteria: str = "", verification: str = "",
               session_id: Optional[str] = None) -> str:
     mgr = _manager(session_id)
     if mgr is None:
@@ -111,12 +139,7 @@ def goal_tool(action: str, *, objective: str = "", evidence: str = "", max_turns
         if not mgr.accepts_agent_goal():
             return tool_error("a goal is already set for this session; finish it with complete, "
                               "or the user clears it with /goal clear", **_state_view(mgr))
-        from hermes_cli.goals import draft_contract
-        try:
-            contract = draft_contract(objective)
-        except Exception as exc:  # contract is a quality aid, never a blocker
-            logger.info("goal tool: draft_contract failed (%s)", exc)
-            contract = None
+        contract = _build_contract(objective, acceptance_criteria, verification)
         state = mgr.set_agent_goal(objective, contract=contract, max_turns=max_turns)
         if state is None:
             return tool_error("goal not set", **_state_view(mgr))
@@ -148,6 +171,7 @@ registry.register(
     name="goal", toolset="goal", schema=GOAL_SCHEMA, check_fn=check_goal_tool_requirements,
     handler=lambda args, **kw: goal_tool(
         str(args.get("action") or ""), objective=args.get("objective") or "", evidence=args.get("evidence") or "",
+        acceptance_criteria=args.get("acceptance_criteria") or "", verification=args.get("verification") or "",
         max_turns=args.get("max_turns"), session_id=kw.get("session_id")),
     emoji="⊙",
 )

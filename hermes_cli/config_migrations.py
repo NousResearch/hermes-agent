@@ -702,6 +702,78 @@ def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+_RETIRED_TOOLSET_NAMES = frozenset({
+    # Removed with the agent-callable send_message toolset cleanup; older
+    # configs can still persist it under platform_toolsets.*.
+    "messaging",
+})
+
+
+def _prune_retired_toolset_names(config: Dict[str, Any]) -> List[str]:
+    """Remove retired built-in toolset names from persisted selections."""
+    from hermes_cli.toolset_validation import saved_toolset_resolver
+
+    is_known = saved_toolset_resolver(config)
+    removed: List[str] = []
+
+    def _is_retired(name: str) -> bool:
+        return name in _RETIRED_TOOLSET_NAMES and not is_known(name)
+
+    platform_toolsets = config.get("platform_toolsets")
+    if isinstance(platform_toolsets, dict):
+        for platform_name, raw_toolsets in list(platform_toolsets.items()):
+            if not isinstance(raw_toolsets, list):
+                continue
+            kept = []
+            changed = False
+            for raw_name in raw_toolsets:
+                name = str(raw_name)
+                if _is_retired(name):
+                    removed.append(f"platform_toolsets.{platform_name}.{name}")
+                    changed = True
+                    continue
+                kept.append(raw_name)
+            if changed:
+                platform_toolsets[platform_name] = kept
+        config["platform_toolsets"] = platform_toolsets
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        enabled_toolsets = agent_cfg.get("enabled_toolsets")
+        if isinstance(enabled_toolsets, list):
+            kept = []
+            changed = False
+            for raw_name in enabled_toolsets:
+                name = str(raw_name)
+                if _is_retired(name):
+                    removed.append(f"agent.enabled_toolsets.{name}")
+                    changed = True
+                    continue
+                kept.append(raw_name)
+            if changed:
+                agent_cfg["enabled_toolsets"] = kept
+                config["agent"] = agent_cfg
+
+    return removed
+
+
+def _migrate_to_51(results: Dict[str, Any], quiet: bool) -> None:
+    # 50 → 51: prune retired persisted toolset names. The old messaging toolset was removed with
+    # the agent-callable send_message cleanup. Configs that saved it under platform_toolsets.* or
+    # agent.enabled_toolsets warn about the unknown toolset on every start. Remove only retired
+    # built-in names; preserve MCP server names and custom/plugin entries that may resolve after
+    # plugin discovery.
+    config = read_raw_config()
+    removed_toolsets = _prune_retired_toolset_names(config)
+    if not removed_toolsets:
+        return
+    _commit(
+        config, results, quiet,
+        f"pruned retired toolsets ({len(removed_toolsets)})",
+        "  ✓ Removed retired toolset entries from config.yaml: "
+        f"{', '.join(removed_toolsets)}")
+
+
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -835,6 +907,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: retired built-in toolset names pruned from saved toolset lists (see _migrate_to_51).
+    (51, _migrate_to_51),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -846,7 +920,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51})
 
 
 def run_migrations(

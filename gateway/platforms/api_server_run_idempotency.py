@@ -173,6 +173,8 @@ class RunIdempotencyStore:
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now))
             if room_authority is not None:
+                from gateway.platforms.api_server_run_authority import canonical
+                room_authority = canonical(self._conn, room_authority)
                 self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
                                    (*room_authority[:2], run_id))
             self._conn.commit()
@@ -194,21 +196,35 @@ class RunIdempotencyStore:
             return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
-    def accepts_room_authority(self, authority):
-        from gateway.platforms.api_server_run_authority import superseded
+    def accepts_room_authority(self, authority, previous=None):
+        from gateway.platforms.api_server_run_authority import successor, superseded
         with self._lock:
-            return not superseded(self._conn, authority)
+            return not superseded(self._conn, successor(self._conn, authority, previous))
+
+    def permits_room_retirement(self, authority):
+        from gateway.platforms.api_server_run_authority import retirement_allowed
+        with self._lock:
+            return retirement_allowed(self._conn, authority)
 
     def room_authority_retired(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical, retirement_allowed
         with self._lock:
+            if not retirement_allowed(self._conn, authority):
+                return False
+            authority = canonical(self._conn, authority)
             row = self._conn.execute(
                 "SELECT retired_through FROM run_room_authorities WHERE authority_key=?", (authority[0],)).fetchone()
         return row is not None and authority[1] <= row[0]
 
-    def observe_room_authority(self, scope, authority):
+    def room_origin_home(self, claims):
+        from gateway.platforms.api_server_run_authority import origin_home, room_authority
+        with self._lock:
+            return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
+
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority)
+            current = observe(self._conn, scope, authority, previous, previous_home)
             self._conn.commit()
         return current
 

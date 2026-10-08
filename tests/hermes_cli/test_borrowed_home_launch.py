@@ -190,6 +190,33 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     assert len(syncs) == 1 and completion_tail == []
 
 
+def test_a_foreign_owned_checkout_degrades_without_retrying_its_refused_sync(
+    tmp_path, monkeypatch, capsys
+):
+    """A sudo launch runs the user's checkout from root's default data root, which owns no
+    state for it; the borrowed sync is refused cross-user every time, so it degrades once
+    with a remedy that works instead of announcing a failed source update (#135181)."""
+    import os
+
+    import pm
+
+    root = _checkout(tmp_path, monkeypatch)
+    _state(tmp_path / ".hermes", root)  # the invoking user's install owns the checkout
+    _home(monkeypatch, tmp_path / "root-home")  # sudo's env_reset left root's default home
+    assert owning_home_root(root) == tmp_path / ".hermes"
+    # Root sees the user's uid on the checkout tree, never its own.
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(venv_sync, "_sync_source_dependencies",
+                        lambda *a, **kw: pytest.fail("synced a foreign-owned checkout"))
+
+    assert venv_sync.prepare_launch(root, ["gateway", "stop"]) is None
+    err = capsys.readouterr().err
+    assert "owned by uid" in err
+    assert "run `hermes update` as the owning user" in err
+    assert "preparing dependencies" not in err
+
+
 def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completion_tail):
     """Unchanged for the owner: a stale environment syncs, arms and runs the tail."""
     import pm

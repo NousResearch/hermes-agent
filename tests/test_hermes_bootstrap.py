@@ -654,3 +654,45 @@ class TestNeverFreeEnviron:
             grown = tracemalloc.get_traced_memory()[0] - before
             assert grown < 64 * 1024, f"20k set/del of 4 names grew the heap by {grown} bytes"
         """)], check=True, cwd=str(Path(__file__).resolve().parents[1]), timeout=120)
+
+
+
+class TestForeignCheckoutBytecode:
+    """Root launching another user's checkout must not write root-owned ``*.pyc`` into it.
+
+    The guard runs in a child interpreter: importing hermes_bootstrap in-process replays
+    its launch-time recovery I/O, which the real-home test guard refuses in this
+    environment. The module body is stdlib-only, so ``-I -S`` plus an explicit sys.path
+    entry imports it hermetically; argv carries the uids under test.
+    """
+
+    _PROBE = textwrap.dedent("""
+        import sys
+        sys.path.insert(0, sys.argv[1])
+        import hermes_bootstrap as hb
+        import os, types
+        os.geteuid = lambda: int(sys.argv[2])
+        os.lstat = lambda path: types.SimpleNamespace(st_uid=int(sys.argv[3]))
+        hb._suppress_foreign_checkout_bytecode()
+        print(sys.dont_write_bytecode)
+    """)
+
+    def _guard_says(self, tmp_path, euid, checkout_uid):
+        repo_root = str(Path(__file__).resolve().parents[1])
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", self._PROBE,
+             repo_root, str(euid), str(checkout_uid)],
+            capture_output=True, text=True, cwd=tmp_path, timeout=60)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_root_on_a_users_checkout_stops_writing_bytecode(self, tmp_path):
+        assert self._guard_says(tmp_path, euid=0, checkout_uid=1001) == "True"
+
+    def test_root_on_its_own_checkout_keeps_the_cache(self, tmp_path):
+        assert self._guard_says(tmp_path, euid=0, checkout_uid=0) == "False"
+
+    def test_a_non_root_user_is_untouched(self, tmp_path):
+        # A non-root borrower cannot write someone else's tree anyway; Python already
+        # ignores the failed pyc write, so the cache setting stays the user's choice.
+        assert self._guard_says(tmp_path, euid=1002, checkout_uid=1001) == "False"

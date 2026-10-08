@@ -41,7 +41,7 @@ def _validate_workdir(workdir: str) -> str | None:
     for ch in workdir or "":
         if not _is_safe_workdir_char(ch):
             return (
-                f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                f"Blocked: workdir contains disallowed character {ch!r}. "
                 "Use a simple filesystem path without shell metacharacters."
             )
     return None

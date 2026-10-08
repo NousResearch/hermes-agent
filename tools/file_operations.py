@@ -220,9 +220,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Ordinary executables: bool cache (hits AND misses). rg is special — it has
         # an off-PATH resolver and may be installed mid-session — so only successful
         # rg resolutions are cached (see SearchMixin._resolve_command).
-        self._command_cache: Dict[str, bool] = {}
-        self._rg_resolution_cache: Dict[str, str] = {}
-        self._rg_modified_capability: Dict[str, Optional[str]] = {}
+        self._command_cache: dict[str, bool] = {}
+        self._rg_resolution_cache: dict[str, str] = {}
+        self._rg_modified_capability: dict[str, Optional[str]] = {}
 
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:

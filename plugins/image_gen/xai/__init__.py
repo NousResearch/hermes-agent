@@ -22,7 +22,7 @@ from tools.xai_http import (
 
 logger = logging.getLogger(__name__)
 
-_MODELS: Dict[str, Dict[str, Any]] = {
+_MODELS: dict[str, dict[str, Any]] = {
     "grok-imagine-image": {
         "display": "Grok Imagine Image", "speed": "~5-10s", "strengths": "Fast, high-quality",
     },
@@ -42,11 +42,11 @@ _EDIT_FALLBACK_MODEL = "grok-imagine-image-quality"
 
 # Live catalog cache ``(models, fetched_monotonic)``: ``/image-generation-models`` is the source of
 # truth (new models need no code change); ``_MODELS`` is the offline fallback + curated text.
-_LIVE_CACHE: Optional[Tuple[Dict[str, Dict[str, Any]], float]] = None
+_LIVE_CACHE: Optional[tuple[dict[str, dict[str, Any]], float]] = None
 # Under a multiplexed profile override the catalog is keyed by (base_url, key fingerprint): the
 # endpoint is credential-scoped, so one slot would hand profile A's models (or its cached auth
 # failure) to profile B. The unscoped slot above stays for the single-profile path and its tests.
-_LIVE_CACHE_BY_CREDENTIAL: Dict[Tuple[str, Optional[str]], Tuple[Dict[str, Dict[str, Any]], float]] = {}
+_LIVE_CACHE_BY_CREDENTIAL: dict[tuple[str, Optional[str]], tuple[dict[str, dict[str, Any]], float]] = {}
 _LIVE_CACHE_TTL = 300.0
 _LIVE_TIMEOUT = 10.0
 
@@ -63,11 +63,11 @@ _FILE_OUTPUT_EXTRA_KEYS = (
     "filename", "expires_at", "public_url_expires_at", "public_url_error", "storage_error")
 
 
-def _base_url(creds: Dict[str, Any]) -> str:
+def _base_url(creds: dict[str, Any]) -> str:
     return str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
 
 
-def _fetch_live_models(creds: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+def _fetch_live_models(creds: Optional[dict[str, Any]] = None) -> dict[str, dict[str, Any]]:
     """``{model_id: {"input_modalities", "aliases"}}`` from the live endpoint; raises on failure."""
     if creds is None:
         creds = resolve_xai_http_credentials()
@@ -80,7 +80,7 @@ def _fetch_live_models(creds: Optional[Dict[str, Any]] = None) -> Dict[str, Dict
         timeout=_LIVE_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for entry in payload.get("models") or payload.get("data") or []:
         model_id = entry.get("id") or entry.get("name") if isinstance(entry, dict) else None
         if isinstance(model_id, str) and model_id.strip():
@@ -90,7 +90,7 @@ def _fetch_live_models(creds: Optional[Dict[str, Any]] = None) -> Dict[str, Dict
     return out
 
 
-def _live_models() -> Dict[str, Dict[str, Any]]:
+def _live_models() -> dict[str, dict[str, Any]]:
     """Cached live catalog (``{}`` when unreachable)."""
     global _LIVE_CACHE
     from hermes_constants import get_hermes_home_override
@@ -105,7 +105,7 @@ def _live_models() -> Dict[str, Dict[str, Any]]:
 
     try:
         creds = resolve_xai_http_credentials()
-    except Exception as exc:  # noqa: BLE001 - unresolvable credentials → static fallback
+    except Exception as exc:
         logger.debug("xAI live image model catalog unavailable: %s", exc)
         creds = {}
     key = (_base_url(creds), fingerprint_secret_value(creds.get("api_key")))
@@ -117,21 +117,21 @@ def _live_models() -> Dict[str, Dict[str, Any]]:
     return live
 
 
-def _fetch_live_models_or_empty(creds: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _fetch_live_models_or_empty(creds: Optional[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     try:
         return _fetch_live_models() if creds is None else _fetch_live_models(creds)
-    except Exception as exc:  # noqa: BLE001 - offline/unauth → static fallback
+    except Exception as exc:
         logger.debug("xAI live image model catalog unavailable: %s", exc)
         return {}
 
 
-def _catalog() -> Dict[str, Dict[str, Any]]:
+def _catalog() -> dict[str, dict[str, Any]]:
     """Live ids + curated metadata (unknown live models get generic text; curated entries the live
     list omits are kept); the static table alone when the API is unreachable."""
     live = _live_models()
     if not live:
         return dict(_MODELS)
-    merged: Dict[str, Dict[str, Any]] = {}
+    merged: dict[str, dict[str, Any]] = {}
     for model_id in live:
         meta = _MODELS.get(model_id) or {
             "display": model_id, "speed": "", "strengths": "New xAI Imagine model (from live xAI catalog)",
@@ -147,7 +147,7 @@ def _configured_model() -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
-def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(caller_model: Optional[str] = None) -> tuple[str, dict[str, Any]]:
     """caller kwarg → ``XAI_IMAGE_MODEL`` → config → default, validated against the merged catalog."""
     catalog = _catalog()
     for candidate in (caller_model, os.environ.get("XAI_IMAGE_MODEL"), _configured_model()):
@@ -170,7 +170,7 @@ def _resolve_resolution() -> str:
     return res if isinstance(res, str) and res in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
 
-def _xai_image_field(source: str) -> Dict[str, str]:
+def _xai_image_field(source: str) -> dict[str, str]:
     """Edit ``image`` field: URL / data URI pass through; local paths are inlined as ``data:`` URIs."""
     source = source.strip()
     if source.lower().startswith(_REMOTE_PREFIXES):
@@ -189,8 +189,8 @@ def _xai_image_field(source: str) -> Dict[str, str]:
 
 
 def _check_source_images(
-    source_images: List[str], image_url: Optional[str], fail: Any
-) -> Optional[Dict[str, Any]]:
+    source_images: list[str], image_url: Optional[str], fail: Any
+) -> Optional[dict[str, Any]]:
     """Edit-request guard: at most 3 sources, each a remote URL/data URI or an existing local file."""
     if len(source_images) > _MAX_SOURCE_IMAGES:
         return fail(
@@ -217,14 +217,14 @@ class XAIImageGenProvider(StaticImageGenProvider):
     def is_available(self) -> bool:
         return bool(resolve_xai_http_credentials().get("api_key"))
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return catalog_rows(_catalog(), ("display", "speed", "strengths"))
 
     def default_model(self) -> Optional[str]:
         # First live/static catalog row (inherited ImageGenProvider behaviour).
         return next(iter(_catalog()), None)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         # Auth goes through the shared ``xai_grok`` post_setup hook (same OAuth-or-key choice everywhere).
         storage_notice = xai_storage_notice_text("image_gen")
         tag = "grok-imagine-image - text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY"
@@ -235,7 +235,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
             "post_setup": "xai_grok",
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         # /v1/images/edits accepts up to 3 total source images.
         return {
             "modalities": ["text", "image"], "max_reference_images": 2,
@@ -244,9 +244,9 @@ class XAIImageGenProvider(StaticImageGenProvider):
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
-        image_url: Optional[str] = None, reference_image_urls: Optional[List[str]] = None,
+        image_url: Optional[str] = None, reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Text-to-image, or editing via ``/v1/images/edits`` (JSON body — xAI does not support the
         SDK's multipart ``images.edit()``) when source images are supplied."""
         creds = resolve_xai_http_credentials()
@@ -283,7 +283,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
                 image_fields = [_xai_image_field(source) for source in source_images]
             except Exception as exc:
                 return edit_fail(f"Could not load source image for editing: {exc}", "io_error", model=model_id)
-            payload: Dict[str, Any] = {"model": model_id, "prompt": prompt}
+            payload: dict[str, Any] = {"model": model_id, "prompt": prompt}
             if len(image_fields) == 1:
                 payload["image"] = image_fields[0]
             else:
@@ -325,7 +325,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
             if err:
                 return err
 
-        extra: Dict[str, Any] = {"storage_enabled": bool(storage_cfg["enabled"])}
+        extra: dict[str, Any] = {"storage_enabled": bool(storage_cfg["enabled"])}
         if not is_edit:
             extra["resolution"] = xai_res
         if storage_notice:

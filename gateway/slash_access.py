@@ -16,7 +16,7 @@ from typing import Any, Callable, FrozenSet, Iterable, Optional
 
 # Read-only floor every allowed user keeps under gating, so a non-admin can still discover what
 # they can do. ``user_allowed_commands`` only adds to this set, never restricts it.
-_ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({"help", "whoami"})
+_ALWAYS_ALLOWED_FOR_USERS: frozenset[str] = frozenset({"help", "whoami"})
 
 _DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
 
@@ -32,8 +32,8 @@ class SlashAccessPolicy:
     """Resolved access policy for one (platform, scope) pair; scope is ``"dm"`` or ``"group"``."""
 
     enabled: bool  # gating active for this scope?
-    admin_user_ids: FrozenSet[str]
-    user_allowed_commands: FrozenSet[str]
+    admin_user_ids: frozenset[str]
+    user_allowed_commands: frozenset[str]
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         # Gating disabled -> everyone is admin so callers can use is_admin/can_run uniformly.
@@ -58,7 +58,7 @@ _FAIL_CLOSED_POLICY = SlashAccessPolicy(
 )
 
 
-def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> FrozenSet[str]:
+def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> frozenset[str]:
     """Normalize a YAML-loaded value (None, list/tuple/set, comma string, or scalar) into a
     frozenset of stripped, non-empty strings, applying ``normalize`` to each."""
     if raw is None:
@@ -72,12 +72,12 @@ def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> FrozenSet[s
     return frozenset(s for s in (normalize(str(it).strip()) for it in items) if s)
 
 
-def _coerce_id_list(raw: Any) -> FrozenSet[str]:
+def _coerce_id_list(raw: Any) -> frozenset[str]:
     """Normalize an admin/user id list into a frozenset of strings."""
     return _coerce_list(raw)
 
 
-def _coerce_command_list(raw: Any) -> FrozenSet[str]:
+def _coerce_command_list(raw: Any) -> frozenset[str]:
     """Command allowlist: strip leading slashes (``/help`` or ``help``) and lowercase to match
     how ``resolve_command()`` stores names."""
     return _coerce_list(raw, lambda s: s.lstrip("/").lower())

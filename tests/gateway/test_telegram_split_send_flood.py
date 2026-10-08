@@ -106,7 +106,7 @@ async def test_concurrent_split_sends_to_one_chat_do_not_interleave():
         return MagicMock(message_id=len(order))
 
     adapter = _adapter(AsyncMock(side_effect=fake_send_message))
-    long = lambda tag: "\n".join(" ".join([tag] * 30) for _ in range(90))  # noqa: E731
+    long = lambda tag: "\n".join(" ".join([tag] * 30) for _ in range(90))
 
     await asyncio.gather(adapter.send("1", long("REPORT")), adapter.send("1", long("ALERT")))
 

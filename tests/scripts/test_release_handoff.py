@@ -6,7 +6,7 @@ from urllib.parse import unquote
 import pytest
 
 from scripts.releases import handoff, r2
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 @pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260908T232538Z', 'rc.1-v1.2.3', None])

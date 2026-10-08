@@ -196,7 +196,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         # whose PID differs from the process running the command line. The
         # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
         # inferred from inline `-c` source (#107002).
-        [getattr(sys, "_base_executable"), sleeper_script_path(), "hermes", "gateway", "run"],
+        [sys._base_executable, sleeper_script_path(), "hermes", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

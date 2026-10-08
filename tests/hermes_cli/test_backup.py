@@ -47,7 +47,7 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
             _offset = _dt.timedelta(0)
 
             @classmethod
-            def now(cls, tz=None):  # noqa: D102
+            def now(cls, tz=None):
                 return _dt.datetime.now(tz) + cls._offset
 
         _backup.datetime = _ShimDatetime

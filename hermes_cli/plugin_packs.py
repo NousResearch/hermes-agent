@@ -59,11 +59,11 @@ class PluginPack:
     description: str = ""
     author: str = ""
     version: str = ""
-    plugins: List[PackPluginEntry] = field(default_factory=list)
+    plugins: list[PackPluginEntry] = field(default_factory=list)
     # plugin id → {entry-key: seed-value}; validated non-secret, non-reserved.
     config: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Skill-hub ids. Parsed + displayed, NOT installed (documented seam).
-    skills: List[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
 
 
 # ── Parse + validate ────────────────────────────────────────────────────────────────────────
@@ -234,14 +234,14 @@ class ResolvedPackPlugin:
 
     entry: PackPluginEntry
     identifier: Optional[str]        # None when index resolution failed
-    index_capabilities: List[str] = field(default_factory=list)
+    index_capabilities: list[str] = field(default_factory=list)
     resolve_error: Optional[str] = None
 
 
-def resolve_pack_plugins(pack: PluginPack) -> List[ResolvedPackPlugin]:
+def resolve_pack_plugins(pack: PluginPack) -> list[ResolvedPackPlugin]:
     """Resolve every entry; bare names go through the curated plugin catalog. Failures do not raise —
     they are carried per-entry so the review screen shows them and install reports partial failure."""
-    resolved: List[ResolvedPackPlugin] = []
+    resolved: list[ResolvedPackPlugin] = []
     catalog_entries = None
     for entry in pack.plugins:
         if entry.install_identifier is not None:
@@ -267,7 +267,7 @@ def resolve_pack_plugins(pack: PluginPack) -> List[ResolvedPackPlugin]:
     return resolved
 
 
-def render_pack_review(console, pack: PluginPack, resolved: List[ResolvedPackPlugin]) -> None:
+def render_pack_review(console, pack: PluginPack, resolved: list[ResolvedPackPlugin]) -> None:
     """Print the full pack review screen (mandatory before install)."""
     from rich.table import Table
     header = f"[bold]{pack.name}[/bold]" + (f" v{pack.version}" if pack.version else "")
@@ -340,11 +340,11 @@ def _seed_plugin_config(plugin_id: str, seed: dict[str, Any], console) -> None:
 
 def install_pack_plugins(
     pack: PluginPack,
-    resolved: List[ResolvedPackPlugin],
+    resolved: list[ResolvedPackPlugin],
     console,
     *,
     force: bool = False,
-) -> List[PackInstallResult]:
+) -> list[PackInstallResult]:
     """Fan a pack out to N ordinary pinned installs; never raises per-plugin.
 
     Each plugin goes through the exact-ref install path, then the SAME per-plugin capability
@@ -361,7 +361,7 @@ def install_pack_plugins(
     )
     from hermes_cli.plugins_admission import AdmissionRefused
     from hermes_cli.plugins_cmd_install import recorded_install
-    results: List[PackInstallResult] = []
+    results: list[PackInstallResult] = []
 
     def _fail(display: str, error: str) -> None:
         results.append(PackInstallResult(display=display, ok=False, error=error))
@@ -450,7 +450,7 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
     return _strip_forbidden_keys(entry)
 
 
-def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, List[str]]:
+def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, list[str]]:
     """Build pack YAML from the current install; returns ``(yaml_text, warnings)``. Plugins with
     unknown Git provenance (no install metadata) become warnings + YAML comments, never entries."""
     import hermes_yaml as yaml
@@ -461,9 +461,9 @@ def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack"
     if enabled_only:
         installed = [n for n in installed if n in enabled]
 
-    entries: List[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     config: dict[str, dict[str, Any]] = {}
-    warnings: List[str] = []
+    warnings: list[str] = []
     for plugin_id in installed:
         record = metadata.get(plugin_id) or {}
         source = record.get("source")

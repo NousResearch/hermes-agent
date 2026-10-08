@@ -369,7 +369,7 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
 def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
     """The update skips the desktop build only when the shipped app's baked commit is HEAD
     and its receipt is current; a moved HEAD or an unreadable stamp means build."""
-    import hermes_cli.main_desktop as main_desktop
+    from hermes_cli import main_desktop
 
     root = tmp_path / "checkout"
     root.mkdir()

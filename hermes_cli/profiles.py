@@ -130,7 +130,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
-    def _ignore(directory: str, names: List[str]) -> set:
+    def _ignore(directory: str, names: list[str]) -> set:
         try:
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
@@ -193,11 +193,11 @@ _STORE_COPY_RE = re.compile(
 )
 
 
-def _fold(parts: Tuple[str, ...]) -> Tuple[str, ...]:
+def _fold(parts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.casefold() for part in parts)
 
 
-def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
+def profile_path_is_private(parts: tuple[str, ...]) -> bool:
     """True for a PROFILE_CREDENTIAL_PATHS store, anything below one, or a root copy of one.
     Case-folded: on a case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
     folded = _fold(parts)
@@ -206,7 +206,7 @@ def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
     return any(folded[:len(store)] == store for store in _CREDENTIAL_PATH_PARTS)
 
 
-def profile_path_contains_private_store(parts: Tuple[str, ...]) -> bool:
+def profile_path_contains_private_store(parts: tuple[str, ...]) -> bool:
     """True for a strict ancestor of a store (``platforms`` holds ``platforms/pairing``)."""
     folded = _fold(parts)
     return any(len(store) > len(folded) and store[:len(folded)] == folded for store in _CREDENTIAL_PATH_PARTS)
@@ -414,7 +414,7 @@ def _canon_valid(name: str) -> str:
     return canon
 
 
-def _existing_profile_dir(name: str) -> Tuple[str, Path]:
+def _existing_profile_dir(name: str) -> tuple[str, Path]:
     """``(canon, profile_dir)`` for an existing profile; FileNotFoundError otherwise."""
     canon = _canon_valid(name)
     profile_dir = get_profile_dir(canon)
@@ -466,7 +466,7 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
         return False
 
 
-def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
+def _iter_named_profile_dirs(*, live_only: bool = True) -> list[Path]:
     """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
 
     A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
@@ -486,7 +486,7 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
     ]
 
 
-def list_profile_names() -> List[str]:
+def list_profile_names() -> list[str]:
     """Cheap name-only listing (``default`` + LIVE profile dirs). Unlike :func:`list_profiles` this
     reads NO per-profile config — safe for hot paths (cron target listings, create validation).
     Tombstoned shells are skipped like everywhere else: a stale process that re-mkdirs a deleted
@@ -687,7 +687,7 @@ class ProfileInfo:
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
-    previous_names: List[str] = field(default_factory=list)
+    previous_names: list[str] = field(default_factory=list)
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -708,7 +708,7 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
 # template, ~119KB) was re-parsed for every bot every five seconds to yield the same two strings.
 # Only DERIVED values are cached, never a document a caller could write back: the raw readers
 # (`read_user_config_raw`, `_load_yaml_dict`) keep their uncached contract. See #117378.
-_PROFILE_FILE_CACHE: Dict[tuple, tuple] = {}
+_PROFILE_FILE_CACHE: dict[tuple, tuple] = {}
 _PROFILE_FILE_CACHE_MAX = 512
 
 
@@ -953,12 +953,12 @@ def read_profile_meta(profile_dir: Path) -> dict:
     return meta
 
 
-def _clean_previous_names(raw) -> List[str]:
+def _clean_previous_names(raw) -> list[str]:
     """Normalize the ``previous_names`` list from ``profile.yaml``: strings only,
     stripped, de-duplicated preserving order. Never raises."""
     if not isinstance(raw, list):
         return []
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     seen = set()
     for item in raw:
         name = str(item or "").strip()
@@ -970,7 +970,7 @@ def _clean_previous_names(raw) -> List[str]:
 
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
-    display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
+    display_name: Optional[str] = None, previous_names: Optional[list[str]] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist."""
@@ -1045,7 +1045,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     )
 
 
-def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
+def list_profiles(*, lazy_skill_count: bool = False) -> list[ProfileInfo]:
     """Return info for all profiles, including the default.
 
     ``lazy_skill_count=True`` is for POLLED callers (``GET /api/profiles``, ``profiles.list``):
@@ -1069,7 +1069,7 @@ def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
 #: One signature/result per home: the webhook and
 #: api-server callers run :func:`profiles_to_serve` per inbound request, so the reader
 #: must not re-parse a profile's config.yaml every time.
-_STANDALONE_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool]]] = {}
+_STANDALONE_MEMO: dict[str, tuple[Optional[tuple], Optional[bool]]] = {}
 _STANDALONE_WARNED = False
 
 _STANDALONE_DEFAULT_WARNING = (
@@ -1148,7 +1148,7 @@ _parked_default_warned: set[Path] = set()
 
 
 def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
-                      include_parked: bool = False) -> List[Tuple[str, Path]]:
+                      include_parked: bool = False) -> list[tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
@@ -1168,7 +1168,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
         _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
-    serve: List[Tuple[str, Path]] = [("default", default)]
+    serve: list[tuple[str, Path]] = [("default", default)]
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
                  and (include_parked or not profile_is_parked(entry)))
@@ -1218,10 +1218,10 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 _CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
 
 
-def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
+def _materialize_symlinked_files(profile_dir: Path) -> list[str]:
     """Replace symlinked root files the clone will edit with private copies of their targets (a
     dangling link is dropped). Returns the relative names materialized."""
-    done: List[str] = []
+    done: list[str] = []
     for name in _CLONE_MATERIALIZE:
         path = profile_dir / name
         if not path.is_symlink():
@@ -1256,9 +1256,9 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
     traversing them. A ``skills/foo`` junction into a ``skills.external_dirs`` root copied as a
     physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
     A junction whose target is gone is skipped with a warning, never a crash."""
-    junctions: Dict[str, str] = {}
+    junctions: dict[str, str] = {}
 
-    def _ignore(directory: str, names: List[str]) -> set:
+    def _ignore(directory: str, names: list[str]) -> set:
         ignored = set(ignore(directory, names))
         for name in names:
             target = _junction_target(os.path.join(directory, name))
@@ -1308,7 +1308,7 @@ def _clone_plugins_ignore(plugins_root: Path):
     the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
     root = str(plugins_root)
 
-    def _ignore(directory: str, names: List[str]) -> set:
+    def _ignore(directory: str, names: list[str]) -> set:
         ignored = _non_exportable_entries(directory, names)
         if directory == root:
             # Directories only: ``.install-metadata.json`` shares the prefix and must travel.
@@ -1333,7 +1333,7 @@ def _clone_plugins(source_dir: Path, profile_dir: Path) -> None:
                                  _clone_plugins_ignore(source_plugins), dirs_exist_ok=True)
 
 
-def cloned_plugin_names(profile_dir: Path) -> List[str]:
+def cloned_plugin_names(profile_dir: Path) -> list[str]:
     """Plugins a clone now carries in ``plugins/``, for the CLI notice."""
     try:
         return sorted(p.name for p in (profile_dir / "plugins").iterdir()
@@ -1562,7 +1562,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         return None
 
 
-def backfill_profile_envs(quiet: bool = False) -> List[str]:
+def backfill_profile_envs(quiet: bool = False) -> list[str]:
     """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
     the placeholder header). Never overwrites an existing profile ``.env``.
 
@@ -1573,7 +1573,7 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     those profiles were already running with (they previously read the root ``.env`` via the process
     environment). Users can then diverge per profile from there.
     """
-    backfilled: List[str] = []
+    backfilled: list[str] = []
     default_env = _get_default_hermes_home() / ".env"
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
@@ -1681,7 +1681,7 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
     return pids
 
 
-def _wait_then_force_kill(pids: List[int], start_times: dict, *, wait: float = 10.0) -> bool:
+def _wait_then_force_kill(pids: list[int], start_times: dict, *, wait: float = 10.0) -> bool:
     """After a graceful ``terminate_pid``, wait up to *wait* seconds (0.5s polls) for *pids*
     to exit, then force-kill stragglers. True when every pid exited gracefully.
     ``start_times`` pins each force kill to the same process incarnation (PID reuse guard)."""
@@ -2282,7 +2282,7 @@ def _scrub_export_secrets(staged: Path) -> None:
         path.write_text(redacted, encoding="utf-8")
 
 
-def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
+def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive; credential files are excluded and staged text is
     force-redacted first. Returns the output file path."""
     import tempfile

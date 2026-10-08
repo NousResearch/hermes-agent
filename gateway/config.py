@@ -156,7 +156,7 @@ def coerce_systemd_watchdog_seconds(
     return parsed
 
 
-def _coerce_dict(value: Any) -> Dict[str, Any]:
+def _coerce_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
@@ -354,12 +354,12 @@ class HomeChannel:
         if self.platform == Platform.DISCORD and isinstance(self.chat_id, str):
             self.chat_id = discord_channel_id_from_link(self.chat_id.strip()) or self.chat_id
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
@@ -382,11 +382,11 @@ class ChannelOverride:
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
@@ -417,10 +417,10 @@ class PlatformConfig:
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
-    channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
+    channel_overrides: dict[str, ChannelOverride] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "enabled": self.enabled, "extra": self.extra, "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
@@ -442,7 +442,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -514,11 +514,11 @@ class StreamingConfig:
         """
         return self.globally_enabled and (platform_override is None or bool(platform_override))
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "StreamingConfig":
         if not isinstance(data, dict) or not data:
             return cls()
 
@@ -584,9 +584,9 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 @dataclass
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
-    platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
-    reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
-    quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
+    platforms: dict[Platform, PlatformConfig] = field(default_factory=dict)
+    reset_triggers: list[str] = field(default_factory=lambda: ["/new", "/reset"])
+    quick_commands: dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     # Legacy sessions.json mirror of the routing index (primary: state.db) for external tooling / downgrades.
     # The primary copy lives in state.db (gateway_routing table, #9006). Default True for backward
@@ -656,7 +656,7 @@ class GatewayConfig:
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
-    def get_connected_platforms(self) -> List[Platform]:
+    def get_connected_platforms(self) -> list[Platform]:
         """Enabled + configured platforms, sorted by value so the rendered "Connected
         Platforms" prompt block is byte-stable (a reorder busts the prompt cache)."""
         connected = [p for p, c in self.platforms.items() if c.enabled and self._is_platform_connected(p, c)]
@@ -704,7 +704,7 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         return self.platforms[platform].home_channel if self.platforms.get(platform) else None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},
             "reset_triggers": self.reset_triggers,
@@ -721,7 +721,7 @@ class GatewayConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "GatewayConfig":
         data = _coerce_dict(data)
         nested_gateway = _coerce_dict(data.get("gateway"))
 

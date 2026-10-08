@@ -443,7 +443,7 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
     error = _SpendingLimitError("Error code: 403")
     classified = classify_api_error(error, provider="xai-oauth", model="grok-4.5")
     error_context = agent._extract_api_error_context(error)
-    setattr(agent, "_credential_pool", _FakePool())
+    agent._credential_pool = _FakePool()
     agent._swap_credential = MagicMock()
 
     recovered, retried_429 = agent._recover_with_credential_pool(

@@ -121,7 +121,7 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-read-recently-played", "playlist-read-private", "playlist-read-collaborative",
     "playlist-modify-public", "playlist-modify-private", "user-library-read", "user-library-modify",
 ))
-SERVICE_PROVIDER_NAMES: Dict[str, str] = {"spotify": "Spotify"}
+SERVICE_PROVIDER_NAMES: dict[str, str] = {"spotify": "Spotify"}
 
 # LM Studio's default no-auth mode still needs *some* non-empty bearer for the API-key code paths to
 # treat the provider as configured. Sent only to LM Studio, never to a remote service.
@@ -168,7 +168,7 @@ _minimax_err = _provider_error_factory("minimax-oauth")
 _openrouter_err = _provider_error_factory("openrouter")
 
 
-def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
+def _decode_jwt_claims(token: Any) -> dict[str, Any]:
     if not isinstance(token, str) or token.count(".") != 2:
         return {}
     payload = token.split(".")[1]

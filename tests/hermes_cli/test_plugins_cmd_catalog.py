@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -134,6 +134,32 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
+def test_the_catalog_name_you_installed_with_works_for_every_later_verb(world, tmp_path):
+    """17 catalog entries install under a different manifest name (`hermes-memory-wiki` lands as
+    `plugins/memory-wiki`). Every later verb must accept the name the user typed at install, resolved
+    through the installer's own record; a URL install shipping a forged sidecar must not claim it."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: renamed-plugin\nversion: 1.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "manifest name differs from catalog name")
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert pc._find_plugin_entry("cat-plugin") is None
+
+    pc.cmd_install("cat-plugin", enable=False)
+    target = world["plugins_dir"] / "renamed-plugin"
+    assert target.is_dir() and pc._get_enabled_set() == set()
+
+    pc.cmd_enable("cat-plugin")
+    assert pc._get_enabled_set() == {"renamed-plugin"}
+    pc.cmd_show("cat-plugin")
+    pc.cmd_capabilities("cat-plugin")
+    pc.cmd_disable("cat-plugin")
+    assert pc._get_disabled_set() == {"renamed-plugin"}
+    assert pc.dashboard_set_agent_plugin_enabled("cat-plugin", enabled=True)["name"] == "renamed-plugin"
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"] is True
+    assert pc.dashboard_remove_user_plugin("cat-plugin")["ok"] is True
+    assert not target.exists()
+    assert "renamed-plugin" not in pc._get_enabled_set()
 
 
 def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):

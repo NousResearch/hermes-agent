@@ -264,7 +264,7 @@ def test_live_windows_scan_does_not_use_the_retired_main_alias(monkeypatch, no_e
 
     # Routing, not OS emulation: lifecycle fallback accepts rows on any host.
     monkeypatch.setattr(main, "_detect_venv_python_processes", no_external_work)
-    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    monkeypatch.setattr(process_identity, "ledger_entries", list)
     monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: None)
     monkeypatch.setattr(
         update_cmd_windows, "_detect_venv_python_processes",

@@ -13,7 +13,7 @@ import pytest
 import hermes_yaml as yaml
 
 from scripts.releases import darwin, r2
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401 — loopback fixture
+from tests.scripts.test_release_r2 import r2_server
 from scripts.releases.darwin import (
     _darwin_feed,
     mac_feed_references,

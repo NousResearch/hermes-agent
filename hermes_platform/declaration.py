@@ -236,7 +236,7 @@ def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str)
     return Declaration(name=name, app=app, requires=parse_requires(raw_requires, app, where=where))
 
 
-_REGISTRY: Dict[str, Declaration] = {}
+_REGISTRY: dict[str, Declaration] = {}
 _REGISTRY_LOCK = threading.Lock()
 on_change: Optional[Callable[[], None]] = None
 

@@ -252,7 +252,7 @@ def _play(console, payload, *, cols, rows, color, fps: int) -> int:
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 # ── list / delete / edit ─────────────────────────────────────────────────────

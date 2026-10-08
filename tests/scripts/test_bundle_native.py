@@ -48,7 +48,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     elif os.name == "nt":
         shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
-        shutil.copytree(Path(getattr(sys, "_base_executable")).resolve().parents[1],
+        shutil.copytree(Path(sys._base_executable).resolve().parents[1],
                         source_python.parents[1], dirs_exist_ok=True)
     repo = tmp_path / "repo"
     repo.mkdir()

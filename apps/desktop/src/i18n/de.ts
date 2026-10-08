@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deCustomEndpoints } from './de_custom_endpoints'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
@@ -1512,47 +1513,7 @@ export const deOverrides = {
       backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
       backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
     },
-    customEndpoints: {
-      active: 'Aktiv',
-      apiKeySet: 'API-Schlüssel gesetzt',
-      use: 'Verwenden',
-      editTitle: 'Endpunkt bearbeiten',
-      addTitle: 'Endpunkt hinzufügen',
-      fields: {
-        name: 'Name',
-        providerId: 'Anbieter-ID',
-        endpointUrl: 'Endpunkt-URL',
-        defaultModel: 'Standardmodell',
-        context: 'Kontext',
-        apiKey: 'API-Schlüssel',
-        apiKeyNewPlaceholder: 'Leer lassen, um den aktuellen Schlüssel zu behalten',
-        apiKeyPlaceholder: 'Optional',
-        useNewChats: 'Für neue Chats verwenden',
-        discoverModels: 'Modelle ermitteln'
-      },
-      test: 'Testen',
-      save: 'Speichern',
-      newEndpoint: 'Neuer Endpunkt',
-      apiMode: 'API-Modus',
-      autoDetect: 'Automatisch erkennen',
-      couldNotLoad: 'Benutzerdefinierte Endpunkte konnten nicht geladen werden',
-      endpointSaved: 'Benutzerdefinierter Endpunkt gespeichert.',
-      saveFailed: 'Speichern fehlgeschlagen',
-      endpointReachable: 'Der Endpunkt ist erreichbar.',
-      endpointReachableTransport: transport => `Der Endpunkt ist erreichbar (${transport}-Route bedient).`,
-      endpointReachableModels: (reachable, count) => `${reachable} ${count} Modell${count === 1 ? '' : 'e'} gefunden.`,
-      endpointValidationFailed: 'Die Validierung des Endpunkts ist fehlgeschlagen.',
-      validationFailed: 'Validierung fehlgeschlagen',
-      activationFailed: 'Aktivierung fehlgeschlagen',
-      deleteConfirm: name => `${name} löschen?`,
-      deleteFailed: 'Löschen fehlgeschlagen',
-      title: 'Eigene Endpunkte',
-      deleteEndpoint: 'Endpunkt löschen',
-      emptyDescription: 'Fügen Sie unten einen OpenAI-kompatiblen Endpunkt hinzu.',
-      emptyTitle: 'Keine eigenen Endpunkte',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Automatisch'
-    },
+    customEndpoints: deCustomEndpoints,
     computerUse: {
       accessibility: 'Bedienungshilfen',
       screenRecording: 'Bildschirmaufnahme',

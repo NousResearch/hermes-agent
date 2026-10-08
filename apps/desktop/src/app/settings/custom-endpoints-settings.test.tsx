@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
-import type { CustomEndpointsResponse } from '@/types/hermes'
+import { stubResizeObserver } from '@/test/jsdom'
+import type { CustomEndpoint, CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
 const saveCustomEndpoint = vi.fn()
@@ -261,5 +263,110 @@ describe('CustomEndpointsSettings', () => {
     // Save stores form.baseUrl verbatim and chat POSTs {base_url}/chat/completions, so the
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
+  })
+})
+
+// --- #108786: the API-key placeholder surface (PR's own harness) ---
+stubResizeObserver()
+// `mocked` bridges the PR's harness to this file's existing '@/hermes' mocks.
+const mocked = { getCustomEndpoints, saveCustomEndpoint, validateCustomEndpoint }
+const SAVED_ENDPOINT: CustomEndpoint = {
+  api_key_preview: 'sk-s...kI0c',
+  base_url: 'https://spark.example.com/v1',
+  context_length: null,
+  discover_models: true,
+  has_api_key: true,
+  id: 'custom',
+  is_current: true,
+  model: 'qwen3.8-27b',
+  models: ['qwen3.8-27b'],
+  name: 'Custom',
+  source: 'providers'
+}
+
+function listing(endpoints: CustomEndpoint[], id?: string): CustomEndpointsResponse {
+  return {
+    current: { base_url: SAVED_ENDPOINT.base_url, model: SAVED_ENDPOINT.model, provider: 'custom' },
+    endpoints,
+    id,
+    ok: true
+  }
+}
+
+async function renderSettings() {
+  await act(async () => {
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <CustomEndpointsSettings />
+        </I18nProvider>
+      </MemoryRouter>
+    )
+  })
+  await screen.findByText('Edit Endpoint')
+}
+
+describe('CustomEndpointsSettings API key', () => {
+  it('tells the user a key is on file instead of showing an empty field', async () => {
+    mocked.getCustomEndpoints.mockResolvedValue(listing([SAVED_ENDPOINT]))
+
+    await renderSettings()
+
+    expect((screen.getByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
+    expect(screen.getByText('sk-s...kI0c')).toBeTruthy()
+  })
+
+  it('says when a saved endpoint has no key on file', async () => {
+    mocked.getCustomEndpoints.mockResolvedValue(
+      listing([{ ...SAVED_ENDPOINT, api_key_preview: null, has_api_key: false }])
+    )
+
+    await renderSettings()
+
+    expect(screen.getByPlaceholderText('No key saved for this endpoint (optional)')).toBeTruthy()
+  })
+
+  it('surfaces an unresolved key_env even though no key is usable', async () => {
+    mocked.getCustomEndpoints.mockResolvedValue(
+      listing([{ ...SAVED_ENDPOINT, api_key_preview: '${HERMES_CUSTOM_CUSTOM_API_KEY} (not set)', has_api_key: false }])
+    )
+
+    await renderSettings()
+
+    expect(screen.getByText('${HERMES_CUSTOM_CUSTOM_API_KEY} (not set)')).toBeTruthy()
+    expect(screen.getByPlaceholderText('No key saved for this endpoint (optional)')).toBeTruthy()
+  })
+
+  it('tests a saved endpoint by id with a blank key so the backend uses the key on file', async () => {
+    mocked.getCustomEndpoints.mockResolvedValue(listing([SAVED_ENDPOINT]))
+    mocked.validateCustomEndpoint.mockResolvedValue({ message: '', models: ['qwen3.8-27b'], ok: true, reachable: true })
+
+    await renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+
+    await waitFor(() => expect(mocked.validateCustomEndpoint).toHaveBeenCalledTimes(1))
+    expect(mocked.validateCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'custom', api_key: undefined, base_url: SAVED_ENDPOINT.base_url }),
+      'default' // profile-scoped like save/list (#108785)
+    )
+  })
+
+  it('keeps the field blank after Save but shows the newly saved key preview', async () => {
+    const before: CustomEndpoint = { ...SAVED_ENDPOINT, api_key_preview: null, has_api_key: false }
+    mocked.getCustomEndpoints.mockResolvedValue(listing([before]))
+    mocked.saveCustomEndpoint.mockResolvedValue(listing([SAVED_ENDPOINT], 'custom'))
+
+    await renderSettings()
+    const field = screen.getByPlaceholderText('No key saved for this endpoint (optional)')
+    fireEvent.change(field, { target: { value: 'sk-typed-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(mocked.saveCustomEndpoint).toHaveBeenCalledTimes(1))
+    expect(mocked.saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ api_key: 'sk-typed-key' }),
+      'default' // profile-scoped like list (#108785)
+    )
+    await screen.findByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)')
+    expect((screen.getByPlaceholderText('Leave blank to keep current key (sk-s...kI0c)') as HTMLInputElement).value).toBe('')
   })
 })

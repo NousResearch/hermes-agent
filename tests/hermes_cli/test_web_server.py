@@ -2291,8 +2291,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         }
         save_config(cfg)
         endpoints = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
-        assert endpoints["env-preview"]["api_key_preview"] == "${OLD_ENDPOINT_KEY}"
-        assert endpoints["legacy-preview"]["api_key_preview"].startswith("«redacted")
+        assert endpoints["env-preview"]["api_key_preview"] == redact_key("old-secret-1234567890")
+        assert endpoints["legacy-preview"]["api_key_preview"] == redact_key("legacy-secret-A-1234567890")
 
         cfg = load_config()
         cfg["providers"]["env-preview"]["key_env"] = "NEW_ENDPOINT_KEY"
@@ -2379,7 +2379,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
         assert rows["qwen-local"]["source"] == "providers"
         assert rows["qwen-local"]["has_api_key"] is True
-        assert rows["qwen-local"]["api_key_preview"] == "${HERMES_CUSTOM_127_0_0_1_8001_API_KEY}"
+        assert rows["qwen-local"]["api_key_preview"] == redact_key("secret-value")
 
     def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
         """A post-migration ``custom_providers:`` list entry is still routed by the

@@ -5,6 +5,7 @@ import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enCustomEndpoints } from './en_custom_endpoints'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
@@ -1166,47 +1167,7 @@ export const en: Translations = {
       backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
       backendIdleTimeoutTitle: 'Backend Idle Timeout'
     },
-    customEndpoints: {
-      active: 'Active',
-      apiKeySet: 'API key set',
-      use: 'Use',
-      editTitle: 'Edit Endpoint',
-      addTitle: 'Add Endpoint',
-      fields: {
-        name: 'Name',
-        providerId: 'Provider ID',
-        endpointUrl: 'Endpoint URL',
-        defaultModel: 'Default Model',
-        context: 'Context',
-        apiKey: 'API Key',
-        apiKeyNewPlaceholder: 'Leave blank to keep current key',
-        apiKeyPlaceholder: 'Optional',
-        useNewChats: 'Use for new chats',
-        discoverModels: 'Discover models'
-      },
-      test: 'Test',
-      save: 'Save',
-      newEndpoint: 'New endpoint',
-      apiMode: 'API Mode',
-      autoDetect: 'Auto-detect',
-      couldNotLoad: 'Could not load custom endpoints',
-      endpointSaved: 'Custom endpoint saved.',
-      saveFailed: 'Save failed',
-      endpointReachable: 'Endpoint is reachable.',
-      endpointReachableTransport: transport => `Endpoint is reachable (${transport} route served).`,
-      endpointReachableModels: (reachable, count) => `${reachable} Found ${count} models.`,
-      endpointValidationFailed: 'Endpoint validation failed.',
-      validationFailed: 'Validation failed',
-      activationFailed: 'Activation failed',
-      deleteConfirm: name => `Delete ${name}?`,
-      deleteFailed: 'Delete failed',
-      title: 'Custom Endpoints',
-      deleteEndpoint: 'Delete endpoint',
-      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
-      emptyTitle: 'No custom endpoints',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Auto'
-    },
+    customEndpoints: enCustomEndpoints,
     computerUse: {
       accessibility: 'Accessibility',
       screenRecording: 'Screen Recording',

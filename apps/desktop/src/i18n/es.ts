@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esCustomEndpoints } from './es_custom_endpoints'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
@@ -1515,47 +1516,7 @@ export const esOverrides = {
       backendIdleTimeoutAria: 'Tiempo de inactividad del backend en milisegundos',
       backendIdleTimeoutTitle: 'Tiempo de inactividad del backend'
     },
-    customEndpoints: {
-      active: 'Activo',
-      apiKeySet: 'Clave API configurada',
-      use: 'Usar',
-      editTitle: 'Editar endpoint',
-      addTitle: 'Añadir endpoint',
-      fields: {
-        name: 'Nombre',
-        providerId: 'ID del proveedor',
-        endpointUrl: 'URL del endpoint',
-        defaultModel: 'Modelo predeterminado',
-        context: 'Contexto',
-        apiKey: 'Clave API',
-        apiKeyNewPlaceholder: 'Déjalo en blanco para conservar la clave actual',
-        apiKeyPlaceholder: 'Opcional',
-        useNewChats: 'Usar en los chats nuevos',
-        discoverModels: 'Descubrir modelos'
-      },
-      test: 'Probar',
-      save: 'Guardar',
-      newEndpoint: 'Nuevo endpoint',
-      apiMode: 'Modo de API',
-      autoDetect: 'Detección automática',
-      couldNotLoad: 'No se pudieron cargar los endpoints personalizados',
-      endpointSaved: 'Endpoint personalizado guardado.',
-      saveFailed: 'Error al guardar',
-      endpointReachable: 'El endpoint es accesible.',
-      endpointReachableTransport: transport => `El endpoint es accesible (ruta ${transport} atendida).`,
-      endpointReachableModels: (reachable, count) => `${reachable} Se encontraron ${count} modelos.`,
-      endpointValidationFailed: 'Falló la validación del endpoint.',
-      validationFailed: 'Falló la validación',
-      activationFailed: 'Falló la activación',
-      deleteConfirm: name => `¿Eliminar ${name}?`,
-      deleteFailed: 'Error al eliminar',
-      title: 'Endpoints personalizados',
-      deleteEndpoint: 'Eliminar endpoint',
-      emptyDescription: 'Añade abajo un endpoint compatible con OpenAI.',
-      emptyTitle: 'No hay endpoints personalizados',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Auto'
-    },
+    customEndpoints: esCustomEndpoints,
     computerUse: {
       accessibility: 'Accesibilidad',
       screenRecording: 'Grabación de pantalla',

@@ -285,6 +285,8 @@ export function validateCustomEndpoint(
   endpoint: CustomEndpointUpdate,
   profile?: null | string
 ): Promise<CustomEndpointValidationResponse> {
+  // Profile-scoped like save/list: a blank api_key on a saved endpoint makes
+  // the backend probe with the key on file, which lives in that profile's .env.
   return hermesApi<CustomEndpointValidationResponse>({
     ...profileScoped(profile),
     path: '/api/providers/custom-endpoints/validate',

@@ -2954,6 +2954,7 @@
     "settings.customEndpoints.endpointValidationFailed",
     "settings.customEndpoints.fields.apiKey",
     "settings.customEndpoints.fields.apiKeyNewPlaceholder",
+    "settings.customEndpoints.fields.apiKeyNoKeySaved",
     "settings.customEndpoints.fields.apiKeyPlaceholder",
     "settings.customEndpoints.fields.context",
     "settings.customEndpoints.fields.defaultModel",

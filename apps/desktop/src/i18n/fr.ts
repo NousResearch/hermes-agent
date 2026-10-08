@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frCustomEndpoints } from './fr_custom_endpoints'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
@@ -1518,48 +1519,7 @@ export const frOverrides = {
       backendIdleTimeoutAria: "Délai d'inactivité du backend en millisecondes",
       backendIdleTimeoutTitle: "Délai d'inactivité du backend"
     },
-    customEndpoints: {
-      active: 'Actif',
-      apiKeySet: 'Clé API définie',
-      use: 'Utiliser',
-      editTitle: 'Modifier le point de terminaison',
-      addTitle: 'Ajouter un point de terminaison',
-      fields: {
-        name: 'Nom',
-        providerId: 'ID du fournisseur',
-        endpointUrl: 'URL du point de terminaison',
-        defaultModel: 'Modèle par défaut',
-        context: 'Contexte',
-        apiKey: 'Clé API',
-        apiKeyNewPlaceholder: 'Laissez vide pour conserver la clé actuelle',
-        apiKeyPlaceholder: 'Facultatif',
-        useNewChats: 'Utiliser pour les nouvelles conversations',
-        discoverModels: 'Découvrir les modèles'
-      },
-      test: 'Tester',
-      save: 'Enregistrer',
-      newEndpoint: 'Nouveau point de terminaison',
-      apiMode: 'Mode API',
-      autoDetect: 'Détection automatique',
-      couldNotLoad: 'Impossible de charger les points de terminaison personnalisés',
-      endpointSaved: 'Point de terminaison personnalisé enregistré.',
-      saveFailed: 'Échec de l’enregistrement',
-      endpointReachable: 'Le point de terminaison est joignable.',
-      endpointReachableTransport: transport => `Le point de terminaison est joignable (route ${transport} servie).`,
-      endpointReachableModels: (reachable, count) =>
-        `${reachable} ${count} modèle${count > 1 ? 's' : ''} trouvé${count > 1 ? 's' : ''}.`,
-      endpointValidationFailed: 'La validation du point de terminaison a échoué.',
-      validationFailed: 'Échec de la validation',
-      activationFailed: 'Échec de l’activation',
-      deleteConfirm: name => `Supprimer ${name} ?`,
-      deleteFailed: 'Échec de la suppression',
-      title: 'Points de terminaison personnalisés',
-      deleteEndpoint: 'Supprimer le point de terminaison',
-      emptyDescription: 'Ajoutez ci-dessous un point de terminaison compatible OpenAI.',
-      emptyTitle: 'Aucun point de terminaison personnalisé',
-      namePlaceholder: 'Proxy Axet',
-      contextPlaceholder: 'Auto'
-    },
+    customEndpoints: frCustomEndpoints,
     computerUse: {
       accessibility: 'Accessibilité',
       screenRecording: "Enregistrement de l'écran",

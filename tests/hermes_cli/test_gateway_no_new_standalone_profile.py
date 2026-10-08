@@ -39,8 +39,6 @@ def quiet_host(tmp_path, monkeypatch):
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda v: False)
     monkeypatch.setattr(gw, "is_managed", lambda: False)
     monkeypatch.setattr(gw, "is_termux", lambda: False)
-    # tmp root is outside the platform-default tree, which `gateway install` refuses by design.
-    monkeypatch.setattr("hermes_cli.gateway_service_owner.home_may_install_service", lambda home: True)
     calls: list[str] = []
     monkeypatch.setattr(gw, "_install_systemd_from_cli", lambda *a, **k: calls.append("install"))
     monkeypatch.setattr(gw, "_service_call", lambda backend, v, system: calls.append(v))

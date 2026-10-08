@@ -161,8 +161,6 @@ def test_service_verbs_do_not_start_a_second_gateway(served_root, monkeypatch, v
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda *a, **k: "systemd")
     monkeypatch.setattr(gw, "is_managed", lambda: False)
     monkeypatch.setattr(gw, "is_termux", lambda: False)
-    # The served root is a tmp dir, which `gateway install` refuses as a scratch home by design.
-    monkeypatch.setattr("hermes_cli.gateway_service_owner.home_may_install_service", lambda home: True)
     fn = getattr(gw, f"_cmd_{verb}")
     ns = argparse.Namespace(system=False, all=False, force=False, run_as_user=None)
     if verb == "restart":

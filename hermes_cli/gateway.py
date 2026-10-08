@@ -5291,10 +5291,6 @@ def _cmd_install(args):
     force_unit_path = getattr(args, "force_unit_path", False)
     if backend == "systemd" and refuses_container_user_scope_install(system):
         sys.exit(1)
-    if backend in ("systemd", "launchd"):
-        from hermes_cli.gateway_service_owner import refuse_foreign_home_install
-        if refuse_foreign_home_install(get_hermes_home(), force_unit_path):
-            sys.exit(1)
     if backend == "systemd":
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":

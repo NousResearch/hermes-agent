@@ -134,8 +134,7 @@ def build_gateway_parser(
     _flag(gateway_install, "--if-missing", dest="if_missing",
         help="Do nothing when a gateway service is already installed")
     _flag(gateway_install, "--force-unit-path", dest="force_unit_path",
-        help="Install for a HERMES_HOME outside this account's Hermes tree, or repoint a service "
-             "definition that pins another home")
+        help="Repoint a service definition that pins another HERMES_HOME at this one")
     _flag(gateway_install, "--elevated-handoff", dest="elevated_handoff", help=argparse.SUPPRESS)
 
     gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")

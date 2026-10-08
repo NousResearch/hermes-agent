@@ -571,6 +571,8 @@ class BuzzAdapter(BasePlatformAdapter):
         self._profile_name_cache: dict[str, tuple[float, str]] = {}
         # inbound event_id -> thread root (None when top-level), so send() joins the user's thread instead of nesting.
         self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        # message_id -> wall-clock time its last edit returned; see edit_message().
+        self._last_edit_at: Dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -871,7 +873,16 @@ class BuzzAdapter(BasePlatformAdapter):
         # Unlike ``messages send``, the CLI's ``messages edit`` takes ``--content`` literally (no ``-``/stdin
         # expansion); the ``=`` form keeps clap from reading hyphen-leading text as a flag.
         args = ["messages", "edit", "--event", str(message_id), f"--content={content}"]
+        # Edits carry a whole-second created_at and Buzz clients show the edit with the greatest one,
+        # keeping the first seen on a tie. A second edit in the same second can lose to the one before
+        # it (a streamed final losing to its cursor frame), so wait for the next second first.
+        last = self._last_edit_at.get(str(message_id))
+        if last is not None and (wait := int(last) + 1 - time.time()) > 0:
+            await asyncio.sleep(wait)
         code, out, err = await self._run_cli(args)
+        now = time.time()
+        self._last_edit_at = {mid: t for mid, t in self._last_edit_at.items() if now - t < 1}
+        self._last_edit_at[str(message_id)] = now
         if code != 0:
             return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
         data = _json_or(out, {})

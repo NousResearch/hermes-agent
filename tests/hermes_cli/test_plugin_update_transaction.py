@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+from tests.pm.test_plugin_survival_contract import admission_env
 
 
 def _commit(repo, message):
@@ -156,7 +156,6 @@ def test_update_rebuilds_an_accepted_node_sidecar_when_its_manifest_moves(instal
         rebuilt.append(plugin_dir)
         (plugin_dir / "node_modules").mkdir(exist_ok=True)
         (plugin_dir / "node_modules" / "fresh").write_text("v2", encoding="utf-8")
-        return None
 
     monkeypatch.setattr(workspace, "install_node_sidecar", fake_npm)
     result = plugins_cmd.dashboard_update_user_plugin("transactional")

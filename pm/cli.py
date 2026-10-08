@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from pm import termux_libs
-from pm.install import _facts, _lockfile, _store, ensure, stage_only
+from pm.install import _facts, _lockfile, _reclaim_set_aside, _store, ensure, stage_only
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
@@ -490,6 +490,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         facts.reload()
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
+        removed += _reclaim_set_aside(store)
         for item in sorted(store.root.iterdir()):
             if not item.is_dir():
                 continue
@@ -520,8 +521,11 @@ def cmd_gc(args) -> int:
     from pm.runtime import collect_runtime_generations
     generations = collect_generations(repo_root())
     runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
+    from pm.environments import installs_root
+    from pm.install_states import collect_orphan_install_states
+    orphans = collect_orphan_install_states(installs_root())
     print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
-          f"{len(runtimes)} PM runtime generations")
+          f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
     return 0
 
 
@@ -588,15 +592,40 @@ def _apply_pins(changed: list, lockfile) -> int:
     if not changed:
         print("pm update: nothing to update")
         return 0
+    pinned: list[str] = []
+    failed: dict[str, str] = {}
     for d in changed:
         package = get_package(d.name)
-        artifacts = _pin_artifacts(package, d, lockfile.pinned_artifacts(d.name))
+        try:
+            artifacts = _pin_artifacts(package, d, lockfile.pinned_artifacts(d.name))
+        except Exception as e:
+            # One broken pin — a package's resolution bug or one target's upstream
+            # pool skew (rolling Termux pool 404 while nodejs.org is ahead) — must
+            # not zero out the whole run. Pin the rest, report the failure (#125386).
+            print(f"✗ {d.name} pin failed: {e}")
+            failed[d.name] = f"{type(e).__name__}: {e}"
+            continue
         lockfile.set_pin(d.name, d.version, artifacts)
+        pinned.append(d.name)
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
-    lockfile.save()
-    if _install_names([d.name for d in changed]):
-        return 1
-    return 0 if _sync_venv_step() else 1
+    if pinned:
+        lockfile.save()
+        rc = 1 if _install_names(pinned) or not _sync_venv_step() else 0
+    else:
+        print("pm update: every pin failed; lockfile untouched")
+        rc = 1
+    if not failed:
+        return rc
+    print(f"pm update: pinned {len(pinned)}, failed {len(failed)}: {', '.join(failed)}")
+    # The venv sync above leaves an `ok` sync receipt as latest; `hermes pm
+    # status` and the desktop read latest, so the partial run must land last.
+    from pm import receipt
+
+    token = receipt.begin("update")
+    for name, error in failed.items():
+        receipt.record_step(f"pin {name}", False, error)
+    receipt.finalize("failed", 1, token=token)
+    return 1
 
 
 def _refresh_uv_lock() -> int:

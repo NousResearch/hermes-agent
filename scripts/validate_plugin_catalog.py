@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Standalone structural validator for plugin-catalog entry files.
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and

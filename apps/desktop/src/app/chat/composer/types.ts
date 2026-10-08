@@ -73,5 +73,7 @@ export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 export interface VoiceActivityState {
   elapsedSeconds: number
   level: number
+  /** Live STT text so far (stt.streaming); '' when none. */
+  partial?: string
   status: VoiceStatus
 }

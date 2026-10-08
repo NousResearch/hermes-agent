@@ -134,7 +134,7 @@ def nearest_root(
     return None
 
 
-def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> Tuple[Optional[str], bool]:
+def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> tuple[Optional[str], bool]:
     """Return ``(workspace_root, gated_in)`` for a file.  The cwd's worktree wins when the file is
     inside it; otherwise the file's own worktree is the fallback anchor (monorepos / unrelated
     checkouts).  ``(None, False)`` when neither is in a git worktree."""
@@ -154,7 +154,7 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
     return None, False
 
 
-def operator_workspace_roots() -> Set[str]:
+def operator_workspace_roots() -> set[str]:
     """Git worktrees the operator pointed Hermes at: the launch dir and the surface-set workspace
     (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``hermes -w``'s worktree, a gateway's
     ``terminal.cwd``).  The agent's ``cd`` moves neither (it only moves the terminal's cwd).  A repo at
@@ -172,7 +172,7 @@ def operator_workspace_roots() -> Set[str]:
     if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
         anchors.append(resolve_agent_cwd)
     home = normalize_path("~")
-    roots: Set[str] = set()
+    roots: set[str] = set()
     for anchor in anchors:
         try:
             root = find_git_worktree(str(anchor()))

@@ -100,7 +100,10 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
+# Families whose documented "off" is ``thinking: {"type": "between_tools"}`` (no up-front thinking,
+# short notes between tool calls): ``disabled`` 400s there with a message pointing at it.
+_BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -190,7 +193,7 @@ def _accepts_thinking_disable(model: str) -> bool:
     return (
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)
-        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS + _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS)
     )
 
 
@@ -245,14 +248,14 @@ _CLAUDE_CODE_PREFIXES = (
 _CLAUDE_CODE_NAMES = ("claude", "claude-code")
 
 
-def _claude_code_candidates() -> List[str]:
+def _claude_code_candidates() -> list[str]:
     """Executable paths to try, deduped and filtered to files that exist.
 
     Two passes: every PATH hit first (what the user's shell would run), then the
     well-known install prefixes. A single nested loop would probe a stale prefix
     ``claude`` before a current PATH ``claude-code``.
     """
-    seen: Dict[str, None] = {}
+    seen: dict[str, None] = {}
     for name in _CLAUDE_CODE_NAMES:
         hit = shutil.which(name)
         if hit:
@@ -265,13 +268,26 @@ def _claude_code_candidates() -> List[str]:
     return list(seen)
 
 
+def find_claude_code_cli(command: str) -> Optional[str]:
+    """Path of a bare Claude Code command name on PATH, else in an install prefix; None for any other command.
+
+    Core's own presence checks (external-process providers, ``claude setup-token``) ask this so they
+    agree with version detection about whether the CLI is installed under a GUI/service PATH."""
+    if command not in _CLAUDE_CODE_NAMES:
+        return None
+    from hermes_platform.resolver import locate_command
+
+    found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
+    return found[0] if found else None
+
+
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
     for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
@@ -335,12 +351,12 @@ def _common_betas_for_base_url(base_url: str | None, *, drop_context_1m_beta: bo
     return betas
 
 
-def _beta_header(betas: list) -> Dict[str, str]:
+def _beta_header(betas: list) -> dict[str, str]:
     """``{"anthropic-beta": ...}`` when there are betas, else ``{}``."""
     return {"anthropic-beta": ",".join(betas)} if betas else {}
 
 
-def _attribution_headers() -> Dict[str, str]:
+def _attribution_headers() -> dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
@@ -355,13 +371,13 @@ def _client_timeout(timeout):
     return Timeout(timeout=float(read), connect=10.0)
 
 
-def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
+def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
     SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
     base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
-    kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
+    kwargs: dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
     normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
     if normalized:
         kwargs["base_url"] = normalized
@@ -398,7 +414,7 @@ def _build_anthropic_client_with_bearer_hook(
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route: str = None):
+def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str = None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
     ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
@@ -423,7 +439,7 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route:
     return sdk.Anthropic(**kwargs)
 
 
-def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+def _custom_provider_extra_headers(base_url) -> dict[str, str]:
     """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
     SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
     if not base_url:
@@ -521,7 +537,7 @@ def _normalize_to_mcp_wire(name: str) -> str:
     return _MCP_TOOL_PREFIX + name.removeprefix("mcp_")
 
 
-def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
+def _oauth_wire_namer(anthropic_tools: list[dict[str, Any]]):
     """Return ``name -> OAuth wire name`` for this request's tool set. An alias must never collide
     with a wire name owned by a non-alias tool: two identical tool names in one request is a hard
     400, strictly worse than the bug being fixed. Mirrors normalize_response's "registered tool
@@ -580,7 +596,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
@@ -590,6 +606,8 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
         # omission: a silently-ignored disable beats a dead turn.
+        if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
+            return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
     if "haiku" in model.lower():
         return {}
@@ -612,11 +630,11 @@ _TOOL_CHOICE_MAP = {None: {"type": "auto"}, "auto": {"type": "auto"}, "required"
 
 
 def build_anthropic_kwargs(
-    model: str, messages: List[Dict], tools: Optional[List[Dict]], max_tokens: Optional[int],
-    reasoning_config: Optional[Dict[str, Any]], tool_choice: Optional[str] = None,
+    model: str, messages: list[dict], tools: Optional[list[dict]], max_tokens: Optional[int],
+    reasoning_config: Optional[dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
     model's native output ceiling; if that exceeds ``context_length`` (small local endpoints) it is
@@ -638,7 +656,7 @@ def build_anthropic_kwargs(
     to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
     if to_wire:
         system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
-    kwargs: Dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
+    kwargs: dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system
     if anthropic_tools:

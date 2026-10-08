@@ -370,7 +370,7 @@ class TestSubcommandCompletion:
             "hermes_cli.tools_config._get_platform_tools",
             lambda *_a, **_k: set(),
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
         monkeypatch.setattr(
             "hermes_cli.tools_config._get_plugin_toolset_keys",
             lambda: set(),

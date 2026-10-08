@@ -194,7 +194,7 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -233,7 +233,7 @@ class TestBusySessionAck:
         import gateway.run as _gr
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         runner._should_echo_stt_transcripts = MagicMock(return_value=False)
@@ -425,7 +425,7 @@ class TestBusySessionOnboardingHint:
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
         # against a writable dir by pointing _hermes_home at tmp_path.
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"

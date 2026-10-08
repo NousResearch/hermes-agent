@@ -62,7 +62,6 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
                 operation.settle(SettleReason.all_resolved)
 
         threading.Timer(0.02, respond).start()
-        return None
 
     agent = SimpleNamespace(
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],

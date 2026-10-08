@@ -44,9 +44,9 @@ def _make_compressor() -> ContextCompressor:
     return compressor
 
 
-def _tool_pairs(count: int, start: int = 0) -> List[Dict[str, Any]]:
+def _tool_pairs(count: int, start: int = 0) -> list[dict[str, Any]]:
     """``count`` assistant(tool_calls) + tool result pairs."""
-    turns: List[Dict[str, Any]] = []
+    turns: list[dict[str, Any]] = []
     for i in range(start, start + count):
         turns.append(
             {
@@ -67,7 +67,7 @@ def _tool_pairs(count: int, start: int = 0) -> List[Dict[str, Any]]:
     return turns
 
 
-def _cron_transcript() -> List[Dict[str, Any]]:
+def _cron_transcript() -> list[dict[str, Any]]:
     """system + one user job prompt + many tool turns, NO trailing user."""
     return [
         {
@@ -80,7 +80,7 @@ def _cron_transcript() -> List[Dict[str, Any]]:
     ]
 
 
-def _compress(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _compress(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = (
@@ -92,7 +92,7 @@ def _compress(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return compressor.compress(messages, current_tokens=200_000, force=True)
 
 
-def _handoff_idx(compressed: List[Dict[str, Any]]) -> int:
+def _handoff_idx(compressed: list[dict[str, Any]]) -> int:
     """Index of the handoff row (standalone summary or merged carrier)."""
     for idx in range(len(compressed) - 1, -1, -1):
         content = compressed[idx].get("content")
@@ -102,12 +102,12 @@ def _handoff_idx(compressed: List[Dict[str, Any]]) -> int:
     return -1
 
 
-def _text(message: Dict[str, Any]) -> str:
+def _text(message: dict[str, Any]) -> str:
     content = message.get("content")
     return content if isinstance(content, str) else str(content)
 
 
-def _actionable_user_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _actionable_user_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         m
         for m in rows
@@ -164,7 +164,7 @@ def test_role_alternation_and_head_are_preserved():
 def test_idle_session_without_inflight_task_is_not_reanimated():
     """#80622 must hold: a session whose only user-role row is an inherited
     handoff has no in-flight task, so compaction must not manufacture one."""
-    messages: List[Dict[str, Any]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": "You are Hermes."},
         {
             "role": "user",
@@ -205,7 +205,7 @@ def test_completed_exchange_is_not_replayed():
 # ---------------------------------------------------------------------------
 
 
-def _pending_tail_transcript() -> List[Dict[str, Any]]:
+def _pending_tail_transcript() -> list[dict[str, Any]]:
     """Cron shape whose LAST row is an assistant tool_calls turn still awaiting
     its result — compaction fired inside the tool-execution window."""
     msgs = _cron_transcript()
@@ -360,3 +360,55 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
     found = ContextCompressor._find_inflight_user_task(msgs)
     assert found is not None
     assert JOB_SENTINEL in str(found.get("content"))
+
+
+def test_replay_replaces_surviving_user_row_with_same_message_uid():
+    """A protected copy of the in-flight request must not remain active beside its replay."""
+    from agent.context_compressor import (
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        _template_visible_role,
+    )
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS
+
+    uid = "request-uid"
+    carrier = {
+        "role": "assistant",
+        "content": SUMMARY_PREFIX + "\n## Summary\nran steps.\n\n" + _SUMMARY_END_MARKER,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+    }
+    original = {"role": "user", "content": JOB_SENTINEL, "message_uid": uid}
+    out = _make_compressor()._reappend_inflight_user_task(
+        [original, carrier], {**original}
+    )
+
+    def holders(rows):
+        return [m for m in rows if uid == m.get("message_uid") or uid in m.get(ABSORBED_MESSAGE_UIDS, ())]
+
+    matching = holders(out)
+    assert len(matching) == 1
+    assert _INFLIGHT_TASK_REPLAY_HEADER in str(matching[0].get("content"))
+
+    # Real compress(): the head-protected original is the head's only user row.
+    # Removing it must not leave the window opening system -> assistant.
+    messages = _cron_transcript()
+    messages[1] = {**messages[1], "message_uid": uid}
+    compressed = _compress(messages)
+    assert len(holders(compressed)) == 1
+    # Raw role: _template_visible_role skips a leading assistant(tool_calls)
+    # row, which native Gemini rejects as the first turn.
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
+    visible = [r for r in map(_template_visible_role, compressed[1:]) if r is not None]
+    assert visible[0] == "user", visible
+    assert all(a != b for a, b in zip(visible, visible[1:])), visible
+    assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]
+
+    # Visible assistant text in the tail makes the summary merge into tail[0],
+    # an assistant(tool_calls) row: it must stay adjacent to its tool results.
+    messages += [{"role": "assistant", "content": "interim note"}, *_tool_pairs(1, 40)]
+    compressed = _compress(messages)
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
+    for i, msg in enumerate(compressed):
+        if msg.get("tool_calls"):
+            ids = [c["id"] for c in msg["tool_calls"]]
+            assert [m.get("tool_call_id") for m in compressed[i + 1 : i + 1 + len(ids)]] == ids, i

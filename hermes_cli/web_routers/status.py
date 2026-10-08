@@ -115,9 +115,15 @@ async def get_ssh_ownership(request: Request):
 
 @router.get("/api/health")
 async def get_health():
-    """Lightweight process liveness for desktop/backend readiness probes."""
+    """Lightweight process liveness for desktop/backend readiness probes.
+
+    ``commit`` is the code this process BOOTED from (``get_version_info`` is cached at
+    ``web_server`` import): Desktop refuses to attach to a backend whose commit differs from
+    its checkout, so a serve that outlived ``hermes update`` is never re-adopted.
+    """
     info = get_version_info()
     return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
+            "commit": info.commit,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
@@ -273,7 +279,7 @@ def _project_gateway_platforms(gateway_platforms: dict, configured: "set[str] | 
     return {}
 
 
-async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Dict[str, Any]:
+async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> dict[str, Any]:
     """Liveness + runtime-state readout (running/pid/state/platforms/exit_reason/updated_at
     plus the raw ``runtime`` document).
 
@@ -358,7 +364,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
-def _auth_gate_status() -> Dict[str, Any]:
+def _auth_gate_status() -> dict[str, Any]:
     """Dashboard auth gate readout: gate engaged, registered providers, and the RFC 8252
     native-app capability advertisement ``auth_flows`` the desktop reads to pick the
     system-browser + loopback + PKCE flow over the embedded-webview cookie flow. "cookie" is
@@ -395,14 +401,14 @@ def _nous_session_validity() -> str:
         return "unknown"
 
 
-async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
+async def _component_health(gateway: dict[str, Any]) -> dict[str, Any]:
     """Component-level health rollup: counts and status enums only (public payload — no
     messages, paths or other detail that could carry secrets). The storage probe reuses the
     gateway readiness state_db check (read-only, 1s-bounded) off-loop."""
     from hermes_cli.web_server import DASHBOARD_HEALTH
     gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
     gateway_platforms = gateway["gateway_platforms"]
-    components: Dict[str, Any] = {
+    components: dict[str, Any] = {
         "gateway": {
             "status": "ok" if gateway_running and gateway_state in {"running", "draining"} else "degraded",
             "state": gateway_state or ("running" if gateway_running else "stopped")},
@@ -427,7 +433,7 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
     return components
 
 
-async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
+async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
     """Memory / disk pressure rollups + deferred FTS rebuild progress (coarse numbers/enums
     only; public payload). Deliberately NOT folded into components/overall: pressure is
     advisory, not a liveness verdict, and flipping ``overall`` on it would page NAS's
@@ -566,7 +572,7 @@ async def get_system_stats():
     disk/uptime when available). Non-sensitive: no env values, no paths beyond hermes home."""
     import platform as _platform
 
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         **_display_system_platform(
             system=_platform.system(), release=_platform.release(), version=_platform.version(),
             platform_label=_platform.platform()),
@@ -703,19 +709,22 @@ async def get_learning_node(id: str, profile: Optional[str] = None):
 
 
 @router.delete("/api/learning/node")
-async def delete_learning_node(body: LearningNodeRef):
-    """Delete a journey node — skills are archived (restorable), memories removed."""
+async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
+    """Delete a journey node — skills are archived (restorable), memories removed.
+
+    ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
+    ignoring it archived the same-named skill of the launch profile instead."""
     from agent.learning_mutations import delete_node
     return await _learning_mutation(
-        body.profile, lambda: delete_node(body.id), 400, "delete failed")
+        body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
 @router.put("/api/learning/node")
-async def update_learning_node(body: LearningNodeEdit):
-    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
+    """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
-        body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+        body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).
@@ -738,7 +747,7 @@ def _feature_state(feat) -> str:
 
 def _get_portal_status_sync():
     cfg = load_config() or {}
-    auth: Dict[str, Any] = {}
+    auth: dict[str, Any] = {}
     try:
         from hermes_cli.auth import get_nous_auth_status_local
         # Refresh-free snapshot so polling never performs an OAuth refresh.
@@ -793,6 +802,7 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
+    from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
@@ -801,10 +811,12 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
         raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=502, detail=f"Upload failed: {error}")
     except Exception as exc:
         _log.exception("debug share failed")
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=500, detail=f"Failed: {error}")
 
     return {"ok": True, "urls": result.urls, "failures": result.failures,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}

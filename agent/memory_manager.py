@@ -617,7 +617,14 @@ class MemoryManager:
         raw_observations = raw_result.observations
         if raw_observations is None:
             raw_observations = ()
-        observation_iterator = iter(raw_observations)
+        try:
+            observation_iterator = iter(raw_observations)
+        except Exception as exc:
+            logger.warning(
+                "Memory provider '%s' returned an unreadable observation container; "
+                "dropping it: %s", provider.name, exc,
+            )
+            observation_iterator = iter(())
         truncated_reason = None
         while True:
             # Operation-wide inspected-candidate cap: applied *before* any
@@ -640,6 +647,12 @@ class MemoryManager:
                     next(observation_iterator)
                 except StopIteration:
                     break
+                except Exception as exc:
+                    logger.warning(
+                        "Memory provider '%s' returned an unreadable observation container; "
+                        "dropping its remaining observations: %s", provider.name, exc,
+                    )
+                    break
                 truncated_reason = (
                     "count" if len(observations) >= remaining_count else "bytes"
                 )
@@ -649,6 +662,12 @@ class MemoryManager:
             try:
                 candidate = next(observation_iterator)
             except StopIteration:
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Memory provider '%s' returned an unreadable observation container; "
+                    "dropping its remaining observations: %s", provider.name, exc,
+                )
                 break
             try:
                 if isinstance(candidate, Mapping):
@@ -958,18 +977,21 @@ class MemoryManager:
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,
             )
-        elif isinstance(result, MemoryPrefetchResult) and result.context.strip():
-            # Keep structured providers on the same effective context path as legacy string
-            # providers. Observations are metadata only; the digest is computed later from this
-            # spilled context after all provider contexts are merged.
-            spilled_context = spill_if_oversized(
-                result.context, session_id=session_id, source=f"{provider.name} memory prefetch",
-                config=self._external_prefetch_spill_config,
-            )
-            if spilled_context != result.context:
-                result = MemoryPrefetchResult(
-                    context=spilled_context, observations=result.observations
+        elif isinstance(result, MemoryPrefetchResult):
+            structured_context = str.__str__(result.context)
+            if structured_context.strip():
+                # Keep structured providers on the same effective context path as legacy string
+                # providers. Observations are metadata only; the digest is computed later from this
+                # spilled context after all provider contexts are merged.
+                spilled_context = spill_if_oversized(
+                    structured_context, session_id=session_id,
+                    source=f"{provider.name} memory prefetch",
+                    config=self._external_prefetch_spill_config,
                 )
+                if type(result.context) is not str or spilled_context != structured_context:
+                    result = MemoryPrefetchResult(
+                        context=spilled_context, observations=result.observations
+                    )
         return result
 
     def describe_recall(self) -> str:

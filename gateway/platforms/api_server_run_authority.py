@@ -17,6 +17,11 @@ def room_authority(claims):
     return key, int(claims["authority_epoch"]), str(claims["authority_gateway_id"])
 
 
+def room_namespace(claims):
+    fields = ("room_id", "member_id", "target_install_id", "target_profile")
+    return hashlib.sha256("\0".join(str(claims[key]) for key in fields).encode()).hexdigest()
+
+
 def initialize(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_authorities (
         authority_key TEXT PRIMARY KEY, authority_epoch INTEGER NOT NULL,
@@ -26,6 +31,8 @@ def initialize(conn):
     conn.execute("UPDATE run_room_authorities SET home_key=authority_key WHERE home_key IS NULL")
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_authority_aliases (
         home_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL, origin_home TEXT NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS run_room_namespaces (
+        namespace_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL)""")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempts ON run_idempotency(room_authority_key, room_authority_epoch)")
 
 
@@ -34,6 +41,13 @@ def canonical(conn, authority):
     key, epoch, gateway = authority
     row = conn.execute("SELECT authority_key FROM run_room_authority_aliases WHERE home_key=?", (key,)).fetchone()
     return (row[0] if row else key), epoch, gateway
+
+
+def namespace_matches(conn, namespace, authority):
+    if namespace is None:
+        return True
+    row = conn.execute("SELECT authority_key FROM run_room_namespaces WHERE namespace_key=?", (namespace,)).fetchone()
+    return row is None or row[0] == canonical(conn, authority)[0]
 
 
 def origin_home(conn, authority, home):
@@ -79,9 +93,11 @@ def superseded(conn, authority):
     return row is not None and (epoch <= row[2] or epoch < row[0] or (epoch == row[0] and gateway != row[1]))
 
 
-def observe(conn, scope, authority, previous=None, previous_home=None):
+def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None):
     """Bind old receipts on authenticated observation, then advance one room/member watermark."""
     key, epoch, gateway = successor(conn, authority, previous)
+    if not namespace_matches(conn, namespace, (key, epoch, gateway)):
+        return False
     if previous is not None and key != authority[0]:
         if not previous_home:
             raise ValueError("previous room home is required")
@@ -97,6 +113,9 @@ def observe(conn, scope, authority, previous=None, previous_home=None):
         ON CONFLICT(authority_key) DO UPDATE SET
         authority_epoch=excluded.authority_epoch,gateway_id=excluded.gateway_id,home_key=excluded.home_key""",
         (key, epoch, gateway, authority[0]))
+    if namespace is not None:
+        conn.execute("INSERT INTO run_room_namespaces(namespace_key,authority_key) VALUES(?,?) ON CONFLICT DO NOTHING",
+                     (namespace, key))
     compact(conn, key)
     return True
 

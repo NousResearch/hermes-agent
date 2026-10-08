@@ -34,8 +34,7 @@ from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
-    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
-    _resolve_zai_base_url, detect_zai_endpoint)
+    KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, detect_zai_endpoint)
 from hermes_cli.auth_model_picker import (  # noqa: F401  re-exported
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (  # noqa: F401  re-exported
@@ -194,7 +193,7 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
     ("zai", "Z.AI / GLM", "https://api.z.ai/api/paas/v4",
      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "GLM_BASE_URL"),
     # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat); sk-kimi- (Kimi Code)
-    # keys are auto-redirected to api.kimi.com/coding by _resolve_kimi_base_url().
+    # keys are auto-redirected to api.kimi.com/coding by KimiProfile.resolve_base_url().
     ("kimi-coding", "Kimi / Moonshot", "https://api.moonshot.ai/v1",
      ("KIMI_API_KEY", "KIMI_CODING_API_KEY"), "KIMI_BASE_URL"),
     ("kimi-coding-cn", "Kimi / Moonshot (China)", "https://api.moonshot.cn/v1", ("KIMI_CN_API_KEY",)),
@@ -263,7 +262,8 @@ from hermes_cli.config import (  # noqa: E402
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, resolve_provider_base_url,
+    sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 
@@ -2068,15 +2068,9 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    env_url = _provider_env_base_url(pconfig)
-    if provider_id in {"kimi-coding", "kimi-coding-cn"}:
-        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
-    else:
-        base_url = env_url or pconfig.inference_base_url
-    actual_local_noauth = False
-    if provider_id == "actual":
-        base_url = normalize_actual_base_url(base_url)
-        actual_local_noauth = not api_key and is_actual_local_base_url(base_url)
+    # probe=False: a status read must not network-probe or write auth.json.
+    base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=_provider_env_base_url(pconfig), probe=False)
+    actual_local_noauth = provider_id == "actual" and not api_key and is_actual_local_base_url(base_url)
     configured = bool(api_key) or actual_local_noauth
     return {  # logged_in mirrors configured for compat with the OAuth status shape
         "configured": configured, "provider": provider_id, "name": pconfig.name,
@@ -2262,37 +2256,6 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
-    return env_url.rstrip("/") if env_url else default
-
-
-def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
-    base_url = _default_api_key_base_url(api_key, default, env_url)
-    try:
-        from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-        raw_token, _ = resolve_copilot_token()
-        if raw_token:
-            resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
-            if resolved:
-                base_url = resolved
-    except Exception as exc:
-        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
-    return base_url
-
-
-# Providers whose runtime base URL is not simply env-override-or-registry-default:
-# ``(api_key, registry_default, env_override) -> base_url``.
-_API_KEY_BASE_URL_RESOLVERS: Dict[str, Callable[[str, str, str], str]] = {
-    "kimi-coding": _resolve_kimi_base_url,
-    "kimi-coding-cn": _resolve_kimi_base_url,
-    "zai": _resolve_zai_base_url,
-    "copilot": _copilot_runtime_base_url,
-    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
-    "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
-
-
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
     pconfig = _registry_lookup(provider_id)
@@ -2309,8 +2272,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         key_source = key_source or "default"
 
     env_url = _provider_env_base_url(pconfig)
-    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
-    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
+    base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=env_url)
     # An API-key provider must never hand back an empty base URL (a set-but-empty
     # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):

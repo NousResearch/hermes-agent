@@ -1,4 +1,4 @@
-"""Kimi Code and Z.AI endpoint auto-detection, LM Studio base-URL normalization.
+"""Kimi Code endpoint constant, Z.AI endpoint auto-detection, LM Studio base-URL normalization.
 
 Re-exported from ``hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
 lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
@@ -7,30 +7,19 @@ lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and 
 from __future__ import annotations
 
 import logging
-import hashlib
-import time
 from typing import Dict, Optional
 from hermes_cli.auth_constants import httpx
 
 logger = logging.getLogger("hermes_cli.auth")
 
-# In-process negative cache for Z.AI endpoint detection, keyed by key hash: a failed probe is not
-# retried for this long (a success persists to auth.json instead).
+# In-process negative cache for Z.AI endpoint detection (ZaiProfile.resolve_base_url), keyed by key
+# hash: a failed probe is not retried for this long (a success persists to auth.json instead).
 _ZAI_PROBE_FAILURE_TTL_SECONDS = 300
 _zai_probe_failed_until: Dict[str, float] = {}
 
 # "sk-kimi-" keys only work on api.kimi.com/coding; legacy moonshot keys use the old default.
 # NO /v1 suffix: the anthropic SDK appends "/v1/messages" itself ("/coding/v1" would 404).
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
-
-
-def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Kimi base URL from the key prefix; an explicit KIMI_BASE_URL always wins."""
-    if env_override:
-        return env_override
-    if api_key and api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
-    return default_url
 
 
 # Z.AI bills general/coding plans and global/China endpoints separately ("Insufficient balance" on
@@ -99,57 +88,6 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
         return _first_ready(require_done=False)
     finally:
         pool.shutdown(wait=False)
-
-
-def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Z.AI base URL by probing endpoints; an explicit GLM_BASE_URL always wins.
-
-    The detected endpoint is cached in provider state (auth.json) keyed on a hash of the API key so
-    subsequent starts skip the probe.
-    """
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state, detect_zai_endpoint
-    if env_override:
-        return env_override
-    # No key -> don't probe (N×M 401s); auxiliary-client auto-detection hits this for everyone.
-    if not api_key:
-        return default_url
-
-    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-    state = _load_provider_state(_load_auth_store(), "zai") or {}
-    cached = state.get("detected_endpoint")
-    if isinstance(cached, dict) and cached.get("base_url") and cached.get("key_hash", "") == key_hash:
-        logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
-        return cached["base_url"]
-    # Only a success is persisted, so a failing key (429/401 on every endpoint) would re-run the
-    # four chat-completion probes on every credential-pool load — dozens of times per picker open.
-    if _zai_probe_failed_until.get(key_hash, 0.0) > time.time():
-        return default_url
-
-    # Probe — may take up to ~8s per endpoint.
-    detected = detect_zai_endpoint(api_key)
-    if not (detected and detected.get("base_url")):
-        logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
-        _zai_probe_failed_until[key_hash] = time.time() + _ZAI_PROBE_FAILURE_TTL_SECONDS
-        return default_url
-
-    detected_endpoint = {
-        "base_url": detected["base_url"], "endpoint_id": detected.get("id", ""),
-        "model": detected.get("model", ""), "label": detected.get("label", ""),
-        "key_hash": key_hash,
-    }
-    # Persist failure must not break resolution; worst case the next start re-probes.
-    try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()  # reload under lock to avoid overwriting concurrent changes
-            state_under_lock = _load_provider_state(auth_store, "zai") or {}
-            state_under_lock["detected_endpoint"] = detected_endpoint
-            # set_active=False: runs from credential-pool env seeding; must not flip active provider.
-            _store_provider_state(auth_store, "zai", state_under_lock, set_active=False)
-            _save_auth_store(auth_store)
-    except Exception as exc:
-        logger.warning("Z.AI: could not persist detected endpoint (%s); will re-probe next start", exc)
-    logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
-    return detected["base_url"]
 
 
 def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:

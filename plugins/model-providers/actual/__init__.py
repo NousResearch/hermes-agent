@@ -37,6 +37,13 @@ class ActualProfile(ProviderProfile):
 
         return {"ssl_ca_cert": certifi.where()}
 
+    def resolve_base_url(self, *, api_key: str, default_url: str, env_url: str, probe: bool = True) -> str:
+        """Hosted or loopback root normalised to its ``/v1`` surface (status and runtime alike)."""
+        from hermes_cli.auth import normalize_actual_base_url
+
+        return normalize_actual_base_url(
+            super().resolve_base_url(api_key=api_key, default_url=default_url, env_url=env_url, probe=probe))
+
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
         from agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
 

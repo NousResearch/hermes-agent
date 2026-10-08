@@ -13,7 +13,6 @@ from hermes_cli.auth import (
     AuthError,
     KIMI_CODE_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
-    _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
@@ -470,20 +469,6 @@ class TestHasAnyProviderConfigured:
 # =============================================================================
 
 MOONSHOT_DEFAULT_URL = "https://api.moonshot.ai/v1"
-
-
-class TestResolveKimiBaseUrl:
-    """Test _resolve_kimi_base_url() helper for key-prefix auto-detection."""
-
-    def test_sk_kimi_prefix_routes_to_kimi_code(self):
-        url = _resolve_kimi_base_url("sk-kimi-abc123", MOONSHOT_DEFAULT_URL, "")
-        assert url == KIMI_CODE_BASE_URL
-
-
-    def test_env_override_wins_over_legacy(self):
-        custom = "https://custom.example.com/v1"
-        url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, custom)
-        assert url == custom
 
 
 class TestKimiCodeStatusAutoDetect:

@@ -1,5 +1,5 @@
 """Kimi / Moonshot provider profiles (chat_completions path; sk-kimi-* keys are
-redirected to api.kimi.com/coding by core)."""
+redirected to api.kimi.com/coding by ``resolve_base_url``)."""
 
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +50,17 @@ class KimiProfile(ProviderProfile):
         if models is None or confirmed_coding_endpoint:
             return models
         return [model for model in models if model.strip().lower() != "k3"]
+
+    def resolve_base_url(self, *, api_key: str, default_url: str, env_url: str, probe: bool = True) -> str:
+        """Kimi base URL from the key prefix; an explicit KIMI_BASE_URL always wins. No I/O, so the
+        status path (``probe=False``) gets the same answer."""
+        from hermes_cli.auth import KIMI_CODE_BASE_URL
+
+        if env_url:
+            return env_url
+        if api_key and api_key.startswith("sk-kimi-"):
+            return KIMI_CODE_BASE_URL
+        return default_url
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context

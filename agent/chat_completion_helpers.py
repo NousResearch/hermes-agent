@@ -2489,7 +2489,7 @@ def _relay_stream_metadata(agent, api_mode: str) -> dict:
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
     return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
+        "call_role": call_role, **getattr(agent, "_current_api_retry_metadata", {})}
 
 
 def _stream_final_text(response) -> str:

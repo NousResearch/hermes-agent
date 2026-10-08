@@ -104,6 +104,10 @@ def check_api_response(
     from agent.turn_recovery import validate_response_shape
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseCheckVerdict:
+        if action == "continue":
+            # All response-side retries, including truncated tool calls, leave
+            # the dedicated HTTP-error policy without resetting its hard limit.
+            _retry.scheduled_retry_policy = "generic"
         return ResponseCheckVerdict(
             action=action, thinking_spinner=thinking_spinner, messages=messages,
             active_system_prompt=active_system_prompt, finish_reason=finish_reason,
@@ -250,6 +254,10 @@ def retry_invalid_response(
     )
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> InvalidResponseVerdict:
+        if action == "continue":
+            # Includes the early credential-pool exit: the cumulative Copilot
+            # counter must not claim a request scheduled by response recovery.
+            _retry.scheduled_retry_policy = "generic"
         return InvalidResponseVerdict(
             action=action, thinking_spinner=thinking_spinner,
             active_system_prompt=active_system_prompt, retry_count=retry_count,

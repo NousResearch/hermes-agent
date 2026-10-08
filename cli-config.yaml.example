@@ -1251,6 +1251,11 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Opt-in extra attempts for GitHub Copilot HTTP 403 only, before fallback.
+  # 0 disables; 3 means at most four attempts of the unchanged request.
+  # Does not refresh credentials or fix missing entitlement.
+  # copilot_403_max_retries: 0
+
   # Once api_max_retries AND the fallback chain are spent on a transient outage
   # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
   # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;

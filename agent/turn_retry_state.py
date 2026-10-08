@@ -24,6 +24,10 @@ class TurnRetryState:
     welcome_model_switch_attempted: bool = False
     welcome_route_heal_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
+    copilot_403_retries_used: int = 0
+    # Policy scheduling the current request; None denotes the initial attempt.
+    # Keep this separate from the cumulative hard Copilot retry limit.
+    scheduled_retry_policy: str | None = None
     # Copilot surfaces a stale credential as a 400 ``model_not_available_for_integrator``
     # / ``model_not_supported``, not a 401 — separate guard from the 401 one.
     copilot_stale_cred_retry_attempted: bool = False

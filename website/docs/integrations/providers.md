@@ -250,6 +250,26 @@ On HTTP 401, Hermes now performs a one-shot credential recovery before fallback:
 Some older community proxies use `api.github.com/copilot_internal/v2/token` exchange flows. That endpoint can be unavailable for some account types (returns 404). Hermes therefore keeps direct-token auth as the primary path and relies on runtime credential refresh + retry for robustness.
 :::
 
+**Optional HTTP 403 retries:** A Copilot 403 (Forbidden) can be transient, but can also mean
+invalid authentication, missing subscription/model entitlement, or an organization policy.
+Retries cannot grant access. If you believe your login and model access are correct, opt in:
+
+```bash
+hermes config set agent.copilot_403_max_retries 3
+```
+
+Restart the CLI, or run `hermes gateway restart` for a gateway. The YAML setting defaults to
+`0` (disabled); a non-negative integer `N` allows **N extra attempts** of the same request
+(at most `N + 1` attempts when it keeps returning 403), with the existing exponential jittered
+backoff and interrupt/redirect handling. Negative or malformed values disable it. The setting
+applies only to Copilot (`copilot`, `github-copilot`, `github`, or a recognized Copilot endpoint),
+not other providers or the `copilot-acp` backend. It does not change HTTP 401 credential refresh.
+
+When enabled, these retries run before credential rotation or fallback, without changing the
+prompt/messages or refreshing credentials. After the limit, Hermes tries the configured
+fallback chain or surfaces the 403; `agent.api_max_retries` and `agent.auto_recovery_cycles`
+do not extend this 403 budget. Set `agent.copilot_403_max_retries` back to `0` to disable.
+
 **API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
 
 **`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:

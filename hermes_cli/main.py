@@ -1751,7 +1751,10 @@ def cmd_chat(args):
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
     run_bootstrap(announce=False)
-    if not _has_any_provider_configured():
+    # The TUI owns its first-run state: it renders "Setup Required" with in-place /setup.
+    # The classic prompt only fronts the classic CLI.
+    provider_configured = _has_any_provider_configured()
+    if not use_tui and not provider_configured:
         _first_run_setup_guard(args)
         return
 
@@ -1777,7 +1780,10 @@ def cmd_chat(args):
     _pin_kanban_board_env()
     from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
 
-    offer_consent_before_chat(args)
+    # Not before setup: a blank install meets "Setup Required" first. The offer stays
+    # undecided, so it is asked on the first launch with a provider.
+    if provider_configured:
+        offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}

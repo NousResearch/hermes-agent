@@ -784,9 +784,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge's own ``listen``); False with a named fatal when something still holds it — spawning
         onto a busy port only bought an EADDRINUSE crash-loop."""
         import time
-        from .bridge_ownership import port_is_free
+        from .bridge_ownership import port_accepts_listen
         deadline = time.monotonic() + _BRIDGE_PORT_FREE_TIMEOUT_S
-        while not port_is_free(self._bridge_port):
+        while not port_accepts_listen(self._bridge_port):
             if time.monotonic() >= deadline:
                 holders: list = []
                 with suppress(Exception):

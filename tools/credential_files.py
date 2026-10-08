@@ -34,8 +34,6 @@ _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_file
 
 # Cache for config-based file list, one entry per profile home (tests reset it).
 _config_files: Dict[str, List[Dict[str, str]]] = {}
-# Reused across calls so sanitized skill copies don't accumulate.
-_safe_skills_tempdir: Path | None = None
 
 
 def _get_registered() -> Dict[str, str]:
@@ -207,30 +205,51 @@ def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[Di
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy (same exclusions as sync)."""
-    global _safe_skills_tempdir
-
+    """Keep published sanitized snapshots alive for persistent read-only mounts."""
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
         return str(skills_dir)
     for link in symlinks:
         logger.warning("credential_files: skipping symlink in skills dir: %s -> %s", link, os.readlink(link))
 
-    import atexit
+    import errno
+    import hashlib
     import shutil
+    import stat
     import tempfile
 
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
-    safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
-
-    for base, files in _walk_skill_tree(skills_dir):
-        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
-        for item in files:
-            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
-
-    atexit.register(lambda: safe_dir.is_dir() and shutil.rmtree(safe_dir, ignore_errors=True))
-    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
+    files = []
+    digest = hashlib.sha256()
+    for base, entries in _walk_skill_tree(skills_dir):
+        for item in sorted(entries):
+            relative = item.relative_to(skills_dir)
+            data = item.read_bytes()
+            mode = stat.S_IMODE(item.stat().st_mode)
+            files.append((relative, data, mode))
+            digest.update(os.fsencode(relative) + b"\0" + str(mode).encode() + b"\0" + hashlib.sha256(data).digest())
+    root_key = hashlib.sha256(os.fsencode(skills_dir.resolve())).hexdigest()
+    cache = get_hermes_home() / "cache" / "skill-mounts" / root_key
+    cache.mkdir(parents=True, exist_ok=True)
+    safe_dir = cache / digest.hexdigest()
+    if safe_dir.is_dir():
+        return str(safe_dir)
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=cache))
+    try:
+        (staging / ".snapshot").write_text(digest.hexdigest() + "\n")
+        for relative, data, mode in files:
+            target = staging / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            target.chmod(mode)
+        try:
+            staging.rename(safe_dir)
+        except OSError as exc:
+            if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not safe_dir.is_dir():
+                raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    logger.info("credential_files: published symlink-safe skills snapshot at %s", safe_dir)
     return str(safe_dir)
 
 

@@ -23,7 +23,7 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
-from utils import fast_safe_load, file_signature
+from utils import fast_safe_load, file_signature, read_file_with_signature
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +104,36 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def load_managed_config_snapshot() -> tuple[dict, tuple | None]:
+    """Parse and fingerprint the same bytes, including metadata-preserving edits."""
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return {}, None
+    path = managed_dir / "config.yaml"
+    snapshot = read_file_with_signature(path)
+    if snapshot is None:
+        return {}, None
+    content, signature = snapshot
+    with _CACHE_LOCK:
+        hit = _CONFIG_CACHE.get(signature[0])
+        if hit is not None and hit[0] == signature:
+            return copy.deepcopy(hit[1]), signature
+    try:
+        parsed = fast_safe_load(content) or {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+    except Exception as exc:
+        logger.warning("managed scope: failed to parse %s: %s — IGNORING this managed file. "
+                       "Admin policy from this file is NOT being applied. Fix and restart.", path, exc)
+        return {}, signature
+    with _CACHE_LOCK:
+        _CONFIG_CACHE[signature[0]] = (signature, copy.deepcopy(parsed))
+    return parsed, signature
+
+
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
+    return load_managed_config_snapshot()[0]
 
 
 def load_managed_env() -> Dict[str, str]:

@@ -1,4 +1,5 @@
 """Config integration tests — managed scope wins over user config at the leaf."""
+import os
 import textwrap
 
 import pytest
@@ -101,3 +102,46 @@ def test_managed_bare_string_model_flattens_to_default_on_load(homes):
     _write(managed / "config.yaml", "model: managed/bare\n")
     cfg = load_config()
     assert cfg_get(cfg, "model", "default") == "managed/bare"
+
+
+def test_load_config_uses_one_managed_snapshot(homes, monkeypatch):
+    """A mid-load rewrite cannot pair one snapshot's policy with another's ID."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import cfg_get, load_config
+
+    home, managed = homes
+    _write(home / "config.yaml", "model:\n  default: user/model\n")
+    original_body = "model:\n  default: managed/alpha\n"
+    rewritten_body = "model:\n  default: managed/bravo\n"
+    assert len(original_body.encode()) == len(rewritten_body.encode())
+    path = managed / "config.yaml"
+    _write(path, original_body)
+    original_stat = path.stat()
+    real_snapshot = managed_scope.load_managed_config_snapshot
+    call_count = 0
+
+    def snapshot_then_rewrite():
+        nonlocal call_count
+        parsed, signature = real_snapshot()
+        call_count += 1
+        if call_count == 1:
+            path.write_text(rewritten_body, encoding="utf-8")
+            os.utime(
+                path,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+        return parsed, signature
+
+    monkeypatch.setattr(
+        managed_scope,
+        "load_managed_config_snapshot",
+        snapshot_then_rewrite,
+    )
+
+    first = load_config()
+    assert cfg_get(first, "model", "default") == "managed/alpha"
+    assert call_count == 1
+
+    second = load_config()
+    assert cfg_get(second, "model", "default") == "managed/bravo"
+    assert call_count == 2

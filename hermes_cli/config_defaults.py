@@ -1357,6 +1357,12 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
+        # Operator ceiling: intersect with parent capabilities; [] denies all,
+        # including MCP and delegation. None preserves normal inheritance.
+        "default_toolsets": None,
+        # Model-selectable provider/model bundles. Only names and redacted
+        # descriptions appear in schemas; secrets may use ${ENV_VAR} references.
+        "routes": {},
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each

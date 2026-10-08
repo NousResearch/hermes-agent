@@ -25,7 +25,7 @@ from typing import Mapping, Sequence
 # exist on the on-disk copy after this release. Extend when a new root-level
 # symbol would otherwise break the pre-handoff upgrade path.
 _ROOT_MODULE_REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
-    "utils": ("file_signature",),
+    "utils": ("file_signature", "read_file_with_signature", "file_content_signature"),
 }
 
 

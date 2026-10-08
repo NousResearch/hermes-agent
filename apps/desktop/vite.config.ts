@@ -14,105 +14,26 @@ function compilerPreset() {
   return preset
 }
 
-/** The React Compiler babel pass is ~85% of a production renderer build (≈13 s over ~770
- *  files), and every source update rebuilt all of it for a one-file change. Its output is a
- *  pure function of the module text, its id and the compiler/babel versions, so memoize it on
- *  disk by that content key: an update that touched three components re-runs babel on three
- *  files. A missing or corrupt entry is just a miss. The cache lives under node_modules
- *  (ignored, outside every freshness hash). Only production builds use it: the compiler emits
- *  HMR cache-reset code when NODE_ENV is development, and a dev server would grow it one entry
- *  per save with no build to prune it. */
+/** The production renderer build memoizes this pass on disk (scripts/compiler-cache.mjs); the
+ *  lockfile and this config (the preset and its filter) pin the toolchain it keys on. The
+ *  cache lives under node_modules: ignored, and outside every freshness hash. */
 async function cachedCompilerPass(command: string) {
-  const plugin = await babel({ presets: [compilerPreset()] })
-
-  if (command !== 'build') {
-    return plugin
-  }
-
-  // The lockfile pins every babel/compiler/plugin version this pass runs, this config file holds
-  // the preset and its filter, and NODE_ENV selects the compiler's dev mode: together they are
-  // the whole toolchain identity.
-  const toolchain = crypto.createHash('sha256')
-    .update(fs.readFileSync(path.resolve(__dirname, '../../package-lock.json')))
-    .update(fs.readFileSync(fileURLToPath(import.meta.url)))
-    .update(`\0${process.env.NODE_ENV ?? ''}`)
-    .digest('hex')
-    .slice(0, 16)
-
-  const root = path.join(__dirname, 'node_modules/.cache/hermes-react-compiler')
-  const dir = path.join(root, toolchain)
-  const used = new Set<string>()
-  const handler = plugin.transform.handler
-
-  plugin.transform.handler = async function (code: string, id: string, opts: unknown) {
-    const key = crypto.createHash('sha256').update(`${path.relative(__dirname, id)}\0${code}`).digest('hex')
-    const file = path.join(dir, `${key}.json`)
-    used.add(file)
-
-    try {
-      const hit = JSON.parse(fs.readFileSync(file, 'utf8'))
-
-      // The stored map drops sourcesContent: it is the module text the key already hashed.
-      if (hit.map) {
-        hit.map.sourcesContent = [code]
-      }
-
-      return hit
-    } catch {
-      // miss (or a torn entry): compile and store below
-    }
-
-    const result = await handler.call(this, code, id, opts)
-
-    if (result) {
-      try {
-        fs.mkdirSync(dir, { recursive: true })
-        const temp = `${file}.${process.pid}.tmp`
-        const map = result.map ? { ...result.map, sourcesContent: undefined } : result.map
-        fs.writeFileSync(temp, JSON.stringify({ code: result.code, map }))
-        fs.renameSync(temp, file)
-      } catch {
-        // a read-only or full disk only costs the next build this file's compile
-      }
-    }
-
-    return result
-  }
-
-  // Keep exactly what this build used: entries for since-edited files and other toolchains would
-  // otherwise accumulate one generation per update. A watch build never prunes (partial graph).
-  plugin.closeBundle = function () {
-    if (this.meta?.watchMode) {
-      return
-    }
-
-    try {
-      for (const name of fs.readdirSync(root)) {
-        if (name !== toolchain) {
-          fs.rmSync(path.join(root, name), { recursive: true, force: true })
-        }
-      }
-
-      for (const name of fs.readdirSync(dir)) {
-        if (!used.has(path.join(dir, name))) {
-          fs.rmSync(path.join(dir, name), { force: true })
-        }
-      }
-    } catch {
-      // nothing cached yet, or a read-only tree
-    }
-  }
-
-  return plugin
+  return withCompilerCache(await babel({ presets: [compilerPreset()] }), {
+    command,
+    cacheRoot: path.join(__dirname, 'node_modules/.cache/hermes-react-compiler'),
+    base: __dirname,
+    toolchain: [path.resolve(__dirname, '../../package-lock.json'), fileURLToPath(import.meta.url)]
+  })
 }
 
-import crypto from 'crypto'
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
 import tailwindcss from '@tailwindcss/vite'
+
+import { withCompilerCache } from './scripts/compiler-cache.mjs'
 
 // The runner loads this as ESM without the default bundler's CJS globals.
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url))

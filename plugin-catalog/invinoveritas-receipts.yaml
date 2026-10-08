@@ -1,17 +1,19 @@
 name: invinoveritas-receipts
 repo: https://github.com/babyblueviper1/hermes-invinoveritas
-sha: 4def742e3c991539769c5f7328399a6542b7f147
-description: "Signed, independently checkable receipts for Hermes approval verdicts. Observe-only post_approval_response hook: for each Guardian LLM verdict (or every approve/deny with scope=all) it requests an invinoveritas decision receipt, a signed set of salted commitments that anyone can check for free at /verify-proof, and that the holder can later open with the salt kept locally. Never approves, denies or delays an approval. Disclosure — one HTTPS POST per recorded approval decision to api.babyblueviper.com/decision-receipt (or the configured api_url) under INVINOVERITAS_API_KEY, paid automatically at 100 sats per receipt from your invinoveritas balance (default: Guardian LLM verdicts only; scope: all adds every human approve/deny); sends a fixed question, the options, the choice, a nonce-salted SHA-256 of the decision context and the tool_call_id/turn_id, never the command text; stores receipts, salts and the full decision context (including the command as Hermes passed it) in plugin-data/invinoveritas-receipts/receipts.jsonl."
+sha: 307c64ece1f6fa9e953f1859538f86a760d45ff3
+description: "Signed, independently checkable receipts for Hermes approval verdicts and, since 0.2.0, for turns that stop on iteration exhaustion. Observe-only: a post_approval_response hook requests an invinoveritas decision receipt for each Guardian LLM verdict (or every approve/deny with scope=all); post_llm_call + on_session_end record, when a turn ends with max_iterations_reached, whether the turn's todo ledger was complete (turn_scope: exhausted by default, all, or off). Each receipt is a signed set of salted commitments that anyone can check for free at /verify-proof and that the holder can later open with the salt kept locally. Never approves, denies, delays, continues or blocks anything. Disclosure — one HTTPS POST per recorded approval decision or exhausted turn to api.babyblueviper.com/decision-receipt (or the configured api_url) under INVINOVERITAS_API_KEY, paid automatically at 100 sats per receipt from your invinoveritas balance; sends a fixed question, the options, the choice, a nonce-salted SHA-256 of the context and the tool_call_id/turn_id, never the command text, todo contents or reply text; stores receipts, salts and the full contexts (including the command as Hermes passed it, and the todo ledger) in plugin-data/invinoveritas-receipts/receipts.jsonl."
 maintainer: babyblueviper1
 tier: community
 category: general
 docs_url: https://github.com/babyblueviper1/hermes-invinoveritas#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 capabilities:
   provides_tools: []
   provides_hooks:
     - post_approval_response
+    - post_llm_call
+    - on_session_end
   provides_middleware: []
   requires_env:
     - INVINOVERITAS_API_KEY

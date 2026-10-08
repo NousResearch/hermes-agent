@@ -196,11 +196,18 @@ class RunIdempotencyStore:
             return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
-    def accepts_room_authority(self, authority, previous=None, namespace=None):
+    def accepts_room_authority(self, authority, previous=None, namespace=None, claims=None, previous_home=None):
         from gateway.platforms.api_server_run_authority import namespace_matches, successor, superseded
+        from gateway.platforms.api_server_room_origins import accepts
         with self._lock:
             candidate = successor(self._conn, authority, previous)
-            return namespace_matches(self._conn, namespace, candidate) and not superseded(self._conn, candidate)
+            return (namespace_matches(self._conn, namespace, candidate) and not superseded(self._conn, candidate)
+                    and (claims is None or accepts(self._conn, claims, previous_home)))
+
+    def knows_room_target(self, claims):
+        from gateway.platforms.api_server_room_origins import retained
+        with self._lock:
+            return retained(self._conn, claims) is not None
 
     def knows_room_authority(self, authority):
         from gateway.platforms.api_server_run_authority import canonical
@@ -228,10 +235,10 @@ class RunIdempotencyStore:
         with self._lock:
             return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
 
-    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None):
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority, previous, previous_home, namespace)
+            current = observe(self._conn, scope, authority, previous, previous_home, namespace, claims)
             self._conn.commit()
         return current
 

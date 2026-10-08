@@ -55,13 +55,14 @@ async def test_changed_home_compacts_with_explicit_lineage_and_survives_restart(
 
 
 @pytest.mark.asyncio
-async def test_unrelated_origin_collision_does_not_compact_or_merge(tmp_path):
+@pytest.mark.parametrize('member_id', ['member-1', 'member-2'])
+async def test_unrelated_origin_collision_does_not_compact_or_merge(tmp_path, member_id):
     adapter = _adapter(tmp_path / 'runs.db')
     try:
         async with TestClient(TestServer(app(adapter))) as cli:
             grant, body = await _invitation(cli)
             assert (await cli.post('/v1/runs/stop', headers=_headers(grant), json=body)).status == 200
-            unrelated = successor_body()
+            unrelated = successor_body(member_id=member_id)
             unrelated.pop('previous_authority')
             assert (await invite(cli, unrelated)).status == 400
             store = adapter._run_idempotency_store
@@ -111,6 +112,51 @@ def test_explicit_binding_cannot_absorb_a_preexisting_unrelated_origin(tmp_path)
         assert store._conn.execute('SELECT COUNT(*) FROM run_room_authority_aliases').fetchone()[0] == 0
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_room_epoch_fences_all_members_but_retirement_stays_per_member(tmp_path):
+    adapter = _adapter(tmp_path / 'runs.db')
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            first, first_body = await _invitation(cli)
+            second_body = successor_body(home_install_id='home', authority_gateway_id='home', authority_epoch=1,
+                                         member_id='member-2')
+            second_body.pop('previous_authority')
+            response = await invite(cli, second_body)
+            assert response.status == 201
+            second = (await response.json())['grant']
+            claims = decode_room_grant(adapter._room_grant_secret(), second, permission='status')
+            body = {**first_body, 'hosted_room_dispatch': {**first_body['hosted_room_dispatch'], 'member_id': 'member-2'}}
+            assert (await cli.post('/v1/runs/stop', headers=_headers(second), json=body)).status == 200
+            assert (await cli.post('/v1/room-members/grants/revoke', headers=_headers(first),
+                                   json={'retire_authority': True})).status == 200
+            store = adapter._run_idempotency_store
+            assert store.accepts_room_authority(room_authority(claims))
+            assert (await cli.post('/v1/runs/stop', headers=_headers(second), json=body)).status == 200
+            # A different member advances the room. Member 2 has no new invitation,
+            # but its captured writer and cancellation state share that epoch fence.
+            assert (await invite(cli, successor_body())).status == 201
+            assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+            assert store.reserve(room_run_scope(claims), 'room:task-1:1', 'late', 'late', {'status': 'queued'},
+                                 room_authority=room_authority(claims)) == ('authority_retired', None)
+            # A member introduced after takeover starts its own transcript at its
+            # first home; future moves can carry that independently of older members.
+            newcomer = successor_body(member_id='new-member')
+            newcomer.pop('previous_authority')
+            response = await invite(cli, newcomer)
+            assert response.status == 201
+            fresh = decode_room_grant(adapter._room_grant_secret(), (await response.json())['grant'], permission='status')
+            assert store.room_origin_home(fresh) == 'successor'
+            third = successor_body(member_id='new-member', home_install_id='third', authority_gateway_id='third',
+                authority_epoch=3, previous_authority={
+                    'home_install_id': 'successor', 'authority_gateway_id': 'successor', 'authority_epoch': 2})
+            response = await invite(cli, third)
+            assert response.status == 201
+            continued = decode_room_grant(adapter._room_grant_secret(), (await response.json())['grant'], permission='status')
+            assert store.room_origin_home(continued) == 'successor'
+    finally:
+        adapter._run_idempotency_store.close()
 
 
 @pytest.mark.asyncio

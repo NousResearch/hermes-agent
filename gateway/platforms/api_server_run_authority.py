@@ -28,6 +28,9 @@ def initialize(conn):
         gateway_id TEXT NOT NULL, retired_through INTEGER NOT NULL DEFAULT 0)""")
     from hermes_cli.sqlite_util import add_column_if_missing
     add_column_if_missing(conn, "run_room_authorities", "home_key", "home_key TEXT")
+    add_column_if_missing(conn, "run_room_authorities", "target_key", "target_key TEXT")
+    from gateway.platforms import api_server_room_origins
+    api_server_room_origins.initialize(conn)
     conn.execute("UPDATE run_room_authorities SET home_key=authority_key WHERE home_key IS NULL")
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_authority_aliases (
         home_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL, origin_home TEXT NOT NULL)""")
@@ -82,21 +85,28 @@ def retirement_allowed(conn, authority):
     key, epoch, gateway = canonical(conn, authority)
     row = conn.execute("SELECT authority_epoch,gateway_id,home_key FROM run_room_authorities WHERE authority_key=?",
                        (key,)).fetchone()
-    return row is not None and (epoch < row[0] or (epoch, gateway, authority[0]) == row)
+    from gateway.platforms.api_server_room_origins import effective
+    current = effective(conn, key)
+    return current is not None and (epoch < current[0] or (
+        (epoch, gateway) == current[:2] and (epoch, gateway, authority[0]) == row))
 
 
 def superseded(conn, authority):
     if authority is None:
         return False
     key, epoch, gateway = canonical(conn, authority)
-    row = conn.execute("SELECT authority_epoch,gateway_id,retired_through FROM run_room_authorities WHERE authority_key=?", (key,)).fetchone()
+    from gateway.platforms.api_server_room_origins import effective
+    row = effective(conn, key)
     return row is not None and (epoch <= row[2] or epoch < row[0] or (epoch == row[0] and gateway != row[1]))
 
 
-def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None):
+def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
     """Bind old receipts on authenticated observation, then advance one room/member watermark."""
     key, epoch, gateway = successor(conn, authority, previous)
     if not namespace_matches(conn, namespace, (key, epoch, gateway)):
+        return False
+    from gateway.platforms import api_server_room_origins as origins
+    if claims is not None and not origins.accepts(conn, claims, previous_home):
         return False
     if previous is not None and key != authority[0]:
         if not previous_home:
@@ -116,7 +126,14 @@ def observe(conn, scope, authority, previous=None, previous_home=None, namespace
     if namespace is not None:
         conn.execute("INSERT INTO run_room_namespaces(namespace_key,authority_key) VALUES(?,?) ON CONFLICT DO NOTHING",
                      (namespace, key))
-    compact(conn, key)
+    if claims is not None:
+        original = origin_home(conn, authority, claims["home_install_id"])
+        target = origins.observe(conn, claims, original)
+        conn.execute("UPDATE run_room_authorities SET target_key=? WHERE authority_key=?", (target, key))
+        for (member_key,) in conn.execute("SELECT authority_key FROM run_room_authorities WHERE target_key=?", (target,)).fetchall():
+            compact(conn, member_key)
+    else:
+        compact(conn, key)
     return True
 
 
@@ -132,11 +149,13 @@ def retire(conn, scope, authority):
 
 def compact(conn, authority_key):
     """Drop cancelled terminal receipts; live executors retain their stop bit and status."""
+    from gateway.platforms.api_server_room_origins import effective
+    current = effective(conn, authority_key)
+    if current is None:
+        return
     rows = conn.execute("""SELECT scope,idempotency_key,status_json,stop_requested
-        FROM run_idempotency WHERE room_authority_key=? AND (room_authority_epoch<
-        (SELECT authority_epoch FROM run_room_authorities WHERE authority_key=?) OR room_authority_epoch<=
-        (SELECT retired_through FROM run_room_authorities WHERE authority_key=?))""",
-        (authority_key, authority_key, authority_key)).fetchall()
+        FROM run_idempotency WHERE room_authority_key=? AND (room_authority_epoch<? OR room_authority_epoch<=?)""",
+        (authority_key, current[0], current[2])).fetchall()
     for scope, key, encoded, stopped in rows:
         try:
             status = json.loads(encoded)

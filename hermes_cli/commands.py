@@ -441,11 +441,11 @@ _LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": bu
 SUBCOMMANDS: dict[str, list[str]] = {
     f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
 
-_PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
+_PIPE_SUBS_RE = re.compile(r"[a-z][a-z0-9_-]*(?:\s*\|\s*[a-z][a-z0-9_-]*)+")
 for _cmd in COMMAND_REGISTRY:
     _m = _PIPE_SUBS_RE.search(_cmd.args_hint) if _cmd.args_hint else None
     if _m and f"/{_cmd.name}" not in SUBCOMMANDS:
-        SUBCOMMANDS[f"/{_cmd.name}"] = _m.group(0).split("|")
+        SUBCOMMANDS[f"/{_cmd.name}"] = [s.strip() for s in _m.group(0).split("|") if s.strip()]
 
 
 # /help sub-groups for the large "Session" category (category itself is load-bearing for gateway

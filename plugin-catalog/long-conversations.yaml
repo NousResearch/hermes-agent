@@ -1,6 +1,7 @@
 name: long-conversations
+version: "0.1.0"
 repo: https://github.com/cspears32/hermes-long-conversations
-sha: b3a7f573eaac294a191fc2649becb292b2713335
+sha: aebb41f2a9813ddbf263a22dd7c0f536c727df1f
 description: "Persistent long-term conversations across session boundaries via structured handoff briefs and token monitoring."
 maintainer: cspears32
 tier: community

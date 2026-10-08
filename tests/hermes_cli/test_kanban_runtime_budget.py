@@ -53,12 +53,13 @@ def _running(conn, *, started_seconds_ago=0, **task_kwargs):
     return tid
 
 
-def _timed_out_payload(conn, tid):
+def _timed_out_payload(conn, tid) -> dict:
     ev = conn.execute(
         "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'timed_out' "
         "ORDER BY id DESC LIMIT 1", (tid,),
     ).fetchone()
-    return json.loads(ev["payload"]) if ev and ev["payload"] else None
+    payload = json.loads(ev["payload"]) if ev and ev["payload"] else None
+    return payload if isinstance(payload, dict) else {}
 
 
 def test_heartbeat_records_expected_runtime(kanban_home):

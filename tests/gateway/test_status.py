@@ -757,19 +757,33 @@ class TestPidExistsZombieProbe:
     def test_no_such_process_with_live_pid_reports_alive(self, monkeypatch):
         """#135102: under hidepid=2 / ProtectProc=invisible the status read raises
         NoSuchProcess for ANOTHER user's live worker (its /proc/<pid> is unreadable), which
-        must not be booked as "pid not alive" — pid_exists() answers EPERM=True for it.
-        Without the fall-through a foreign gateway's kanban sweep reclaims the live run."""
+        must not be booked as "pid not alive". The stdlib os.kill(pid, 0) probe answers
+        EPERM for it; psutil.pid_exists() must NOT be consulted because on Linux it also
+        falls back to ``pid in os.listdir("/proc")``, which omits hidepid-hidden pids —
+        so it is pinned to the WRONG answer (False) to prove the fix never calls it.
+        Without this a foreign gateway's kanban sweep reclaims the live run."""
         psutil = pytest.importorskip("psutil")
         self._status_raises_no_such_process(monkeypatch)
-        monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+
+        def kill_denies_foreign_pid(pid, sig):
+            raise PermissionError(pid)  # EPERM: exists, but this user may not signal it
+
+        monkeypatch.setattr(os, "kill", kill_denies_foreign_pid)
 
         assert status._pid_exists(4242) is True
 
     def test_no_such_process_with_dead_pid_reports_dead(self, monkeypatch):
-        # A pid that fails both probes is really gone: fall-through must not flip it alive.
+        # A pid that fails os.kill(pid, 0) with ESRCH is really gone, even if a stale
+        # psutil.pid_exists() were to claim otherwise (pinned True to prove it is unused).
         psutil = pytest.importorskip("psutil")
         self._status_raises_no_such_process(monkeypatch)
-        monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+        monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+
+        def kill_finds_no_process(pid, sig):
+            raise ProcessLookupError(pid)  # ESRCH: no such process
+
+        monkeypatch.setattr(os, "kill", kill_finds_no_process)
 
         assert status._pid_exists(4242) is False
 

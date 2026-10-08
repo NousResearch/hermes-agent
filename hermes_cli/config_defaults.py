@@ -1323,6 +1323,11 @@ DEFAULT_CONFIG = {
         # "retaindb", "byterover", or a catalog-installed one ("honcho", "hindsight", "supermemory",
         # "mem0", "openviking").
         "provider": "",
+        # Seconds to wait for an external provider's synchronous prefetch
+        # before skipping this turn. Default matches the historical 8s
+        # hard cap. Slow backends (cold recall, remote auth) should raise
+        # this rather than appearing "parked" for the session.
+        "external_prefetch_timeout": 8.0,
     },
     # Subagent delegation — override the provider:model used by delegate_task so children run on a
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so

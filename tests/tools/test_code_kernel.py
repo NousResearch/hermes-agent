@@ -2,8 +2,8 @@
 """Tests for execute_code's session kernel.
 
 Session kernels are always on (the ``code_execution.kernel_mode`` key is
-retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
-Python child alive so state survives across calls. These tests pin the
+retired): each (profile home, session, mode, interpreter, cwd, tool-set) owner
+keeps one Python child alive so state survives across calls. These tests pin the
 contract:
 
   - state persists across cells and reset=true discards it
@@ -210,9 +210,9 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
 
     run_agent mints a fresh task id per top-level turn, so a task-keyed
     kernel would neither survive the next user turn nor ever be disposed
-    with anything. The owner is the approval session key; disposal rides
+    with anything. The owner is the profile home plus approval session key; disposal rides
     the same session boundary that clears approval/yolo state, idle
-    kernels are reaped, and the process-wide live count is capped (the
+    kernels are reaped, and each profile's live count is capped (the
     lifecycle shape carried forward from hermes-agent#88637).
     """
 
@@ -242,6 +242,85 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
             other = self._run_as("conv-b", "print(x + 1)", task_id="turn-1")
         self.assertEqual(other["status"], "error", other)
         self.assertIn("NameError", other.get("error", ""))
+
+    def test_same_session_id_is_profile_owned_across_a_b_a(self):
+        """A multiplexed process may serve equal raw session ids in two homes.
+
+        The persistent interpreter, its frozen environment and open handles, reset,
+        and the per-profile LRU budget must all follow the immutable profile owner.
+        """
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        previous_multiplex = is_multiplex_active()
+        set_multiplex_active(True)
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                home_a, home_b = Path(root, "profile-a"), Path(root, "profile-b")
+                home_a.mkdir()
+                home_b.mkdir()
+                file_a, file_b = home_a / "owned.txt", home_b / "owned.txt"
+                file_a.write_text("alpha-handle", encoding="utf-8")
+                file_b.write_text("beta-handle", encoding="utf-8")
+
+                def run(home, code, **kwargs):
+                    token = set_hermes_home_override(home)
+                    try:
+                        return self._run_as(
+                            "same-raw-session", code, task_id="same-turn", **kwargs
+                        )
+                    finally:
+                        reset_hermes_home_override(token)
+
+                with _kernel_config(max_session_kernels=1):
+                    first_a = run(
+                        home_a,
+                        "import os\n"
+                        f"profile_handle = open({str(file_a)!r}, encoding='utf-8')\n"
+                        "profile_global = 'alpha-global'\n"
+                        "print('env', os.environ.get('HERMES_HOME'))\n",
+                    )
+                    first_b = run(
+                        home_b,
+                        "import os\n"
+                        "print('foreign-global', globals().get('profile_global', 'ISOLATED'))\n"
+                        "print('foreign-handle', globals().get('profile_handle', 'ISOLATED'))\n"
+                        f"profile_handle = open({str(file_b)!r}, encoding='utf-8')\n"
+                        "profile_global = 'beta-global'\n"
+                        "print('env', os.environ.get('HERMES_HOME'))\n",
+                    )
+                    reset_b = run(
+                        home_b,
+                        "print('after-reset', globals().get('profile_global', 'ISOLATED'), "
+                        "globals().get('profile_handle', 'ISOLATED'))\n",
+                        reset=True,
+                    )
+                    back_a = run(
+                        home_a,
+                        "import os\n"
+                        "print('global', profile_global)\n"
+                        "print('handle', profile_handle.read())\n"
+                        "print('env', os.environ.get('HERMES_HOME'))\n",
+                    )
+        finally:
+            set_multiplex_active(previous_multiplex)
+
+        self.assertEqual(first_a["status"], "success", first_a)
+        self.assertFalse(first_a["kernel"]["reused"], first_a)
+        self.assertIn(f"env {home_a}", first_a["output"])
+        self.assertEqual(first_b["status"], "success", first_b)
+        self.assertFalse(first_b["kernel"]["reused"], first_b)
+        self.assertIn("foreign-global ISOLATED", first_b["output"])
+        self.assertIn("foreign-handle ISOLATED", first_b["output"])
+        self.assertIn(f"env {home_b}", first_b["output"])
+        self.assertTrue(reset_b["kernel"]["state_reset"], reset_b)
+        self.assertIn("after-reset ISOLATED ISOLATED", reset_b["output"])
+        self.assertEqual(back_a["status"], "success", back_a)
+        self.assertTrue(back_a["kernel"]["reused"], back_a)
+        self.assertIn("global alpha-global", back_a["output"])
+        self.assertIn("handle alpha-handle", back_a["output"])
+        self.assertIn(f"env {home_a}", back_a["output"])
+        self.assertEqual(len(_KERNELS), 2, "max_session_kernels is a per-profile budget")
 
     def test_delegated_children_get_their_own_kernels(self):
         """A delegated child runs in a COPY of the parent's context and
@@ -359,7 +438,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 self._run_as(f"conv-{index}", "x = 1", task_id=f"turn-{index}")
                 kernels.append(list(_KERNELS.values()))
             self.assertLessEqual(len(_KERNELS), 2)
-            live_owners = {key[0] for key in _KERNELS}
+            live_owners = {key[0].session_key for key in _KERNELS}
             # The two most recently used owners survive.
             self.assertEqual(live_owners, {"conv-2", "conv-3"})
         # Evicted kernels are actually dead, not orphaned.

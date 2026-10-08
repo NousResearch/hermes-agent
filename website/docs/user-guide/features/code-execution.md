@@ -193,7 +193,7 @@ What ends a kernel:
 
 - **Timeout or interrupt.** A cell that hits the timeout (or is interrupted) kills the kernel process and its state is lost on purpose; the result says so and the next call starts a fresh kernel.
 - **`reset=true`.** The agent can pass `reset: true` to discard the kernel's state and start clean. This is also the way to pick up environment changes: a kernel's environment is frozen when it spawns, so a newly allowlisted passthrough variable is invisible until the kernel is reset.
-- **Idle timeout and eviction.** Kernels die with the session, after `code_execution.kernel_idle_timeout` idle seconds (default 1800), or when more than `code_execution.max_session_kernels` (default 4) top-level sessions' kernels are alive and the oldest is evicted (running subagents' kernels do not count against the cap).
+- **Idle timeout and eviction.** Kernels die with the session, after `code_execution.kernel_idle_timeout` idle seconds (default 1800), or when one profile has more than `code_execution.max_session_kernels` (default 4) top-level sessions' kernels alive and that profile's oldest is evicted (running subagents' kernels do not count against the cap).
 
 The security envelope is the same as a one-shot script: environment scrubbing, the tool whitelist, and the per-call tool budget all apply to every cell, and tool-call authority (approvals, session, allow-list) is rebound on each cell.
 
@@ -201,7 +201,7 @@ The security envelope is the same as a one-shot script: environment scrubbing, t
 # ~/.hermes/config.yaml
 code_execution:
   kernel_idle_timeout: 1800   # seconds a kernel may sit idle before it is reaped
-  max_session_kernels: 4      # kernels kept alive at once; oldest is evicted past this
+  max_session_kernels: 4      # kernels kept alive per profile; that profile's oldest is evicted
 ```
 
 **Remote backends** (Docker, SSH, Modal) run a remote session kernel with the same contract. If the kernel cannot be spawned on the backend, Hermes falls back to running each call as a standalone script and says so in the result.

@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.chat_completion_helpers_pool import _pool_exhaustion_detail
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -1943,31 +1944,6 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
             agent._rate_limited_until = cooldown_until
             agent._rate_limit_cooldown_reason = reason
     return False
-
-
-def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> "Optional[str]":
-    """None when the candidate's credential pool is usable. Otherwise a short reason
-    token distinguishing the two ways the pool can be unusable: "cooldown" when every
-    entry sits in an exhaustion cooldown longer than the retry loop's longest wait
-    (the 600s Retry-After cap), versus "no-wait-info" when nothing reports a recovery
-    time at all — an unfilled borrowed row or empty-looking pool, where no entry is
-    actually in cooldown (#131993). The skip decision is the same either way; only
-    the log message differs."""
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
-        try:
-            from agent.credential_pool import load_pool
-            pool = load_pool(fb_provider)
-        except Exception:
-            return None
-    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
-        return None
-    until = pool.next_available_at(model=fb_model)
-    if until is None:
-        return "no-wait-info"
-    if until - time.time() > 600:
-        return "cooldown"
-    return None
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:

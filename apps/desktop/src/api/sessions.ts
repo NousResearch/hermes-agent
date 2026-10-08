@@ -374,6 +374,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
 const runSessionMutation = createSessionMutationClient()
 
+class MissingMutationSnapshotRoute extends Error {}
+
 /** Run one fenced session edit. The fencing protocol is a backend capability: an older
  *  standalone runtime has no snapshot route and keeps its base write. Only that route-level
  *  verdict on the read, before any write was attempted, selects it; a session/profile 404,
@@ -381,13 +383,13 @@ const runSessionMutation = createSessionMutationClient()
  *  identity. */
 export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
   send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
-  let unfenced = false
-
   return runSessionMutation(key, () => read().catch(error => {
-    unfenced = isUnroutedRestPath(error)
+    // The prepared read is shared by equal concurrent edits; its verdict must
+    // travel with that rejection, rather than one caller's local closure.
+    if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
     throw error
   }), send).catch(error => {
-    if (!unfenced) { throw error }
+    if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
 
     return send({})
   })

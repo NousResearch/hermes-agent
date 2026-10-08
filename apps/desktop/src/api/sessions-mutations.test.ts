@@ -12,6 +12,41 @@ import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemot
 
 beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
 
+it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
+  vi.mocked(hermesApi).mockImplementation(async request => {
+    if (!request.method || request.method === 'GET') {
+      throw new Error('404: {"detail":"No such API endpoint: /api/sessions/shared-old/mutation-snapshot"}')
+    }
+
+    return { ok: true } as never
+  })
+
+  const results = await Promise.allSettled([
+    renameSession('shared-old', 'same name', 'work'),
+    renameSession('shared-old', 'same name', 'work')
+  ])
+
+  expect(results.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+  expect(vi.mocked(hermesApi).mock.calls.filter(([request]) => !request.method || request.method === 'GET')).toHaveLength(1)
+})
+
+it('a missing-route response from a write never selects an unfenced retry', async () => {
+  const missing = new Error('404: {"detail":"No such API endpoint: /api/sessions/write-only"}')
+  const writes: unknown[] = []
+  vi.mocked(hermesApi).mockImplementation(async request => {
+    if (!request.method || request.method === 'GET') {
+      return { exists: true, runtime_revision: 2, runtime_generation: 1 } as never
+    }
+
+    writes.push(request.body)
+    throw missing
+  })
+
+  await expect(renameSession('write-only', 'same name', 'work')).rejects.toBe(missing)
+  expect(writes).toHaveLength(1)
+  expect(writes[0]).toMatchObject({ request_id: expect.any(String), expected_revision: 2 })
+})
+
 it('uses owner snapshots and preserves the exact delete identity after a lost reply', async () => {
   let lost = true
   const writes: unknown[] = []

@@ -153,6 +153,25 @@ class TestSkips:
         preflight_db_writability(db)
         assert stat.S_IMODE(db.stat().st_mode) == before
 
+    def test_symlinked_db_in_readonly_dir_passes_when_target_writable(
+        self, hermes_home, tmp_path
+    ):
+        target_dir = hermes_home / "target-dir"
+        target_dir.mkdir()
+        target_db = target_dir / "target.db"
+        _make_db(target_db)
+
+        readonly_dir = tmp_path / "readonly-symlink-loc"
+        readonly_dir.mkdir()
+        symlink_db = readonly_dir / "symlink.db"
+        symlink_db.symlink_to(target_db)
+
+        os.chmod(readonly_dir, 0o555)
+        try:
+            preflight_db_writability(symlink_db, db_label="symlink.db")
+        finally:
+            os.chmod(readonly_dir, 0o755)
+
 
 class TestSessionDBIntegration:
     def test_sessiondb_selfheals_readonly_db_in_home(self, hermes_home):

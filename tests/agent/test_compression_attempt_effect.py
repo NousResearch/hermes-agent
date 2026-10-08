@@ -277,3 +277,39 @@ def test_aborted_record_after_a_commit_describes_its_own_attempt(caplog, abort, 
     assert aborted["method"] == "none" and not aborted["fallback_used"]
     assert [aborted.get(key) for key in ("tokens_before", "tokens_after", "tokens_reclaimed")] == [None] * 3
 
+
+def _adopt_child(agent, _db, _parent_sid):
+    agent.session_id = "adopted-child"
+    return [{"role": "user", "content": "child transcript"}]
+
+
+def _unreadable_ownership(_db, _sid):
+    raise OSError("database is locked")
+
+
+@pytest.mark.parametrize(
+    ("ownership_patch", "expected"),
+    [
+        # The lease found the parent already rotated and adopted the live child.
+        ({"_session_was_rotated_by_compression": lambda _db, _sid: True, "_adopt_live_compression_child": _adopt_child},
+         ("skipped", "session_ownership_lost")),
+        # The ownership lookup itself failed: ownership is unknown, not lost.
+        ({"_session_was_rotated_by_compression": _unreadable_ownership}, ("aborted", "session_ownership_unreadable")),
+    ],
+)
+def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path, ownership_patch, expected):
+    from hermes_state import SessionDB
+
+    agent = _Agent(_compressor())
+    agent._session_db = SessionDB(db_path=tmp_path / "state.db")
+    agent._session_db.create_session(agent.session_id, "cli", model="test/main-model")
+
+    with patch.multiple("agent.conversation_compression", **ownership_patch), \
+            patch.object(agent.context_compressor, "_generate_summary") as summary:
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool")
+
+    summary.assert_not_called()
+    [record] = _attempt_records(caplog)
+    assert (record["commit_status"], record["failure_class"]) == expected
+    assert (record["session_id"], record["trigger_source"]) == ("session-effect-test", "post_tool")

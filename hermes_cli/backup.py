@@ -138,6 +138,19 @@ _EXCLUDED_PREFIXES = (
     f"state.db{RETIRED_GENERATION_DIR_SUFFIX}",
 )
 
+# Cron runtime coordination that appears and vanishes WHILE a backup runs. The scan builds its file
+# list once and the archive writes it over minutes, so either of these can be gone by the time it is
+# read: the run then reports files that "could not be added", the archive is marked incomplete and
+# the systemd timer exits 1 (2026-10-04: 6 such files, all of this kind; earlier runs 8-48).
+#   * ``cron/.jobs_<rand>.tmp`` — the atomic-write temp for jobs.json (cron/jobs.py
+#     ``mkstemp_beside``), created and renamed away within milliseconds.
+#   * ``cron/external-workers/`` — the per-fire worker handoff: payload ``.json``, ack ``.ready``,
+#     captured ``.stderr``, all removed as soon as the worker exits (cron/scheduler.py).
+# Neither is durable state (the handoff dir is recreated on demand and never restored), so both are
+# excluded from the scan. Genuinely vanished durable files are still reported by the writer.
+_CRON_JOBS_TMP_PREFIX = ".jobs_"
+_CRON_EXTERNAL_WORKERS_DIR = "external-workers"
+
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
 # drives the container-boot reconciler (a foreign value leaves the gateway stuck "starting" and
@@ -310,6 +323,22 @@ def _is_link_path(path: Path) -> bool:
     return os.name == "nt" and bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def _is_ephemeral_cron_path(rel_path: Path) -> bool:
+    """True for cron runtime state that can vanish between the backup's scan and its write.
+
+    Covers ``cron/.jobs_<rand>.tmp`` and ``cron/external-workers/`` (see the constants above). Both
+    are recreated on demand and never restored, so excluding them removes the race at the source
+    instead of reporting files that no longer exist by the time the archive reaches them.
+    """
+    parts = rel_path.parts
+    if "cron" not in parts:
+        return False
+    name = rel_path.name
+    if name.startswith(_CRON_JOBS_TMP_PREFIX) and name.endswith(".tmp"):
+        return True
+    return _CRON_EXTERNAL_WORKERS_DIR in parts
+
+
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
@@ -319,7 +348,9 @@ def _should_exclude(rel_path: Path) -> bool:
     if any(p in _EXCLUDED_DIRS and (p != "hermes-agent" or p == parts[0]) for p in parts):
         return True
     name = rel_path.name
-    return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
+    if name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES):
+        return True
+    return _is_ephemeral_cron_path(rel_path)
 
 
 def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
@@ -335,7 +366,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         kept = [
             d for d in dirnames
             if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
-            and not _in_excluded_root_dir(rel_dir / d)]
+            and not _in_excluded_root_dir(rel_dir / d)
+            and not _is_ephemeral_cron_path(rel_dir / d)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
@@ -504,12 +536,18 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 def _write_zip_entries(
     zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
-    *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
+    *, on_db_failure, on_error, on_progress, track_bytes: bool, on_vanished=None) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
     ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
     ``track_bytes`` stats plain files for the size total.
+
+    A file the scan listed but that is gone by the time it is read raises ``FileNotFoundError`` and
+    is reported through ``on_vanished(rel_path)`` instead of ``on_error``: the file was deleted while
+    the archive was being written, so nothing durable is missing from the archive. Failing the whole
+    run for that (as it did before) turned normal runtime churn — atomic-write temps, per-fire worker
+    handoffs — into a red backup timer. ``on_vanished`` may be omitted to treat it as a plain skip.
     """
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
@@ -524,6 +562,12 @@ def _write_zip_entries(
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
+        except FileNotFoundError:
+            # Deleted between the scan and this write. ``_write_zip_file`` already dropped any
+            # partial member, so the archive stays valid; just don't call it a failure.
+            if on_vanished is not None:
+                on_vanished(rel_path)
+            continue
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
             continue
@@ -628,6 +672,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
     errors = []
+    # Files the scan listed but that were deleted before the writer reached them. Normal runtime
+    # churn, reported (not silently dropped) but never a reason to fail the run.
+    vanished: list[str] = []
     t0 = time.monotonic()
 
     def _progress(i: int) -> None:
@@ -639,13 +686,16 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         total_bytes = _write_zip_entries(
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
-            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
+            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+            on_vanished=lambda rel: vanished.append(str(rel)))
         # External memory-provider state never includes ``.db`` files in practice, so no
         # SQLite snapshot is needed; _write_zip_file still drops a failed partial member.
         for abs_path, arcname in external_to_add:
             try:
                 _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
+            except FileNotFoundError:
+                vanished.append(arcname)
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0
@@ -664,6 +714,13 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+    if vanished:
+        # Reported, not counted: the file was deleted on disk while the archive was being written,
+        # so there is nothing to restore and nothing to fail over. Visible so a durable file
+        # disappearing mid-run still shows up in the output and the log.
+        logger.info("backup phase=archive status=vanished count=%d", len(vanished))
+        _print_capped(f"\n  Skipped {len(vanished)} file(s) deleted during the run "
+                      "(runtime state, not a failure):", vanished, "  ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
     else:
@@ -2262,6 +2319,10 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+                # A file deleted mid-run is runtime churn, not a reason to salvage this
+                # pre-update backup; log it and keep the archive clean.
+                on_vanished=lambda rel: logger.info(
+                    "automatic backup: skipped %s (deleted during the run)", rel),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:

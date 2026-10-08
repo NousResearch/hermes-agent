@@ -201,12 +201,19 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
-    """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query, or None."""
+def _nvidia_vram() -> tuple[int, int | None, str, int | None] | None:
+    """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query.
+
+    None when there is no query or it has no total. Free falls back to total - used and is None
+    when the driver reports neither; callers then keep the capacity plan.
+    """
     query = _cached_nvidia_gpu_query()
-    if query is None:
+    if query is None or query["total_bytes"] is None:
         return None
-    return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
+    total, free, used = query["total_bytes"], query["free_bytes"], query["used_bytes"]
+    if free is None and used is not None:
+        free = max(0, total - used)
+    return total, free, query["gpu_name"], query["gpu_pci_id"]
 
 
 _gpu_query_cache: "tuple[float, dict | None] | None" = None
@@ -218,12 +225,61 @@ _gpu_query_cache: "tuple[float, dict | None] | None" = None
 _GPU_QUERY_TTL_S = 4.0
 
 
+# The wide row serves every reader in one spawn. The narrow row is the fallback for a driver that
+# rejects the whole wide query (an unknown field fails the process, not the cell).
+_GPU_QUERY_FIELDS = "memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+_GPU_QUERY_FALLBACK_FIELDS = "name,memory.total,memory.free"
+
+
+def _smi_int(cell: str, base: int = 10) -> int | None:
+    """One nvidia-smi cell: ``N/A``, ``[N/A]``, ``[Not Supported]`` are None, never 0."""
+    with suppress(ValueError):
+        return int(cell, base)
+    return None
+
+
+def _smi_mib(cell: str) -> int | None:
+    mib = _smi_int(cell)
+    return None if mib is None else mib << 20
+
+
+def _smi_query(exe: str, fields: str) -> "dict | None":
+    """First GPU's row for ``fields``, or None when nvidia-smi rejects the query."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    out = subprocess.run(
+        [exe, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        creationflags=windows_hide_flags())
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    keys = fields.split(",")
+    row = next(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+    if len(row) < len(keys):
+        return None
+    # nvidia-smi does not quote names: a comma in one spills into extra cells, so the numeric
+    # columns are read from both ends and the name is whatever lies between them.
+    at = keys.index("name")
+    tail = len(row) - (len(keys) - at - 1)
+    cells = dict(zip(keys[:at], row[:at])) | dict(zip(keys[at + 1:], row[tail:]))
+    return {
+        "gpu_name": ", ".join(row[at:tail]).strip(),
+        "total_bytes": _smi_mib(cells["memory.total"]),
+        "free_bytes": _smi_mib(cells["memory.free"]),
+        "used_bytes": _smi_mib(cells.get("memory.used", "")),
+        "gpu_util_percent": _smi_int(cells.get("utilization.gpu", "")),
+        "gpu_pci_id": _smi_int(cells.get("pci.device_id", ""), 16),
+    }
+
+
 def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
     """One nvidia-smi read shared by the budget probe and the hardware endpoint.
 
     Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
-    gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
-    Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
+    gpu_pci_id=)``; a numeric cell the driver answers ``N/A`` is None and the rest of the row
+    still stands. None when nvidia-smi is absent, times out, or rejects both the wide query and
+    the narrow ``name,memory.total,memory.free`` retry. Cached for ``ttl_s`` (failures too — a
+    missing smi must not spawn per poll).
     """
     global _gpu_query_cache
     now = time.monotonic()
@@ -231,37 +287,13 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
         return _gpu_query_cache[1]
 
     exe = _nvidia_smi_path()
-    if exe is None:
-        _gpu_query_cache = (now, None)
-        return None
-
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    with suppress(OSError, ValueError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            creationflags=windows_hide_flags())
-        if out.returncode != 0 or not out.stdout.strip():
-            _gpu_query_cache = (now, None)
-            return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
-        data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
-            "gpu_pci_id": pci_id,
-        }
-        _gpu_query_cache = (now, data)
-        return data
-    _gpu_query_cache = (now, None)
-    return None
+    data = None
+    if exe is not None:
+        # A timeout skips the retry: a second 10s stall on install/launch buys nothing.
+        with suppress(OSError, subprocess.TimeoutExpired):
+            data = _smi_query(exe, _GPU_QUERY_FIELDS) or _smi_query(exe, _GPU_QUERY_FALLBACK_FIELDS)
+    _gpu_query_cache = (now, data)
+    return data
 
 
 def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
@@ -430,7 +462,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             # Live: dedicated-free plus what the OS can still give. smi's free saturates at the
             # carve-out so this under-counts a bit — the safe direction (the pool edge is a
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
-            live = (vram[1] + ram_avail) if vram else ram_avail
+            live = ram_avail + ((vram[1] or 0) if vram else 0)
             base = min(unified, live)
         return _uma_budget(base, unified, gpu_name=vram[2] if vram else "",
                            gpu_pci_id=vram[3] if vram else None)
@@ -453,7 +485,8 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
 
     total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
-    return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
+    base = total if planning or free is None else free
+    return HardwareBudget(usable_vram_bytes=max(0, base - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
                           uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id)
@@ -470,14 +503,16 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
     A stopped server's memory reads as free by the time its process has exited (measured on
     Windows: free memory was fully back at the first reading after exit). None for unified memory
-    (its live budget is already free memory) and when the device query fails, so callers keep the
-    capacity plan.
+    (its live budget is already free memory) and when the device query fails or reports no free
+    memory, so callers keep the capacity plan.
     """
     if capacity.uma:
         return None
     vram = _nvidia_vram()
     if vram is not None:
         total, free = vram[0], vram[1]
+        if free is None:
+            return None
     else:
         # A discrete card behind Vulkan/HIP: the driver's free count includes other programs.
         device = _accelerator_device(fresh=True)

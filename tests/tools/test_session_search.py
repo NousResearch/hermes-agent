@@ -61,6 +61,56 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+@pytest.mark.parametrize("suffix_started", [100, 200])
+def test_exact_title_precedes_suffixed_continuation_in_discovery(db, suffix_started):
+    for sid, title, started in (
+        ("exact", "Quarterly Recall", 100),
+        ("numbered", "Quarterly Recall #2", suffix_started),
+    ):
+        db.create_session(sid, source="cli")
+        db.append_message(sid, role="user", content="Notes stored in this session")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (started, title, sid),
+        )
+    db._conn.commit()
+
+    result = json.loads(session_search(query='"Quarterly Recall"', db=db, limit=2))
+    assert result["results"][0]["session_id"] == "exact"
+    assert result["results"][0]["title"] == "Quarterly Recall"
+
+
+@pytest.mark.parametrize("exact_status", ["absent", "hidden", "outside_window", "root_outside_window"])
+def test_unavailable_exact_title_uses_newest_numbered_continuation(db, exact_status):
+    sessions = [
+        ("older", "Quarterly Recall #2", 160, "cli"),
+        ("newer", "Quarterly Recall #3", 200, "cli"),
+    ]
+    if exact_status == "root_outside_window":
+        db.create_session("root", source="cli")
+        db._conn.execute("UPDATE sessions SET started_at = 100 WHERE id = 'root'")
+    if exact_status != "absent":
+        sessions.append(("exact", "Quarterly Recall",
+                         170 if exact_status == "root_outside_window" else 100,
+                         "tool" if exact_status == "hidden" else "cli"))
+    for sid, title, started, source in sessions:
+        db.create_session(sid, source=source,
+                          parent_session_id="root" if exact_status == "root_outside_window" and sid == "exact" else None)
+        db.append_message(sid, role="user", content="Notes stored in this session")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (started, title, sid),
+        )
+    db._conn.commit()
+
+    if exact_status in ("outside_window", "root_outside_window"):
+        result = json.loads(session_search(query="Quarterly Recall", db=db, limit=2,
+                                           after="1970-01-01T00:02:30Z"))
+    else:
+        result = json.loads(session_search(query="Quarterly Recall", db=db, limit=2))
+    assert result["results"][0]["session_id"] == "newer"
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================

@@ -493,7 +493,7 @@ class GatewayTopicThreadsMixin:
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("disable_topic_auto_rename"))
 
     async def _rename_telegram_topic_for_session_title(self, source: SessionSource, session_id: str, title: str) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+        """Best-effort rename (+ semantic icon) of a Telegram DM topic when Hermes auto-titles a session."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
             return
         # Operator kill-switch, e.g. user-managed topics (ad-hoc Threaded Mode) that auto-rename
@@ -528,21 +528,75 @@ class GatewayTopicThreadsMixin:
         if adapter is None:
             return
         topic_name = self._sanitize_telegram_topic_title(title)
+        # Semantic icon from the model title (same call, no extra model cost). The operator
+        # topic guard above already excluded config-declared topics, whose icons the operator
+        # chose; an operator-set icon on an ad-hoc topic is preserved by the editForumTopic
+        # contract itself (name+icon in one call; icon omitted ⇒ kept).
+        topic_icon = await self._telegram_topic_icon_for_title(adapter, topic_name)
+        # User-chosen icon wins: if the adapter observed a service message showing the
+        # user set (or cleared) this topic's icon, leave it untouched — name-only rename.
+        # The Bot API has no read-back for a topic's current icon, so this only protects
+        # icons we have actually seen (the documented Telegram limit). Looked up on the
+        # CLASS like the operator-topic guard above: a MagicMock test double must not
+        # auto-create the method and shadow "unknown" with a mock return value.
+        user_icon = getattr(type(adapter), "get_dm_topic_user_icon", None) if adapter is not None else None
+        if callable(user_icon):
+            try:
+                observed = user_icon(adapter, str(source.chat_id), str(source.thread_id))
+            except Exception:
+                observed = None
+            if observed is not None:
+                topic_icon = None
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:
-                await rename_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name)
+                await rename_topic(
+                    chat_id=str(source.chat_id), thread_id=str(source.thread_id), name=topic_name,
+                    icon_custom_emoji_id=topic_icon)
                 return
             bot = getattr(adapter, "_bot", None)
             edit_forum_topic = getattr(bot, "edit_forum_topic", None) or getattr(bot, "editForumTopic", None)
             if edit_forum_topic is None:
                 return
             try:
-                await edit_forum_topic(chat_id=int(source.chat_id), message_thread_id=int(source.thread_id), name=topic_name)
+                await edit_forum_topic(
+                    chat_id=int(source.chat_id), message_thread_id=int(source.thread_id),
+                    name=topic_name, icon_custom_emoji_id=topic_icon)
             except (TypeError, ValueError):
-                await edit_forum_topic(chat_id=source.chat_id, message_thread_id=source.thread_id, name=topic_name)
+                if topic_icon:
+                    try:
+                        await edit_forum_topic(
+                            chat_id=source.chat_id, message_thread_id=source.thread_id,
+                            name=topic_name, icon_custom_emoji_id=topic_icon)
+                    except (TypeError, ValueError):
+                        await edit_forum_topic(
+                            chat_id=source.chat_id, message_thread_id=source.thread_id, name=topic_name)
+                else:
+                    await edit_forum_topic(chat_id=source.chat_id, message_thread_id=source.thread_id, name=topic_name)
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
+
+    async def _telegram_topic_icon_for_title(self, adapter, title: str) -> Optional[str]:
+        """Allowed custom-emoji id for a semantic topic icon, or None (icon left as-is).
+
+        Pure keyword projection of the already-generated title onto Telegram's fixed
+        forum-icon set; one cached ``getForumTopicIconStickers`` fetch per gateway
+        process and no extra model call.
+        """
+        try:
+            from plugins.platforms.telegram.topic_icons import ForumTopicIconIndex, select_topic_icon
+        except Exception:
+            logger.debug("topic_icons module unavailable; skipping semantic topic icon", exc_info=True)
+            return None
+        try:
+            index = getattr(self, "_telegram_topic_icon_index", None)
+            if index is None:
+                index = ForumTopicIconIndex()
+                self._telegram_topic_icon_index = index
+            return await select_topic_icon(title, getattr(adapter, "_bot", None), index)
+        except Exception:
+            logger.debug("Semantic topic icon selection failed", exc_info=True)
+            return None
 
     # ── /topic command bodies ───────────────────────────────────────────────────────────────
 

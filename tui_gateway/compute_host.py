@@ -80,8 +80,10 @@ class ComputeHost:
         self._turn_futures: dict[concurrent.futures.Future, str] = {}
         self._turn_futures_lock = threading.Lock()
         self._transport = _HostTransport(self.emit)
-        from .host_conditional import HostConditionalProtocol
-        self._conditional = HostConditionalProtocol(self)
+        # Hello/idle hosts need no reservations or membership reaper. First use includes
+        # legacy turns whose failed origin must be latched, not just conditional requests.
+        self._conditional = None
+        self._conditional_lock = threading.Lock()
         self._heartbeat_secs = (
             float(heartbeat_secs) if heartbeat_secs is not None
             else float(os.environ.get("HERMES_COMPUTE_HOST_HEARTBEAT_SECS") or "15"))
@@ -105,7 +107,12 @@ class ComputeHost:
 
     def close(self) -> None:
         self._closed.set()
-        self._conditional.close()
+        # Wait for any initializer to publish, then release the lifecycle lock before
+        # closing the protocol (which takes its own locks and shuts down workers).
+        with self._conditional_lock:
+            conditional = self._conditional
+        if conditional is not None:
+            conditional.close()
         self._executor.shutdown(wait=False, cancel_futures=True)
         # Every caller hard-exits next (os._exit skips atexit): a foreground command still
         # running in its own process group would outlive the host.
@@ -160,8 +167,22 @@ class ComputeHost:
         else:
             getattr(self, handler)(frame)
 
+    def _conditional_protocol(self):
+        with self._conditional_lock:
+            if self._closed.is_set():
+                return None
+            if self._conditional is None:
+                from .host_conditional import HostConditionalProtocol
+                self._conditional = HostConditionalProtocol(self)
+            return None if self._closed.is_set() else self._conditional
+
     def _handle_conditional(self, frame):
-        self._conditional.handle(frame)
+        conditional = self._conditional_protocol() if frame.get("boot_id") == self._boot_id else None
+        if conditional is None:
+            self.emit({"type": "conditional.ack", "request_id": frame.get("request_id"),
+                       "boot_id": self._boot_id, "error": 4007})
+        else:
+            conditional.handle(frame)
 
     def _handle_shutdown(self, frame: dict[str, Any]) -> None:
         self.emit({"type": "shutdown.ack", "request_id": frame.get("request_id")})
@@ -238,7 +259,10 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
-            self._conditional.capture(server, session, frame)
+            conditional = self._conditional_protocol()
+            if conditional is None:
+                raise RuntimeError("compute host closed")
+            conditional.capture(server, session, frame)
             # #101416: the parent already holds this session's active-session lease (claimed in
             # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
             # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own

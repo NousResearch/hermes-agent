@@ -1344,6 +1344,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._update_prompt_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Pure-media messages (no text) wait here for the chat's next text message from
+        # the same sender (see the cache key), with a TTL so a chat that never follows
+        # up cannot grow the pool forever.
+        self._pending_media_cache: Dict[str, Dict[str, list]] = {}
+        self._pending_media_ts: Dict[str, float] = {}  # cache key → last park time
         self._load_seen_message_ids()
 
     @staticmethod
@@ -2675,6 +2680,42 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        # Pure-media messages (no text) are cached and acked with "📷 收到"; they are NOT
+        # delivered (and not auto-flushed by the media-batch timer) until the chat's next
+        # text message, which flushes the cached media in as real attachments (images —
+        # image routing decides native vs text) plus "[Media: …]" refs (documents). A chat
+        # that never follows up keeps the ack as the only response.
+        if event.media_urls and not (event.text or "").strip():
+            self._prune_media_cache()
+            ckey = self._media_cache_key(event)
+            bucket = self._pending_media_cache.setdefault(ckey, {"images": [], "files": []})
+            for path, mime in zip(event.media_urls, event.media_types):
+                if str(mime or "").startswith("image/"):
+                    bucket["images"].append((path, mime))
+                else:
+                    bucket["files"].append(path)
+            bucket["images"] = bucket["images"][-self._MEDIA_CACHE_MAX_PER_KEY:]
+            bucket["files"] = bucket["files"][-self._MEDIA_CACHE_MAX_PER_KEY:]
+            self._pending_media_ts[ckey] = time.time()
+            try:
+                await self.send(event.source.chat_id, "📷 收到")
+            except Exception:
+                pass
+            return
+
+        if (event.text or "").strip():
+            _ckey = self._media_cache_key(event)
+            bucket = self._pending_media_cache.pop(_ckey, None)
+            self._pending_media_ts.pop(_ckey, None)
+            if bucket:
+                refs = [f"[Media: {p}]" for p in bucket.get("files", [])]
+                if refs:
+                    event.text = (event.text or "") + "\n\n" + "\n".join(refs)
+                cached_imgs = bucket.get("images", [])
+                if cached_imgs:
+                    event.media_urls = list(event.media_urls or []) + [p for p, _m in cached_imgs]
+                    event.media_types = list(event.media_types or []) + [m for _p, m in cached_imgs]
+
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -2683,7 +2724,31 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         await self._handle_message_with_guards(event)
 
+    def _media_cache_key(self, event: MessageEvent) -> str:
+        """Pending-media cache key for a Feishu message: chat + thread + sender.
+
+        The sender is part of the key so a group chat cannot flush one member's
+        parked media into another member's next text.
+        """
+        thread = getattr(event.source, "thread_id", None) or ""
+        user = getattr(event.source, "user_id", None) or ""
+        return f"feishu:{event.source.chat_id}:{thread}:{user}"
+
     # --- Media batching ---
+
+    # Pure-media pool policy: drop a parked bucket when no text from the same sender
+    # follows within this window, and cap what a single bucket may hold.
+    _MEDIA_CACHE_TTL_SECONDS = 1800.0
+    _MEDIA_CACHE_MAX_PER_KEY = 32
+
+    def _prune_media_cache(self) -> None:
+        """Drop stale buckets so a chat that never follows up cannot grow the pool forever."""
+        now = time.time()
+        stale = [k for k, ts in self._pending_media_ts.items() if now - ts >= self._MEDIA_CACHE_TTL_SECONDS]
+        for k in stale:
+            self._pending_media_ts.pop(k, None)
+            self._pending_media_cache.pop(k, None)
+
     def _should_batch_media_event(self, event: MessageEvent) -> bool:
         batchable = {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT, MessageType.AUDIO}
         return bool(event.media_urls and event.message_type in batchable)

@@ -163,6 +163,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        # Pure-media messages (no text of the user's own) wait here for the chat's next
+        # text from the same sender (see the cache key), with a TTL so a chat that never
+        # follows up cannot grow the pool forever.
+        self._pending_attachments: Dict[str, list] = {}  # cache key → [(path, mime), ...]
+        self._pending_file_texts: Dict[str, list] = {}  # cache key → [(info, kind), ...]
+        self._pending_media_ts: Dict[str, float] = {}  # cache key → last park time
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
@@ -812,6 +818,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     # ── Shared inbound pipeline (all four message kinds) ──
 
+    # Pure-media pool policy: drop a parked bucket when no text from the same sender
+    # follows within this window, and cap what a single bucket may hold.
+    _MEDIA_CACHE_TTL_SECONDS = 1800.0
+    _MEDIA_CACHE_MAX_PER_KEY = 32
+
+    def _prune_media_cache(self) -> None:
+        """Drop stale buckets so a chat that never follows up cannot grow the pool forever."""
+        now = time.time()
+        stale = [k for k, ts in self._pending_media_ts.items() if now - ts >= self._MEDIA_CACHE_TTL_SECONDS]
+        for k in stale:
+            self._pending_media_ts.pop(k, None)
+            self._pending_attachments.pop(k, None)
+            self._pending_file_texts.pop(k, None)
+
     @staticmethod
     def _append_block(text: str, block: str) -> str:
         """Append *block* to *text* after a blank line (or return block alone if text is blank)."""
@@ -838,6 +858,48 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
             image_media_types = image_media_types + quoted["image_media_types"]
+
+        # Pure-media messages (no text of the user's own) are held back: cache them and
+        # ack with "📷 收到" instead of dispatching; the chat's next text flushes them in
+        # as real attachments (images) / "[Media: …]" refs (files). Judge by the USER's
+        # own input — raw text, voice transcripts, or a quoted block — not by the folded
+        # ``text``: attachment_info alone must not count as the user having typed.
+        ckey = f"qqbot:{chat_id}:{source_kwargs.get('user_id', '') or ''}"
+        user_input = (
+            bool((content or "").strip())
+            or bool(voice_transcripts)
+            or bool(quoted["quote_block"].strip())
+        )
+        if not user_input:
+            self._prune_media_cache()
+            if image_urls:
+                # (path, mime) pairs so the flush restores media_urls AND media_types
+                # (image routing needs the per-attachment MIME).
+                self._pending_attachments.setdefault(ckey, []).extend(zip(image_urls, image_media_types))
+                self._pending_attachments[ckey] = self._pending_attachments[ckey][-self._MEDIA_CACHE_MAX_PER_KEY:]
+            if att["attachment_info"]:
+                self._pending_file_texts.setdefault(ckey, []).append((att["attachment_info"], "file"))
+                self._pending_file_texts[ckey] = self._pending_file_texts[ckey][-self._MEDIA_CACHE_MAX_PER_KEY:]
+            self._pending_media_ts[ckey] = time.time()
+            if image_urls or att["attachment_info"]:
+                try:
+                    await self.send(chat_id, "📷 收到")
+                except Exception:
+                    pass
+            return
+
+        # Flush cached pure-media into this text as real attachments so gateway image
+        # routing decides native-vs-text per the model's vision capability.
+        pending_imgs = self._pending_attachments.pop(ckey, [])
+        pending_files = self._pending_file_texts.pop(ckey, [])
+        self._pending_media_ts.pop(ckey, None)
+        if pending_imgs:
+            image_urls = image_urls + [p for p, _m in pending_imgs]
+            image_media_types = image_media_types + [m for _p, m in pending_imgs]
+        refs = [fp for fp, kind in pending_files if kind == "file"]
+        if refs:
+            text = text + "\n\n" + "\n".join(refs)
+
         if not text.strip() and not image_urls:
             return
 

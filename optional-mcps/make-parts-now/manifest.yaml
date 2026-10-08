@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: make-parts-now
+description: 'Make Parts Now: instant 3D printing and CNC machining quotes from a CAD file.'
+source: https://makepartsnow.com/developers#ai-assistants
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required for quoting (verified
+# live: initialize and tools/call succeed anonymously). ?client=hermes only
+# attributes traffic; the server treats it as an analytics label, not auth.
+transport:
+  type: http
+  url: https://makepartsnow.com/mcp/assistant?client=hermes
+
+auth:
+  type: none
+
+# get_order_status needs a signed-in Make Parts Now account (OAuth), which
+# this anonymous entry doesn't have. delete_uploaded_part carries the
+# vendor destructive hint and only deletes a file this session uploaded.
+tools:
+  default_enabled:
+    - get_manufacturing_options
+    - create_upload_link
+    - analyze_part
+    - quote_part
+    - update_quote
+    - create_checkout_link
+    - delete_uploaded_part
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - make parts now
+    - makepartsnow
+    - cnc machining quote
+    - 3d printing quote
+  hosts:
+    - makepartsnow.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Quotes only — Hermes can upload a CAD file you point it at, or give you
+  an upload link. Ordering and payment happen on makepartsnow.com via the
+  returned checkout link, never in-conversation. US shipping only.

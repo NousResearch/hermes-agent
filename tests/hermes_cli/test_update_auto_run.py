@@ -22,14 +22,15 @@ def context(tmp_path, monkeypatch):
     return AutoUpdateContext(root, home, home / "logs" / "update_receipts")
 
 
-def test_command_pins_same_install_and_explicit_profile(context, monkeypatch):
+def test_command_pins_same_installation_home_from_every_profile(context, monkeypatch):
     calls = []
     monkeypatch.setattr(runner, "installation_command", lambda root, args, **kw: calls.append((root, args, kw)) or args)
     runner.command(context, ["update", "auto", "run-scheduled"])
     assert calls[0] == (context.install, ["--profile", "default", "update", "auto", "run-scheduled"], {"home": context.home})
     named = AutoUpdateContext(context.install, context.home / "profiles" / "work", context.receipt_directory)
     runner.command(named, ["update"])
-    assert calls[1][1][:2] == ["--profile", "work"]
+    assert calls[1][1][:2] == ["--profile", "default"]
+    assert calls[1][2] == {"home": context.home}
 
 
 @pytest.mark.parametrize("receipt,code,expected", [
@@ -104,11 +105,11 @@ def test_failed_spawn_leaves_durable_failure(context, monkeypatch):
     ("preview", "next", None, "next"), ("stable", None, "feature", "feature"),
 ])
 def test_plan_target_matches_apply_not_current_parked_branch(context, monkeypatch, channel, target_branch, explicit_branch, expected):
-    from hermes_cli import config, source_check, source_releases, update_channel
+    from hermes_cli import config, source_check, source_releases, update_installation
 
     monkeypatch.setattr(runner, "require_source_install", lambda c: None)
     monkeypatch.setattr(config, "require_readable_config_before_write", lambda p: {})
-    monkeypatch.setattr(update_channel, "resolve_update_channel", lambda *a: channel)
+    monkeypatch.setattr(update_installation, "resolve_install_channel", lambda *a, **kw: channel)
     monkeypatch.setattr(source_releases, "resolve_source_target", lambda *a: SimpleNamespace(branch=target_branch))
     calls = []
     monkeypatch.setattr(source_check, "check_for_updates", lambda **kw: calls.append(kw) or {

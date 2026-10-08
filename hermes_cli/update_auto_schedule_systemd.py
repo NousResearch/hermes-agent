@@ -34,8 +34,8 @@ def _quote(value: str) -> str:
 def render(spec: SchedulerSpec) -> tuple[bytes, bytes]:
     # ':' suppresses systemd's $VAR argument expansion. This is argv, not a shell.
     command = ":" + " ".join(_quote(part) for part in spec.command)
-    stdout = "append:" + str(spec.home / "logs" / "update-auto.out.log")
-    stderr = "append:" + str(spec.home / "logs" / "update-auto.err.log")
+    stdout = "append:" + str(spec.log_directory / "update-auto.out.log")
+    stderr = "append:" + str(spec.log_directory / "update-auto.err.log")
     service = "\n".join([
         "[Unit]", "Description=Hermes Agent auto-update", "", "[Service]", "Type=oneshot", "TimeoutStartSec=infinity",
         f"Environment={_quote(f'HERMES_HOME={spec.home}')}",
@@ -170,7 +170,7 @@ def enable(spec: SchedulerSpec) -> SchedulerHandle:
     content = {"service_path": service, "path": timer}
     rollback = lambda: _restore(info, files, states)
     try:
-        (spec.home / "logs").mkdir(parents=True, exist_ok=True)
+        spec.log_directory.mkdir(parents=True, exist_ok=True)
         if any(snapshot is not None for snapshot in files.values()):
             require_success(_run(["disable", "--now", info["path"].name]), "systemctl disable timer", allow_missing=True)
         _require_idle_service(info)

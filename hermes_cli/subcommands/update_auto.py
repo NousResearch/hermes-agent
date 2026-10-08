@@ -24,10 +24,13 @@ def build_auto_parser(update_parser) -> None:
         ("run-now", "Run the updater now with mandatory backups and terminal receipt verification"),
         ("run-scheduled", "Internal entrypoint; requires valid saved scheduler activation"),
         ("enable", "Enable a user schedule; no administrator privileges"),
-        ("disable", "Disable and remove only this installation/profile's schedule"),
+        ("disable", "Disable and remove this installation's schedules"),
+        ("migrate", "Consolidate matching legacy profile schedules into one installation schedule"),
     ):
         child = commands.add_parser(name, help=help_text)
         child.set_defaults(func=_dispatch)
+        if name == "run-scheduled":
+            child.add_argument("--scheduler-identity", default=None, help=argparse.SUPPRESS)
         if name == "enable":
             child.add_argument("--time", required=True, metavar="HH:MM", help="Daily local update time")
             child.add_argument("--plan-time", action="append", default=[], metavar="HH:MM",

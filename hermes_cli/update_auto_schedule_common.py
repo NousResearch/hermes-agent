@@ -29,7 +29,7 @@ def parse_time(value: str) -> tuple[int, int, str]:
 
 
 def validate_spec(spec) -> None:
-    if not re.fullmatch(r"(?:v1-)?[0-9a-f]{24}", spec.identity):
+    if not re.fullmatch(r"(?:v[12]-)?[0-9a-f]{24}", spec.identity):
         raise ValueError("scheduler identity must be a stable 24-character hexadecimal hash")
     command = tuple(spec.command)
     if not command or not all(isinstance(part, str) and "\0" not in part for part in command):
@@ -43,6 +43,10 @@ def validate_spec(spec) -> None:
         raise ValueError("scheduler home must be an absolute path without control characters")
     object.__setattr__(spec, "command", command)
     object.__setattr__(spec, "home", home)
+    log_directory = Path(spec.log_directory) if spec.log_directory is not None else home / "logs"
+    if not log_directory.is_absolute() or any(ord(char) < 32 for char in str(log_directory)):
+        raise ValueError("scheduler log directory must be an absolute path without control characters")
+    object.__setattr__(spec, "log_directory", log_directory)
     object.__setattr__(spec, "schedule", parse_time(spec.schedule)[2])
     plan_times = tuple(dict.fromkeys(parse_time(t)[2] for t in spec.plan_times))
     if spec.schedule in plan_times:
@@ -64,7 +68,7 @@ def backend():
 
 
 def identity_suffix(spec) -> str:
-    return spec.identity.removeprefix("v1-")
+    return spec.identity.split("-", 1)[-1]
 
 
 def calendar_intervals(spec) -> list[dict[str, int]]:

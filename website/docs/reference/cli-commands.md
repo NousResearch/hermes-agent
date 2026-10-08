@@ -2170,8 +2170,8 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | Option | Description |
 |--------|-------------|
 | `--install-id` | Print this installation's identity and path, then exit. |
-| `--set-channel CHANNEL` | Persist the update channel for this source installation without applying an update: `stable` (published releases) or `main` (every commit). Bundled applications have a fixed build channel and refuse channel changes. |
-| `--channel CHANNEL` | Select a source channel for this invocation only (`stable` or `main`); nothing is saved. |
+| `--set-channel CHANNEL` | Persist the update channel for this source installation, shared by every profile, without applying an update: `stable` (published releases) or `main` (every commit). Bundled applications have a fixed build channel and refuse channel changes. |
+| `--channel CHANNEL` | Select a source channel for this invocation only (`stable` or `main`); the installation's saved subscription is unchanged. |
 | `--branch NAME` | Select a source branch for this invocation; takes precedence over source channel selection. |
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |
@@ -2184,6 +2184,19 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 
 Additional behavior:
 
+- **Installation-owned channel.** The saved record is `update.installs.<install-id>`
+  in the installation owner's root `config.yaml`, with `scope: installation`.
+  `--profile` does not select a different Hermes version or subscription. Before
+  consolidation, matching legacy profile records can supply the channel;
+  conflicting records stop with their paths and values. An explicit
+  `hermes update --set-channel CHANNEL` chooses the installation-wide value.
+  Legacy profile files are retained, and unrelated settings are preserved.
+  PM's committed data-root owner is authoritative. A checkout without PM
+  ownership records one data-root binding on its first explicit configuration
+  or auto-update operation, in Git metadata (or the platform-default Hermes
+  root's `installs/<install-id>/update-owner.json` for a non-Git source tree).
+  Later custom `HERMES_HOME` roots share that owner;
+  contradictory owner evidence stops with both paths instead of choosing one.
 - **Gateway restart.** After a successful update, Hermes attempts to restart all running gateway profiles of the home being updated (its root and every `profiles/<name>` under it) automatically so they pick up the new code. Gateways and `hermes-gateway*` services that belong to a different `HERMES_HOME` on the same machine — another install, or a scratch home running `hermes update` — are named in the output and left alone. Use `hermes gateway restart` when you want to restart a gateway without applying an update.
 - **Restart-phase recovery.** If the in-process restart phase aborts while importing the freshly pulled tree, supervised gateway profiles are retried through a clean Python process. Only restarts independently confirmed by systemd (`systemctl --user is-active`) are reported as verified; a relaunch that merely exited 0 is recorded as `relaunch_attempted` and the restart stays owed (a `gateway_restart` follow-up; the update itself still exits 0 because the code is in place). Manual gateways and serve/dashboard runtimes are never killed without a relaunch authority; they are recorded as skipped with a reason and remain in the incomplete-update report with the exact restart command.
 - **Update receipts + fleet version check.** Every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` in the root Hermes home, even from a sticky profile (pre-update fleet plan, steps, skips with reasons, restart outcome, follow-ups; `latest.json` points at the newest and reads `running` while an update is in progress). After the restart phase the updater verifies each live gateway's running code against the updated checkout and prints a per-profile version matrix. A gateway still on pre-update code does not fail the update once the new code is in place: the update prints a `⚠` line with the exact restart command, exits 0, records a `gateway_restart` follow-up, and keeps the restart owed — every CLI start warns about it and the next `hermes update` retries it.
@@ -2197,7 +2210,7 @@ Additional behavior:
 
 Optional daily scheduling for self-managed source installations. It is **disabled
 by default** and uses no model calls, daemon, or Hermes cron job. Enabling it
-installs only an installation-and-profile-specific user systemd timer on Linux
+installs one installation-specific user systemd timer on Linux
 or a GUI-session LaunchAgent on macOS. Windows and externally managed installs
 (including Desktop bundles, Docker, Nix, and package-owned installations) are
 not supported by this source scheduler.
@@ -2207,12 +2220,15 @@ hermes update auto status
 hermes update auto plan
 hermes update auto run-now
 hermes update auto enable --time 04:00 --plan-time 21:00
+hermes update auto migrate  # once, for matching legacy profile schedules
 hermes update auto disable
 ```
 
-- `status` prints JSON from `HERMES_HOME/state/update-status.json`, without a
+- `status` prints JSON from `<installation-home>/installs/<install-id>/update-auto/status.json`, without a
   network check. An unconfigured `status`, `disable`, or `run-scheduled` does
-  not create state files or install anything.
+  not create state files or install anything. Every profile of the checkout
+  shares this status, timer, operation lock, and saved channel. Separate
+  checkouts remain independent. Legacy schedules are listed when migration is needed.
 - `plan` checks the same effective channel or branch as the updater, saves an
   advisory plan, and prints a concise notice. It updates the local check cache
   and status/log files. It does not send a chat notification. The actual run
@@ -2222,17 +2238,30 @@ hermes update auto disable
   PM dependency selection, fleet restart, and health verification. Normal updater
   prompts are handled as with `--yes`; neither force flags nor skipped backups
   are accepted. A manual run does not enable a schedule.
+- `run-scheduled` checks availability before starting the updater. A clean,
+  already-current installation records a check-only `up_to_date` result without
+  starting a child, creating backups, or restarting anything. Check failures
+  stop the attempt. Existing or unreadable recovery evidence keeps the canonical
+  updater path so unfinished completion/restart work is not silently abandoned.
 - `enable --time HH:MM` uses the host's local clock. Repeat `--plan-time HH:MM`
   for multiple check-only times; none may equal the update time. After sleep or
   login, a caught-up firing uses the most recent configured daily slot. The
   schedule follows the install's saved update channel. `--branch` and `--channel`
   overrides are available only for manual `plan` and `run-now`.
-- `disable` removes only this installation/profile's owned timer or LaunchAgent.
+- `migrate` replaces matching legacy profile timers with one installation timer,
+  preserving their update and check-only times. It runs from a terminal while the
+  old services are idle; an old timer's own firing reports this command and
+  refuses to unload itself or run another update. Conflicting times are shown
+  explicitly; `enable --time ...` supplies the intended replacement schedule.
+  Conflicting channels require an explicit `--set-channel` choice first.
+- `disable` removes this installation's timer or LaunchAgent, including any
+  recognized legacy profile timers; it can disable conflicting schedules
+  without selecting one of them.
   Active updates and ambiguous manager state are refused. Failed scheduler
   changes restore the prior files and manager state; incomplete recovery is
   recorded as `recovery_required` and must be inspected before further changes.
 
-Output is appended to `HERMES_HOME/logs/update.log`; scheduler stdout/stderr use
+Output is appended to `<installation-home>/installs/<install-id>/update-auto/update.log`; scheduler stdout/stderr use
 `update-auto.out.log` and `update-auto.err.log` in the same directory. Only the
 unique archived updater receipt matching this invocation's correlation ID can
 certify success. An unchanged revision can be a verified `up_to_date` result.
@@ -2243,8 +2272,11 @@ wrapper, the next operation reconciles a matching terminal receipt; otherwise,
 inspect the log and use `run-now` explicitly to retry.
 
 Scheduling needs no sudo and is never enabled during installation or startup.
-Legacy experimental scheduler state is not adopted automatically. Existing
-unrecognized state must be inspected before migration; files are left intact.
+Migration retains the old status and log files and records the original scheduler
+artifacts in the shared status. A failed migration restores the old files and
+manager state. An interrupted migration leaves `migration_running` evidence and
+refuses further changes until recovery is inspected; it never guesses that the
+remaining timer is the intended one. Unrecognized legacy state is left intact.
 
 ## Maintenance commands
 

@@ -19,8 +19,7 @@ from hermes_cli.update_auto_state import AutoUpdateContext, append_log, utc_now,
 
 def command(context: AutoUpdateContext, arguments: list[str]) -> list[str]:
     # Explicit default prevents a later sticky `profile use` from retargeting a timer.
-    profile = context.home.name if context.home.parent.name == "profiles" else "default"
-    return installation_command(context.install, ["--profile", profile, *arguments], home=context.home)
+    return installation_command(context.install, ["--profile", "default", *arguments], home=context.home)
 
 
 def require_source_install(context: AutoUpdateContext) -> None:
@@ -37,16 +36,14 @@ def require_source_install(context: AutoUpdateContext) -> None:
 
 
 def check_update(context: AutoUpdateContext, args) -> dict:
-    from hermes_cli.config import require_readable_config_before_write
     from hermes_cli.source_check import check_for_updates
     from hermes_cli.source_releases import resolve_source_target
-    from hermes_cli.update_channel import resolve_update_channel
+    from hermes_cli.update_installation import resolve_install_channel
 
     require_source_install(context)
     branch = getattr(args, "branch", None)
-    config = require_readable_config_before_write(context.home / "config.yaml")
     channel = "main" if branch else (getattr(args, "channel", None) or
-                                     resolve_update_channel(config, context.install))
+                                     resolve_install_channel(context.install, home=context.home))
     if not branch:
         target = resolve_source_target(channel, ["git"], context.install)
         branch = target.branch
@@ -109,7 +106,8 @@ def reconcile_run(context: AutoUpdateContext, status: dict) -> bool:
     exit_code = exit_code if isinstance(exit_code, int) else 0
     verdict, _code = receipt_result(receipt, exit_code)
     status.update(status=verdict, terminalReceipt=receipt, receiptPath=str(path),
-                  runPending=False, finishedAt=receipt["finished_at"], exitCode=exit_code, error=None)
+                  runPending=False, finishedAt=receipt["finished_at"], exitCode=exit_code, error=None,
+                  outcomeSource="updater_receipt")
     write_status(context, status)
     return False
 
@@ -138,23 +136,26 @@ def run_update(context: AutoUpdateContext, status: dict, args) -> int:
     environment["HERMES_HOME"] = str(context.home)
     environment["HERMES_UPDATE_CORRELATION_ID"] = correlation
     status.update(status="running", lastRunAt=utc_now(), correlationId=correlation, runPending=True,
-                  error=None, receiptPath=None, terminalReceipt=None, exitCode=None, finishedAt=None)
+                  error=None, receiptPath=None, terminalReceipt=None, exitCode=None, finishedAt=None,
+                  outcomeSource="updater")
     write_status(context, status)
     try:
         returncode = _invoke(context, argv, environment, correlation)
     except (OSError, ValueError) as exc:
-        status.update(status="update_failed", error=str(exc), runPending=False, finishedAt=utc_now())
+        status.update(status="update_failed", error=str(exc), runPending=False, finishedAt=utc_now(),
+                      outcomeSource="launch_failure")
         write_status(context, status)
         return 12
     found = find_receipt(context.receipt_directory, correlation)
     if found is None:
-        status.update(status="unverified", error=f"Updater exited {returncode} without a unique terminal receipt")
+        status.update(status="unverified", error=f"Updater exited {returncode} without a unique terminal receipt",
+                      outcomeSource="process_exit")
         code = 12
     else:
         receipt_path, receipt = found
         verdict, code = receipt_result(receipt, returncode)
         status.update(status=verdict, terminalReceipt=receipt, receiptPath=str(receipt_path), runPending=False,
-                      error=receipt.get("stop_reason") if code else None)
+                      error=receipt.get("stop_reason") if code else None, outcomeSource="updater_receipt")
     status.update(finishedAt=utc_now(), exitCode=returncode)
     write_status(context, status)
     try:

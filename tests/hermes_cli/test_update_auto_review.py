@@ -36,7 +36,7 @@ def test_failure_to_open_output_does_not_leave_a_phantom_running_update(context,
 
 
 @pytest.mark.platforms("posix")
-def test_symlinked_profile_keeps_lexical_root_and_profile_for_child(context, tmp_path, monkeypatch):
+def test_symlinked_profile_cannot_retarget_installation_home(context, tmp_path, monkeypatch):
     from hermes_cli import config
 
     external = tmp_path / "another-install" / "home"
@@ -48,10 +48,10 @@ def test_symlinked_profile_keeps_lexical_root_and_profile_for_child(context, tmp
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setattr(config, "get_project_root", lambda: context.install)
     actual = state.AutoUpdateContext.current()
-    assert actual.home == profile
+    assert actual.home == context.home
     assert actual.receipt_directory == context.home / "logs" / "update_receipts"
     monkeypatch.setattr(runner, "installation_command", lambda root, args, **kwargs: args)
-    assert runner.command(actual, ["update"]) == ["--profile", "work", "update"]
+    assert runner.command(actual, ["update"]) == ["--profile", "default", "update"]
 
 
 def test_generation_console_script_uses_owning_checkout(context, monkeypatch):

@@ -310,7 +310,7 @@ class TestSetChannelCLI:
         assert exc.value.code == 0
         assert writes == [(cfg, f"update.installs.{install_id(root)}")]
         expected = initial
-        expected["update"]["installs"][install_id(root)] = {"path": str(root), "channel": "canary"}
+        expected["update"]["installs"][install_id(root)] = {"path": str(root), "channel": "canary", "scope": "installation"}
         assert yaml.safe_load(cfg.read_text(encoding="utf-8")) == expected
         assert cfg.read_text(encoding="utf-8").startswith("# retain user comment\n")
         output = capsys.readouterr().out

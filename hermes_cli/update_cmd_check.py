@@ -235,20 +235,20 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     ``target_is_head`` means an unchosen default subscription is already past the release,
     so HEAD itself is the target. Exits 1 (after ``stop()``) when the channel is unresolvable.
     """
-    from copy import deepcopy
-
-    from hermes_cli.config import require_readable_config_before_write
     from hermes_cli.release_channels import retrying_reads
     from hermes_cli.source_releases import resolve_source_target
-    from hermes_cli.update_channel import channel_record, rides_default_channel
+    from hermes_cli.update_channel import rides_default_channel
+    from hermes_cli.update_installation import prepare_install_channel_record, read_install_channel_record
     from hermes_cli.update_cmd_common import _record_stop
 
     if getattr(args, "branch", None):
         return f"origin/{branch}", None, False, None
     root = _uc()._m().PROJECT_ROOT
     selected = _uc()._update_run_channel(args)
-    original = deepcopy(channel_record(require_readable_config_before_write(
-        Path(request["home"]) / "config.yaml"), root))
+    # The installation-owned record (shared by every profile); a persisted run consolidates
+    # unambiguous legacy profile records first.
+    original = (read_install_channel_record(root) if getattr(args, "channel", None)
+                else prepare_install_channel_record(root, transient=None))
     print(f"→ Update channel: {selected}")
     try:
         with retrying_reads():

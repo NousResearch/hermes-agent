@@ -28,6 +28,8 @@ def _parser():
 
 
 def _args(*parts):
+    if parts == ("run-scheduled",):
+        parts = (*parts, "--scheduler-identity", state.AutoUpdateContext.current().identity)
     return _parser().parse_args(["update", "auto", *parts])
 
 
@@ -159,6 +161,7 @@ def test_scheduled_dispatch_uses_saved_times_and_clears_target_overrides(context
     monkeypatch.setattr(scheduler, "scheduled_action", lambda schedule, times: action)
     monkeypatch.setattr(auto, "_plan", lambda ctx, status, args: selected.append(("plan", args.branch, args.channel)) or 0)
     monkeypatch.setattr(auto, "_run", lambda ctx, status, args: selected.append(("run", args.branch, args.channel)) or 0)
+    monkeypatch.setattr(auto, "check_update", lambda *args: {"updateAvailable": True})
     _args("run-scheduled").func(_args("run-scheduled"))
     assert selected == [(action, None, None)]
 
@@ -282,7 +285,7 @@ def test_scheduler_command_resists_changed_sticky_profile(context, monkeypatch, 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(sys, "argv", ["hermes", *argv[start:]])
     main._apply_profile_override()
-    assert Path(os.environ["HERMES_HOME"]) == home
+    assert Path(os.environ["HERMES_HOME"]) == context.home
     assert sys.argv[1:] == ["update", "auto", "run-scheduled"]
 
 

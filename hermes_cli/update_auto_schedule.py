@@ -24,6 +24,7 @@ class SchedulerSpec:
     home: Path
     schedule: str
     plan_times: Sequence[str] = ()
+    log_directory: Path | None = None
 
     def __post_init__(self) -> None:
         from hermes_cli.update_auto_schedule_common import validate_spec

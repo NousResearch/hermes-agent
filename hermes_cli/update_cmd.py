@@ -598,12 +598,9 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     if transient is not None:
         from hermes_cli.release_channels import validate_name
         return validate_name(transient)
-    from hermes_cli.update_channel import resolve_update_channel
+    from hermes_cli.update_installation import resolve_install_channel
 
-    from hermes_cli.config import get_config_path, require_readable_config_before_write
-
-    config = require_readable_config_before_write(get_config_path())
-    return resolve_update_channel(config, _m().PROJECT_ROOT)
+    return resolve_install_channel(_m().PROJECT_ROOT)
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):
@@ -1840,6 +1837,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         had_desktop_app_before_update, gateway_mode)
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
+    from hermes_cli.update_installation_owner import ensure_installation_home
+    ensure_installation_home(_m().PROJECT_ROOT)
     target_ref, release_sha, target_is_head, target_repository = _check.select_apply_target(
         args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
         stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))

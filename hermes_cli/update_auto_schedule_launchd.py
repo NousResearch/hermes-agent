@@ -43,8 +43,8 @@ def render(spec: SchedulerSpec) -> bytes:
         "Label": _label(spec), "ProgramArguments": list(spec.command),
         "StartCalendarInterval": intervals[0] if len(intervals) == 1 else intervals,
         "EnvironmentVariables": {"HERMES_HOME": str(spec.home), "HOME": str(Path.home())},
-        "StandardOutPath": str(spec.home / "logs" / "update-auto.out.log"),
-        "StandardErrorPath": str(spec.home / "logs" / "update-auto.err.log"),
+        "StandardOutPath": str(spec.log_directory / "update-auto.out.log"),
+        "StandardErrorPath": str(spec.log_directory / "update-auto.err.log"),
         "RunAtLoad": False,
     }, sort_keys=True)
 
@@ -119,7 +119,7 @@ def enable(spec: SchedulerSpec) -> SchedulerHandle:
     rollback = lambda: _restore(path, snapshot, target, label, state)
     data = render(spec)
     try:
-        (spec.home / "logs").mkdir(parents=True, exist_ok=True)
+        spec.log_directory.mkdir(parents=True, exist_ok=True)
         _require_idle(_state(target, label))
         if state["loaded"]:
             require_success(_run(["bootout", f"{target}/{label}"]), "launchctl bootout", allow_missing=True)

@@ -1,4 +1,4 @@
-"""Profile-owned state for the opt-in update scheduler.
+"""Installation-owned state for the opt-in update scheduler.
 
 The operation mutex is separate from the updater's checkout lock: holding the
 checkout lock while waiting for a fresh updater would deadlock its admission.
@@ -13,7 +13,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from hermes_cli.update_installation_owner import installation_home
 from hermes_cli.update_lock import marker_mutex
 from utils import atomic_json_write
 
@@ -24,31 +25,37 @@ class AutoUpdateContext:
     home: Path
     receipt_directory: Path
 
+    def __post_init__(self) -> None:
+        root = self.install.resolve()
+        home = installation_home(root, home=self.home)
+        object.__setattr__(self, "install", root)
+        object.__setattr__(self, "home", home)
+        object.__setattr__(self, "receipt_directory", home / "logs" / "update_receipts")
+
     @classmethod
     def current(cls) -> AutoUpdateContext:
         from hermes_cli.config import get_project_root
         from hermes_cli.update_owning_install import owning_install_root
 
-        # Keep a symlinked named profile's lexical provenance, as the CLI does.
         home = get_hermes_home().absolute()
         root = get_project_root().resolve()
         root = owning_install_root(root) or root
-        return cls(root, home,
-                   get_default_hermes_root(home=home) / "logs" / "update_receipts")
+        return cls(root, home, home / "logs" / "update_receipts")
 
     @property
     def identity(self) -> str:
         # Python versions/dependency generations change during an update.
-        material = f"{self.install}\0{self.home}"
-        return "v1-" + hashlib.sha256(material.encode()).hexdigest()[:24]
+        return "v2-" + hashlib.sha256(str(self.install).encode()).hexdigest()[:24]
 
     @property
     def status_path(self) -> Path:
-        return self.home / "state" / "update-status.json"
+        from pm.environments import install_key
+
+        return self.home / "installs" / install_key(self.install) / "update-auto" / "status.json"
 
     @property
     def log_path(self) -> Path:
-        return self.home / "logs" / "update.log"
+        return self.status_path.parent / "update.log"
 
 
 def utc_now() -> str:
@@ -57,9 +64,9 @@ def utc_now() -> str:
 
 def default_status(context: AutoUpdateContext) -> dict:
     return {
-        "schema": 2, "enabled": False, "mode": "manual", "schedule": None,
+        "schema": 3, "enabled": False, "mode": "manual", "schedule": None,
         "planSchedule": [], "schedulerIdentity": context.identity,
-        "installationRoot": str(context.install), "profileHome": str(context.home),
+        "installationRoot": str(context.install), "dataRoot": str(context.home),
         "status": "not_configured", "logPath": str(context.log_path),
     }
 
@@ -74,12 +81,12 @@ def read_status(context: AutoUpdateContext) -> dict:
         return default_status(context)
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Cannot read auto-update status at {path}: {exc}") from exc
-    if not isinstance(data, dict) or data.get("schema") != 2:
+    if not isinstance(data, dict) or data.get("schema") != 3:
         raise ValueError("Unrecognized auto-update status schema; inspect the existing schedule before replacing it")
     expected = default_status(context)
-    for key in ("schedulerIdentity", "installationRoot", "profileHome"):
+    for key in ("schedulerIdentity", "installationRoot", "dataRoot"):
         if data.get(key) != expected[key]:
-            raise ValueError(f"Auto-update {key} does not belong to this installation/profile")
+            raise ValueError(f"Auto-update {key} does not belong to this installation")
     if not isinstance(data.get("enabled"), bool):
         raise ValueError("Auto-update enabled must be a boolean")
     return data

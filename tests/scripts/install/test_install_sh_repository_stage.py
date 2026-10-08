@@ -126,6 +126,26 @@ def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
     assert "--no-checkout" not in clone.split()
 
 
+def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
+    """A pinned fresh clone pins before it publishes: a refused or failed pin leaves no empty checkout."""
+    origin = _origin(tmp_path / "origin")
+    pin = _git(origin, "rev-parse", "HEAD")
+    _commit(origin, "tip")
+    _git(origin, "checkout", "-qb", "side")
+    off_branch = _commit(origin, "side")
+    _git(origin, "checkout", "-q", "main")
+    refused = _stage(tmp_path, origin, commit=off_branch)
+    assert refused.returncode != 0
+    assert "is not on branch main" in refused.stdout + refused.stderr
+    assert not (tmp_path / "install").exists()
+    failing_checkout = 'git() { [ "${3:-}" = checkout ] && return 1; command git "$@"; }'
+    failed = _stage(tmp_path, origin, commit=pin, prelude=failing_checkout)
+    assert failed.returncode != 0
+    assert "no checkout published" in failed.stdout + failed.stderr
+    assert not (tmp_path / "install").exists()
+    assert not list(tmp_path.glob(".hermes-clone-*"))
+
+
 def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"

@@ -307,6 +307,15 @@ def _api_server(config: GatewayConfig) -> None:
     """Require a usable key: an unauthenticated adapter refuses to start and the reconnect watcher would spin."""
     key = getenv("API_SERVER_KEY")
     if not _has_usable_api_server_key(key):
+        # Fail closed (no enrollment, no adapter) but never silently: with zero messaging
+        # platforms an API-only gateway otherwise boots "healthy" with no log line at all,
+        # and platforms.api_server sits at "disconnected" with error_message null (#135298).
+        if str(key or "").strip():
+            logger.warning(
+                "API_SERVER_KEY is set but too weak or a placeholder (<16 chars): "
+                "the api_server platform will NOT start. Generate a strong secret "
+                "(e.g. `openssl rand -hex 32`) and restart the gateway."
+            )
         return
     extra = _enable_from_env(config, Platform.API_SERVER, pop_marker=True, warn=False).extra
     extra["key"] = key

@@ -311,10 +311,11 @@ def _handler_for(fake: CatalogFake) -> type[BaseHTTPRequestHandler]:
             if fake.models_status != 200:
                 self._json(fake.models_status, {"error": {"message": "no listing here"}})
                 return
-            self._json(200, {"object": "list", "data": [
-                {"id": m, "object": "model", "type": "model", "display_name": m, "created": 1,
-                 "created_at": "2026-01-01T00:00:00Z", "owned_by": "catalog", "context_length": 131072}
-                for m in fake.models]})
+            rows = [{"id": m, "object": "model", "type": "model", "display_name": m, "created": 1,
+                     "created_at": "2026-01-01T00:00:00Z", "owned_by": "catalog", "context_length": 131072}
+                    for m in fake.models]
+            # ``models`` is LM Studio's native listing key; OpenAI-shaped readers ignore it.
+            self._json(200, {"object": "list", "data": rows, "models": rows})
 
         def do_POST(self) -> None:  # noqa: N802
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))

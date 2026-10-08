@@ -125,7 +125,8 @@ import {
   readBundleSwapStamp,
   relaunchIntoSwappedBundle
 } from './bundle-swap'
-import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { CHALLENGE_PARTITION } from './challenge-window'
+import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
@@ -431,7 +432,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
+import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
@@ -448,7 +449,7 @@ import {
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
-import { createPortalSession } from './portal-session'
+import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import {
   createKeepAwake,
   type KeepAwakeMode,
@@ -483,18 +484,20 @@ import {
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
+  applyRemoteProfileSessionOutcomes,
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  composeUnifiedSessionResponse,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
   isAllProfilesSessionListRequest,
-  mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
   remoteProfileQueryScope,
+  settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
@@ -611,7 +614,12 @@ import {
   registerUpdateHoldIpc,
   waitForPoolUpdateClearance
 } from './update-hold-wiring'
-import { describeSkippedPrewrite, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import {
+  describeSkippedPrewrite,
+  readLiveUpdateMarker,
+  updateHandoffConflict,
+  writeUpdateMarker
+} from './update-marker'
 import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
@@ -648,7 +656,7 @@ import {
   registerUpdateRelaunch,
   type RelaunchRegistration
 } from './updater/relaunch'
-import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
+import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
@@ -666,6 +674,7 @@ import {
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
+import { isAppSized, registerWindowSizing } from './window-growth'
 import { windowMenuTemplate } from './window-menu'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
@@ -674,10 +683,10 @@ import {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  firstLaunchSize,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
-  MIN_WIDTH as WINDOW_MIN_WIDTH
+  MIN_WIDTH as WINDOW_MIN_WIDTH,
+  windowSize
 } from './window-state'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
@@ -2179,20 +2188,6 @@ const POOL_KEEPALIVE_FRESH_MS = Math.max(
   Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
 )
 
-// Pinned-tier TTL (#105239): the renderer's 60s keepalive (touchPoolBackend)
-// refreshes lastActiveAt for every OPEN chat, so the idle reaper's only clock
-// never fires for the pinned tier — every profile whose chat was ever opened
-// held its ~120 MB serve child until app quit (126 processes / 7.5 GB on the
-// reporter's machine, all parented to Hermes.exe). A keepalive proves the
-// chat is open, not that anything streamed: retire a local child whose last
-// streamed turn is older than this window. Re-focusing the chat re-ensures it
-// idempotently (ensureBackend/ensureRegistryBackend reuse), and mid-stream
-// safety is unchanged — activeTurn entries are excluded by the retirer.
-const POOL_PINNED_IDLE_MS = Math.max(
-  POOL_LIMITS_MIN.idleMs,
-  Number(process.env.HERMES_DESKTOP_POOL_PINNED_IDLE_MS) || 60 * 60_000
-)
-
 let poolIdleReaper = null
 let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
@@ -3629,7 +3624,7 @@ function readWindowState() {
 // broken transition behind #94319 — so record that provenance and let recovery
 // on the next launch recognize the snapshot instead of guessing from geometry.
 function persistWindowState() {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || isAppSized(mainWindow)) {
     return
   }
 
@@ -3847,12 +3842,7 @@ function createNativePackagedStrategy(
           // script is staged to a temp dir and resolved absolutely so
           // nothing inherited from the package holds the swap open.
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
-              scriptPath: relaunchWaiterScript(process.resourcesPath)
-            })
+            startUpdateRelaunchWaiter(PRODUCT_IDENTITY.msixAppIdWithOrg, process.resourcesPath, rememberLog)
         })
     }
 
@@ -3878,13 +3868,12 @@ function createNativePackagedStrategy(
       registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
         registerUpdateRelaunch(app, fromVersion, {
           relaunch: () =>
-            startRelaunchWaiter({
-              processId: process.pid,
-              processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
-              identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
-              scriptPath: relaunchWaiterScript(process.resourcesPath),
-              timeoutSeconds: 1860
-            })
+            startUpdateRelaunchWaiter(
+              PRODUCT_IDENTITY.storeMsix!.identityName,
+              process.resourcesPath,
+              rememberLog,
+              1860
+            )
         })
     })
   }
@@ -4951,10 +4940,6 @@ function readBootstrapMarker() {
 // "already installed" off the filesystem alone, not just the marker.
 async function isSourceRuntimeUsable(root: string): Promise<boolean> {
   return (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME })) !== null
-}
-
-function isActiveRuntimeUsable(): Promise<boolean> {
-  return isSourceRuntimeUsable(ACTIVE_HERMES_ROOT)
 }
 
 function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
@@ -8146,17 +8131,6 @@ async function freshGatewayWsUrl(profile) {
 //     portal's silent auto-approve (org member, existing session) and 302s back
 //     with that agent's session cookie — no prompt. Each agent still completes
 //     its own PKCE exchange; SSO removes the human click, not a security check.
-
-// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
-// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
-// so a single override flips every Hermes surface to the same portal.
-const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
-
-function resolvePortalBaseUrl() {
-  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
-
-  return String(raw).trim().replace(/\/+$/, '')
-}
 
 const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
   createPortalSession({
@@ -11979,13 +11953,6 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 
       if (typeof options.activeTurn === 'boolean') {
         entry.activeTurn = options.activeTurn
-
-        // A prompt turn leasing this backend IS streamed activity (#105239):
-        // the keepalive touch alone only proves the chat is open, so the
-        // pinned-tier TTL reads this stamp, not lastActiveAt.
-        if (options.activeTurn) {
-          entry.lastStreamedAt = Date.now()
-        }
       }
 
       return
@@ -12016,29 +11983,15 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      // Remote descriptors hold no child/slot. Local children require the
-      // same admission authority as foreground and LRU reclamation.
-      // Pinned-tier TTL (#105239): the keepalive refreshes lastActiveAt for
-      // every open chat, so that clock alone never fires for the pinned tier.
-      // A local child whose last STREAMED turn (activeTurn touch) is older
-      // than POOL_PINNED_IDLE_MS is idle even while keepalive-fresh; entries
-      // without the stamp keep the legacy lastActiveAt clock.
-      const idleFor = now - (entry.lastActiveAt || 0)
-      const streamedIdleFor = entry.lastStreamedAt ? now - entry.lastStreamedAt : null
-      const reapable = idleFor > poolIdleMs() || (streamedIdleFor !== null && streamedIdleFor > POOL_PINNED_IDLE_MS)
-
-      if (reapable) {
-        const retiring = entry.process
-          ? poolRetirer.retireIdle(profile, poolIdleMs(), candidate =>
-              Boolean(
-                Date.now() - (candidate.lastActiveAt || 0) > poolIdleMs() ||
-                (candidate.lastStreamedAt ? Date.now() - candidate.lastStreamedAt > POOL_PINNED_IDLE_MS : false)
-              )
-            )
-          : stopPoolBackend(profile)
-
-        void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
+      // Only connection descriptors (no child, no slot) are idle-reclaimed. A local `hermes serve` child is
+      // never retired for being idle: it runs its profile's cron jobs and bot chats with nobody watching,
+      // and a reaped one left "This device · Backend offline" (support f502bc6f). The slot cap and
+      // foreground reclaim still bound how many run; activeTurn is vetoed there as before.
+      if (entry.process || now - (entry.lastActiveAt || 0) <= poolIdleMs()) {
+        continue
       }
+
+      void stopPoolBackend(profile).catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
     }
 
     if (backendPool.size === 0 && poolIdleReaper) {
@@ -13959,7 +13912,7 @@ function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocu
   const displays = screen.getAllDisplays()
 
   const fallback = computeWindowOptions(
-    readWindowState() ?? firstLaunchSize(screen.getPrimaryDisplay().workArea),
+    readWindowState() ?? windowSize('normal', screen.getPrimaryDisplay().workArea),
     displays
   )
 
@@ -14066,7 +14019,7 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
-registerChatOnboardingWindow({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
+registerWindowSizing({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -15070,7 +15023,7 @@ function createWindow() {
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
     ...computeWindowOptions(
-      savedWindowState ?? firstLaunchSize(screen.getPrimaryDisplay().workArea),
+      savedWindowState ?? windowSize('normal', screen.getPrimaryDisplay().workArea),
       screen.getAllDisplays()
     ),
     minWidth: WINDOW_MIN_WIDTH,
@@ -17420,23 +17373,26 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const profileTotals = { ...(base.profile_totals || {}) }
   let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
 
-  // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
-    remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
-      }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
-    })
+  // Swap each remote profile's stale local rows/total for the remote's real
+  // ones. #75712: each remote fetch runs under its own bounded budget and
+  // settles — one unavailable remote no longer holds the whole aggregate (and
+  // the sidebar behind it) hostage for the 180s backend readiness wait. A
+  // dead or still-pending remote contributes no rows, drops its stale local
+  // total, and is NAMED in the response `errors` instead of silently
+  // vanishing; the fetch itself keeps running so a remote that is merely slow
+  // to boot lands on a later refresh.
+  const remoteOutcomes = await settleRemoteProfileSessions(remoteProfiles, name =>
+    remoteSessionList(name, remoteParams)
   )
+
+  const { total: remoteTotal, errors: remoteErrors } = applyRemoteProfileSessionOutcomes(
+    remoteOutcomes,
+    merged,
+    profileTotals,
+    total
+  )
+
+  total = remoteTotal
 
   // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
   // into the unified list. Only already-pooled backends are read — a sidebar
@@ -17457,12 +17413,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return {
-    ...(base as any),
-    sessions: mergeProfileSessionWindow(merged, offset, limit),
-    total,
-    profile_totals: profileTotals
-  }
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors)
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
@@ -18478,6 +18429,15 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   }
 })
 
+// Free-tier browser challenge: a hidden portal window (electron/challenge-window.ts).
+registerChallengeWindowIpc({
+  isReady: () => app.isReady(),
+  getSession: () => session.fromPartition(CHALLENGE_PARTITION),
+  resolvePortalBaseUrl,
+  createWindow: options => new BrowserWindow(options),
+  rememberLog
+})
+
 ipcMain.handle('hermes:openExternal', async (_event, url) => {
   const result = await openExternalUrl(url)
 
@@ -19113,7 +19073,9 @@ registerDesktopUninstallIpc({
   stamp: INSTALL_STAMP,
   fallbackSummary: fallbackUninstallSummary,
   probeSummary: probeUninstallSummary,
-  runUninstall: runDesktopUninstall
+  runUninstall: runDesktopUninstall,
+  removableAppPath: () => resolveRemovableAppPath(process.execPath, process.platform, process.env),
+  openAppsSettings: () => shell.openExternal('ms-settings:appsfeatures')
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON

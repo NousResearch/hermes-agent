@@ -118,7 +118,11 @@ class _KeylessFirecrawlClient:
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         response = httpx.post(f"{self.api_url}{path}", json=payload, headers={"Content-Type": "application/json"}, timeout=60.0)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Keep the vendor's reason (e.g. "your IP address looks suspicious") and the ring's ``HTTP <code>`` shape.
+            raise httpx.HTTPStatusError(f"HTTP {response.status_code}: {response.text.strip()[:300]}", request=exc.request, response=response) from exc
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731

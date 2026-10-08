@@ -131,13 +131,21 @@ def _packaged_exe_rel() -> Path:
     return Path("linux-unpacked") / "hermes"
 
 
+def _npm_argv(cmd) -> list:
+    """The npm command line inside a build call. A direct ``hermes desktop`` build holds the
+    checkout lock (review C5), so on POSIX it runs under the custody launcher
+    (``python -I -S -c <reaper> <fds> npm ...``)."""
+    cmd = list(cmd)
+    return cmd[6:] if cmd[1:4] == ["-I", "-S", "-c"] else cmd
+
+
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     """``subprocess.run`` side effect mimicking a real ``npm run pack``: lays
     the packaged app down inside the STAGING dir named on the command line
     (never in release/), then returns *returncode*. Non-pack commands (the
     launch) return success."""
     def _run(cmd, **kwargs):
-        if len(cmd) >= 3 and cmd[1:3] == ["run", "builder"]:
+        if _npm_argv(cmd)[1:3] == ["run", "builder"]:
             exe = _staging_dir_from(cmd) / _packaged_exe_rel()
             exe.parent.mkdir(parents=True, exist_ok=True)
             exe.write_text(content, encoding="utf-8")
@@ -1827,7 +1835,7 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     live_exe.write_text("good build", encoding="utf-8")
 
     def empty_pack(cmd, **kwargs):
-        if cmd[1:3] == ["run", "builder"]:
+        if _npm_argv(cmd)[1:3] == ["run", "builder"]:
             _staging_dir_from(cmd).mkdir(parents=True, exist_ok=True)
         return subprocess.CompletedProcess(cmd, 0)
 

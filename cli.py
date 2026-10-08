@@ -409,6 +409,7 @@ _cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_c
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
+_session_end_messages: list[str] = []  # plugin on_session_finalize text awaiting the exit summary
 _cli_wake_owner = None
 # One-shot finalization runs before process cleanup (plugins see the boundary while the
 # agent is attached); atexit cleanup must not finalize those sessions again.
@@ -520,7 +521,9 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         if notify_session_finalize:
             cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown")
+                # Printed by _print_exit_summary, which clears the screen first.
+                _session_end_messages.extend(
+                    _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown"))
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -971,27 +974,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
         self._tool_callbacks_installed = True
-
-    def _ensure_tirith_security(self) -> None:
-        """Check tirith availability once before tools can run terminal commands."""
-        if self._tirith_security_checked:
-            return
-        self._tirith_security_checked = True
-        try:
-            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
-
-            if (
-                ensure_installed(log_failures=False) is None and is_platform_supported()
-                and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
-            ):
-                # First launch after install downloads tirith in the background;
-                # warning then would report a fault that resolves itself.
-                if missing_is_expected():
-                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
-                else:
-                    _cprint(f"  {_DIM}{_t('cli.startup.tirith_unavailable')}{_RST}")
-        except Exception as exc:
-            logger.debug("tirith availability check failed: %s", exc)
 
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""

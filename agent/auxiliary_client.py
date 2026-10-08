@@ -6706,12 +6706,10 @@ def _merge_aux_extra_body(
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.
     merged_extra.update(caller_reasoning_fields)
-    if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if caller_disabled:
-            merged_extra["reasoning"] = {"enabled": False}
-        else:
-            # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
-            merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    if not projection.handles_reasoning:
+        # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
+        from agent.reasoning_effort import generic_nested_reasoning
+        merged_extra.update(generic_nested_reasoning(reasoning_config))
     # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
     # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
     # OpenAI-compat wire from any aux task (#112010).

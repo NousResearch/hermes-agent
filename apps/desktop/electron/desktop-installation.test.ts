@@ -268,7 +268,11 @@ test('the repair lock records our creation time from Electron, without a ps spaw
     try {
       asMacOS(
         () => 'Sun Oct  4 12:00:00 2026',
-        () => assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+        () =>
+          assert.equal(
+            loadOrCreateInstallationId(filePath, () => ID_A),
+            ID_A
+          )
       )
       lockBody = String(writes.mock.calls[0]?.[1])
     } finally {
@@ -295,7 +299,11 @@ test('a contended repair lock probes its holder creation time once per wait, liv
     // The holder matches its recorded creation time, then dies into a zombie on the 5th poll.
     asMacOS(
       args => (args.includes('lstart=') ? 'Sun Oct  4 12:00:00 2026' : ++statPolls >= 5 ? 'Z' : 'S'),
-      () => assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+      () =>
+        assert.equal(
+          loadOrCreateInstallationId(filePath, () => ID_A),
+          ID_A
+        )
     )
 
     assert.equal(statPolls, 5, 'liveness is re-read every poll')

@@ -1696,7 +1696,7 @@ def cmd_gui(args: argparse.Namespace):
             print("  Refusing to run npm without serialization; check the checkout permissions and retry.")
             sys.exit(1)
         if not acquired:
-            print("✗ Another Hermes desktop dependency install or build is already running.")
+            print("✗ A Hermes update or another desktop dependency install or build is already running.")
             print("  Wait for it to finish, then retry.")
             sys.exit(2)
 

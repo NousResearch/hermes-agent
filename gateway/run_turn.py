@@ -512,7 +512,6 @@ class GatewayTurnMixin:
     async def _hmwa_open_session(self, session_entry, session_key, source):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
         Returns ``(_was_auto_reset, _is_new_session)``."""
-        # Consume was_auto_reset immediately so it cannot re-fire and wipe overrides set between turns.
         # Capture and immediately consume was_auto_reset so it does not re-fire on subsequent messages —
         # preventing the cleanup from wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
@@ -1409,7 +1408,7 @@ class GatewayTurnMixin:
             )
         return bounded
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, internal=False):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, message, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
@@ -1418,13 +1417,13 @@ class GatewayTurnMixin:
             return
         human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
-            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # Same branch logic as the TUI (offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
-            from agent.onboarding import first_contact_turn_note
+            from agent.onboarding import first_contact_turn_note, setup_command
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
-                session_history_empty=True, install_has_prior_sessions=False,
-            )
+                session_history_empty=True, install_has_prior_sessions=False, message=message,
+                command=setup_command(source.platform.value))
             if note:
                 turn_sidecar_notes.append(note)
 
@@ -2050,12 +2049,13 @@ class GatewayTurnMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        from tools.approval_yolo import restore_session_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        restore_session_yolo(session_key, session_entry.yolo is True)  # a restarted gateway's set starts empty
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
-        # UIs render timeline notices, not user bubbles; role/content untouched.
+        # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
@@ -2101,7 +2101,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).
@@ -3592,20 +3592,16 @@ class GatewayTurnMixin:
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
         the active model and the next message retries the primary). Skip failed runs: evicting
         would loop bad model → fallback → evict → recreate."""
-        from gateway.run import _resolve_gateway_model
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        _cfg_model = _resolve_gateway_model()
-        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
-        # cached agent is evicted every turn, destroying prompt caching.
-        with suppress(Exception):
-            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-            _agent_provider = getattr(_agent, 'provider', '') or ''
-            if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+        # A provider fallback is drift even when it serves the configured model name on another endpoint.
+        if getattr(_agent, "_provider_fallback_active", False) is True:
+            self._evict_cached_agent(session_key)
+            return
+        _cfg_model = self._fallback_baseline_model(session_key, turn_ctx.source, _agent)
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
@@ -4315,8 +4311,8 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
-            persist_user_display_metadata=persist_user_display_metadata,
-            scheduled_heartbeat=scheduled_heartbeat,
+            persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

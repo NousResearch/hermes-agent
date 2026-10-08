@@ -1338,7 +1338,7 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """
     # A finite `hermes -z`/`chat -q` run is CLI history too: `hermes -z … --resume latest` chains on it.
     if source == "cli":
-        from run_agent import CLI_FAMILY_SOURCES
+        from agent.session_source import CLI_FAMILY_SOURCES
         source = sorted(CLI_FAMILY_SOURCES)
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
@@ -1769,7 +1769,7 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
         # Explicit flag, not a label inherited from a parent TUI/Desktop session — one-shot
-        # runs must keep it (see run_agent._session_source_for_agent).
+        # runs must keep it (see agent.session_source.session_source_for).
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
@@ -2324,11 +2324,14 @@ def _update_preflight_handled(args) -> bool:
     """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
     from hermes_cli.config import is_managed, managed_error
     from hermes_cli.update_channel import handle_metadata_args
+    from hermes_cli.update_cmd_common import _record_stop
 
     if handle_metadata_args(args, PROJECT_ROOT):
         sys.exit(0)
     if is_managed():
         managed_error("update Hermes Agent")
+        if not any(getattr(args, flag, False) for flag in ("plan", "check", "list_venv_holders")):
+            _record_stop("managed_install", without_receipt="refused")  # an update attempt: a metrics row only
         return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
@@ -2358,15 +2361,10 @@ def _update_preflight_handled(args) -> bool:
             sys.exit(VENV_HOLDERS_EXIT)
         return True
 
-    # Image/package-managed admission gate: baked provenance marker first
-    # (fail-closed on malformed), then docker/nix/apt heuristics. Records a
-    # `refused` receipt and exits 2 (refused-by-contract, distinct from errors).
-    # Image-managed / package-managed admission gate (#91277 Phase 3): one shared decision for every
-    # mutation surface. Prints the real update command, records a `refused` receipt so fleet tooling sees
-    # the blocked attempt, and exits 2 (refused-by-contract, distinct from exit 1 errors).
-    # Shared admission gate (#91277 Phase 3): same marker-first decision as the apply path, so --check can
-    # never report git state for an install whose real update mechanism is an image pull.
-    # The response keeps the pre-existing per-kind error codes the dashboard UI already keys on. See #91277.
+    # Image/package-managed admission gate (#91277 Phase 3): baked provenance marker first (fail-closed
+    # on malformed), then docker/nix/apt heuristics; one shared decision for every mutation surface, so
+    # --check never reports git state for an image-managed install. Prints the real update command,
+    # records a `refused` receipt and exits 2 (refused-by-contract, distinct from exit 1 errors).
     from hermes_cli.update_contract import (
         evaluate_update_admission,
         record_refusal_receipt,
@@ -2423,8 +2421,9 @@ def cmd_update(args):
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
+        from hermes_cli.update_cmd_common import _record_stop
+        _record_stop("lock_held", without_receipt="refused")  # no receipt: latest.json is the holder's
         sys.exit(UPDATE_EXIT_CONCURRENT)
-
 
     from hermes_cli.update_cmd import _cmd_update_impl
     from pm import InstallError

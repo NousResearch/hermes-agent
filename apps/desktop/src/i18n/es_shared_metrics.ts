@@ -1,39 +1,35 @@
 export const esSharedMetrics = {
-  consentTitle: '¿Nos ayudas a mejorar Hermes?',
+  consentTitle: '¿Compartir estadísticas de uso?',
+  dialogTitle: 'Estadísticas de uso',
   consentBody:
-    'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
-  whatIsCollected: 'Qué se recopila',
-  collectedIntro: 'Solo contadores acotados:',
-  collectedActivity:
-    'Actividad, duración de sesiones, resultados y clases de error, incluido un motivo de una lista fija cuando una escritura en memoria o una compresión de contexto se rechaza, falla o se omite',
-  collectedModels: 'Rutas de modelo y totales de tokens',
-  collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
-  collectedMilestones: 'Recuentos de configuración agrupados',
+    'Hermes puede contar cómo lo usas: duración de las sesiones, qué modelos y herramientas se ejecutan y cuándo algo falla. Nunca registra tus mensajes, archivos, rutas ni textos de error.',
+  whatIsCollected: 'Qué se cuenta',
+  collectedActivity: 'Sesiones: duración, resultado, tipo de error, tiempo activo por día',
+  collectedModels: 'Modelos: cuáles, totales de tokens',
+  collectedNames: 'Funciones: herramientas integradas, comandos, áreas de la app y ajustes usados o desactivados',
+  collectedMilestones:
+    'Configuración: qué pasos se completaron, conexiones con proveedores, cuántos skills, plugins y tareas',
   collectedReliability:
-    'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
+    'Estado de la app: fallos, velocidad de inicio y de respuesta, actualizaciones, conexiones de mensajería',
   collectedUsage:
-    'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
-  collectedMachine:
-    'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
-  installId:
-    'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
-  consentWindow:
-    'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    'Calidad del agente: ediciones fallidas, llamadas a herramientas rotas, bucles atascados, coste por tarea',
+  collectedMachine: 'Equipo: sistema operativo, rango de RAM, tipo de GPU, versión de Hermes, uso de modelos locales',
+  sending:
+    'Las estadísticas se quedan en este equipo a menos que elijas Compartir. Las estadísticas compartidas se envían a Nous una vez al día con un ID aleatorio para este perfil. Salvo un aviso único de que Hermes se instaló, que solo se cuenta cuando aceptas, las estadísticas de antes de aceptar nunca se envían. Puedes cambiarlo cuando quieras en Configuración.',
   readDocs: 'Leer todos los detalles',
-  share: 'Recopilar y enviar a Nous',
-  local: 'Recopilar solo en local',
+  share: 'Compartir con Nous',
+  local: 'Guardar en este equipo',
   off: 'No, gracias',
-  changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
   saveFailed: 'No se pudo guardar tu elección',
   collectLabel: 'Recopilar estadísticas de uso',
-  collectDesc: 'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
-  sendLabel: 'Enviar estadísticas de uso a Nous',
+  collectDesc: 'Solo recuentos, guardados en este equipo. Nunca tus mensajes, archivos, rutas ni textos de error.',
+  sendLabel: 'Compartir estadísticas de uso con Nous',
   sendDesc:
-    'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
+    'Envía las estadísticas a Nous una vez al día con un ID aleatorio para este perfil. Salvo el aviso único de instalación, nunca se envían estadísticas de antes de que aceptaras. Requiere la recopilación activada.',
   unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
-  stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
+  stripBody: 'Solo recuentos. Nunca tus mensajes ni archivos.',
   stripReaskBody:
     'Te lo preguntamos de nuevo: una versión anterior podía guardar «No, gracias» antes de que vieras esta pregunta.',
-  stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
+  stripChoices: { share: 'Compartir con Nous', local: 'Guardar en este equipo', off: 'No, gracias' },
   stripDetails: 'Detalles'
 }

@@ -338,7 +338,7 @@ class TeamsMeetingPipeline:
             raise TeamsPipelineRetryableError("Recording fallback requires ffmpeg for audio extraction, but ffmpeg was not found.")
         audio_path = recording_path.with_suffix(".wav")
         proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            ffmpeg, "-y", "-i", str(recording_path), str(audio_path), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise TeamsPipelineRetryableError(f"ffmpeg audio extraction failed: {stderr.decode('utf-8', errors='replace').strip()}")

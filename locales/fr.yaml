@@ -921,6 +921,8 @@ gateway:
   plan:
     ack_task: "Planification : {task}"
     ack_conversation: "Planification à partir du contexte de cette conversation…"
+  initiate_setup:
+    ack: "Lancement de la configuration…"
   init:
     start_failed: "Impossible de démarrer /init — veuillez réessayer."
     ack_update: "Mise à jour d'AGENTS.md à partir d'une analyse du projet…"
@@ -1011,6 +1013,9 @@ gateway:
     db_fts_corrupt: "⚠️ La base de données des sessions a signalé une erreur de corruption limitée à l'index de recherche (FTS5) ; les tables de messages ne sont pas endommagées. Les messages risquent de ne pas être persistés tant qu'elle n'est pas réparée : exécutez `hermes {profile_arg}doctor --fix`, puis redémarrez le gateway. N'exécutez pas d'outils de récupération et ne restaurez pas de sauvegarde à moins que `hermes {profile_arg}doctor` ne confirme des dégâts."
     db_then_restart: "{action} Puis `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Base de données des sessions indisponible — les messages risquent de ne pas être enregistrés et /resume sera vide. Cause : {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Le stockage cron {store} n'est plus accessible en écriture ({error}) depuis {since}. Les tâches planifiées sont ignorées jusqu'à ce qu'il accepte à nouveau les écritures. Correctif : {fix}."
+    recovered: "✅ Le stockage cron {store} est de nouveau accessible en écriture ; {skipped} exécution(s) ignorée(s), chaque tâche est rattrapée une fois."
   whoami:
     scope_dm: "MP"
     scope_group: "groupe/canal"
@@ -1805,6 +1810,8 @@ slash:
     description: "Relancer un prompt à intervalle régulier dans cette session"
   plan:
     description: "Rédiger un plan d'implémentation markdown dans .hermes/plans/ sans rien exécuter"
+  initiate-setup:
+    description: "Lancer la configuration initiale : apprendre à vous connaître et adapter Hermes à vous"
   moa:
     description: "Exécuter un prompt via le preset Mixture of Agents par défaut, puis restaurer votre modèle"
   subgoal:
@@ -2665,6 +2672,7 @@ cli:
     session_not_found: "Session introuvable : {session_id}"
     compressed_into: "La session {session_id} a été compressée dans {descendant} ; reprise de la session descendante avec votre transcription."
     cannot_resume: "Impossible de reprendre la session : {error}"
+    kanban_owned: "⛔ La session {session_id} est la transcription d'un worker Kanban. La reprendre ici créerait un écrivain que le tableau Kanban ne peut ni observer ni superviser — relance ou débloque plutôt la carte sur le tableau, afin que le dispatcher possède la prochaine exécution."
     cannot_resume_prefix: "Impossible de reprendre la session :"
     resumed_session: "↻ Session reprise"
     counts_one: "({count} message utilisateur, {total} messages au total)"
@@ -2699,7 +2707,6 @@ cli:
     run_model_to_retry: "Exécutez 'hermes model' pour réessayer."
     provider_configured: "✓ Fournisseur configuré — vous pouvez commencer à discuter."
     provider_setup_incomplete: "La configuration du fournisseur n'a pas abouti. Exécutez 'hermes model' pour réessayer."
-    tirith_unavailable: "⚠ Le scanner de sécurité tirith est activé mais indisponible — l'analyse des commandes se limitera à la détection par motifs"
     unknown_toolsets: "Avertissement : ensembles d'outils inconnus : {names}"
     stdin_unusable: |2-
 
@@ -3208,6 +3215,8 @@ cli:
     plan:
       planning: "📋 Planification : {task}"
       from_conversation: "📋 Planification à partir du contexte de cette conversation..."
+    initiate_setup:
+      starting: "🧭 Lancement de la configuration..."
     init:
       updating: "⚡ Mise à jour d'AGENTS.md à partir d'une analyse du projet..."
       generating: "⚡ Génération d'AGENTS.md à partir d'une analyse du projet..."
@@ -3969,7 +3978,7 @@ tips:
   t167: "L'approbation des commandes dangereuses a 4 niveaux : once, session, always (liste d'autorisation permanente), deny."
   t168: "Le mode d'approbation intelligent utilise un LLM pour approuver automatiquement les commandes sûres et signaler les dangereuses."
   t169: "La protection SSRF bloque les réseaux privés, le loopback, les adresses link-local et les adresses de métadonnées cloud."
-  t170: "L'analyse pré-exécution Tirith détecte l'usurpation d'URL par homoglyphes et les schémas de type « pipe vers interpréteur »."
+  t170: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
   t171: "Les sous-processus MCP reçoivent un environnement filtré — seules les variables système sûres sont transmises."
   t172: "Les fichiers de contexte (.hermes.md, AGENTS.md) sont analysés contre les injections de prompt avant chargement."
   t173: "command_allowlist dans config.yaml approuve de façon permanente certains motifs de commandes shell."
@@ -3999,7 +4008,7 @@ tips:
   t197: "L'enregistrement des trajectoires (--save-trajectories) capture les traces complètes d'utilisation des outils pour l'entraînement de modèles."
   t198: "Trois types de plugins : généraux (outils/hooks), fournisseurs de mémoire et moteurs de contexte."
   t199: "hermes plugins install owner/repo installe des plugins directement depuis GitHub."
-  t200: "Fournisseurs de mémoire externes : OpenViking intégré ; Honcho, Hindsight, Mem0 et d'autres via hermes plugins install."
+  t200: "Fournisseurs de mémoire externes : Honcho, Hindsight, Mem0, OpenViking et d'autres via hermes plugins install."
   t201: "Les hooks de plugin incluent pre/post_tool_call, pre/post_llm_call et transform_terminal_output pour normaliser la sortie."
   t202: "Le cache de prompt (Anthropic) réduit les coûts en réutilisant les préfixes de prompt système déjà mis en cache."
   t203: "L'agent génère les titres de session dans un thread d'arrière-plan — aucun impact sur la latence."
@@ -4174,12 +4183,9 @@ tips:
   t372: "image_gen.model dans config.yaml choisit le modèle FAL : flux-2/klein, gpt-image-2, nano-banana-pro, et d'autres."
   t373: "image_gen.provider fait passer la génération d'images par un plugin (OpenAI Images, Codex, FAL) au lieu du fournisseur par défaut."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY dirigent l'analyse d'images vers n'importe quel point de terminaison compatible OpenAI."
-  t375: "security.tirith_fail_open: false fait bloquer les commandes par Hermes quand le scanner tirith lui-même tombe en erreur."
-  t376: "La variable d'environnement TIRITH_FAIL_OPEN remplace la configuration tirith_fail_open — une bascule rapide sans modifier config.yaml."
+  t375: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
+  t376: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   t377: "Les chats --source tool sont exclus de hermes sessions list par défaut — passez --source explicitement pour les voir."
-  t378: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
-  t379: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
-  t380: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Posez une question, ou tapez / pour les commandes…"
     p02: "Résume le contenu de ce dossier"

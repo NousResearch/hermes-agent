@@ -79,7 +79,7 @@ def _new_session(**kwargs):
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     return AIOHTTP_AVAILABLE and bool(
-        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
+        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip())
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -94,7 +94,8 @@ class SmsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+        # Stripped: a whitespace-only token must read as unset, not key the signature HMAC with blanks.
+        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip()
         # Scoped like the sibling reads above: a secondary profile must not send from the default
         # profile's TWILIO_PHONE_NUMBER (#98738 class).
         self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
@@ -204,6 +205,8 @@ class SmsAdapter(BasePlatformAdapter):
         return bool(variant and self._check_signature(variant, post_params, signature))
 
     def _check_signature(self, url: str, post_params: dict, signature: str) -> bool:
+        if not self._auth_token:  # an empty HMAC key is public: fail closed rather than verify against it
+            return False
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
@@ -299,7 +302,7 @@ def _strip_markdown_for_sms(message: str) -> str:
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
-    auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+    auth_token = str(getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "") or "").strip()
     if not AIOHTTP_AVAILABLE:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")

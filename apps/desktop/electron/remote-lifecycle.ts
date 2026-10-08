@@ -331,6 +331,17 @@ async function probeRemoteHermesHome(ssh) {
  * located, adds its checkout to the probed ones. Every parse, read, lock, or
  * transport uncertainty fails closed so a Desktop relaunch cannot start
  * `serve` beside an updater that survived the old app process.
+ *
+ * The program travels on stdin (`python3 -`), not in argv. `ssh.exec` rides the
+ * POSIX ControlMaster mux socket, where ssh writes the session request and only
+ * then hands our stdio descriptors over with sendmsg(SCM_RIGHTS): a request
+ * still sitting in the socket buffer leaves no room for that descriptor message
+ * and the pass fails with EMSGSIZE ("mm_send_fd: sendmsg(0): Message too long",
+ * exit 255). macOS sizes a unix-stream buffer at 8 KB and the gate program is
+ * ~7.5 KB, so an inlined `python3 -c` landed a connect inside that window and
+ * every reconnect read a transport error as "could not prove it is clear".
+ * Python compiles the whole program before running it and the gate never reads
+ * stdin, so argv stays a few dozen bytes however the judge grows.
  */
 async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') {
   const marker = expandRemotePath(`${remoteInstallRoot(hermesHome)}/.hermes-update-in-progress`)
@@ -339,7 +350,7 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') 
 
   try {
     observation =
-      String(await ssh.exec(`python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${marker}${hermes}`))
+      String(await ssh.exec(`python3 - ${marker}${hermes}`, { stdinData: REMOTE_MARKER_GATE_PY }))
         .trim()
         .split(/\r?\n/)
         .pop() || ''
@@ -1206,6 +1217,29 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .endsWith('YES')
 }
 
+function remoteProfileMissingError(output) {
+  const match = String(output || '').match(
+    /Error: Profile ['"]([^'"]+)['"] does not exist\.?(?: Create it with: ([^\n]+))?/i
+  )
+
+  if (!match) {
+    return null
+  }
+
+  const profile = match[1]
+  const createCommand = match[2]?.trim()
+
+  const err: any = new Error(
+    `The remote Hermes profile '${profile}' does not exist. ` +
+      `Select an existing remote profile${createCommand ? ` or create it with: ${createCommand}` : '.'}`
+  )
+
+  err.kind = 'remote-profile-missing'
+  err.profile = profile
+
+  return err
+}
+
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs(), isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
@@ -1213,18 +1247,24 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
   while (Date.now() < deadline) {
     assertBootstrapNotSuperseded(signal)
 
-    if (isAlive && !(await isAlive())) {
-      const err: any = new Error('Remote dashboard process exited before announcing its port.')
-      err.kind = 'spawn-failed'
-      throw err
-    }
-
     let tail
 
     try {
       tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
     } catch {
       tail = ''
+    }
+
+    if (isAlive && !(await isAlive())) {
+      const cause = remoteProfileMissingError(tail)
+
+      if (cause) {
+        throw cause
+      }
+
+      const err: any = new Error('Remote dashboard process exited before announcing its port.')
+      err.kind = 'spawn-failed'
+      throw err
     }
 
     const m = READY_RE.exec(String(tail || ''))

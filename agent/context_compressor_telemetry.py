@@ -50,6 +50,10 @@ class CompressionTelemetryMixin:
             "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
             "summary_input_record_count": None, "summary_input_sampled_record_count": None,
             "summary_input_elided_record_count": None,
+            # Effect of a committed rewrite (filled by _record_compression_effect; defaults describe no rewrite).
+            "method": "none", "items_dropped": 0, "messages_before": None, "messages_after": None,
+            "tokens_before": None, "tokens_after": None, "tokens_reclaimed": None, "token_count_method": None,
+            "tool_results_pruned": None, "reasoning_items_pruned": None,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry
@@ -92,3 +96,28 @@ class CompressionTelemetryMixin:
             accumulate = key in {"queue_wait_ms", "summary_generation_ms"} and value is not None
             telemetry[key] = (telemetry.get(key) or 0) + value if accumulate else value
 
+    def _compression_method(self) -> str:
+        """How the summary that replaced the middle window was produced."""
+        if getattr(self, "_last_summary_fallback_used", False):
+            return "deterministic_fallback"
+        if getattr(self, "_last_aux_model_failure_error", None):
+            return "aux_fallback_main"
+        return "llm_summary"
+
+    def _record_compression_effect(
+        self, messages_before: int, compressed: list[dict[str, Any]], tokens_before: int, tool_results_pruned: int,
+        reasoning_items_pruned: int,
+    ) -> None:
+        """Record what a finished rewrite did. ``tokens_before`` and the after count are rough message-only
+        estimates (system prompt and tool schemas excluded), so they compare like for like."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        tokens_after = estimate_messages_tokens_rough(compressed)
+        telemetry.update(
+            method=self._compression_method(), items_dropped=getattr(self, "_last_summary_dropped_count", 0) or 0,
+            messages_before=messages_before, messages_after=len(compressed), tokens_before=tokens_before,
+            tokens_after=tokens_after, tokens_reclaimed=tokens_before - tokens_after,
+            token_count_method="estimate_rough", tool_results_pruned=tool_results_pruned,
+            reasoning_items_pruned=reasoning_items_pruned,
+        )

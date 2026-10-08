@@ -226,6 +226,37 @@ attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### Attempt telemetry
+
+Every `compress_context` call that returns logs one content-free INFO line,
+`context compression attempt telemetry: {...}` (logger
+`agent.conversation_compression`). It never carries message text, summary
+text, the focus topic or error messages.
+
+- `trigger_source` names why the attempt ran: `manual`, `idle`,
+  `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
+  `gateway_hygiene` or `overflow`.
+- `route` is `hermes` for the local compressor and `codex_app_server` when the
+  Codex thread owns compaction.
+- `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
+  A `blocked` attempt was refused by an automatic guard; its `failure_class`
+  names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
+  `blocked:ineffective`).
+- `method` says how the summary was produced: `llm_summary`,
+  `aux_fallback_main` (the summary model failed and the main model wrote it),
+  `deterministic_fallback` (static anchors summary; `items_dropped` counts the
+  replaced messages), `provider` (Codex) or `none`.
+- `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
+  `tokens_reclaimed` describe the compressor's rewrite.
+  `token_count_method: estimate_rough` marks them as rough message-only
+  estimates (system prompt and tool schemas excluded), so they compare like
+  for like. `tool_results_pruned` and `reasoning_items_pruned` count the
+  deterministic passes that ran before and after the summary.
+
+The opt-in `hermes.compression.count` shared metric keeps coarse triggers
+(`auto`, `manual`, `overflow`) and counts only attempts the local compressor
+ran; blocked and Codex-routed attempts appear in the log line only.
+
 
 ## Configuration
 

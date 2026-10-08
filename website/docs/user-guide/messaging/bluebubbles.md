@@ -126,9 +126,17 @@ iMessage → Messages.app → BlueBubbles Server → Webhook → Hermes
 Hermes → BlueBubbles REST API → Messages.app → iMessage
 ```
 
-- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery.
+- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery. Hermes keeps one exact `new-message` registration. If an older same-URL registration has a stale event set, Hermes migrates it with rollback and cancellation protection. The exact fixed-URL registration is durable across reconnects because BlueBubbles' idempotent POST cannot prove which concurrent process created it; disconnect therefore never deletes that ambiguous row.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
+
+### Incoming event policy
+
+`new-message` and the legacy `message` alias can start a turn. Hermes acknowledges `updated-message` without dispatching a turn or downloading attachments, even when the GUID is unseen. An update containing newly available attachments or group content therefore does not deliver that content to the agent. Edits and retractions do not start turns either.
+
+This policy applies to DMs and groups. Attachments are retried within the original new-message request; successful downloads and captions are preserved, with an attachment-unavailable fallback if every download fails. Hermes does not rely on a later update to hydrate the message. GUID replay protection follows actual gateway admission: cancellation before admission releases the GUID; cancellation after admission retains it.
+
+Synthetic tests cover the update policy and group payload shapes. Fresh on-device group traffic has not been validated; this change does not claim to consolidate the broader update-based attachment/group handling proposed in [#116401](https://github.com/NousResearch/hermes-agent/pull/116401).
 
 ### Two URLs, opposite directions
 
@@ -139,7 +147,7 @@ The setup uses two URLs that point in opposite directions — don't confuse them
 
 ### How the webhook is registered
 
-You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for the `new-message` and `updated-message` events, and removes the registration again on clean shutdown.
+You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for `new-message` only. The exact fixed-URL registration is retained on disconnect so another gateway or outbound client cannot remove it.
 
 Two details worth knowing:
 
@@ -160,8 +168,27 @@ Two details worth knowing:
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
+| `BLUEBUBBLES_SEND_READ_RECEIPTS` | No | `true` | Override automatic read receipts |
 
-Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
+### Reply experience
+
+Set these keys directly under `platforms.bluebubbles` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    auto_react: true
+    auto_react_type: like
+    typing_indicators: true
+    typing_refresh_interval: 4
+    send_read_receipts: true
+    split_paragraph_replies: false
+```
+
+By default, Hermes immediately adds one `like` tapback when processing starts, keeps the native typing indicator active through the shared gateway lifecycle, marks the message read, and sends a normal response as one iMessage bubble. Messages longer than the platform limit are still split. Set `split_paragraph_replies: true` only if each paragraph must be a separate bubble.
+
+The Private API helper is required for reactions, typing indicators, and read receipts. Basic text and media still work when the helper is not available.
 
 ## Features
 

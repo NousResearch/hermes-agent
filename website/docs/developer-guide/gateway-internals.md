@@ -165,9 +165,11 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 
 gateway/platforms/                  # core base + legacy direct adapters
 ├── base.py              # BasePlatformAdapter — shared logic for all platforms
+├── base_reactions.py    # inherited opt-in reaction completion lifecycle
 ├── signal.py            # Signal via signal-cli REST API
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
-├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
+├── bluebubbles.py       # Apple iMessage transport, registration and reply behavior
+├── bluebubbles_inbound.py # inherited webhook policy, media recovery and GUID admission
 ├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
 ├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)

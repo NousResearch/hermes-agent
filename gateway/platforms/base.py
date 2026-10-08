@@ -20,6 +20,8 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from .base_reactions import ProcessingReactionHooksMixin
+
 from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -1914,7 +1916,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(ProcessingReactionHooksMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2976,6 +2978,10 @@ class BasePlatformAdapter(ABC):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
 
+    def get_typing_refresh_interval(self) -> float:
+        """Return the shared inbound typing refresh cadence for this platform."""
+        return 2.0
+
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator; override where typing runs as a loop."""
 
@@ -3521,36 +3527,8 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks.pop(session_key, None)
         return callback if callable(callback) else None
 
-    # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing
-    # ``_add_reaction(chat_id, message_id, emoji)`` / ``_remove_reaction(chat_id, message_id)``
-    # can just set the emoji attributes; left ``None`` the hook is a no-op.
-    _ACK_EMOJI: Optional[str] = None
-    _OK_EMOJI: Optional[str] = None
-    _FAIL_EMOJI: Optional[str] = None
-
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
-
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes. Default: opt-in reaction ack — with
-        ``_OK_EMOJI``/``_FAIL_EMOJI`` set and ``_add_reaction``/``_remove_reaction`` present, swap
-        the in-progress reaction for the outcome one. Remove-then-add is deterministic whether the
-        platform replaces or stacks a sender's reactions. CANCELLED leaves it unreacted."""
-        if self._OK_EMOJI is None and self._FAIL_EMOJI is None:
-            return
-        add: Any = getattr(self, "_add_reaction", None)
-        remove: Any = getattr(self, "_remove_reaction", None)
-        enabled = getattr(self, "_reactions_enabled", None)
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if (not callable(add) or not callable(remove) or (callable(enabled) and not enabled())
-                or not chat_id or not message_id):
-            return
-        await remove(chat_id, message_id)
-        emoji = {ProcessingOutcome.SUCCESS: self._OK_EMOJI,
-                 ProcessingOutcome.FAILURE: self._FAIL_EMOJI}.get(outcome)
-        if emoji:
-            await add(chat_id, message_id, emoji)
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -3604,6 +3582,7 @@ class BasePlatformAdapter(ABC):
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
+        event._gateway_accepted = True
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return
@@ -3861,6 +3840,7 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+                    event._gateway_accepted = True
                 return
         now = time.monotonic()
         if state is None:
@@ -3880,6 +3860,7 @@ class BasePlatformAdapter(ABC):
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        event._gateway_accepted = True
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""
@@ -4471,6 +4452,8 @@ class BasePlatformAdapter(ABC):
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
+        if self._accepts_kwarg(self._keep_typing, "interval", var_kw=False, unknown=True):
+            kwargs["interval"] = self.get_typing_refresh_interval()
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,

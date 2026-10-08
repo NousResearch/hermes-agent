@@ -614,3 +614,12 @@ def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
         except OSError:
             pass
 
+
+
+@pytest.fixture()
+def _isolate_bluebubbles_environment(monkeypatch):
+    """Keep host BlueBubbles settings from changing adapter test behavior."""
+    for key in tuple(os.environ):
+        if key.startswith("BLUEBUBBLES_"):
+            monkeypatch.delenv(key, raising=False)
+

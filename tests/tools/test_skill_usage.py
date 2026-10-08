@@ -404,6 +404,34 @@ def test_is_agent_created(skills_home):
     assert is_agent_created("hubbed") is False
 
 
+def test_bundled_provenance_recovery_is_cached_until_sync_invalidation(skills_home, monkeypatch):
+    from tools import skill_usage
+
+    skills_dir = skills_home / "skills"
+    bundled_dir = skills_home / "bundled"
+    local = _write_skill(skills_dir, "restored", category="github")
+    _write_skill(bundled_dir, "restored", category="github")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: bundled_dir)
+
+    calls = 0
+    original = skill_usage._same_skill_tree
+
+    def counted(left, right):
+        nonlocal calls
+        calls += 1
+        return original(left, right)
+
+    monkeypatch.setattr(skill_usage, "_same_skill_tree", counted)
+    assert skill_usage.is_bundled("restored") is True
+    assert skill_usage.is_bundled("restored") is True
+    assert calls == 1
+
+    (local / "SKILL.md").write_text("changed\n", encoding="utf-8")
+    skill_usage.invalidate_bundled_names_cache()
+    assert skill_usage.is_bundled("restored") is False
+    assert calls == 2
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------

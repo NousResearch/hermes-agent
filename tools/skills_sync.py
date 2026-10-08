@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
-from tools.skill_usage import _read_skill_name
+from tools.skill_usage import _read_skill_name, invalidate_bundled_names_cache
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
@@ -165,6 +165,8 @@ def _write_manifest(entries: Dict[str, str]):
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)
     except Exception as e:
         logger.debug("Failed to write skills manifest %s: %s", _manifest_file(), e, exc_info=True)
+    finally:
+        invalidate_bundled_names_cache()
 
 
 def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:

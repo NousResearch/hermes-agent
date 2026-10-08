@@ -671,7 +671,16 @@ def _result_taken(result: dict) -> bool:
     return result.get("auth_code") is not None or result.get("error") is not None
 
 
-def _make_callback_handler() -> tuple[type, dict]:
+def _make_flow_state() -> dict:
+    """Per-flow expected-state slot shared by the redirect handler and the callback readers. The SDK
+    generates the state and only compares it *after* ``callback_handler`` returns, so a callback
+    belonging to a different surviving login looked accepted up front and failed late (#134964);
+    the redirect URL carries the state, so capture it there and let both readers reject a mismatch
+    before it poisons the result."""
+    return {"expected_state": None}
+
+
+def _make_callback_handler(flow_state: dict | None = None) -> tuple[type, dict]:
     """Fresh ``(HandlerClass, result_dict)`` per flow so concurrent flows don't stomp on each other."""
     result: dict[str, Any] = {"auth_code": None, "state": None, "error": None, "iss": None}
 
@@ -686,6 +695,13 @@ def _make_callback_handler() -> tuple[type, dict]:
             elif _result_taken(result):
                 # First terminal result (HTTP or paste) wins; a duplicate or refreshed callback never replaces it.
                 body = "<h2>Authorization already received</h2><p>You can close this tab and return to Hermes.</p>"
+            elif (flow_state is not None and flow_state.get("expected_state") is not None
+                  and parsed["state"] != flow_state["expected_state"]):
+                # A callback from a different in-flight login must not half-complete this one (#134964);
+                # the SDK's own compare would only fail later, after the user already saw success.
+                status = 403
+                body = ("<h2>Wrong login attempt</h2><p>This callback belongs to a different Hermes "
+                        "login — complete that one, or start a new login for this server.</p>")
             else:
                 result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
                 body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
@@ -704,7 +720,7 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-def _paste_callback_reader(result: dict) -> None:
+def _paste_callback_reader(result: dict, flow_state: dict | None = None) -> None:
     """Read one stdin line as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
     exits without auth) into *result*. Parse failures, EOF and interrupts are swallowed — best-effort
     fallback racing the HTTP listener, which stays primary."""
@@ -733,6 +749,13 @@ def _paste_callback_reader(result: dict) -> None:
         print("  Pasted input did not contain ``code=`` or ``error=`` — ignoring.", file=sys.stderr)
         return
     if _result_taken(result):  # one more race-check before writing
+        return
+    if (flow_state is not None and flow_state.get("expected_state") is not None
+            and parsed["state"] != flow_state["expected_state"]):
+        print(
+            "  This code belongs to a different Hermes login attempt — ignored. Complete that "
+            "login, or start a new one for this server.",
+            file=sys.stderr)
         return
     result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
     if parsed["code"]:
@@ -782,7 +805,8 @@ def _announce_authorization_url(
     print(f"  ({note})\n", file=sys.stderr)
 
 
-def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
+def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None,
+                           flow_state: dict | None = None):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
     flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
     hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
@@ -808,6 +832,13 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
         _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
+        # The state arrives on the authorization URL the SDK hands us — capture it so the paste
+        # fallback and the HTTP listener can attribute a callback to THIS flow (#134964).
+        if flow_state is not None:
+            try:
+                flow_state["expected_state"] = _parse_redirect_query(urlparse(authorization_url).query).get("state")
+            except (ValueError, TypeError):
+                flow_state["expected_state"] = None
 
     return _redirect_handler
 
@@ -852,7 +883,8 @@ def _callback_outcome(result: dict, cimd_url: str | None):
     return _authorization_code_result(result["auth_code"], result["state"], result.get("iss"))
 
 
-def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0):
+def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0,
+                          flow_state: dict | None = None):
     """Callback waiter bound to one flow's port. ``timeout`` is where ``oauth.timeout`` applies (mcp 2.0
     dropped the provider's own). ``cimd_url`` only tailors the timeout message: a server refusing the
     document aborts at the authorization endpoint, so no redirect arrives and a bare "timed out" would
@@ -882,7 +914,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         _raise_if_non_interactive(
             "OAuth callback requires an interactive session but none is available (non-interactive/background "
             "context); skipping browser authorization without binding a callback listener.")
-        handler_cls, result = _make_callback_handler()
+        handler_cls, result = _make_callback_handler(flow_state)
         server = _start_callback_server(port, handler_cls)
         # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
         # select() keeps the listening socket alive past server_close() (the kernel holds the file for
@@ -896,7 +928,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
                 file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
+            threading.Thread(target=_paste_callback_reader, args=(result, flow_state), daemon=True).start()
         elapsed = 0.0
         try:
             while elapsed < timeout and not _result_taken(result):

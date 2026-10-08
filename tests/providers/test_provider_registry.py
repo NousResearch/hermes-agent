@@ -107,3 +107,25 @@ def test_api_key_profiles_declare_their_registry_key_env():
         if not keys or keys[0] not in row.api_key_env_vars:
             missing.append((profile.name, tuple(profile.env_vars), tuple(row.api_key_env_vars)))
     assert not missing, f"profiles whose env_vars miss their registry key: {missing}"
+
+
+def test_plugin_load_failure_warns_once_per_source_and_name(tmp_path, caplog, monkeypatch):
+    """Discovery retries failed plugin imports by design (a plugin landing mid-scan gets
+    picked up) — the load-failure warning must not re-spam on every scan (PR review:
+    18-19 duplicate "Failed to load" lines per `hermes doctor` run)."""
+    _reset_registry()
+    plugin_dir = tmp_path / "broken_plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "__init__.py").write_text("raise RuntimeError('boom')\n")
+    providers._WARNED_PLUGIN_FAILURES.clear()
+
+    with caplog.at_level("WARNING", logger="providers"):
+        providers._import_plugin_dir(plugin_dir, "user", home_key=str(tmp_path))
+        providers._import_plugin_dir(plugin_dir, "user", home_key=str(tmp_path))
+
+    try:
+        failures = [r for r in caplog.records if "Failed to load" in r.getMessage()]
+        assert len(failures) == 1
+        assert "boom" in failures[0].getMessage()
+    finally:
+        providers._WARNED_PLUGIN_FAILURES.clear()

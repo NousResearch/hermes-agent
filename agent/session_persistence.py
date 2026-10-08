@@ -259,11 +259,38 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     batch_rows: list[dict[str, Any]] = []
     batch_msgs: list[dict] = []
     tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
+    # Durable-uid dedupe (re-insert guard): a dict rebuilt from durable rows (crash/failed-turn history
+    # restore, resume, repaired sequence) carries its durable message_uid but neither the persistence
+    # marker nor _row_id — the identity guards below can't see it, and the flush would INSERT a second
+    # copy of an already-durable logical message. Probe the candidates once per flush; already-active uid
+    # = stamp durable and skip (state stays append-only, no rows rewritten).
+    from agent.message_metadata import message_uid_or_none
+    candidate_uids = sorted({
+        uid for msg in messages
+        if isinstance(msg, dict) and not _is_ephemeral_scaffolding(msg)
+        and not msg.get(_DB_PERSISTED_MARKER)
+        and not isinstance(msg.get("_row_id"), int)
+        and (uid := message_uid_or_none(msg))
+    })
+    durable_uids = set()
+    if candidate_uids and getattr(agent, "_session_db", None):
+        try:
+            probe = agent._session_db.active_message_uid_exists(agent.session_id, candidate_uids)
+            durable_uids = {uid for uid, exists in probe.items() if exists}
+        except Exception as probe_exc:
+            # Fail open: a probe failure must never block persistence — the pre-guard behavior.
+            logger.warning("durable-uid flush probe failed (dedupe skipped, append-only behavior): %s",
+                           probe_exc)
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
         if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
+            continue
+        # Durable-uid re-insert guard: this dict carries a uid that is already an ACTIVE durable row
+        # (rebuilt-from-restore dict without marker/_row_id). Same logical message — stamp and skip.
+        if message_uid_or_none(msg) in durable_uids and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
+            msg[_DB_PERSISTED_MARKER] = True
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
         is_history = id(msg) in history_ids

@@ -86,34 +86,16 @@ def test_canonical_repair_preserves_adjacent_user_source_boundaries():
     assert messages[1] is second
 
 
-def test_repair_preserves_consecutive_plain_text_users():
-    agent = _bare_agent()
-    messages = [
-        {"role": "user", "content": "first"},
-        {"role": "user", "content": "second"},
-    ]
-    original = [dict(message) for message in messages]
-
-    repairs = AIAgent._repair_message_sequence(agent, messages)
-
-    assert repairs == 0
-    assert messages == original
-
-
-def test_repair_preserves_empty_user_source_boundary():
+def test_repair_preserves_user_content_when_one_side_empty():
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": ""},
         {"role": "user", "content": "real message"},
     ]
 
-    repairs = AIAgent._repair_message_sequence(agent, messages)
+    AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs == 0
-    assert messages == [
-        {"role": "user", "content": ""},
-        {"role": "user", "content": "real message"},
-    ]
+    assert messages == [{"role": "user", "content": "real message"}]
 
 
 def test_repair_marker_user_merge_keeps_plain_row_addressable():
@@ -588,8 +570,10 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
 def test_cursor_untouched_when_no_repairs():
     agent = _bare_agent()
     messages = [
-        {"role": "user", "content": "first"},
-        {"role": "user", "content": "second"},
+        # Source-identified rows never fold (the queued-prompt carve-out), so this
+        # sequence is repair-free and the cursor must stay put.
+        {"role": "user", "content": "first", "_source_message_id": "cursor-1"},
+        {"role": "user", "content": "second", "_source_message_id": "cursor-2"},
     ]
     agent._last_flushed_db_idx = 1
 
@@ -1303,14 +1287,10 @@ def test_repair_drops_turn_when_pruned_calls_were_only_payload():
 
     assert repairs >= 2
     assert all(m.get("role") != "assistant" for m in messages)
-    # Canonical history keeps each queued user turn as its own source boundary (#63298);
-    # the merge happens on the wire copy, so both asks survive and stay attributable.
+    # The two user turns merge (Pass 3); nothing was lost.
     users = [m for m in messages if m.get("role") == "user"]
-    assert len(users) == 2
-    assert [u["content"] for u in users] == ["do it", "redirected"]
-    wire = AIAgent._drop_thinking_only_and_merge_users(
-        [{"role": m["role"], "content": m["content"]} for m in messages])
-    assert wire == [{"role": "user", "content": "do it\n\n[Next user message]\n\nredirected"}]
+    assert len(users) == 1
+    assert "do it" in users[0]["content"] and "redirected" in users[0]["content"]
 
 
 def test_repair_keeps_calls_answered_within_following_run():
@@ -1605,21 +1585,20 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
 from agent.context_compressor import _DB_PERSISTED_MARKER
 
 
-def test_repair_preserves_adjacent_stamped_user_boundaries():
-    """Adjacent user rows are canonical source boundaries, not a malformed
-    sequence: repair must leave both stamped rows intact and marked, so the
-    flush scan still identity-matches each durable row (#63298)."""
+def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
+    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
+    the next turn's prompt) merge in place; the survivor must lose its marker so
+    the merged text reaches session.db instead of the pre-merge row."""
     agent = _bare_agent()
     stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
-    second = {"role": "user", "content": "second", _DB_PERSISTED_MARKER: True}
-    messages = [stamped, second]
+    messages = [stamped, {"role": "user", "content": "second"}]
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs == 0
-    assert messages == [stamped, second]
-    assert messages[0] is stamped and messages[1] is second
-    assert messages[0][_DB_PERSISTED_MARKER] and messages[1][_DB_PERSISTED_MARKER]
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["content"] == "first\n\nsecond"
+    assert _DB_PERSISTED_MARKER not in messages[0]
 
 
 def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():

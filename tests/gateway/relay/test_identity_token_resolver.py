@@ -18,8 +18,10 @@ SELECTION, the request shapes, and the fail-closed paths.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
+import urllib.error
 
 import pytest
 
@@ -255,3 +257,63 @@ def test_ambient_via_config_yaml(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     assert relay._resolve_relay_identity_token() == _FAKE_JWT
+
+
+def test_ambient_non_utf8_body_is_a_runtime_error(monkeypatch):
+    """A metadata endpoint returning non-UTF-8 bytes must not leak a decoder error."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://proxy.local/access-token")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(b"\xff\xfe"))
+
+    with pytest.raises(RuntimeError, match="non-UTF-8"):
+        relay._resolve_relay_identity_token()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(urllib.error.URLError("offline"), id="url-error"),
+        pytest.param(ValueError("unknown url type"), id="bad-url"),
+        pytest.param(ConnectionResetError("reset"), id="read-reset"),
+        pytest.param(http.client.RemoteDisconnected("closed"), id="http-framing"),
+    ],
+)
+def test_ambient_transport_failures_are_runtime_errors(monkeypatch, failure):
+    """Every ambient endpoint transport failure should keep the resolver contract."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://proxy.local/access-token")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(failure))
+
+    with pytest.raises(RuntimeError, match="identity token endpoint"):
+        relay._resolve_relay_identity_token()
+
+
+def test_ambient_http_error_is_a_runtime_error(monkeypatch):
+    """An HTTP status from the metadata endpoint should be operator-readable."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://proxy.local/access-token")
+    error = urllib.error.HTTPError(
+        "https://proxy.local/access-token", 503, "unavailable", {}, io.BytesIO(b"down")
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(error))
+
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        relay._resolve_relay_identity_token()
+
+
+def test_ambient_json_array_is_rejected_without_leaking_attribute_error(monkeypatch):
+    """A JSON value other than an object must use the normal ambient error."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://proxy.local/access-token")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(b"[]"))
+
+    with pytest.raises(RuntimeError, match="ambient"):
+        relay._resolve_relay_identity_token()
+
+
+def test_client_credentials_json_array_is_rejected_without_leaking_attribute_error(monkeypatch):
+    """An IdP token response must be a JSON object, not an arbitrary JSON value."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://idp.test/token")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_ID", "client")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "secret")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(b"[]"))
+
+    with pytest.raises(RuntimeError, match="JSON object"):
+        relay._resolve_relay_identity_token()

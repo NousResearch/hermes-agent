@@ -34,7 +34,11 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        # ``--slurp`` is a GraphQL-only flag.  Older gh releases reject it for
+        # REST endpoints before issuing a request, which left a completely
+        # green PR with an empty receipt classified as infrastructure.  REST
+        # pagination writes one JSON value per page; decode that stream below.
+        command += ["--paginate"]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -49,7 +53,20 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
-    value = json.loads(result.stdout)
+    if paginate:
+        decoder, offset, pages = json.JSONDecoder(), 0, []
+        output = result.stdout
+        while offset < len(output):
+            while offset < len(output) and output[offset].isspace():
+                offset += 1
+            if offset < len(output):
+                value, offset = decoder.raw_decode(output, offset)
+                pages.append(value)
+        if not pages:
+            raise ValueError("GitHub pagination returned no JSON pages")
+        value = pages
+    else:
+        value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -135,17 +152,23 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GateAuthError:
+            # GitHub returns 403 for this endpoint on private repositories
+            # below the rules feature tier, even to a principal that can read
+            # the PR and its checks.  The ci-required aggregate remains the
+            # fail-closed baseline when that optional rules API is unavailable.
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
-        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
-            return receipt
+            required.add(("ci-required", None))
+        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]

@@ -153,7 +153,7 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
-def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
+def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills(monkeypatch):
     """The local profile is smaller, but never drops the execution contract."""
     from agent.prompt_builder import (
         OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -162,6 +162,12 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
         TOOL_USE_ENFORCEMENT_GUIDANCE,
     )
     from agent.system_prompt import GUARDED_EXECUTION_CONTRACT
+    import run_agent
+
+    monkeypatch.setitem(
+        run_agent.__dict__, "build_skills_system_prompt",
+        lambda **_kwargs: pytest.fail("legacy facade slot overrode the topical skills owner"),
+    )
 
     agent = _make_agent(
         valid_tool_names=["read_file", "skills_list", "skill_view"],
@@ -175,7 +181,7 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
     )
     with (
         patch("agent.coding_context.guarded_prompt_enabled", return_value=True),
-        patch("run_agent.build_skills_system_prompt", return_value="SKILLS") as skills,
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS") as skills,
     ):
         stable = _stable_prompt(agent)
 
@@ -186,6 +192,7 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
     assert TOOL_USE_ENFORCEMENT_GUIDANCE in stable
     assert PARALLEL_TOOL_CALL_GUIDANCE not in stable
     assert OPENAI_MODEL_EXECUTION_GUIDANCE not in stable
+    skills.assert_called_once()
     assert skills.call_args.kwargs["compact_all_categories"] is True
 
 

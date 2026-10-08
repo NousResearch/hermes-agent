@@ -322,16 +322,10 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
-    build_skills_system_prompt = _pb.build_skills_system_prompt
-    try:
-        import run_agent
-        build_skills_system_prompt = run_agent.__dict__.get("build_skills_system_prompt") or build_skills_system_prompt
-    except Exception:
-        pass
-    return build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                      compact_categories=_compact_cats or None,
-                                      compact_all_categories=_guarded_prompt_enabled(agent),
-                                      skills_dir_override=_agent_skills_dir(agent))
+    return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
+                                         compact_categories=_compact_cats or None,
+                                         compact_all_categories=_guarded_prompt_enabled(agent),
+                                         skills_dir_override=_agent_skills_dir(agent))
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:

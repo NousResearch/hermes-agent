@@ -278,7 +278,10 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["schedule"] == "every day at 9am"
 
         from cron.jobs import get_job
-        assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
+        stored = get_job(job_id)
+        assert stored["schedule"]["expr"] == "0 9 * * *"
+        assert stored["enabled"] is True
+        assert stored["state"] == "scheduled"
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

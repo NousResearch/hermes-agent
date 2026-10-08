@@ -226,6 +226,17 @@ hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
 ```
 
+To correct the schedule of a disabled job while keeping its lifecycle, pass
+`hermes cron edit <job_id> --schedule "every 4h" --preserve-lifecycle`. The model tool
+accepts the same request policy as `cronjob_manage(action="update", ...,
+preserve_lifecycle=true)` with a JSON boolean. This option preserves the stored
+`enabled` and `state` values; it is not saved as a job field. It has no effect on
+job creation.
+
+Without the option, CLI/tool schedule edits retain the existing re-arm behavior
+for non-paused jobs. Paused jobs already remain paused. This opt-in applies to the
+CLI and model tool; it does not add a dashboard or REST API option.
+
 Notes:
 
 - repeated `--skill` replaces the job's attached skill list

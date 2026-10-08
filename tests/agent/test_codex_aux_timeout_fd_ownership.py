@@ -22,6 +22,12 @@ import pytest
 from agent.auxiliary_client import _CodexCompletionsAdapter
 
 
+@pytest.fixture(autouse=True)
+def _skip_unrelated_update_recovery(monkeypatch):
+    # Linked-worktree recovery probes installed Git metadata, outside this unit test.
+    monkeypatch.setattr("hermes_cli._early_recovery.restore_interrupted_pull", lambda _root: False)
+
+
 def _adapter_with_recording_client(stream):
     """Build an adapter whose client records (action, thread) events.
 

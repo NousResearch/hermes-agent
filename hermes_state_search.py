@@ -1105,11 +1105,7 @@ class SessionSearchMixin:
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
                        exclude_sources=exclude_sources, role_filter=role_filter,
                        after_ts=after_ts, before_ts=before_ts)
-        # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
-        # opt-in full-body path and scans canonical rows via LIKE.
-        if role_filter and "tool" in role_filter:
-            matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
-            return self._finalize_search_matches(matches, result_fields=result_fields)
+        wants_tool_rows = bool(role_filter) and "tool" in role_filter
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
@@ -1121,7 +1117,7 @@ class SessionSearchMixin:
         route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
         # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram/cjk
         # indexes (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
-        wants_unindexed_rows = (bool(role_filter) and "tool" in role_filter) or (
+        wants_unindexed_rows = wants_tool_rows or (
             bool(source_filter) and any(src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter))
         is_cjk = self._contains_cjk(query)
         if is_cjk:
@@ -1154,12 +1150,27 @@ class SessionSearchMixin:
             except sqlite3.OperationalError as exc:
                 logger.debug("Unindexed-gap supplement skipped: %s", exc)
 
+        # Oversized-tool-result supplement: every layout indexes only the first
+        # FTS_TOOL_CONTENT_PREFIX_CHARS of a role='tool' row (_FTS_NEW_INDEXED_CONTENT_SQL is
+        # shared by FTS_SQL and LEGACY_FTS_SQL), so an explicit tool search can miss a term
+        # living past that boundary. Only rows LONGER than the prefix can hide one, so the scan
+        # stays bounded (a few percent of tool rows) instead of the full-table LIKE this route
+        # used to take unconditionally. Same shape as the gap supplement above: it runs only
+        # when MATCH underfilled the page, so recall is preserved at FTS speed.
+        if wants_tool_rows and len(matches) < limit:
+            try:
+                overflow = self._search_tool_overflow(query, limit - len(matches), **filters)
+                seen_ids = {match["id"] for match in matches}
+                matches.extend(match for match in overflow if match["id"] not in seen_ids)
+            except sqlite3.OperationalError as exc:
+                logger.debug("Tool-overflow supplement skipped: %s", exc)
+
         # unicode61 puts no boundary between Latin and adjacent CJK ("修改youer服务端" is
         # one token, so MATCH "youer" misses). On a zero-result Latin miss retry the
         # substring-capable indexes: cjk first (exact ranked match), then trigram (>=3-char
         # tokens). Gated on a miss so hits keep their ranking ("cat" may then match
         # "concatenate"). Skipped for role='tool' (both indexes exclude tool rows).
-        if not matches and not is_cjk and not (bool(role_filter) and "tool" in role_filter):
+        if not matches and not is_cjk and not wants_tool_rows:
             fb_query = _quote_fts_tokens(query.strip('"').strip())
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ────── When the bigram index is
             # available it serves EVERY CJK query shape the legacy code split between trigram (>=3
@@ -1217,6 +1228,39 @@ class SessionSearchMixin:
         # instr() for the snippet uses the first search token.
         return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
                                order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")
+
+    def _search_tool_overflow(self, query: str, limit: int, **filters) -> List[Dict[str, Any]]:
+        """LIKE-scan the oversized tool results whose tail ``messages_fts`` does not index.
+
+        Bounded to rows LONGER than the indexed prefix: a shorter one is indexed whole, so
+        MATCH already covered it. Those rows are then matched on the WHOLE of ``content``
+        rather than ``substr()`` from the boundary — the caller dedupes by id, so re-finding a
+        match that sits inside the prefix is free, while materializing a multi-KB substring per
+        row is not (measured 96 ms against 337 ms on a 46k-tool-row store).
+        ``idx_messages_oversized_tool`` serves both the gate and the ORDER BY, which is why the
+        bound is interpolated below rather than bound.
+        ``tool_name``/``tool_calls`` are indexed in full and need no supplement. Degrades the
+        FTS query to AND-joined substring terms with quoted phrases kept whole, exactly like
+        :meth:`_search_unindexed_gap`.
+        """
+        if limit <= 0:
+            return []
+        terms = [tok for tok in (t.strip('"').strip("*").strip() for t in _LIKE_TOKEN_RE.findall(query))
+                 if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
+        if not terms:
+            return []
+        # The bound is INTERPOLATED, not bound: idx_messages_oversized_tool is a partial index
+        # over this same predicate, and SQLite can only prove it applies when both sides carry
+        # the literal. The value is a module constant, never caller input.
+        where = ["m.role = 'tool'",
+                 f"LENGTH(COALESCE(m.content, '')) > {FTS_TOOL_CONTENT_PREFIX_CHARS}"]
+        params: list = []
+        for term in terms:
+            where.append("m.content LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(term)}%")
+        _search_filter_clauses(where, params, **filters)
+        return self._like_rows(where, [terms[0], *params, limit], order_by="ORDER BY m.timestamp DESC",
+                               limit_sql="LIMIT ?")
 
     def _search_unindexed_gap(self, fts_query: str, limit: int, **filters) -> List[Dict[str, Any]]:
         """LIKE-scan ids in (fts_rebuild_progress, fts_rebuild_high_water] — rows the deferred

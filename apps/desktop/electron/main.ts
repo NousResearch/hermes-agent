@@ -1191,7 +1191,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       linuxGpuFallbackSticky = true
 
       const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+        String(details?.reason || '').toLowerCase() === 'launch-failed' ? 'gpu-launch-failure' : 'gpu-crash'
 
       try {
         writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))

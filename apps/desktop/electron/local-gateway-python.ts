@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -10,30 +10,188 @@ interface TicketEndpoint {
   control_home?: string | null
 }
 
-// Reuse the runtime's SID-validated, deadline-bounded pipe client. No Node pipe
-// connection may bypass GetNamedPipeServerProcessId / token-owner validation.
-// POSIX: the profile home gets the full home policy (private-group + ACL proof that Node cannot
-// make); the control home is checked again by connect_private. A refusal reports its reason.
+// Reuse the runtime's bounded control client: POSIX home/ACL/socket checks and
+// Windows pipe server PID/SID validation have one canonical implementation.
 const TICKET_SCRIPT = `
 import json, os, sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from hermes_cli.gateway_client import _session_ticket
-from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_node
-request = json.loads(sys.stdin.buffer.read(65537))
-endpoint = SimpleNamespace(**{'control_home': None, **request['endpoint']})
-home = Path(endpoint.profile_id)
-if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
-    raise ValueError('invalid ticket endpoint')
-try:
-    if os.name != 'nt':
-        _private_node(home, kind='directory', home=True)
-    ticket = _session_ticket(home, endpoint, purpose=request['purpose'])
-except DiscoveryError as exc:
-    sys.stdout.write(json.dumps({'error': exc.reason}))
-    sys.exit(3)
-sys.stdout.write(json.dumps({'ticket': ticket}))
+with redirect_stdout(sys.stderr):
+    from hermes_cli.gateway_client import _session_ticket
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_node
+while True:
+    line = sys.stdin.buffer.readline(65537)
+    if not line:
+        break
+    if len(line) > 65536 or not line.endswith(b'\\n'):
+        break
+    request = json.loads(line)
+    try:
+        with redirect_stdout(sys.stderr):
+            endpoint = SimpleNamespace(**{'control_home': None, **request['endpoint']})
+            home = Path(endpoint.profile_id)
+            if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
+                raise ValueError('invalid ticket endpoint')
+            if os.name != 'nt':
+                _private_node(home, kind='directory', home=True)
+            ticket = _session_ticket(home, endpoint, purpose=request['purpose'])
+        reply = {'id': request['id'], 'ticket': ticket}
+    except DiscoveryError as exc:
+        reply = {'id': request['id'], 'error': exc.reason}
+    except Exception:
+        reply = {'id': request['id'], 'error': 'ticket_failed'}
+    print(json.dumps(reply), flush=True)
 `
+
+interface PendingTicket {
+  resolve: (ticket: string) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const bridges = new Map<string, TicketBridge>()
+let bridgeGeneration = 0
+
+/** Reuse one private helper per runtime/profile; every ticket still verifies the live owner. */
+class TicketBridge {
+  private child: ChildProcessWithoutNullStreams
+  private pending = new Map<number, PendingTicket>()
+  private sequence = 0
+  private output = ''
+  private idleTimer?: ReturnType<typeof setTimeout>
+  private closed = false
+
+  constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private key: string) {
+    this.child = spawn(command, ['-P', '-u', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
+      cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe']
+    }))
+    this.child.stderr.resume()
+    this.child.stdout.setEncoding('utf8')
+    this.child.stdout.on('data', data => this.receive(String(data)))
+    this.child.on('error', () => this.dispose())
+    this.child.stdin.on('error', () => this.dispose())
+    this.child.on('close', () => this.dispose())
+  }
+
+  request(endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http'): Promise<string> {
+    clearTimeout(this.idleTimer)
+
+    return new Promise((resolve, reject) => {
+      if (this.closed) { reject(new Error('Gateway ticket bootstrap failed'));
+
+ return }
+
+      const id = ++this.sequence
+      const request = JSON.stringify({ id, endpoint, purpose }) + '\n'
+
+      if (Buffer.byteLength(request) > 65536) { reject(new Error('Gateway ticket request too large'));
+
+ return }
+
+      const timer = setTimeout(() => this.dispose(), 10_000)
+      this.pending.set(id, { resolve, reject, timer })
+      // Private stdin carries identity as data. EOF also retires the helper if Desktop exits.
+      this.child.stdin.write(request)
+    })
+  }
+
+  private receive(data: string): void {
+    this.output += data
+
+    if (this.output.length > 65536) { this.dispose();
+
+ return }
+
+    let end: number
+
+    while ((end = this.output.indexOf('\n')) >= 0) {
+      const line = this.output.slice(0, end)
+      this.output = this.output.slice(end + 1)
+
+      try {
+        const reply = JSON.parse(line)
+        const waiter = this.pending.get(reply.id)
+
+        if (!waiter) { this.dispose();
+
+ return }
+
+        this.pending.delete(reply.id)
+        clearTimeout(waiter.timer)
+
+        if (typeof reply.ticket === 'string' && reply.ticket) { waiter.resolve(reply.ticket) }
+        else { waiter.reject(Object.assign(new Error('Gateway ticket bootstrap failed'),
+          typeof reply.error === 'string' ? { reason: reply.error } : {})) }
+      } catch { this.dispose();
+
+ return }
+    }
+
+    if (!this.pending.size) { this.idleTimer = setTimeout(() => this.dispose(), 30_000) }
+  }
+
+  dispose(): void {
+    if (this.closed) { return }
+    this.closed = true
+    clearTimeout(this.idleTimer)
+
+    if (bridges.get(this.key) === this) { bridges.delete(this.key) }
+
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer)
+      waiter.reject(new Error('Gateway ticket bootstrap failed'))
+    }
+
+    this.pending.clear()
+    this.child.kill('SIGKILL')
+  }
+}
+
+export function closeGatewayTicketBridges(): void {
+  bridgeGeneration++
+
+  for (const bridge of bridges.values()) { bridge.dispose() }
+}
+
+interface ResolvedTicketBackend {
+  command: string
+  kind: string
+  shell?: boolean
+  env?: NodeJS.ProcessEnv
+}
+
+export function createGatewayTicketResolver(resolveBackend: () => Promise<ResolvedTicketBackend>, cwd: () => string) {
+  let cached: Promise<ResolvedTicketBackend> | undefined
+  let cachedGeneration = -1
+
+  return async (endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http'): Promise<string> => {
+    const generation = bridgeGeneration
+
+    if (!cached || cachedGeneration !== generation) {
+      cachedGeneration = generation
+
+      const flight = resolveBackend().then(backend => {
+        if (backend.kind !== 'python' || backend.shell) {
+          throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
+        }
+
+        return backend
+      }).catch(error => {
+        if (cached === flight) { cached = undefined }
+        throw error
+      })
+
+      cached = flight
+    }
+
+    const backend = await cached
+
+    if (generation !== bridgeGeneration) { throw new Error('Gateway ticket runtime changed; retry connection') }
+
+    return mintGatewayTicketWithPython(backend, cwd(), endpoint, purpose)
+  }
+}
 
 export function mintGatewayTicketWithPython(
   backend: { command: string; env?: NodeJS.ProcessEnv },
@@ -41,50 +199,16 @@ export function mintGatewayTicketWithPython(
   endpoint: TicketEndpoint,
   purpose: 'interactive' | 'native-http'
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(backend.command, ['-P', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
-      cwd,
-      env: { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe']
-    }))
+  const env = { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id,
+    PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
 
-    let stdout = ''
+  const key = JSON.stringify([backend.command, cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))])
+  let bridge = bridges.get(key)
 
-    const fail = () => {
-      let reason: unknown
+  if (!bridge) {
+    bridge = new TicketBridge(backend.command, cwd, env, key)
+    bridges.set(key, bridge)
+  }
 
-      try { reason = JSON.parse(stdout).error } catch { reason = undefined }
-      reject(Object.assign(new Error('Gateway ticket bootstrap failed'), typeof reason === 'string' ? { reason } : {}))
-    }
-
-    const timer = setTimeout(() => { child.kill(); fail() }, 10_000)
-    child.on('error', fail)
-    child.stdin.on('error', fail)
-    child.stderr.resume()
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', data => {
-      stdout += data
-
-      if (stdout.length > 65536) { child.kill(); fail() }
-    })
-    child.on('close', code => {
-      clearTimeout(timer)
-
-      if (code !== 0) {
-        fail()
-
-        return
-      }
-
-      try {
-        const reply = JSON.parse(stdout)
-
-        if (typeof reply.ticket !== 'string' || !reply.ticket) { throw new Error() }
-        resolve(reply.ticket)
-      } catch { fail() }
-    })
-    // Identity is data on private stdin, never interpolated into code or a shell.
-    child.stdin.end(JSON.stringify({ endpoint, purpose }))
-  })
+  return bridge.request(endpoint, purpose)
 }

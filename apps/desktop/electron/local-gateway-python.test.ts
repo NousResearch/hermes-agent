@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { expect, test } from 'vitest'
 
-import { mintGatewayTicketWithPython } from './local-gateway-python'
+import { closeGatewayTicketBridges, mintGatewayTicketWithPython } from './local-gateway-python'
 
 // This exercises the real helper process and protocol on this host. The native
 // probe separately exercises Windows SID checks and HTTP/WS admission.
@@ -87,6 +87,7 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
     await expect(mintGatewayTicketWithPython(backend, cwd, { ...endpoint, control_home: mux }, 'interactive')).resolves.toBe('private-grant')
     expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive' })
   } finally {
+    closeGatewayTicketBridges()
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
     await fs.rm(mux, { recursive: true, force: true })

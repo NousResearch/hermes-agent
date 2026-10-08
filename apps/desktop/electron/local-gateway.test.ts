@@ -1,3 +1,5 @@
+import path from 'node:path'
+
 import { expect, test, vi } from 'vitest'
 
 import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
@@ -7,12 +9,14 @@ test('the ensure client inherits the caller-scrubbed parent env, not the raw Des
   // credentials. The parent env passed in IS the environment; only HERMES_HOME and the
   // backend's own entries are layered on top.
   const printEnv = ['-e', 'process.stdout.write(JSON.stringify({ leak: process.env.LEAK ?? null, home: process.env.HERMES_HOME, own: process.env.OWN }))']
+
   const result = await runGatewayEnsure(
     { command: process.execPath, args: printEnv, env: { OWN: '1' }, shell: false },
     process.cwd(),
     '/home/x/.hermes',
     { PATH: process.env.PATH ?? '', OWN: '0' }
   )
+
   expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
 })
 
@@ -52,7 +56,7 @@ test('canonical ensure cannot cross a rejected update or profile lifecycle gate'
   expect(ran).toBe(false)
 })
 
-test.skipIf(process.platform === 'win32')('native HTTP mints fresh purpose-bound grants without browser credentials', async () => {
+test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HTTP respects supported home mode %o and mints fresh purpose-bound grants', async mode => {
   const fs = await import('node:fs/promises')
   const os = await import('node:os')
   const path = await import('node:path')
@@ -61,13 +65,14 @@ test.skipIf(process.platform === 'win32')('native HTTP mints fresh purpose-bound
   // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
   // profile_id, so the endpoint must carry the realpath or identities never match.
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-http-')))
+  await fs.chmod(home, mode)
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const requests: any[] = []
 
   const server = net.createServer(socket => socket.once('data', chunk => {
     const request = JSON.parse(chunk.toString())
     requests.push(request)
-    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket: `grant-${requests.length}` } }) + '\n')
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', runtime_protocol: 1, ticket: `grant-${requests.length}` } }) + '\n')
   }))
 
   await new Promise<void>(resolve => server.listen(path.join(home, 'gateway.sock'), resolve))
@@ -103,7 +108,7 @@ test.skipIf(process.platform === 'win32')('a served secondary mints its ticket t
 
   const server = net.createServer(socket => socket.once('data', chunk => {
     requests.push(JSON.parse(chunk.toString()).params)
-    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: secondary, instance_id: 'mux', ticket: 'served-grant' } }) + '\n')
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: secondary, instance_id: 'mux', runtime_protocol: 1, ticket: 'served-grant' } }) + '\n')
   }))
 
   await new Promise<void>(resolve => server.listen(path.join(root, 'gateway.sock'), resolve))
@@ -227,7 +232,7 @@ test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its c
 
   const serve = async (ticket: string) => {
     const server = net.createServer(socket => socket.once('data', () => {
-      socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket } }) + '\n')
+      socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', runtime_protocol: 1, ticket } }) + '\n')
     }))
 
     await new Promise<void>(resolve => server.listen(socketPath, resolve))
@@ -393,11 +398,11 @@ test.skipIf(process.platform === 'win32')('a supported home mode mints its ticke
 })
 
 test('a ?profile= request on the shared host descriptor mints for the sibling profile home', () => {
-  const endpoint = { profile_id: '/h/.hermes', instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
-  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' })
-  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=default', '/h/.hermes')).toBe(endpoint)
-  expect(routedGatewayEndpoint({ ...endpoint, profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' }, 'http://127.0.0.1:1/x?profile=default', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes' })
-  expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', '/h/.hermes')).toThrow('Invalid profile route')
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', path.resolve('hermes-home'))).toMatchObject({ profile_id: path.resolve('hermes-home', 'profiles', 'p2'), control_home: path.resolve('hermes-home') })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=default', path.resolve('hermes-home'))).toBe(endpoint)
+  expect(routedGatewayEndpoint({ ...endpoint, profile_id: path.resolve('hermes-home', 'profiles', 'p2'), control_home: path.resolve('hermes-home') }, 'http://127.0.0.1:1/x?profile=default', path.resolve('hermes-home'))).toMatchObject({ profile_id: path.resolve('hermes-home') })
+  expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', path.resolve('hermes-home'))).toThrow('Invalid profile route')
 })
 
 // A native gateway grant is minted only by main's shared transport (fetchJsonForBackend), which

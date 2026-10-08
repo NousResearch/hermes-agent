@@ -2,17 +2,10 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
-import { mintGatewayTicketWithPython } from './local-gateway-python'
+import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
-configurePythonGatewayTicketClient(async (endpoint, purpose) => {
-  const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
-
-  if (backend.kind !== 'python' || backend.shell) {
-    throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
-  }
-
-  return mintGatewayTicketWithPython(backend, resolveHermesCwd(), endpoint, purpose)
-})
+configurePythonGatewayTicketClient(createGatewayTicketResolver(
+  async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -4401,6 +4394,8 @@ function reapOrphanedBackendsOnce() {
 // PM generations can retain live readers. Gateway draining/restart belongs to
 // `hermes update`; neither venv scans nor a second fleet stop belong here.
 async function stopBackendsForUpdate(): Promise<void> {
+  closeGatewayTicketBridges()
+
   if (IS_WINDOWS) {
     await Promise.all([teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')), stopAllPoolBackends()])
   }
@@ -4409,6 +4404,8 @@ async function stopBackendsForUpdate(): Promise<void> {
 // Uninstall still deletes the installation and its historical venv. Unlike
 // generation updates, deletion must wait for those old files to be released.
 async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ unlocked: boolean }> {
+  closeGatewayTicketBridges()
+
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -17037,6 +17034,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()

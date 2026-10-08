@@ -304,6 +304,23 @@ def test_a_persistence_detached_fork_publishes_nothing(published):
     assert published == []
 
 
+def test_an_attempt_aborted_after_a_commit_marks_only_its_own_attempt(published):
+    agent = _Agent(_compressor())
+
+    with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+        compress_context(
+            agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool",
+            snapshot_is_current=lambda: False,
+        )
+
+    [(_, first, committed), (_, second, aborted)] = published
+    assert (first, second) == ("compaction", "compaction.attempt")
+    assert aborted["attempt_id"] != committed["attempt_id"]
+    assert (aborted["trigger"], aborted["failure_class"], aborted["method"]) == ("post_tool", "snapshot_stale", "none")
+    assert aborted["tokens_reclaimed"] is None and aborted["cache_break"] is False
+
+
 def test_rotation_publishes_after_the_split_with_the_attempts_own_session(published):
     """A rotating commit re-points the agent at a child session and its memory flush resets the compressor's
     telemetry; the record is still built from this attempt's telemetry and names the session it started in."""
@@ -331,6 +348,65 @@ def test_rotation_publishes_after_the_split_with_the_attempts_own_session(publis
     assert payload["tokens_after"] is not None and payload["method"] == "llm_summary"
 
 
+def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(published):
+    """The in-place commit stored the compacted transcript, then a later bookkeeping write failed: the model
+    sees the compacted history next, so Relay must reset freshness, and the record says what failed."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        db = SessionDB(db_path=Path(tmpdir) / "state.db")
+        db.create_session("in-place-session", "cli", model="test/model")
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+            session_db=db, session_id="in-place-session", skip_context_files=True, skip_memory=True,
+        )
+        agent.compression_in_place = True
+        agent.context_compressor.tail_token_budget = 10
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"), \
+                patch.object(SessionDB, "update_system_prompt", side_effect=OSError("disk full")):
+            compressed, _ = agent._compress_context(_messages(), "sys", approx_tokens=80_000, trigger="pre_api")
+        agent.close()
+
+    assert len(compressed) < len(_messages())
+    [(_sid, name, payload)] = published
+    assert name == "compaction"
+    assert (payload["outcome"], payload["failure_class"], payload["split_status"]) == (
+        "committed", "session_split_failed", "failed_not_indexed",
+    )
+    assert (payload["in_place"], payload["session_rotated"], payload["cache_break"]) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    ("record", "name", "outcome"),
+    [
+        # Rotation published the compacted child, then indexing failed: the history was rewritten.
+        ({"commit_status": "aborted", "split_status": "failed_not_indexed", "history_rewritten": True},
+         "compaction", "committed"),
+        # The split rolled back to the original transcript: nothing the model sees changed.
+        ({"commit_status": "aborted", "split_status": "aborted", "history_rewritten": False},
+         "compaction.attempt", "failed"),
+    ],
+)
+def test_the_mark_name_follows_whether_history_was_rewritten(record, name, outcome):
+    payload = compaction_events.attempt_payload({**record, "failure_class": "session_split_failed"})
+    assert (compaction_events.event_name(payload), payload["outcome"]) == (name, outcome)
+    assert payload["failure_class"] == "session_split_failed"
+
+
+@pytest.mark.parametrize(
+    ("split_status", "expected"),
+    [
+        ("in_place_committed", (True, False)), ("rotated_committed", (False, True)),
+        # A session without a database has no commit mode to report.
+        ("not_applicable", (None, None)), ("failed_not_indexed", (None, None)),
+    ],
+)
+def test_commit_mode_is_null_unless_the_split_committed(split_status, expected):
+    payload = compaction_events.attempt_payload({"commit_status": "committed", "split_status": split_status})
+    assert (payload["in_place"], payload["session_rotated"]) == expected
+
+
 @pytest.mark.parametrize(
     ("record", "expected"),
     [
@@ -351,7 +427,10 @@ def test_outcome_and_failure_class_stay_in_their_closed_sets(record, expected):
     ("trigger_source", "trigger", "trigger_class"),
     [
         ("manual", "manual", "manual"), ("overflow", "overflow", "overflow"), ("gateway_hygiene", "gateway_hygiene", "auto"),
-        ("auto", "unknown", "auto"), ("plugin_said_so", "other", "auto"),
+        # An unlabelled automatic caller: the reason is unknown, but the attempt is known to be automatic.
+        ("auto", "unknown", "auto"),
+        # No trigger, or one outside the closed set: the record cannot say what started it.
+        ("unknown", "unknown", "unknown"), (None, "unknown", "unknown"), ("plugin_said_so", "other", "unknown"),
     ],
 )
 def test_trigger_maps_onto_the_closed_set(trigger_source, trigger, trigger_class):
@@ -363,7 +442,7 @@ def test_trigger_maps_onto_the_closed_set(trigger_source, trigger, trigger_class
     ("outcome", "scope", "name"),
     [
         ("committed", "history", "compaction"), ("committed", "provider", "compaction"),
-        ("committed", "request", "compaction.attempt"), ("skipped", "history", "compaction.attempt"),
+        ("committed", "other", "compaction.attempt"), ("skipped", "history", "compaction.attempt"),
     ],
 )
 def test_only_a_committed_history_or_provider_rewrite_is_named_compaction(outcome, scope, name):

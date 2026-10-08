@@ -4349,6 +4349,7 @@ def compress_context(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
             commit_started_at=commit.commit_started_at, attempt_seed=attempt.seed,
+            history_rewritten=compressed is not messages,
         )
         return compressed, new_system_prompt
     finally:

@@ -85,13 +85,15 @@ def _attempt_seed(
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
     commit_started_at: float | None = None, include_last_telemetry: bool = True,
-    attempt_seed: dict[str, Any] | None = None,
+    attempt_seed: dict[str, Any] | None = None, history_rewritten: bool | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt.
 
     ``include_last_telemetry=False`` is for emits that fire without an attempt having begun
     (pool-saturation refusals): they must not hydrate from the previous attempt's numbers.
-    ``attempt_seed`` is the emitting attempt's own seed (see ``_attempt_seed``)."""
+    ``attempt_seed`` is the emitting attempt's own seed (see ``_attempt_seed``).
+    ``history_rewritten`` (commit path only) says whether the returned transcript replaced the input, which
+    a split that failed after publishing the compacted history still did."""
     try:
         compressor = agent.context_compressor
         telemetry = getattr(compressor, "_last_compression_telemetry", None) if include_last_telemetry else None
@@ -111,6 +113,8 @@ def _emit_compression_attempt_telemetry(
             total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
             split_status=split_status,
         )
+        if history_rewritten is not None:
+            payload["history_rewritten"] = history_rewritten
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
         # Defer only to THIS attempt's class: an abort restore can put the previous attempt's telemetry back.

@@ -134,34 +134,95 @@ exporter for that process.
 
 ## Compaction Marks
 
-Every history rewrite emits one Relay mark with
-`data_schema: {"name": "hermes.compaction", "version": "1"}`: each
-`compress_context` attempt (including blocked, Codex-routed and aborted ones),
-each micro-compaction pass, each committed proactive tool-result prune, and
-each Codex-native thread compaction Hermes observes. The mark is emitted
-whenever the Relay runtime is live; it needs no setting because Relay
-exporters are configured separately.
+When the Relay runtime is live, Hermes emits one Relay mark with
+`data_schema: {"name": "hermes.compaction", "version": "1"}` for each of these
+sources:
+
+- each `compress_context` attempt that returns, including blocked,
+  Codex-routed and aborted ones;
+- each micro-compaction pass;
+- each committed proactive tool-result prune;
+- each Codex app-server thread compaction that Codex ran on its own and Hermes
+  observed.
+
+The mark needs no setting because Relay exporters are configured separately.
+Other history and request rewrites emit no mark yet: OpenAI Responses native
+compaction and its pre-checkpoint item pruning, image shrinking after a
+provider rejection, and request-only truncation.
 
 | Mark | When | Relay effect |
 |---|---|---|
 | `compaction` | `outcome: committed` with `scope: history` or `provider` | Resets LLM-history freshness for the session's agent scope, so the next LLM start records the full compacted history |
-| `compaction.attempt` | Any other outcome (`aborted`, `failed`, `skipped`, `blocked`) | None |
+| `compaction.attempt` | Any other outcome (`aborted`, `failed`, `skipped`, `blocked`, `other`) | None |
+
+A commit whose session split failed after it had already stored the compacted
+history is still `committed` (the model sees the compacted history next), with
+`failure_class: session_split_failed` and `split_status: failed_not_indexed`.
 
 The mark is parented to the live `hermes.turn` of the same session, or to the
 `hermes.session` scope when compaction runs outside a turn (gateway hygiene).
+No mark is emitted from a turn Relay does not instrument (a second concurrent
+turn on the same session) or from a persistence-detached fork such as
+background review: their compaction rewrites only their own transcript.
+
 `data` is flat so OpenTelemetry flattens every field into
-`nemo_relay.mark.data.<key>`. Categorical fields come from closed sets with an
-`other` fallback: `kind` (`summarize`, `micro_summarize`,
-`prune_tool_results`, `provider_native`), `scope`, `official` (true only for
-`compress_context`), `method`, `trigger` / `trigger_class`, `outcome` and
-`failure_class`. Numeric fields carry the effect (`tokens_before`,
-`tokens_after`, `tokens_reclaimed`, `messages_before`, `messages_after`,
-`items_dropped`) and timings (`duration_ms`, `summary_generation_ms`,
-`aux_call_duration_ms`, `queue_wait_ms`, `commit_ms`). Token counts are rough
-message-only estimates (`token_count_method: estimate_rough`). The payload never
-contains message text, summary text, the focus topic (only
-`has_focus_topic`), error text or file paths. `attempt_id` and `session_id`
-are for correlation; do not use them as metric labels.
+`nemo_relay.mark.data.<key>`. Every v1 key is present on every mark; a value
+that does not apply is `null`. Categorical fields come from these closed sets:
+
+| Field | v1 values |
+|---|---|
+| `kind` | `summarize`, `micro_summarize`, `prune_tool_results`, `provider_native` |
+| `scope` | `history`, `provider` |
+| `official` | `true` only for `compress_context` attempts |
+| `method` | `llm_summary`, `aux_fallback_main`, `deterministic_fallback`, `deterministic_prune`, `provider`, `none` |
+| `trigger` | `manual`, `turn_start_threshold`, `pre_api`, `post_tool`, `idle`, `engine_preflight`, `overflow`, `gateway_hygiene`, `between_turns`, `proactive_prune`, `provider`, `unknown` |
+| `trigger_class` | `auto`, `manual`, `overflow`, `provider`, `unknown` |
+| `outcome` | `committed`, `aborted`, `failed`, `skipped`, `blocked` |
+| `split_status` | `not_applicable`, `in_place_committed`, `rotated_committed`, `failed_not_indexed`, `aborted`, or `null` |
+| `token_count_method` | `estimate_rough`, or `null` |
+
+A value outside its set reads `other`. `failure_class` uses the
+`hermes.compression.count` classes plus the attempt-only classes (guard exits
+such as `blocked:cooldown`, Codex route exits such as `codex_auto_native`, the
+lease exits `session_ownership_lost`, `session_ownership_unreadable` and
+`cooldown_state_unreadable`, `summary_model_benched`, and the micro-compaction
+outcomes), `none` when there is no class, and `other` for anything else. An
+automatic caller that passes no trigger label reads `trigger: unknown` with
+`trigger_class: auto`; a record with no trigger at all reads `unknown` for
+both. `in_place` and `session_rotated` are set only when `split_status` is
+`in_place_committed` or `rotated_committed`; `cache_break` is `null` for
+`scope: provider`.
+
+Numeric fields carry the effect (`tokens_before`, `tokens_after`,
+`tokens_reclaimed`, `messages_before`, `messages_after`, `items_dropped`) and
+timings (`duration_ms`, `summary_generation_ms`, `aux_call_duration_ms`,
+`queue_wait_ms`, `commit_ms`). Token counts are rough message-only estimates
+(`token_count_method: estimate_rough`). The payload never contains message
+text, summary text, the focus topic (only `has_focus_topic`), error text or
+file paths. `attempt_id` and `session_id` are for correlation; do not use them
+as metric labels.
+
+Codex app-server turns run their model calls inside Codex, so Relay records no
+LLM start for them. Their `compaction` mark records the rewrite; its freshness
+reset only affects a later Hermes-side LLM call in the same session scope. A
+compaction Hermes forces is recorded once, by its `compress_context` attempt:
+the next Codex turn drops notifications from the compaction turn, so it cannot
+report the same compaction again.
+
+Known gaps in v1:
+
+- With `compression.in_place: false`, a second rotating compaction in the same
+  turn emits no mark: its new session has no Relay scope until the next turn,
+  which opens fresh.
+- With `gateway.telemetry.session_segments.on_compaction: true`, a rotating
+  commit outside any turn closes the old Relay session before the mark is
+  emitted, so the mark is dropped. No current caller does this: manual
+  `/compress` defers that notification until after the mark, and gateway
+  hygiene compacts in place.
+- Reserved for later versions and never emitted in v1: `kind`
+  `request_truncation` / `window_reduction`, `scope: request`,
+  `trigger: recovery`, `outcome: noop`, `token_count_method: provider_usage`,
+  and a filled `overflow_reason` (always `null` in v1).
 
 ## Process-Wide Plugin Policy and Profile Isolation
 

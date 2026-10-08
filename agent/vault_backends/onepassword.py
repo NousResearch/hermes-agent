@@ -4,7 +4,7 @@ Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --fields label=password --reveal``.
+username, vault ID. Resolve: ``op item get <id> --vault <vault-id> ...``.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ class OnePasswordLoginBackend(LoginBackend):
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
+        self._vault_by_item_id: Dict[str, str] = {}
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -103,33 +104,62 @@ class OnePasswordLoginBackend(LoginBackend):
             return []
         raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
         out: List[VaultItemMeta] = []
+        vault_by_item_id: Dict[str, str] = {}
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
             origins = _all_origins(urls)
             if not origins:
                 continue
+            item_id = str(item.get("id") or "")
+            vault = item.get("vault") or {}
+            vault_id = str(vault.get("id") or "") if isinstance(vault, dict) else ""
+            if vault_id:
+                vault_by_item_id[item_id] = vault_id
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
+                id=self._make_handle(item_id, vault_id), kind="login", label=str(item.get("title") or origins[0]),
                 origin=origins[0], created_at=str(item.get("created_at") or ""),
                 identifier_type="username" if username else None, identifier=username,
                 allowed_origins=_web_origins(origins)))
+        self._vault_by_item_id = vault_by_item_id
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
-        return next((m for m in self.list_items() if m.id == handle), None)
+        item_id, vault_id = self._parse_handle(handle)
+        for meta in self.list_items():
+            listed_item_id, _ = self._parse_handle(meta.id)
+            if meta.id == handle or (vault_id is None and listed_item_id == item_id):
+                return meta
+        return None
 
     def resolve_password(self, handle: str) -> str:
-        item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run(*self._item_get_args(handle, "--fields", "label=password", "--reveal")).rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run(*self._item_get_args(handle, "--otp")).strip()
         except Exception:
             return None
         return code if code.isdigit() else None
+
+    def _item_get_args(self, handle: str, *args: str) -> List[str]:
+        item_id, vault_id = self._parse_handle(handle)
+        vault_id = vault_id or self._vault_by_item_id.get(item_id)
+        command = ["item", "get", item_id]
+        if vault_id:
+            command += ["--vault", vault_id]
+        return [*command, *args]
+
+    def _make_handle(self, item_id: str, vault_id: str = "") -> str:
+        return f"{self.prefix}{vault_id}:{item_id}" if vault_id else f"{self.prefix}{item_id}"
+
+    def _parse_handle(self, handle: str) -> tuple[str, Optional[str]]:
+        opaque = handle[len(self.prefix):]
+        vault_id, separator, item_id = opaque.partition(":")
+        if separator and vault_id and item_id:
+            return item_id, vault_id
+        return opaque, None
 
 
 def _web_origins(origins: List[str]) -> tuple:

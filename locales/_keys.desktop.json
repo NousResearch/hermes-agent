@@ -2523,6 +2523,8 @@
     "settings.appearance.chatFontReset",
     "settings.appearance.chatFontSample",
     "settings.appearance.chatFontTitle",
+    "settings.appearance.chatLineSpacingDesc",
+    "settings.appearance.chatLineSpacingTitle",
     "settings.appearance.chatTextScaleDesc",
     "settings.appearance.chatTextScaleTitle",
     "settings.appearance.colorMode",

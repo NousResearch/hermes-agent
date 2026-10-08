@@ -1029,6 +1029,9 @@ export const deOverrides = {
       chatTextScaleTitle: 'Chat-Textgröße',
       chatTextScaleDesc:
         'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
+      chatLineSpacingTitle: 'Zeilenabstand im Chat',
+      chatLineSpacingDesc:
+        'Bestimmt den Abstand zwischen den Zeilen der Unterhaltung als Anteil am Zeilenabstand des Themes. 100 % behält den Abstand des Themes bei.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',

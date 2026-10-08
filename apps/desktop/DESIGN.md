@@ -354,6 +354,15 @@ It does not resize the sidebar, settings, toolbars, media, or pane geometry.
 Conversation size and line-height tokens are derived inside the transcript/editor
 from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 
+**Chat Line Spacing** (100% by default, where 100% is a no-op) is the same shape
+again: a desktop-local multiplier on the transcript's message-prose leading. It
+composes with the theme rather than overriding it — the user's factor multiplies
+`--dt-line-height` inside the transcript as `--conversation-message-line-height`,
+so a theme's leading ratio stays the baseline, and a message rendered outside the
+transcript falls back to that ratio. Tool rows, captions, tickers and the composer
+keep their own leading.
+
+
 ## Chat, tools & boot surfaces
 
 - The transcript and composer are built on `@assistant-ui/react`. Extend the

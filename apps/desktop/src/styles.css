@@ -518,6 +518,11 @@
     --conversation-caption-font-size: var(--conversation-caption-base-size);
     --conversation-line-height: var(--conversation-base-line-height);
     --conversation-caption-line-height: var(--conversation-caption-base-line-height);
+    /* Message PROSE leading is the theme's ratio, not one of the rem tokens above:
+       the transcript re-derives it from --chat-line-spacing (see the derived-token
+       block further down). Stated here so anything rendering a message outside the
+       transcript degrades to the theme ratio instead of an invalid value. */
+    --conversation-message-line-height: var(--dt-line-height, 1.5);
     --conversation-turn-gap: 0.375rem;
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
        that scaffolding reads as separate from the reply, not crammed into it. */
@@ -1672,10 +1677,24 @@ body.guest-pointer-lock :is(webview, iframe) {
   --conversation-caption-line-height: calc(var(--conversation-caption-base-line-height) * var(--chat-text-scale, 1));
 }
 
+/* Chat line spacing (Appearance → Typography). Derived inside the transcript, per
+   DESIGN.md §Chat typography: the user's multiplier composes with whatever leading
+   the active theme painted into `--dt-line-height`, so the theme's own ratio stays
+   the baseline this scales from and 100% is a no-op. Only message prose reads this
+   token (the rem tokens above keep chrome, tools and captions on their own leading);
+   the root block declares a base so an out-of-transcript consumer degrades to the
+   theme ratio instead of an invalid value. */
+[data-slot='aui_thread-content'] {
+  --conversation-message-line-height: calc(var(--dt-line-height, 1.5) * var(--chat-line-spacing, 1));
+}
+
+
 [data-slot='aui_assistant-message-content'] {
   padding-left: var(--message-text-indent);
   font-size: var(--conversation-text-font-size);
-  line-height: 1.5;
+  /* Was a literal 1.5 that only matched the token by luck; follow it so the
+     container and the prose inside it can never disagree. */
+  line-height: var(--conversation-message-line-height);
 }
 
 [data-slot='aui_assistant-message-root'] {
@@ -1708,6 +1727,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='aui_assistant-message-content'] .aui-md :where(p) {
   margin-block: var(--paragraph-gap) 0;
 }
+
 
 /* Same Typography trap for images: `.prose :where(img) { margin: 2em }` ties
    `m-0` on specificity (0,1,0) and wins on source order. Inside the framed

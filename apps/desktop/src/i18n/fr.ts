@@ -1030,6 +1030,9 @@ export const frOverrides = {
       chatTextScaleTitle: 'Taille du texte du chat',
       chatTextScaleDesc:
         'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
+      chatLineSpacingTitle: 'Interligne du chat',
+      chatLineSpacingDesc:
+        'Définit l’espacement des lignes de la conversation en proportion de l’interligne du thème. 100 % conserve l’espacement du thème.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',

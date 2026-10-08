@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatLineSpacing, CHAT_LINE_SPACING_PRESETS, setChatLineSpacing } from '@/store/chat-line-spacing'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -426,6 +427,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
+  const chatLineSpacing = useStore($chatLineSpacing)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
@@ -701,6 +703,25 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 id={settingElementId(ids.chatTextScale)}
                 title={a.chatTextScaleTitle}
               />
+
+              <ListRow
+                action={
+                  <SegmentedControl
+                    // Five presets on the default single-row track (the Chat
+                    // Text Size row above ships six this way).
+                    onChange={value => {
+                      triggerHaptic('selection')
+                      setChatLineSpacing(Number(value))
+                    }}
+                    options={CHAT_LINE_SPACING_PRESETS.map(value => ({ id: String(value), label: `${value}%` }))}
+                    value={String(chatLineSpacing)}
+                  />
+                }
+                description={a.chatLineSpacingDesc}
+                id={settingElementId(ids.chatLineSpacing)}
+                title={a.chatLineSpacingTitle}
+              />
+
 
               <div id={settingElementId(ids.chatFont)}>
                 <ChatFontSetting />

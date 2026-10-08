@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 from typing import Any, Optional
 
+from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
 import gateway.run as gateway_run
 import gateway.run_turn as gateway_run_turn
 from gateway.run_turn import GatewayTurnMixin
@@ -58,17 +59,18 @@ def _homes(tmp_path, monkeypatch):
     launch_home.mkdir()
     served_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("GATEWAY_REAPER_TEST_TOKEN", "launch-only")
     return launch_home, served_home
 
 
 def test_inactivity_watchdog_keeps_turn_profile_context(tmp_path, monkeypatch):
     """The event-loop-independent watchdog must retain the routed turn's profile scope."""
     _launch_home, served_home = _homes(tmp_path, monkeypatch)
-    seen_homes = []
+    seen_profiles = []
     watchdog_ran = threading.Event()
 
     def _record_watchdog(**_kwargs):
-        seen_homes.append(get_hermes_home())
+        seen_profiles.append((get_hermes_home(), get_secret("GATEWAY_REAPER_TEST_TOKEN")))
         watchdog_ran.set()
 
     monkeypatch.setattr(gateway_run, "_watch_gateway_turn_inactivity", _record_watchdog)
@@ -88,23 +90,27 @@ def test_inactivity_watchdog_keeps_turn_profile_context(tmp_path, monkeypatch):
         assert watchdog_ran.wait(timeout=1.0), "watchdog thread did not run"
         await worker.executor_task
 
-    token = set_hermes_home_override(served_home)
+    home_token = set_hermes_home_override(served_home)
+    secret_token = set_secret_scope(
+        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
+    )
     try:
         asyncio.run(_exercise())
     finally:
-        reset_hermes_home_override(token)
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
-    assert seen_homes == [served_home]
+    assert seen_profiles == [(served_home, "served-only")]
 
 
 def test_asyncio_timeout_reaper_keeps_turn_profile_context(tmp_path, monkeypatch):
     """The loop-side timeout fallback must reap under the same routed profile as its turn."""
     _launch_home, served_home = _homes(tmp_path, monkeypatch)
-    seen_homes = []
+    seen_profiles = []
     reaper_ran = threading.Event()
 
     def _record_reaper(**_kwargs):
-        seen_homes.append(get_hermes_home())
+        seen_profiles.append((get_hermes_home(), get_secret("GATEWAY_REAPER_TEST_TOKEN")))
         reaper_ran.set()
         return True
 
@@ -143,10 +149,14 @@ def test_asyncio_timeout_reaper_keeps_turn_profile_context(tmp_path, monkeypatch
         finally:
             pending.cancel()
 
-    token = set_hermes_home_override(served_home)
+    home_token = set_hermes_home_override(served_home)
+    secret_token = set_secret_scope(
+        {"GATEWAY_REAPER_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
+    )
     try:
         asyncio.run(_exercise())
     finally:
-        reset_hermes_home_override(token)
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
-    assert seen_homes == [served_home]
+    assert seen_profiles == [(served_home, "served-only")]

@@ -983,18 +983,43 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
         return _ok(task_id=tid, attachment_id=att_id, size=len(data))
 
 
+def _read_attach_path(path_arg: str, filename_arg) -> tuple[bytes, str]:
+    """Read a local file for ``kanban_attach(path=...)`` -> ``(data, filename)``."""
+    from pathlib import Path
+    from hermes_cli import kanban_db as _kb
+    src = Path(path_arg).expanduser()
+    _check(src.is_absolute(), f"path must be absolute: {path_arg}")
+    _check(src.is_file(), f"path is not a readable regular file: {path_arg}")
+    _check(src.stat().st_size <= _kb.KANBAN_ATTACHMENT_MAX_BYTES,
+           f"attachment exceeds {_kb.KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
+    filename = str(filename_arg or "").strip() or src.name
+    return src.read_bytes(), filename
+
+
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task."""
+    """Attach a file to a task from a local ``path`` (read server-side,
+    byte-exact) or inline ``content_base64``.
+
+    ``path`` exists because models that hand-produce base64 for a file
+    corrupt it once it passes a few KB (truncation, flipped bytes), so
+    binary evidence silently arrives broken."""
     tid = _worker_guard("kanban_attach", args)
-    filename = _require_text(args, "filename")
-    content_b64 = _require_text(args, "content_base64")
-    import base64
-    import binascii
-    try:
-        data = base64.b64decode(str(content_b64), validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise _Reject(f"content_base64 is not valid base64: {e}")
+    path_arg = args.get("path")
+    content_b64 = args.get("content_base64")
+    has_path = bool(path_arg and str(path_arg).strip())
+    has_b64 = bool(content_b64 and str(content_b64).strip())
+    _check(has_path != has_b64, "pass exactly one of path or content_base64 (prefer path)")
+    if has_path:
+        data, filename = _read_attach_path(str(path_arg).strip(), args.get("filename"))
+    else:
+        filename = _require_text(args, "filename")
+        import base64
+        import binascii
+        try:
+            data = base64.b64decode(str(content_b64), validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise _Reject(f"content_base64 is not valid base64: {e} (pass path= instead)")
     return _store_attachment(args.get("board"), tid, filename, data, args.get("content_type"))
 
 

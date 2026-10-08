@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -49,6 +50,7 @@ def _run(request: Mapping[str, Any]) -> dict[str, Any]:
         return _error("toolset_policy_violation")
 
     sys.path.insert(0, str(source_root))
+    os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     import hermes_bootstrap  # noqa: F401  # must precede Hermes imports
     from run_agent import AIAgent
 
@@ -80,10 +82,7 @@ def _run(request: Mapping[str, Any]) -> dict[str, Any]:
     try:
         result = agent.run_conversation(prompt)
     finally:
-        try:
-            agent.close()
-        except Exception:
-            pass
+        agent.close()
     if not isinstance(result, Mapping) or result.get("failed") or not result.get("completed"):
         return _error("model_call_failed")
     text = result.get("final_response")
@@ -128,9 +127,9 @@ def main() -> int:
             try:
                 with contextlib.redirect_stdout(captured_stdout), contextlib.redirect_stderr(captured_stderr):
                     payload = _run(request)
-            except Exception:
+            except Exception:  # health: allow BLE001 -- child boundary returns only a sanitized error code
                 payload = _error("worker_exception")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- malformed stdin must not leak child details
         payload = _error("request_invalid")
     sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
     return 0 if payload.get("ok") else 1

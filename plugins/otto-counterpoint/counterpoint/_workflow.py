@@ -283,7 +283,7 @@ class CounterpointWorkflow:
                 verdict="block",
                 next_actor="otto",
             )
-        except Exception:
+        except Exception:  # health: allow BLE001 -- workflow callback failures are sanitized to a blocked result
             return self._blocked(
                 lifecycle,
                 spec,

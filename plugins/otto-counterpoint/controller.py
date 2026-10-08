@@ -153,8 +153,7 @@ class CounterpointController:
                     api_mode=kwargs.get("api_mode"),
                     platform=kwargs.get("platform"),
                 )
-            except Exception as exc:
-                logger.warning("otto-counterpoint admission failed closed: %s", type(exc).__name__)
+            except Exception:  # health: allow BLE001 -- hook boundary must fail closed and sanitize the reason
                 pending = self._failed_closed_pending(
                     session_id=session_id,
                     task_id=task_id,
@@ -227,8 +226,7 @@ class CounterpointController:
                 result = self._run_workflow(pending, response)
                 pending.workflow_result = result
                 self.last_results[pending.turn_id] = result
-            except Exception as exc:
-                logger.warning("otto-counterpoint workflow failed closed: %s", type(exc).__name__)
+            except Exception:  # health: allow BLE001 -- workflow boundary converts all failures to human review
                 self._persist_workflow_failure(pending, "workflow_callback_failed")
                 pending.finalized = True
                 return _human_review_message("workflow_callback_failed") if self._enforce(pending) else None

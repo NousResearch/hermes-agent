@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import hermes_constants
+from hermes_constants import get_hermes_home
+
 from ._contracts import Artifact, Critique, GateResult, JudgeVerdict
 from ._policy import RouteIdentity
 
@@ -69,35 +72,21 @@ class HermesRuntime:
     @classmethod
     def discover(cls) -> "HermesRuntime":
         """Discover the installed Hermes runtime without reading credentials."""
-        source_root = Path(
-            os.environ.get("HERMES_SOURCE_ROOT", "/srv/otto/.hermes/hermes-agent")
-        ).resolve()
-        worker_script = Path(
-            os.environ.get(
-                "HERMES_COUNTERPOINT_WORKER",
-                str(Path(__file__).resolve().parent.parent / "scripts" / "hermes_counterpoint_worker.py"),
-            )
-        ).resolve()
-        configured_python = os.environ.get("HERMES_RUNTIME_PYTHON", "").strip()
-        if configured_python:
-            runtime_python = Path(configured_python)
-        else:
-            runtimes = sorted(
-                Path("/srv/otto/.hermes/tools").glob("python-*/bin/python3"),
-                reverse=True,
-            )
-            if not runtimes:
-                raise HermesCallError("Hermes runtime unavailable")
-            # Keep the launcher symlink.  This installation's python3 entrypoint
-            # carries runtime bootstrap behavior that the versioned target lacks.
-            runtime_python = runtimes[0]
-        home_value = os.environ.get("HERMES_HOME", "").strip()
+        source_root = Path(hermes_constants.__file__).resolve().parent
+        worker_script = Path(__file__).resolve().parent.parent / "hermes_counterpoint_worker.py"
+        hermes_home = get_hermes_home()
+        runtimes = sorted(hermes_home.joinpath("tools").glob("python-*/bin/python3"), reverse=True)
+        if not runtimes:
+            raise HermesCallError("Hermes runtime unavailable")
+        # Keep the launcher symlink. This installation's python3 entrypoint
+        # carries runtime bootstrap behavior that the versioned target lacks.
+        runtime_python = runtimes[0]
         profile = os.environ.get("HERMES_PROFILE", "").strip() or None
         return cls(
             runtime_python=runtime_python,
             source_root=source_root,
             worker_script=worker_script,
-            hermes_home=Path(home_value).resolve() if home_value else None,
+            hermes_home=hermes_home,
             profile=profile,
         )
 
@@ -236,6 +225,7 @@ class HermesAgentClient:
             }:
                 environment.pop(key, None)
         environment["HERMES_COUNTERPOINT_CHILD"] = "1"
+        environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
         environment["HERMES_QUIET"] = "1"
         if self.runtime.hermes_home is not None:
             environment["HERMES_HOME"] = str(self.runtime.hermes_home)

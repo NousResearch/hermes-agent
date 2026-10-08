@@ -96,8 +96,11 @@ def main() -> int:
                         sort_keys=True,
                     )
                 )
-            except Exception as exc:
-                print(json.dumps({"probe": "failed", "error": str(exc)}, sort_keys=True))
+            except Exception as exc:  # health: allow BLE001 -- diagnostic branch emits only bounded metadata
+                error = "probe_failed"
+                if "--debug" in sys.argv:
+                    error = f"{type(exc).__name__}:{exc}"
+                print(json.dumps({"probe": "failed", "error": error}, sort_keys=True))
             return 0
         if "--critic-probe" in sys.argv:
             from hermes_plugins.otto_counterpoint.counterpoint import Artifact, HermesCounterpointCallbacks
@@ -146,8 +149,8 @@ def main() -> int:
                         sort_keys=True,
                     )
                 )
-            except Exception as exc:
-                print(json.dumps({"critic_probe": "failed", "error": str(exc)}, sort_keys=True))
+            except Exception:  # health: allow BLE001 -- diagnostic branch emits only bounded metadata
+                print(json.dumps({"critic_probe": "failed", "error": "critic_probe_failed"}, sort_keys=True))
             return 0
         transformed = controller.on_transform_llm_output(
             response_text=_RESPONSE,

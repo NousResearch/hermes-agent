@@ -34,6 +34,7 @@ if "hermes_plugins.otto_counterpoint" not in sys.modules:
     _spec.loader.exec_module(_module)
 
 from hermes_plugins.otto_counterpoint.controller import CounterpointController
+from hermes_plugins.otto_counterpoint.counterpoint import HermesRuntime
 
 
 class _State:
@@ -67,6 +68,20 @@ def _pre(controller, *, turn_id="turn-1", user_message="hello", model="gpt-5.6-l
         provider="openai-codex",
         platform="discord",
     )
+
+
+def test_discover_uses_launcher_runtime_and_checkout_root(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    launcher = hermes_home / "tools" / "python-3.14.7" / "bin" / "python3"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(Path(sys.executable))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    runtime = HermesRuntime.discover()
+
+    assert runtime.runtime_python == launcher
+    assert runtime.source_root == Path(__file__).resolve().parents[2]
+    assert runtime.worker_script == _PLUGIN_DIR / "hermes_counterpoint_worker.py"
 
 
 def test_low_risk_turn_is_admitted_directly_without_tool_block(tmp_path):

@@ -645,13 +645,19 @@ def _submit_row_owner_key(staged: dict, session: dict) -> str:
 
 
 def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
-                           accept_metadata: dict | None = None) -> dict | None:
+                           accept_metadata: dict | None = None, *,
+                           platform_id: str | None = None,
+                           timestamp: float | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
     the queue envelope, never the shared session slot a possibly-still-staged in-flight turn owns).
     ``accept_metadata`` merges into ``display_metadata`` (the busy-queue accept's never-drained
     marker, retired by ``reopen_session`` — #125577).
+    ``platform_id``/``timestamp`` stamp the queued source identity (a Desktop/gateway envelope's
+    ``message_id``/``submitted_at``) on the row as ``platform_message_id``/row timestamp — the same
+    columns the turn-start flush writes (``_db_flush_row``), so attribution, ``submitted_at``
+    ordering and restart retry dedup (``has_platform_message_id``) ride the accept-time row itself.
     Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
     # ``session_key`` is only an "is this a real session" probe — the row is written to ``target`` below,
     # which a rotation can already have moved off ``session_key`` (#123545). One guard, one value: the
@@ -660,7 +666,9 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
-    staged = stamp_message_timestamp({"role": "user", "content": text})
+    staged = stamp_message_timestamp({"role": "user", "content": text}, timestamp=timestamp)
+    if platform_id is not None:
+        staged["platform_message_id"] = platform_id
     if display_kind:
         staged["display_kind"] = display_kind
     if accept_metadata:
@@ -672,6 +680,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         try:
             staged["_row_id"] = db.append_message(
                 target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                platform_message_id=platform_id,
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:

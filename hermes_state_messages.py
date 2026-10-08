@@ -1149,6 +1149,24 @@ class SessionMessagesMixin:
             "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
             (row_id, session_id))
 
+    def finalize_queued_user_row(self, session_id: str, row_id: int) -> int:
+        """Clear the never-drained busy-queue marker from ONE known active user row (id-addressed,
+        idempotent; returns the affected row count). The queued-prompt drain's identity-preserving
+        sibling of ``deactivate_message``: a source-identified accept row is FINALIZED in place when
+        its turn dispatches — never re-placed, one durable row per client identity — and a drained
+        row must not read as never-drained residue (``reopen_session`` retires still-marked rows,
+        #125577)."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        marker_path = "$." + QUEUED_PROMPT_METADATA_KEY
+        marker_present = _sql_json_extract("display_metadata", marker_path)
+        return self._write_rowcount(
+            "UPDATE messages SET display_metadata = CASE WHEN json_valid(display_metadata) "
+            "THEN json_remove(display_metadata, ?) ELSE display_metadata END "
+            f"WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1 AND {marker_present} IS NOT NULL",
+            (marker_path, row_id, session_id))
+
     def resolve_active_row_id(self, session_id: str, row_id: int) -> Optional[int]:
         """The active row that still carries *row_id*'s message: *row_id* itself while active, else the one
         row an in-place compaction re-sequenced it into (``_clone_message_rows`` copies role, content and

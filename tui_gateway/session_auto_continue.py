@@ -202,7 +202,12 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
+    if (not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str)
+            or entry.get("submitted_at") is not None or entry.get("message_id") is not None):
+        # Image-bearing, authored and SOURCE-IDENTIFIED envelopes are left alone: chronology and the
+        # sender's own words are kept. A source identity pins the exact message its durable row
+        # carries — rewriting the text would desync row and envelope and split the identity across
+        # two rows at adoption.
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -356,18 +361,22 @@ def _session_compression_in_flight(session: dict) -> bool:
 
 
 def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | None) -> None:
-    """Make a queued prompt durable the moment it is accepted. Writes the user row through the same
-    #111868 machinery as an idle submit (so a cold ``session.resume`` sees it and a restart cannot lose
-    it) and attaches the durable dict to the QUEUE ENVELOPE — never ``session["_submit_user_row"]``, the
-    shared slot a possibly-still-staged in-flight turn owns. A text-only merge into an existing envelope
-    rewrites the already-written row (and the staged dict) to the merged text in place, so cold readers
-    see the merged text and the drained turn's ``_adopt_submit_user_row`` content match keeps working.
-    A failed write stages nothing on the envelope; the drained turn then writes its own row as before.
-    A source-identified envelope (``submitted_at``/``message_id``) never pre-writes: its turn persists
-    the canonical user row stamped with the source identity (``persist_user_timestamp``/
-    ``persist_user_platform_id`` -> ``_stage_turn_user_message`` -> flush), and an accept-time row would
-    pre-empt that write (``_adopt_submit_user_row`` marks it ``_db_persisted`` so the flush can no longer
-    stamp the identity) — the queued prompt would lose its source attribution and retry-dedup id.
+    """Make a queued prompt durable the moment it is accepted — BEFORE the ``{"status": "queued"}``
+    response the client treats as ownership transfer (Desktop drops its local entry on it). Writes
+    the user row through the same #111868 machinery as an idle submit (so a cold ``session.resume``
+    sees it and a restart cannot lose it) and attaches the durable dict to the QUEUE ENVELOPE —
+    never ``session["_submit_user_row"]``, the shared slot a possibly-still-staged in-flight turn
+    owns. A text-only merge into an existing envelope rewrites the already-written row (and the
+    staged dict) to the merged text in place, so cold readers see the merged text and the drained
+    turn's ``_adopt_submit_user_row`` content match keeps working. A failed write stages nothing on
+    the envelope; the drained turn then writes its own row as before.
+    A source-identified envelope (``submitted_at``/``message_id``) writes its row HERE TOO, stamped
+    with the stable source identity (``platform_message_id``/``submitted_at``): the accepted ack
+    hands durability ownership to the backend, so the prompt and its identity MUST be stored before
+    it — an in-memory envelope is lost forever by a backend stop before ``_drain_queued_prompt``.
+    The drain FINALIZES this row in place (``_replace_queued_user_row_for_turn``) instead of
+    re-placing it, so no second row is ever minted for the same identity and retry dedup
+    (``has_platform_message_id``) plus source attribution ride the accept-time row itself.
     Caller holds ``history_lock`` (the durable row, the envelope text and the queue must move together —
     a drain cannot claim between the merge and the write)."""
     # The queue path bypasses prompt.submit's lazy row creation: the first message of a draft session can
@@ -377,8 +386,6 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     # persistence, and a local accept-time row would double it on drain.
     if _session_uses_compute_host(session):
         return
-    if envelope.get("submitted_at") is not None or envelope.get("message_id") is not None:
-        return  # source-identified: the drained turn's persist owns the row (see docstring)
     _ensure_session_db_row(session)
     staged = envelope.get("_submit_user_row")
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):
@@ -413,11 +420,47 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
-        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True},
+        platform_id=envelope.get("message_id"), timestamp=envelope.get("submitted_at"))
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
             envelope["_queued_display_kind"] = display_kind
+
+
+def _finalize_queued_user_row_for_turn(session: dict, early: dict) -> dict | None:
+    """FINALIZE a source-identified accept-time row in place when its turn dispatches — the
+    identity-preserving sibling of the anonymous re-placement. The row already carries the prompt
+    AND its stable identity (``platform_message_id``/``submitted_at``), written at ACCEPT before the
+    ``queued`` ack; the drain must never mint a second row for the same identity (source attribution
+    and restart retry dedup ride THIS row), so it clears the never-drained queue marker — a drained
+    row is unmarked, ``reopen_session`` retires only still-marked residue (#125577) — and hands the
+    same dict to the turn for adoption (already ``_db_persisted``: the flush writes no second row).
+    Returns the dict to adopt, or None when no live row carries the message any more (the turn then
+    persists its own row with the identity from ``persist_user_platform_id``, exactly like a failed
+    accept-time write)."""
+    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    key = _submit_row_owner_key(early, session)
+    with _session_db(session) as db:
+        if db is None:
+            return early
+        try:
+            # An in-place compaction may have re-sequenced the row to a new id: finalize the row
+            # that is live NOW and follow it (#123675).
+            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            if live_id is None:
+                return None  # the accept-time row is gone: the turn writes its own
+            db.finalize_queued_user_row(key, live_id)
+        except Exception:
+            # Best-effort bookkeeping: the identity row survives reopen regardless —
+            # retire_undrained_queue_rows never touches source-identified rows.
+            logger.debug("queued-prompt row finalize failed", exc_info=True)
+            return early
+    early["_row_id"] = live_id
+    metadata = early.get("display_metadata")
+    if isinstance(metadata, dict):
+        metadata.pop(QUEUED_PROMPT_METADATA_KEY, None)
+    return early
 
 
 def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatching: bool = False) -> dict | None:
@@ -430,10 +473,19 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     writes no second row (the exact existing contract) — then deactivate the early row (durable
     history, never deleted). Steady-state raw order: ``[uA, aA, uB, aB]``. Caller holds
     ``history_lock`` so a concurrent submit cannot interleave its own row between the two writes.
+
+    A source-identified envelope (``submitted_at``/``message_id``) NEVER re-places: its accept-time
+    row is the durable identity row (one row per identity — a replacement would mint a second),
+    and the never-fold guards keep it its own turn boundary, so there is no glue to heal past.
+    Dispatch finalizes it in place instead (``_finalize_queued_user_row_for_turn``).
     """
     early = queued.get("_submit_user_row")
     if not (isinstance(early, dict) and isinstance(early.get("_row_id"), int)):
         return None  # no accept-time row (write failed / pre-feature envelope): the turn persists as before
+    if queued.get("submitted_at") is not None or queued.get("message_id") is not None:
+        # Still-queued siblings keep their marked, in-place rows (never-drained residue scoping is
+        # per-identity); only the DISPATCHING envelope finalizes.
+        return _finalize_queued_user_row_for_turn(session, early) if is_dispatching else None
     # Append the replacement FIRST: if that write fails nothing is deactivated, the accept-time row
     # stays active (the message stays visible) and the turn's crash persist persists it as before.
     # The DISPATCHING envelope's replacement carries no marker (its turn adopts the row immediately);

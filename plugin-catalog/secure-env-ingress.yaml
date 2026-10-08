@@ -1,13 +1,13 @@
 name: secure-env-ingress
 repo: https://github.com/web3blind/hermes-secure-env-plugin
-sha: 7c41926531d3ba663f6e429c6317dac6f94a188e
+sha: bae49bcfb48dbce484bfcbc5498b72dea00cc417
 subdir: secure_env_ingress
 description: "One-use HTTPS forms for missing environment secrets, native encrypted Browser Vault logins/TOTP setup keys and payment cards, protected hosted payment-field filling, nested HTTPS verification codes/passcodes, and approved secret operations outside chat and LLM input. Disclosure — /senv setup supplies a skill using sudo for host packages and TLS setup after approval; the TLS listener binds all interfaces by default; pre_gateway_dispatch observes gateway messages to bind commands to their sender. In interactive Telegram sessions, browser_vault saves logins or fills a code field through the captured browser supervisor without explicitly submitting the site form. Explicit parent payment/nested-code targeting requires compatible host task/profile ownership and browser-generation evidence and fails closed without it; this is not a general fix for native Vault named-tab selection. Payment filling requires separate native consent and exact document/control guards; explicit resume requires existing nonempty values to match Vault. Site input callbacks, especially 3-D Secure, may authorize or auto-submit an operation. Unknown outcomes require external verification before retry. secure_operation executes administrator-allowlisted, SHA-256-pinned external Python consumers with gateway privileges; consumers are trusted, not sandboxed, and none are enabled by default. Secret input is not persisted by this mode; consumers must enforce their own handling policy. Links are bearer authorization, not submitter identity; cancellation cannot stop an already-running consumer."
 maintainer: web3blind
 tier: community
 category: tools
-version: "0.8.0-rc.1"
-docs_url: https://github.com/web3blind/hermes-secure-env-plugin/blob/7c41926531d3ba663f6e429c6317dac6f94a188e/README.md
+version: "0.8.0-rc.2"
+docs_url: https://github.com/web3blind/hermes-secure-env-plugin/blob/bae49bcfb48dbce484bfcbc5498b72dea00cc417/README.md
 platforms: [linux]
 capabilities:
   provides_tools: [browser_vault, secure_payment_fill, secure_operation]

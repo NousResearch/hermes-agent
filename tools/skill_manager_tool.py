@@ -898,7 +898,8 @@ def _skill_manage_description() -> str:
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
-        "skill_view() shows format conventions."
+        "skill_view() shows format conventions. User controls: /skills approval create|all "
+        "(on/off preserve scope); /skills pending reviews staged writes."
     )
 
 

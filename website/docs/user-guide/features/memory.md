@@ -478,16 +478,19 @@ in-flight fork would have been.
 
 ## Controlling skill writes (`skills.write_approval`)
 
-Skills use the same on/off gate, but the review UX differs because a
+Skills have their own approval gate and scope, but the review UX differs because a
 `SKILL.md` is far too large to read in a chat bubble:
 
 ```yaml
 skills:
   write_approval: false     # false = write freely (default) | true = require approval
+  write_approval_mode: all  # all (default) | create (new skills only)
 ```
 
-When `write_approval: true`, skill writes (create / edit / patch / write_file /
-delete) always **stage** regardless of origin. You review the one-line gist
+When `write_approval: true`, skill writes in the selected scope **stage**
+regardless of origin. The default `all` covers every mutation; `create` covers
+new discoverable skills and permits existing-skill updates without this gate.
+You review the one-line gist
 inline, but the full diff stays out-of-band:
 
 ```
@@ -495,7 +498,9 @@ inline, but the full diff stays out-of-band:
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
 /skills reject <id>         # drop it (or 'all')
-/skills approval on         # turn the gate on (or 'off') and persist it
+/skills approval create     # enable skill approval for new skills only
+/skills approval all        # enable skill approval for every mutation
+/skills approval off        # disable skill approval; preserve selected scope
 ```
 
 On a messaging platform, approve a skill from its gist + metadata, or open

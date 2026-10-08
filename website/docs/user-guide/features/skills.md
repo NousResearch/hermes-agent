@@ -681,10 +681,18 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
 /skills reject <id>         # drop it (or 'all')
-/skills approval on         # turn the gate on (or 'off') and persist it
+/skills approval create     # enable approval for new skills only
+/skills approval all        # enable approval for every skill mutation
+/skills approval off        # disable approval; keep the selected scope
+/skills approval            # current gate/scope + help (also status/current/help)
+/skills mode create         # alias for /skills approval create
 ```
 
-To approve new skills while letting existing skills improve automatically:
+To approve new skills while letting existing skills improve automatically, run
+`/skills approval create`. To require review for every mutation, run
+`/skills approval all`. Each command atomically persists the enabled gate and selected
+scope for the active profile; no manual config edit is needed. The equivalent
+creation-only configuration is:
 
 ```yaml
 skills:
@@ -732,15 +740,20 @@ not automatically merged on a conflict. Failed approval replay retains its origi
 pending ID. Concurrent approve/reject commands use the same fence through removal
 of the pending record; pending lists and diffs remain read-only.
 
-The review commands are unchanged. `/skills approval on|off` toggles the gate
-without resetting its scope; `/skills` shows the active scope. Existing pending
+The review commands are unchanged. `/skills approval off` disables the gate
+without resetting its scope; `/skills approval` shows the gate and selected scope
+even when off. The existing `/skills approval on` command remains available for
+compatibility and re-enables the saved scope; it is not needed after `create` or
+`all`. `/skills mode` is a backward-compatible alias for `approval`.
+`/skills approval help` also lists this compatibility command; `status` and `current` are read-only
+aliases for that view. The next skill write reads the new settings. Existing pending
 records stay pending until approved or rejected, even after changing the scope.
 The default `all` preserves existing behavior. Invalid scope values refuse gated
 skill writes with a configuration error. This option governs `skill_manage`, not
 direct filesystem writes or Skills Hub installation, and does not change memory
 write approval.
 
-The review surface works in the interactive CLI and on messaging platforms
+The review surface works in the interactive CLI, TUI/Desktop and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).

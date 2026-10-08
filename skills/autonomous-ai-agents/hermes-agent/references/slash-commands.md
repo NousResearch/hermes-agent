@@ -58,6 +58,10 @@ it. New commands land often; `/help` in-session is always authoritative.
 /tools [list|enable|disable] Manage tools (CLI)
 /toolsets                List toolsets (CLI)
 /skills                  Search/install/manage skills (CLI)
+/skills approval [create|all|off] Profile-local skill-write gate (CLI/TUI/GW)
+/skills mode [create|all|off] Alias for approval
+/skills pending          List staged skill writes (CLI/TUI/GW)
+/skills diff|approve|reject <id> Review/apply/discard a staged skill write
 /bundles                 List skill bundles (/<name> loads several skills)
 /learn <source>          Learn a reusable skill from dirs/URLs/this chat
 /memory [pending|approve|reject] Review pending memory writes / approval gate
@@ -75,6 +79,8 @@ it. New commands land often; `/help` in-session is always authoritative.
 /browser [connect|status] CDP connection to your live browser (CLI)
 /plugins                 List plugins (CLI)
 ```
+
+`/skills approval` (or `status`, `current`, `help` after it) shows the gate and selected scope. `create`/`all` enable approval and select the scope atomically; `off` disables approval without resetting scope. Existing pending writes stay pending until reviewed. Compatibility: `on` still re-enables the saved scope, but is not needed after `create` or `all`. See `configuration.md` for scope semantics.
 
 ### Gateway
 ```

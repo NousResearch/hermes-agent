@@ -16,12 +16,35 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
+| `skills` | `write_approval` (false), `write_approval_mode` (all/create), `creation_nudge_interval` |
 | `security` | `redact_secrets`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
 
 `hermes config check` reports sections missing from an older config.
+
+### Skill write approval
+
+Use the in-session commands rather than editing config:
+
+```
+/skills approval create  # enable approval for new discoverable skills only
+/skills approval all     # enable approval for every skill_manage mutation (default scope)
+/skills approval off     # disable gate, preserve scope
+/skills approval         # current gate/scope + help (also status/current/help)
+/skills mode create      # backward-compatible alias for approval
+/skills pending          # list staged writes
+/skills diff <id>        # inspect full change (chat may truncate)
+/skills approve <id>     # apply exact pending request (or all)
+/skills reject <id>      # discard exact pending request (or all)
+```
+
+`create` and `all` atomically save `skills.write_approval: true` plus the selected `skills.write_approval_mode` in the active profile. `off` preserves that mode. The next write reads fresh settings; changing scope never approves an old queue. In `create` mode, edits/deletions/support-file changes to existing skills apply without this gate unless they expose a new discoverable skill; a mixed batch that creates one stages as a whole. Foreground and background skill writes use the same gate; other guards remain independent. Exact skill directory paths avoid ambiguous targets. Memory remains boolean-only (`/memory approval on|off`), not creation-scoped.
+
+Compatibility: the existing `/skills approval on` command still re-enables the saved scope. Do not require it after `create` or `all`, or present it as the primary way to enable skill approval.
+
+Settings changes require user authorization. Direct file tools, shell writes and Skills Hub installs are outside this `skill_manage` gate, not a workaround for pending or rejected changes.
 
 ### Toolsets
 

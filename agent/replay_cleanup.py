@@ -6,6 +6,7 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -78,6 +79,25 @@ def _orphan_recovery(name: str, notices: tuple) -> tuple:
     return "none", notices[1]
 
 
+def _invalidate_read_dedup_after_replay_loss() -> None:
+    """Advance the in-process repeat-read dedups after a replay strip dropped rows.
+
+    Dropping an interrupted read-only block removes its SUCCESSFUL sibling results
+    too — a full skill_view/read_file body that the repeat-read dedup still answers
+    "unchanged" for, pointing the model at a row the replayed context no longer
+    carries (#132177). Replay loss is session-wide, so every task's cache advances;
+    the reset is generation-style (first unchanged read returns full content), not a
+    wipe, matching the compression/prune boundaries in _reset_read_dedup_caches."""
+    with contextlib.suppress(Exception):
+        from tools.skills_tool import reset_skill_view_dedup
+
+        reset_skill_view_dedup()
+    with contextlib.suppress(Exception):
+        from tools.file_tools_read_tracking import reset_file_dedup
+
+        reset_file_dedup()
+
+
 def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Strip interrupted assistant→tool blocks anywhere in history (a queued user message may follow one).
     Read-only blocks are dropped; blocks with a side-effecting call are KEPT with the interrupted results
@@ -107,6 +127,10 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
                 else:
                     logger.debug("Stripping interrupted read-only assistant→tool replay block (indices %d–%d, tool_results=%d)",
                                  i, j - 1, len(tool_results))
+                    # Successful read-only results (a full skill_view/read_file body) are
+                    # dropped with the block; their dedup stubs would point at rows that
+                    # no longer exist in the replayed context (#132177).
+                    _invalidate_read_dedup_after_replay_loss()
                 i = j
                 continue
         if msg.get("role") == "tool" and is_interrupted_tool_result(msg.get("content", "")):

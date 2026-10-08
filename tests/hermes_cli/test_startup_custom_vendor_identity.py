@@ -113,6 +113,66 @@ def test_selected_custom_provider_accepts_its_display_name_alias():
     ) == StartupModelRoute("vendor-alias/fixture-model", "custom:endpoint-key")
 
 
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_exact_configured_key_wins_over_selected_display_alias(reverse_order):
+    providers = {
+        "foo": {"name": "bar", "base_url": "https://foo.example.invalid/v1"},
+        "bar": {"base_url": "https://bar.example.invalid/v1"},
+    }
+    if reverse_order:
+        providers = dict(reversed(list(providers.items())))
+    assert resolve_startup_model_route(
+        "bar/fixture-model", current_provider="custom:foo", user_providers=providers,
+    ) == StartupModelRoute("fixture-model", "bar")
+
+
+@pytest.mark.parametrize("url_key", ["base_url", "url", "api"])
+def test_selected_legacy_custom_vendor_alias_keeps_runtime_identity(url_key, tmp_path, monkeypatch):
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: custom:custom:vendor-alias\n  default: vendor-alias/fixture-model\n"
+        "providers:\n  vendor-alias:\n    api: https://foreign.example.invalid/v1\n"
+        "custom_providers:\n  - name: custom:vendor-alias\n"
+        f"    {url_key}: https://legacy.example.invalid/v1\n"
+        "    api_key: legacy-fixture-key\n", encoding="utf-8",
+    )
+    cfg = load_config()
+    route = resolve_startup_model_route(
+        cfg["model"]["default"], current_provider=cfg["model"]["provider"],
+        user_providers=cfg["providers"], custom_providers=cfg["custom_providers"],
+    )
+    assert route == StartupModelRoute("vendor-alias/fixture-model", "custom:custom:vendor-alias")
+    assert route is not None
+    runtime = resolve_runtime_provider(requested=route.provider)
+    assert runtime["provider"] == "custom"
+    assert runtime["base_url"] == "https://legacy.example.invalid/v1"
+    assert runtime["api_key"] == "legacy-fixture-key"
+
+
+@pytest.mark.parametrize("provider", ["nvidia", "openai"])
+@pytest.mark.parametrize("current_kind", ["selected_custom", "foreign_custom", "builtin"])
+def test_tuning_only_provider_routes_to_builtin(provider, current_kind):
+    current_provider = {
+        "selected_custom": f"custom:{provider}", "foreign_custom": "custom:other", "builtin": provider,
+    }[current_kind]
+    assert resolve_startup_model_route(
+        f"{provider}/fixture-model", current_provider=current_provider,
+        user_providers={provider: {"stale_timeout_seconds": 600}},
+    ) == StartupModelRoute("fixture-model", provider)
+
+
+@pytest.mark.parametrize("current_provider", ["custom:openai", "custom:other", "openai"])
+def test_tuning_only_openai_does_not_keep_invalid_custom_aggregator(current_provider, monkeypatch):
+    monkeypatch.setattr("hermes_cli.models._find_openrouter_slug", lambda raw: raw)
+    assert resolve_startup_model_route(
+        "openai/gpt-4o", current_provider=current_provider,
+        user_providers={"openai": {"stale_timeout_seconds": 600}},
+    ) == StartupModelRoute("gpt-4o", "openai")
+
+
 def test_foreign_configured_slash_route_still_switches(custom_config):
     assert resolve_startup_model_route(
         "nvidia/fixture-model", current_provider="custom:other",

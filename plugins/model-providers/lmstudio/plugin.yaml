@@ -1,0 +1,5 @@
+name: lmstudio-provider
+kind: model-provider
+version: 1.0.0
+description: LM Studio
+author: Nous Research

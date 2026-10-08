@@ -30,10 +30,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_install.add_argument(
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
-    plugins_install.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: allow a forced reinstall while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
     _install_deps_group = plugins_install.add_mutually_exclusive_group()
     _install_deps_group.add_argument(
         "--no-deps", action="store_true",
@@ -72,10 +68,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
-    plugins_update.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: update while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",
@@ -121,10 +113,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
-    plugins_remove.add_argument(
-        "--allow-live-gateway", action="store_true",
-        help="DANGEROUS: remove while the messaging gateway is running "
-             "(loaded plugin callbacks may break until it restarts)")
 
     plugins_list = plugins_subparsers.add_parser(
         "list", aliases=["ls"], help="List installed plugins")

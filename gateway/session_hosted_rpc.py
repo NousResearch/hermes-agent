@@ -167,6 +167,10 @@ class HostedRoomAuthorityRPC:
     def _completed(self, admission_id, future):
         if future.cancelled() or admission_id not in self.callbacks:
             return
+        if future.exception() is not None:
+            # A paused FIFO remains queued/unknown; polling or an explicit
+            # resolution will publish its eventual durable terminal outcome.
+            return
         if self.authorizer('terminal', None, None) is not True:
             self.callbacks.pop(admission_id, None)
             return

@@ -22,6 +22,10 @@ HELLO_SECONDS = 60
 STOP_ACK_SECONDS = 30
 
 
+class ManagedExecutionUnknown(RuntimeError):
+    """The committed unknown verdict stops the FIFO without forging failed settlement."""
+
+
 def managed_policy(authority, ref):
     """Bypass (safe / config-only) sessions always execute out of process; other local
     sessions only under the explicit custom-provider opt-in.
@@ -368,7 +372,7 @@ async def execute_managed(authority, ref, row, policy):
             waiter.set_result('Worker execution is unknown.')
         # Stop this drain without its ordinary Exception→failed settlement. The
         # committed unknown row deliberately pauses every accepted follower.
-        raise asyncio.CancelledError('managed_worker_unknown') from exc
+        raise ManagedExecutionUnknown('managed_worker_unknown') from exc
     finally:
         workers.pop(ref.session_id, None)
         await asyncio.to_thread(worker.close)

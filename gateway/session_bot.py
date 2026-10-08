@@ -316,11 +316,19 @@ async def _maybe_retry(authority, home, record):
 
 
 async def _record_reply(authority, home, key, future):
-    await asyncio.shield(future)
+    try:
+        await asyncio.shield(future)
+    except RuntimeStoreError:
+        # A paused FIFO is not a terminal Bot outcome; project the durable state below.
+        pass
     async with _mailbox_order(authority):
         record = _read(_root(home) / f'{key}.json')
         record.update(_result(authority, record))
         _publish(home, record)
+        admission_id, interim = peer_wait_admission(authority, record)
+        if admission_id is not None and not interim:
+            _watch_reply(authority, home, key, admission_id)
+            return
         await _maybe_retry(authority, home, record)
 
 

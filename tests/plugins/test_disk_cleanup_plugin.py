@@ -92,6 +92,108 @@ def _load_plugin_init():
 # Library tests
 # ---------------------------------------------------------------------------
 
+class TestMissingHermesHomeFailsClosed:
+    """A HERMES_HOME that is not a real directory must fail CLOSED.
+
+    ``Path.resolve()`` is lenient about missing paths: it returns the normalized
+    literal path without expanding junction/symlink components. Comparing that
+    against a likewise-unresolved candidate matches trivially, so the naive
+    ``resolved.relative_to(home)`` reads as "safe" for a home that is not on disk
+    at all — violating the fail-closed contract ``is_safe_path`` documents.
+    """
+
+    def test_is_safe_path_rejects_when_home_missing(self, tmp_path, monkeypatch):
+        dg = _load_lib()
+        missing_home = tmp_path / "does-not-exist-yet"
+        monkeypatch.setenv("HERMES_HOME", str(missing_home))
+        assert dg._hermes_home() is None
+        assert dg.is_safe_path(missing_home / "test_a.py") is False
+        # A path that *would* be inside the home once created is still refused.
+        assert dg.guess_category(missing_home / "test_a.py") is None
+        assert dg.track(str(missing_home / "test_a.py"), "test", silent=True) is False
+
+    def test_protection_guards_fail_safe_when_home_missing(self, tmp_path, monkeypatch):
+        """Unresolvable home must not let quick() delete things it cannot reason about."""
+        dg = _load_lib()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "gone"))
+        some_dir = tmp_path / "elsewhere" / "sub"
+        some_dir.mkdir(parents=True)
+        assert dg._is_protected_dir(some_dir) is True, "unknown containment -> protected"
+        assert dg._is_protected_cron_path(tmp_path / "elsewhere" / "cron" / "jobs.json") is True
+
+    def test_quick_does_not_raise_when_home_missing(self, tmp_path, monkeypatch):
+        dg = _load_lib()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "gone"))
+        summary = dg.quick()
+        assert summary["empty_dirs"] == 0
+
+
+class TestJunctionedHomeStillTracked:
+    """HERMES_HOME resolved through a junction/symlink must still be recognised.
+
+    On Windows a very common layout is ``%LOCALAPPDATA%\\hermes`` being a
+    junction to a directory on another drive (D:\\...). ``get_hermes_home()``
+    returns the *unresolved* path while every containment test in the plugin
+    compares a *resolved* candidate, so with the naive comparison no file under
+    HERMES_HOME was ever safe: ``track()`` declined (including the manual
+    ``/disk-cleanup track``), ``status`` reported "(nothing tracked yet", and
+    ``on_session_end`` cleaned nothing.
+    """
+
+    def test_symlinked_hermes_home_is_tracked_and_cleaned(self, _isolate_env, tmp_path, monkeypatch):
+        dg = _load_lib()
+        # The real home lives in tmp_path; HERMES_HOME points at a symlink to it.
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        link_home = tmp_path / "link-home"
+        try:
+            link_home.symlink_to(real_home, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this host")
+        monkeypatch.setenv("HERMES_HOME", str(link_home))
+
+        # Resolve the home the way get_hermes_home() would have reported it, so the
+        # probe asserts the path the agent would actually have handed to the plugin.
+        assert link_home.resolve() == real_home
+        scratch = link_home / "test_symlinked.py"
+        probe = link_home / "cache" / "tmp_probe.txt"
+        probe.parent.mkdir(exist_ok=True)
+
+        assert dg.is_safe_path(scratch) is True, "junctioned home must still be safe"
+        assert dg.is_safe_path(probe) is True
+        assert dg.guess_category(scratch) == "test"
+        assert dg.guess_category(probe) == "temp", "cache/ files age out as temp"
+        scratch.write_text("x")
+        assert dg.track(str(scratch), "test", silent=True) is True
+        assert len(dg.load_tracked()) == 1
+        assert dg.quick()["deleted"] == 1
+        assert not scratch.exists()
+
+    @pytest.mark.platforms("windows")
+    def test_windows_junction_hermes_home(self, _isolate_env, tmp_path, monkeypatch):
+        import subprocess
+        dg = _load_lib()
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        link_home = tmp_path / "link-home"
+        # encoding/errors: `mklink` writes in the OEM code page (e.g. CP936 on a
+        # Chinese host), so a bare text=True let the reader thread raise
+        # UnicodeDecodeError while building the skip message.
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link_home), str(real_home)],
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        if proc.returncode != 0:
+            pytest.skip(f"mklink /J unavailable: {proc.stderr.strip()[:120]}")
+        monkeypatch.setenv("HERMES_HOME", str(link_home))
+
+        assert link_home.resolve() == real_home
+        scratch = link_home / "test_junction.py"
+        assert dg.is_safe_path(scratch) is True
+        assert dg.guess_category(scratch) == "test"
+        scratch.write_text("x")
+        assert dg.track(str(scratch), "test", silent=True) is True
+
+
 class TestIsSafePath:
     def test_accepts_path_under_hermes_home(self, _isolate_env):
         dg = _load_lib()

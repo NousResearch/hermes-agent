@@ -113,6 +113,37 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
 
 
+def test_faster_whisper_carriers_bound_av_below_pyav19():
+    """faster-whisper 1.2.1 passes ``metadata_errors`` to ``av.open()`` — a kwarg
+    PyAV 19 removed, so the pair fails every local transcription with a TypeError
+    (#135245; fixed upstream in SYSTRAN/faster-whisper#1495, unreleased at the
+    time of the pin). faster-whisper itself only declares ``av>=11``, so every
+    extra that carries it must bound ``av`` below 19 with the same platform
+    marker, or the next lock refresh resolves the broken pair.
+    """
+    import tomllib
+    from pathlib import Path
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parents[2]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    optional = pyproject["project"]["optional-dependencies"]
+    carriers = {
+        extra: [Requirement(req) for req in reqs]
+        for extra, reqs in optional.items()
+        if any(req.name == "faster-whisper" for req in map(Requirement, reqs))
+    }
+    assert carriers, "no extra carries faster-whisper — retire this pin and test"
+    for extra, reqs in carriers.items():
+        fw_marker = next(r.marker for r in reqs if r.name == "faster-whisper")
+        av_reqs = [req for req in reqs if req.name == "av"]
+        assert len(av_reqs) == 1, f"{extra} must bound av alongside faster-whisper"
+        av = av_reqs[0]
+        assert not av.specifier.contains("19.0.0"), f"{extra}: av must exclude PyAV 19"
+        assert av.specifier.contains("18.1.0"), f"{extra}: av must admit locked 18.1.0"
+        assert av.marker == fw_marker, f"{extra}: av must share faster-whisper's marker"
+
+
 @pytest.fixture
 def synced(monkeypatch):
     calls: list[list[str]] = []

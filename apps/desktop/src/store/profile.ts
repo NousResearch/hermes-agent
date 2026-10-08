@@ -1193,13 +1193,3 @@ export const $profileCreateRequest = atom(0)
 export function requestProfileCreate(): void {
   $profileCreateRequest.set($profileCreateRequest.get() + 1)
 }
-
-// Keepalive ping for the active pool backend so the main-process idle reaper
-// (which can't see the direct renderer↔backend WS) spares it. No-op for the
-// primary/default backend, which is never pooled.
-export function touchActiveGatewayBackend(): void {
-  // Always ping: the main process no-ops for non-pool (primary) backends, so we
-  // don't need to know which profile is primary from here.
-  const target = normalizeProfileKey($activeGatewayProfile.get())
-  void window.hermesDesktop?.touchBackend?.(target).catch(() => undefined)
-}

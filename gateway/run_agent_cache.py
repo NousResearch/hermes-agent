@@ -43,6 +43,16 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _native_consumer_ids(cache) -> set:
+    """A live native event consumer is busy even if the gateway slot is transiently absent.
+
+    Read only the in-process execution lease, never an RPC or a profile DB under the
+    cache lock. Persisted active Goals alone must not pin abandoned agents forever.
+    """
+    return {id(agent) for entry in list(cache.values()) if (agent := _first_agent(entry)) is not None
+            and getattr(getattr(agent, "_codex_session", None), "_native_goal_running", False) is True}
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -977,7 +987,7 @@ class GatewayAgentCacheMixin:
         rss_mb = read_anon_rss_mb()
         if rss_mb is None or rss_mb < bounds.memory_high_mb:
             return 0
-        running_ids = self._running_agent_ids()
+        running_ids = self._running_agent_ids() | _native_consumer_ids(_cache)
 
         def _is_live(agent: Any) -> bool:
             return agent is not None and agent is not _AGENT_PENDING_SENTINEL and id(agent) not in running_ids
@@ -1052,7 +1062,7 @@ class GatewayAgentCacheMixin:
             return
         # Snapshot of agent instances mid-turn, keyed by id() so lookup is O(1) and independent of
         # AIAgent.__eq__ (which MagicMock overrides in tests).
-        running_ids = self._running_agent_ids()
+        running_ids = self._running_agent_ids() | _native_consumer_ids(_cache)
         # Walk LRU → MRU; only the first (size - cap) LRU positions are candidates. An active slot is
         # SKIPPED rather than evicting a newer entry — that would penalise a fresh session (no cache
         # history) to protect a long-running one. Cache may stay over cap until the next insert.
@@ -1086,7 +1096,7 @@ class GatewayAgentCacheMixin:
         now = time.time()
         idle_ttl = self._agent_cache_idle_ttl()
         to_evict: List[tuple] = []
-        running_ids = self._running_agent_ids()
+        running_ids = self._running_agent_ids() | _native_consumer_ids(_cache)
         with _lock:
             for key, entry in list(_cache.items()):
                 agent = _tuple_agent(entry)

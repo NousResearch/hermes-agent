@@ -332,8 +332,9 @@ describe('resolveNewSessionCwd', () => {
   })
 
   it('anchors a bare chat to the project owning the profile workspace', async () => {
-    // A detached chat lands in the sidebar's Home bucket every time, so the project that owns the
-    // profile's own working directory — where the session will actually work — beats an unset default.
+    // With no default dir configured — what a stock install has — the project that owns the profile's
+    // own working directory, where the session will actually work, stands in for one.
+    applyConfiguredDefaultProjectDir(null)
     getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
     await syncProfileWorkspaceCwd('default')
     $projectTree.set([
@@ -342,6 +343,18 @@ describe('resolveNewSessionCwd', () => {
     ] as never)
 
     expect(resolveNewSessionCwd()).toBe('/work/pasei')
+  })
+
+  it('keeps a configured default dir over the project owning the profile workspace', async () => {
+    // The setting is the user saying where new chats go, so it outranks a project the profile workspace
+    // merely happens to sit in: the workspace project only stands in for a default that is empty.
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
   })
 
   it('keeps the configured default when no project covers the profile workspace', async () => {
@@ -1058,6 +1071,9 @@ describe('repository discovery policy', () => {
     await expect(scanAndRecordRepos()).resolves.toEqual({ reason: 'no-roots' })
 
     expect(scanRepos).not.toHaveBeenCalled()
+    // Not RECORDED either: `record_repos` replaces the cache, so the empty list would wipe the last
+    // real scan's rows out from under a sidebar that still shows them.
+    expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.anything())
   })
 
   it('passes custom roots and exclusions to Electron and records on the origin gateway', async () => {

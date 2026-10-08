@@ -274,7 +274,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "approval", "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -847,16 +847,39 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
         return r, _run_usage(agent), _served_runtime(agent)
 
 
-def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
-    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+def _make_approval_notify(
+    self, run_id: str, *, enqueue_event: Callable[[Dict[str, Any]], None], _api_server,
+    **event_fields: Any,
+) -> Callable[[Dict[str, Any]], None]:
+    """Publish approval status and SSE together on the run's owning event loop."""
+    from tools.approval import list_gateway_approvals
+
+    loop = asyncio.get_running_loop()
+    approval_session_key = self._run_approval_sessions.get(run_id)
+
+    def _publish(event: Dict[str, Any]) -> None:
+        # A delayed worker notification cannot resurrect a resolved request,
+        # a stopping/finished run, or a retired approval-session binding.
+        if (not approval_session_key
+                or self._run_approval_sessions.get(run_id) != approval_session_key
+                or self._run_statuses.get(run_id, {}).get("status") not in {"running", "waiting_for_approval"}):
+            return
+        pending = list_gateway_approvals(approval_session_key)
+        if not any(item.get("request_id") == event.get("request_id") for item in pending):
+            return
+        current = (event if pending[0].get("request_id") == event.get("request_id") else
+                   _api_server._approval_request_event(run_id, pending[0], **event_fields))
+        self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=current)
+        with suppress(Exception):
+            enqueue_event(event)
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
-        event = _api_server._approval_request_event(run_id, approval_data)
-        self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-        with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+        event = _api_server._approval_request_event(run_id, approval_data, **event_fields)
+        # Control handlers snapshot and write status synchronously on this loop.
+        # Hopping the entire publication prevents a worker from writing waiting
+        # between their queue snapshot and a stale running-status write.
+        loop.call_soon_threadsafe(_publish, event)
 
     return _approval_notify
 
@@ -962,7 +985,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
-        approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
+        approval_notify = _make_approval_notify(
+            self, run_id, enqueue_event=run.queue.put_nowait, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
@@ -1155,7 +1179,33 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
-    self._set_run_status(run_id, "running", last_event=name)
+    # A response can settle an approval after stop/completion; the acknowledgement
+    # still belongs on SSE, but cannot put the run back into an active state.
+    current_status = self._run_statuses.get(run_id, {}).get("status", "running")
+    if current_status in {"running", "waiting_for_approval"}:
+        status = "running"
+        status_fields = {}
+        # Any control-plane event can race with a new approval (not only a response).
+        # Steering reads its request body asynchronously after checking run status.
+        approval_session_key = self._run_approval_sessions.get(run_id)
+        if approval_session_key:
+            from tools.approval import list_gateway_approvals
+
+            pending = list_gateway_approvals(approval_session_key)
+            if pending:
+                from gateway.platforms.api_server import _approval_request_event
+
+                status = "waiting_for_approval"
+                current_approval = self._run_statuses.get(run_id, {}).get("approval") or {}
+                surface_fields = {
+                    key: current_approval[key]
+                    for key in ("message_id", "session_id")
+                    if key in current_approval
+                }
+                status_fields["approval"] = _approval_request_event(run_id, pending[0], **surface_fields)
+                if name == "approval.responded":
+                    fields.update(status_fields)
+        self._set_run_status(run_id, status, last_event=name, **status_fields)
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):

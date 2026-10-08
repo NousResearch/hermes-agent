@@ -570,16 +570,15 @@ class OpenAICompatRoutesMixin:
         (#51871) -> ``(notify, on_done)``. Owner + status are stamped like the session stream, so
         ``_load_owned_run`` finds it; keyed by the completion id (never the shared session key) so
         concurrent turns can't cross-resolve. ``on_done`` retires it when the agent task ends."""
-        from gateway.platforms.api_server import _approval_request_event
+        from gateway.platforms import api_server
+        from gateway.platforms.api_server_runs import _make_approval_notify
         self._run_owners[completion_id] = self._run_idempotency_scope(request)
         self._set_run_status(completion_id, "running", session_id=session_id or "")
         self._run_approval_sessions[completion_id] = completion_id
 
-        def _approval_notify(approval_data):
-            event = _approval_request_event(completion_id, approval_data, session_id=session_id or "")
-            self._set_run_status(completion_id, "waiting_for_approval", last_event="approval.request",
-                                 approval=event)
-            stream_q.put_threadsafe(("__approval__", event))
+        _approval_notify = _make_approval_notify(
+            self, completion_id, enqueue_event=lambda event: stream_q.put_nowait(("__approval__", event)),
+            _api_server=api_server, session_id=session_id or "")
 
         def _on_done(fut):
             from gateway.platforms.api_server_runs import terminal_run_status

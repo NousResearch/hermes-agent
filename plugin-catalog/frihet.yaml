@@ -1,4 +1,4 @@
-# Hermes plugin-catalog entry for hermes-frihet v0.2.0.
+# Hermes plugin-catalog entry for hermes-frihet v0.1.0.
 #
 # Catalog: NousResearch/hermes-agent/plugin-catalog/frihet.yaml
 # Per the catalog rules (plugin-catalog/README.md):
@@ -67,7 +67,7 @@ tier: community
 category: tools
 docs_url: https://github.com/Frihet-io/hermes-frihet#readme
 requires_hermes: ">=0.21.5"
-version: "0.2.0"
+version: "0.1.0"
 # Capabilities mirror plugin.yaml exactly.
 # Provides zero Python tools on purpose: the canonical Frihet surface
 # (158 operations) lives in @frihet/mcp-server and is reached via the

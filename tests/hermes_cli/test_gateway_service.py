@@ -157,24 +157,6 @@ class TestSystemdServiceRefresh:
         ), "daemon-reload must not run when write was refused"
 
 
-class TestTempHomeServiceDefinitionGuard:
-    """_temp_home_in_service_definition() — structural temp-dir detection."""
-
-    def test_detects_tmp_home_in_systemd_unit(self):
-        unit = '[Service]\nEnvironment="HERMES_HOME=/tmp/hermes-e2e-41264"\n'
-        assert (
-            gateway_cli._temp_home_in_service_definition(unit)
-            == "/tmp/hermes-e2e-41264"
-        )
-
-    def test_detects_tempdir_env_home(self, monkeypatch, tmp_path):
-        import tempfile as _tempfile
-
-        monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
-        unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
-        assert gateway_cli._temp_home_in_service_definition(unit) is not None
-
-
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"

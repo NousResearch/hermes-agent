@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gw
+from hermes_cli import gateway_service_owner
 
 UNIT = (
     "[Service]\n"
@@ -31,7 +32,7 @@ def unit(tmp_path, monkeypatch):
     path.write_text(UNIT.format(home=real), encoding="utf-8")
     calls = []
     # The temp-root guard only sees homes under a temp dir; scratch homes elsewhere are what slipped past.
-    monkeypatch.setattr(gw, "_refuse_temp_home_service_write", lambda definition, kind: False)
+    monkeypatch.setattr(gateway_service_owner, "refuse_temp_home_service_write", lambda definition, kind: False)
     monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: path)
     monkeypatch.setattr(gw, "systemd_unit_is_current", lambda system=False: False)
     monkeypatch.setattr(gw, "_retire_hermes_replace_dropin", lambda system=False: False)
@@ -56,3 +57,21 @@ def test_refresh_from_the_pinned_home_still_rewrites_a_stale_unit(unit, monkeypa
     assert gw.refresh_systemd_unit_if_needed(system=False) is True
     assert unit.path.read_text(encoding="utf-8") == "ExecStart=new\n"
     assert ("daemon-reload",) in unit.calls
+
+
+class TestTempHomeServiceDefinitionGuard:
+    """temp_home_in_service_definition() — structural temp-dir detection."""
+
+    def test_detects_tmp_home_in_systemd_unit(self):
+        unit = '[Service]\nEnvironment="HERMES_HOME=/tmp/hermes-e2e-41264"\n'
+        assert (
+            gateway_service_owner.temp_home_in_service_definition(unit)
+            == "/tmp/hermes-e2e-41264"
+        )
+
+    def test_detects_tempdir_env_home(self, monkeypatch, tmp_path):
+        import tempfile as _tempfile
+
+        monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
+        unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
+        assert gateway_service_owner.temp_home_in_service_definition(unit) is not None

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import plistlib
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 
 def pinned_home(definition_path: Path) -> str | None:
@@ -24,7 +25,7 @@ def pinned_home(definition_path: Path) -> str | None:
         try:
             with definition_path.open("rb") as fh:
                 data = plistlib.load(fh)
-        except Exception:  # unreadable / not a plist (hand-edited, truncated): pins nobody
+        except (OSError, ValueError, ExpatError):  # unreadable / not a plist: pins nobody
             return None
         env = data.get("EnvironmentVariables") if isinstance(data, dict) else None
         value = env.get("HERMES_HOME") if isinstance(env, dict) else None
@@ -80,3 +81,51 @@ def definition_belongs_to_home(definition_path: Path, home: Path, action: str) -
     print("  That file is another install's gateway. Use that install, or pass --force-unit-path")
     print("  to `hermes gateway install` if you really mean to repoint it at this home.")
     return False
+
+
+def unit_belongs_to_caller(unit_path: Path, system: bool, action: str, run_as_user: str | None = None) -> bool:
+    """``definition_belongs_to_home`` for the systemd unit at *unit_path*, judged against the home this
+    process would pin there (``run_as_user``'s for an explicit ``--system --run-as-user`` install)."""
+    from hermes_cli import gateway as gw
+
+    home = service_home_for_unit(unit_path, system)
+    if system and run_as_user:
+        try:
+            home = Path(gw._hermes_home_for_target_user(gw._system_service_identity(run_as_user)[2]))
+        except ValueError:
+            pass  # unknown account: generate_systemd_unit refuses it later with the real error
+    return definition_belongs_to_home(unit_path, home, action)
+
+
+def temp_home_in_service_definition(definition: str) -> str | None:
+    """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
+    test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
+    import re
+    import tempfile
+    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
+    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.DOTALL)
+    temp_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
+    }
+    for raw in candidates:
+        try:
+            resolved = Path(raw.strip().strip('"')).resolve()
+        except (OSError, ValueError):
+            continue
+        if any(resolved == root or root in resolved.parents for root in temp_roots):
+            return raw.strip()
+    return None
+
+
+def refuse_temp_home_service_write(definition: str, kind: str) -> bool:
+    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
+    temp_home = temp_home_in_service_definition(definition)
+    if temp_home is None:
+        return False
+    print(f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a temporary directory ({temp_home}).")
+    print(
+        "  This usually means a test/E2E environment exported HERMES_HOME. "
+        "Unset it (or run from a clean shell) and retry."
+    )
+    return True

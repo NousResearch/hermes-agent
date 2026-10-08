@@ -388,6 +388,12 @@ feat(gateway): add WhatsApp multi-user session isolation
 fix(security): prevent shell injection in sudo password piping
 ```
 
+### CI and Review Workflow
+
+- **CI does not run automatically on fork PRs.** Workflows require maintainer authorization to run ("Approve and run workflows").
+- **Maintainers trigger CI when reviewing.** Maintainers approve and trigger workflow runs when they begin their review pass. It is expected for a new PR to show pending/no checks initially; contributors do not need to request CI runs.
+- **Run checks locally before submitting.** Verify that `python scripts/check` (all blocking lint and health checks) and relevant tests via `scripts/run_tests.sh` pass locally before opening or updating a PR.
+
 ### Repo-local review checklists: `.agents/checks/*.md`
 
 Projects built on (or reviewed by) Hermes can keep reviewer checklists inside the repository under `.agents/checks/`. Each file is a focused, plain-markdown checklist that an agent loads before reviewing a change touching the matching area:

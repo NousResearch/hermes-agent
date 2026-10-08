@@ -717,6 +717,44 @@ def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
     return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 
 
+def is_http2_transport_failure(stderr: str) -> bool:
+    """True when a fetch failure is curl's HTTP/2 layer dying mid-transfer.
+
+    Field shapes seen on real installs: ``curl 16 Error in the HTTP2 framing layer``
+    (the update-blocker class — the transfer dies partway and the fetch exits 128),
+    ``curl 92 HTTP/2 stream ... not closed cleanly`` (PROTOCOL_ERROR), and curl 56
+    with ``the remote end hung up unexpectedly``. HTTP/2 multiplexing to GitHub
+    breaks on some networks/MTUs/intermediaries while HTTP/1.1 succeeds, so the
+    remedy is a retry with ``http.version=HTTP/1.1`` (#93759, #95777 neighbours).
+    """
+    text = stderr or ""
+    return ("Error in the HTTP2 framing layer" in text
+            or "HTTP/2 stream" in text and "not closed cleanly" in text
+            or ("curl 56" in text and "hung up unexpectedly" in text))
+
+
+def fetch_with_http1_fallback(runner: Callable[..., subprocess.CompletedProcess],
+                              git_cmd: List[str], fetch_args: List[str]
+                              ) -> subprocess.CompletedProcess:
+    """Run a fetch; on an HTTP/2 transport death, retry once over HTTP/1.1.
+
+    GitHub's HTTP/2 endpoint dies mid-transfer on some networks while HTTP/1.1
+    succeeds, and the failure is not the user's fault — without the fallback the
+    updater just reports a dead fetch and the install stays stale indefinitely
+    (2026-10-07 field incident: every update blocked for days until HTTP/1.1
+    was set by hand). The retry pins ``-c http.version=HTTP/1.1`` for that
+    invocation only, so nothing about the checkout's config changes on success
+    or failure. The retry's result is returned whatever its exit code, so the
+    caller keeps its normal failure handling.
+    """
+    result = runner(git_cmd, fetch_args)
+    if result.returncode == 0 or not is_http2_transport_failure(getattr(result, "stderr", "") or ""):
+        return result
+    logger.info("HTTP/2 transport failure on fetch; retrying with http.version=HTTP/1.1")
+    http1_cmd = git_cmd[:1] + ["-c", "http.version=HTTP/1.1"] + git_cmd[1:]
+    return runner(http1_cmd, fetch_args)
+
+
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
                                       git_cmd: list[str], fetch_args: list[str],
                                       repo_root: Path) -> subprocess.CompletedProcess:

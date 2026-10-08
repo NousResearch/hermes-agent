@@ -126,8 +126,10 @@ def test_clear_noop_with_no_locks(repo: Path) -> None:
 
 from subprocess import CompletedProcess
 
-from hermes_cli.gitlock import (
+from hermes_cli.gitlock import (  # noqa: E402
+    fetch_with_http1_fallback,
     fetch_with_partial_clone_recovery,
+    is_http2_transport_failure,
     is_partial_clone_pack_objects_crash,
 )
 
@@ -194,6 +196,107 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
     assert calls == [(["git"], ["fetch", "origin", "main"])] * 2
     assert (pack_dir / "pack-local.promisor").exists()
     assert result.returncode == 0
+
+
+# ---- HTTP/2 transport fallback (2026-10-07 field incident) ----
+#
+# GitHub's HTTP/2 endpoint dies mid-transfer on some networks ("curl 16 Error in the
+# HTTP2 framing layer", "curl 92 ... not closed cleanly", curl 56 hung-up) while
+# HTTP/1.1 succeeds. The updater had no fallback, so `hermes update` just reported a
+# dead fetch and the install stayed stale until http.version was set by hand.
+
+_H2_FRAMING_STDERR = (
+    "POST git-receive-pack (1254 bytes)\n"
+    "error: RPC failed; curl 16 Error in the HTTP2 framing layer\n"
+    "fatal: the remote end hung up unexpectedly\n"
+)
+_H2_STREAM_STDERR = (
+    "error: RPC failed; curl 92 HTTP/2 stream 0 was not closed cleanly: PROTOCOL_ERROR (err 1)\n"
+    "fatal: the remote end hung up unexpectedly\n"
+)
+_H2_HANGUP_STDERR = (
+    "error: RPC failed; curl 56 Recv failure: Connection reset by peer\n"
+    "fatal: the remote end hung up unexpectedly\n"
+)
+
+
+def test_is_http2_transport_failure_matches_the_field_shapes():
+    assert is_http2_transport_failure(_H2_FRAMING_STDERR)
+    assert is_http2_transport_failure(_H2_STREAM_STDERR)
+    assert is_http2_transport_failure(_H2_HANGUP_STDERR)
+    assert not is_http2_transport_failure(
+        "error: RPC failed; curl 22 The requested URL returned error: 429")
+    assert not is_http2_transport_failure("fatal: Authentication failed")
+    assert not is_http2_transport_failure("error: pack-objects died of signal 6")
+    assert not is_http2_transport_failure("")
+    assert not is_http2_transport_failure(None)
+
+
+def test_http1_fallback_retries_once_with_http1_pin_on_framing_death():
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        if len(calls) == 1:
+            return CompletedProcess(git_cmd + args, 128, stdout="", stderr=_H2_FRAMING_STDERR)
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    result = fetch_with_http1_fallback(runner, ["git"], ["fetch", "origin", "main"])
+
+    assert len(calls) == 2
+    assert calls[1][0][:3] == ["git", "-c", "http.version=HTTP/1.1"]
+    assert calls[1][1] == ["fetch", "origin", "main"]
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize("stderr", [_H2_FRAMING_STDERR, _H2_STREAM_STDERR, _H2_HANGUP_STDERR])
+def test_http1_fallback_catches_every_transport_shape(stderr):
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        if len(calls) == 1:
+            return CompletedProcess(git_cmd + args, 128, stdout="", stderr=stderr)
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    result = fetch_with_http1_fallback(runner, ["git", "-C", "/repo"], ["fetch", "origin", "main"])
+
+    assert calls[1][0] == ["git", "-c", "http.version=HTTP/1.1", "-C", "/repo"]
+    assert result.returncode == 0
+
+
+def test_http1_fallback_is_silent_on_success_and_unrelated_failures():
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        return CompletedProcess(git_cmd + args, 1, stdout="", stderr="error: RPC failed; curl 22 The requested URL returned error: 429")
+
+    result = fetch_with_http1_fallback(runner, ["git"], ["fetch", "origin", "main"])
+
+    assert len(calls) == 1  # no retry for a non-transport failure
+    assert result.returncode == 1
+
+    def ok_runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    ok = fetch_with_http1_fallback(ok_runner, ["git"], ["fetch", "origin", "main"])
+    assert len(calls) == 2  # success path: exactly one call, no retry
+    assert ok.returncode == 0
+
+
+def test_http1_fallback_returns_the_retry_verdict_when_http1_also_dies():
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        return CompletedProcess(git_cmd + args, 128, stdout="", stderr=_H2_FRAMING_STDERR)
+
+    result = fetch_with_http1_fallback(runner, ["git"], ["fetch", "origin", "main"])
+
+    assert len(calls) == 2
+    assert result.returncode == 128  # caller's normal failure handling proceeds
 
 
 # ---- partial-clone pack growth (#129712, #127711) ----

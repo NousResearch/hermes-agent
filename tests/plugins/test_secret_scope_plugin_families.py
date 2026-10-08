@@ -192,3 +192,45 @@ class TestGoogleMeetSpawn:
         )
 
         assert captured["env"]["HERMES_MEET_REALTIME_KEY"] == "explicit-key"
+
+    def test_served_profile_without_key_never_gets_launch_profile_env(
+        self, monkeypatch, tmp_path
+    ):
+        """Profile B has no OpenAI key: its bot carries neither launch profile A's key nor A's home,
+        and still gets the import path it needs to run ``-m plugins.google_meet.meet_bot``."""
+        from pathlib import Path
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        import plugins.google_meet.process_manager as pm
+
+        launch = tmp_path / ".hermes"
+        served = launch / "profiles" / "b"
+        served.mkdir(parents=True)
+        (launch / ".env").write_text("OPENAI_API_KEY=sk-launch-profile\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")  # launch .env loaded at boot
+        hermes_tree = str(Path(pm.__file__).resolve().parents[2])
+        monkeypatch.setenv("PYTHONPATH", hermes_tree)  # launcher-composed import path
+        captured: Dict[str, Any] = {}
+
+        class _FakeProc:
+            pid = 4244
+
+        monkeypatch.setattr(
+            pm.subprocess, "Popen", lambda cmd, **kw: (captured.update(kw["env"]), _FakeProc())[1])
+
+        set_multiplex_active(True)
+        home_token = set_hermes_home_override(str(served))
+        scope_token = set_secret_scope({}, profile_home=str(served))
+        try:
+            assert pm.start("https://meet.google.com/abc-defg-hij", mode="realtime")["ok"] is True
+        finally:
+            reset_secret_scope(scope_token)
+            reset_hermes_home_override(home_token)
+            set_multiplex_active(False)
+
+        assert "OPENAI_API_KEY" not in captured
+        assert "HERMES_MEET_REALTIME_KEY" not in captured
+        assert captured["HERMES_HOME"] == str(served)
+        assert hermes_tree in captured["PYTHONPATH"].split(os.pathsep)

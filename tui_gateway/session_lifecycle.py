@@ -393,9 +393,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             with contextlib.suppress(Exception):
                 agent.commit_memory_session(history)
 
-    session_key = session.get("session_key")
-    session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+        session_key = session.get("session_key")
+        session_id = getattr(agent, "session_id", None) or session_key
+        # Finalize observers read profile state too (a plugin's run files, the Relay profile key).
+        _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.

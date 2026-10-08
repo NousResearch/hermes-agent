@@ -146,7 +146,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
             return {"ok": False, "error": (
                 "google_meet plugin prerequisites missing — install with "
                 "`hermes meet install`. Plugin is supported on Linux and macOS only.")}
-        return pm.start(**common)
+        return pm.start(**common, session_id=_kw.get("session_id") or None)
 
     return _dispatch(args.get("node"), "start_bot", lambda c: c.start_bot(**common), _local)
 

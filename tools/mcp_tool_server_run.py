@@ -271,9 +271,16 @@ class MCPServerRunMixin:
         # elicitation/create lets a server ask for structured input mid-call; the handler
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
-        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
-                                                       call_context=lambda: self._pending_call_context)
-                             if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
+        self._elicitation = (
+            _sampling.ElicitationHandler(
+                self.name,
+                elicitation_config,
+                call_context=lambda: self._pending_call_context,
+                approval_callback=lambda: self._pending_approval_callback,
+            )
+            if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES
+            else None
+        )
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
                            "('url'). Remove 'command' to silence this warning.", self.name)

@@ -243,11 +243,14 @@ text, the focus topic or error messages.
 - `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
   A `blocked` attempt was refused by an automatic guard; its `failure_class`
   names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
-  `blocked:ineffective`).
+  `blocked:ineffective`). Under the session lease, `session_ownership_lost`
+  (`skipped`) means another path already rotated the session, and
+  `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
+  mean that state could not be read.
 - `attempt_id` names this attempt and `session_id` the session it started
-  in. An attempt that stops before the compressor runs, or rolls its state
-  back, logs `method: none` and no token counts, never an earlier attempt's
-  numbers.
+  in, even when the attempt then adopts a rotated child session. An attempt
+  that stops before the compressor runs, or rolls its state back, logs
+  `method: none` and no token counts, never an earlier attempt's numbers.
 - `method` says how the summary was produced: `llm_summary`,
   `aux_fallback_main` (the summary model failed and the main model wrote it),
   `deterministic_fallback` (static anchors summary; `items_dropped` counts the

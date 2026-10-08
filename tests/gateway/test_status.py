@@ -369,6 +369,50 @@ class TestGatewayRuntimeStatus:
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
 
+    def test_write_runtime_status_persists_where_no_namespace_exists(self, tmp_path, monkeypatch):
+        """A platform without namespaces must still publish ``gateway_state.json``.
+
+        ``_build_pid_record()`` only sets ``pidns`` when the namespace resolved, so on
+        macOS and Windows the key is ABSENT from the record. Indexing it while merging
+        raised ``KeyError`` inside ``_prepare_runtime_status_update``, every caller
+        swallows that, and the state file was never written at all — no ``starting``,
+        no heartbeat, no watchdog ``degraded``. ``gateway status``, the dashboard and the
+        update drain all read that file, so this is a silent cross-platform regression.
+        Drives the real merge; the assertion is that the file lands on disk.
+        """
+        from hermes_platform.host.pid_namespace import LocalPidNamespace
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            status, "local_pid_namespace",
+            lambda: LocalPidNamespace(id=None, supported=False),
+        )
+        assert "pidns" not in status._build_pid_record()
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == os.getpid()
+        assert "pidns" not in payload, "an unstamped platform must not gain a pidns key"
+
+    def test_write_runtime_status_persists_when_our_own_lookup_failed(self, tmp_path, monkeypatch):
+        """The tri-state's middle case: namespaces exist here, but OUR lookup failed.
+
+        ``supported=True`` with ``id=None`` also omits the stamp, so it reaches the same
+        merge path as the no-namespace platform and must behave identically.
+        """
+        from hermes_platform.host.pid_namespace import LocalPidNamespace
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            status, "local_pid_namespace",
+            lambda: LocalPidNamespace(id=None, supported=True),
+        )
+
+        status.write_runtime_status(gateway_state="running")
+
+        assert status.read_runtime_status()["pid"] == os.getpid()
+
     def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
         """Regression (user report): a stale profile's recycled PID must not be
         reported running just because it now hosts a DIFFERENT profile's gateway.

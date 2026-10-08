@@ -28,6 +28,14 @@ from gateway.status_inline_source import (
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_platform.host.pid_namespace import (
+    PIDNS_UNRESOLVED,
+    describe_pid_namespace,
+    local_pid_namespace,
+    pid_checkable_from,
+    record_unlinkable_from,
+)
+from gateway.scoped_lock_identity import scoped_lock_owned_by_self, scoped_lock_stale_locally
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -778,13 +786,25 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
-    return {
+    record = {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
     }
+    # A PID is only meaningful with the namespace that issued it. Inside
+    # ``PrivatePIDS=`` this process is PID 1, and that number names the host's init
+    # for every reader outside the namespace (#123081). Readers refuse to probe a
+    # record whose namespace is not their own rather than resolving PID 1 to init.
+    # Omitting the key here would make this build indistinguishable from a pre-stamp one, so a
+    # writer on a platform WITH namespaces that cannot resolve its own says so explicitly. Where
+    # there is no namespace concept at all (``supported=False``: macOS, Windows) the key stays
+    # absent — there is nothing to qualify, and every reader keeps main's bare-PID semantics.
+    pidns = local_pid_namespace()
+    if pidns.supported:
+        record["pidns"] = pidns.id if pidns.known else PIDNS_UNRESOLVED
+    return record
 
 
 def _get_code_identity_fields() -> dict[str, Any]:
@@ -877,7 +897,20 @@ def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
-    """Record's PID when it is alive and passes the start-time PID-reuse guard, else None."""
+    """Record's PID when it is alive and passes the start-time PID-reuse guard, else None.
+
+    The namespace gate is here, at the identity predicate every other guard sits around:
+    ``get_running_pid`` (lock-held branch), ``get_running_pid_identity_strict``,
+    ``get_runtime_status_running_pid`` and ``runtime_status_pid_is_live`` all route through
+    this function, and the first three feed processes that SIGNAL what comes back. Checking
+    liveness first made the verdict a coincidence of what this host's PID table held — under
+    ``PrivatePIDs=`` the recorded 1 resolves to the host's init, which is alive, so a record
+    with no ``start_time`` (unreadable at write time) and an unreadable cmdline returned a
+    live PID that ``find_gateway_pids`` then fed to SIGTERM. A PID issued in another
+    namespace names no process here, so nothing about its liveness is worth computing.
+    """
+    if not pid_checkable_from(record.get("pidns") if isinstance(record, dict) else None):
+        return None
     pid = _pid_from_record(record)
     if pid is None or not _pid_exists(pid):
         return None
@@ -899,6 +932,34 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
     return (True, st.st_mtime_ns, st.st_size)
 
 
+def _record_pidns_guards_unlink(record: Optional[dict[str, Any]]) -> bool:
+    """True when a record's PID namespace says this process must not unlink its identity files.
+
+    #123081: a gateway inside ``PrivatePIDs=`` records PID 1. A checker outside the
+    namespace reads host init at PID 1, decides the recorded gateway is dead, and —
+    worse — unlinks ``gateway.pid`` AND ``gateway.lock``. The live gateway keeps its
+    flock on the now-unlinked inode, so the next ``acquire_gateway_runtime_lock()``
+    creates a FRESH file and succeeds: the flock singleton guard, the one atomic
+    arbiter against two gateways, is bypassed entirely and both run, fighting over
+    Telegram ``getUpdates``.
+
+    The flock itself is namespace-proof, so its liveness was never in doubt — only
+    the PID answer was. Refusing to unlink what we cannot verify is the safe answer;
+    deleting a live gateway's lock is never the conservative one.
+    """
+    if not isinstance(record, dict):
+        return False
+    if not record_unlinkable_from(record.get("pidns")):
+        return False
+    logger.warning(
+        "Refusing to unlink gateway identity files: the recorded gateway (pid=%s) was stamped in PID "
+        "namespace %s and this process is in %s. Its PID is not meaningful here, so its liveness cannot "
+        "be verified from this namespace — leaving the files in place preserves the runtime lock.",
+        record.get("pid"), record.get("pidns") or "unrecorded", describe_pid_namespace(),
+    )
+    return True
+
+
 def _cleanup_invalid_pid_path(
     pid_path: Path, *, cleanup_stale: bool, unlink_lock: bool = True
 ) -> None:
@@ -906,6 +967,11 @@ def _cleanup_invalid_pid_path(
     ``unlink_lock=False`` drops only the PID file: the caller saw the lock HELD."""
     if not cleanup_stale:
         return
+    # The lock is held but unprovable from here: the owner may be alive in another
+    # namespace. Refuse rather than delete a live gateway's singleton guard (#123081).
+    for record in (_read_pid_record(pid_path), _read_gateway_lock_record(_get_gateway_lock_path(pid_path))):
+        if _record_pidns_guards_unlink(record):
+            return
     _clear_running_pid_cache()
     for path in (pid_path, _get_gateway_lock_path(pid_path)) if unlink_lock else (pid_path,):
         with contextlib.suppress(Exception):
@@ -1139,7 +1205,12 @@ def _prepare_runtime_status_update(
                 if not isinstance(k, str) or ":" not in k
                 or (drop_prefix is not None and not k.startswith(drop_prefix))
             }
-        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
+        # ``pidns`` is OPTIONAL in the record — absent where the platform has no namespaces
+        # (macOS, Windows) and absent when our own lookup failed — so the merge cannot index
+        # it blindly. Keying it off membership keeps that platform publishing its state file
+        # at all instead of raising inside every caller's except-handler.
+        payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time", "pidns")
+                        if key in current_record})
         payload["updated_at"] = _utc_now_iso()
         payload.update(_get_code_identity_fields())
         _apply_set_fields(payload, (
@@ -1523,9 +1594,22 @@ def remove_pid_file() -> None:
     atexit can fire AFTER the new process wrote its own record."""
     with contextlib.suppress(Exception):
         path = _get_pid_path()
-        file_pid = _pid_from_record(_read_json_file(path))
+        record = _read_json_file(path)
+        file_pid = _pid_from_record(record)
         if file_pid is not None and file_pid != os.getpid():
             return  # Belongs to a different process — leave it alone.
+        # …and numeric equality is not ownership outside a shared PID namespace (#123081).
+        # Under ``PrivatePIDs=`` this gateway IS pid 1, so a record stamped in another
+        # namespace passes the test above and this ordinary exit erases that namespace's
+        # gateway.pid while ``detect_unclean_exit()`` still reads it as live. ``record_unlinkable_from``,
+        # not ``pid_checkable_from``: this call site deletes, so an unprovable namespace must keep
+        # main's behavior — a failed ``/proc`` lookup that refused here would leave the gateway
+        # unable to clear its OWN record, since the same lookup is what stamps it.
+        if isinstance(record, dict) and record_unlinkable_from(record.get("pidns")):
+            logger.debug(
+                "Leaving %s in place: stamped in PID namespace %s, this process is in %s.",
+                path, record.get("pidns") or "unrecorded", describe_pid_namespace())
+            return
         path.unlink(missing_ok=True)
         _clear_running_pid_cache()
 
@@ -1536,7 +1620,18 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
     so (also catches boot-time PID+start_time collisions; systemd spawns deterministically);
     cmdline unreadable AND start_time unknown on either side => the lock record's own argv is the
     only signal left. Stopped (SIGTSTP) processes look alive to _pid_exists; stale so --replace
-    works."""
+    works.
+
+    A record stamped in another PID namespace is never stale on that basis (#123081): inside
+    ``PrivatePIDs=`` the owner recorded PID 1, and reading that number from outside resolves the
+    host's init, whose cmdline is not a gateway — which would let a second gateway steal a live
+    bot token. Unverifiable is not the same as dead. The namespace is checked BEFORE the local
+    liveness probe, so an absent local number can never be read as evidence about an owner in
+    another namespace.
+    """
+    if not pid_checkable_from(existing.get("pidns")):
+        # A stamped record from another namespace: never reclaimable on a local probe.
+        return scoped_lock_stale_locally(existing, _pid_exists)
     if existing_pid is None or not _pid_exists(existing_pid):
         return True
     recorded_start = existing.get("start_time")
@@ -1589,7 +1684,9 @@ def acquire_scoped_lock(
         # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the
         # freshly built record has a real value — the gateway then reports itself as the foreign squatter of
         # its own token (#81468).
-        if existing_pid == os.getpid():
+        # "Our own PID" is namespace-qualified: two gateways in different PID namespaces can both be
+        # PID 1, so a foreign record carrying our number is another process, not self (#123081).
+        if scoped_lock_owned_by_self(existing):
             _write_json_file(lock_path, record)
             return True, existing
         if not _scoped_lock_record_is_stale(existing, existing_pid):
@@ -1610,9 +1707,10 @@ def acquire_scoped_lock(
 
 def release_scoped_lock(scope: str, identity: str) -> None:
     """Release a scope lock owned by this PID. No start_time equality check: on-disk null vs a live
-    fingerprint would wedge reconnects."""
+    fingerprint would wedge reconnects. Ownership is namespace-qualified — a foreign record that
+    happens to carry our PID belongs to another process and must survive our release (#123081)."""
     lock_path = _get_scope_lock_path(scope, identity)
-    if (_read_json_file(lock_path) or {}).get("pid") == os.getpid():
+    if scoped_lock_owned_by_self(_read_json_file(lock_path)):
         _unlink_quietly(lock_path)
 
 
@@ -1620,7 +1718,9 @@ def release_all_scoped_locks(
     *, owner_pid: Optional[int] = None, owner_start_time: Optional[int] = None
 ) -> int:
     """Remove scoped lock files (--replace cleanup); returns the count removed. With ``owner_pid``
-    only that gateway's records go (``owner_start_time`` narrows against PID reuse)."""
+    only that gateway's records go (``owner_start_time`` narrows against PID reuse), and only
+    when the record's PID namespace is one we can interpret — a lock owned by a gateway in
+    another namespace is never swept as ours (#123081)."""
     lock_dir = _get_lock_dir()
     if not lock_dir.exists():
         return 0
@@ -1631,6 +1731,12 @@ def release_all_scoped_locks(
             if _pid_from_record(record) != owner_pid or (
                 owner_start_time is not None and record.get("start_time") != owner_start_time
             ):
+                continue
+            if not pid_checkable_from(record.get("pidns")):
+                logger.warning(
+                    "Leaving scoped lock %s alone: its pid=%s belongs to PID namespace %s, not ours.",
+                    lock_file.name, owner_pid, record.get("pidns") or "unrecorded",
+                )
                 continue
         with contextlib.suppress(OSError):
             lock_file.unlink(missing_ok=True)
@@ -1769,8 +1875,22 @@ def clear_takeover_marker(target_home: Optional[Path] = None) -> None:
 def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tuple[int, int, Path]]:
     """Resolve a live scoped-lock owner to a verified ``(pid, start_time, home)``. A lock file is
     only a claim: the record, the target home's PID record, and the live process must agree on
-    PID, start-time, gateway identity, and home. Missing legacy metadata fails closed."""
+    PID, start-time, gateway identity, and home. Missing legacy metadata fails closed.
+
+    A record stamped in another PID namespace is never signalled (#123081): its PID was issued
+    there, so it names an unrelated process here — under ``PrivatePIDs=`` that is the host's init,
+    and every corroboration below would be read against the wrong process. This gate precedes the
+    cmdline check deliberately: a signal is irreversible, so nothing downstream may be load-bearing
+    for a PID we cannot even name.
+    """
     if not isinstance(record, dict) or not _record_looks_like_gateway(record):
+        return None
+    if not pid_checkable_from(record.get("pidns")):
+        logger.warning(
+            "Refusing to signal scoped-lock holder pid=%s: stamped in PID namespace %s, this "
+            "process is in %s — that PID names an unrelated process from here.",
+            record.get("pid"), record.get("pidns") or "unrecorded", describe_pid_namespace(),
+        )
         return None
     owner_pid = _pid_from_record(record)
     owner_start_time = record.get("start_time")
@@ -2041,6 +2161,33 @@ def get_running_pid(
         for record in records:
             pid = _live_pid_from_record(record)
             if pid is None:
+                # Distinguish PROVEN DEAD from merely UNQUALIFIED. `_live_pid_from_record`
+                # returns None in both cases, but only the second means "maybe alive": it is what
+                # the namespace gate returns for a record we cannot qualify — including this
+                # build's own unresolved stamp. Reading that as "no live gateway" sent the
+                # cleanup down with unlink_lock=True and deleted the pathname of a lock this
+                # caller had just proven HELD; the holder keeps its flock on the unlinked inode,
+                # the next starter creates a fresh file and wins, and the singleton bypass this
+                # whole change exists to close is back (#123081, #123109).
+                #
+                # So the lock fact is the authority and identity is qualified FIRST. A record whose
+                # stamp we cannot compare is NOT evidence of death, whatever the local PID table
+                # says: that number was issued in the writer's namespace and may name an unrelated
+                # live process here, which is not our dead owner. Only a QUALIFIED record whose
+                # PID is provably gone is stale, and a qualified-dead record still takes the
+                # cleanup that #106406's scoped path depends on.
+                if record is None:
+                    continue
+                if not pid_checkable_from(record.get("pidns")):
+                    saw_live_pid = True  # unprovable owner: not provably dead, so keep the lock
+                    continue
+                # Qualified identity, so a local liveness answer is about our own owner. Any
+                # stamp `pid_checkable_from` refuses (foreign, unresolved, unnameable) already
+                # left above, which is why there is no second namespace check here.
+                recorded_pid = _pid_from_record(record)
+                if recorded_pid is None or not _pid_exists(recorded_pid):
+                    continue  # provably dead
+                saw_live_pid = True
                 continue
             home_ok = (
                 _pid_record_belongs_to_current_profile(record) if expected_home is None

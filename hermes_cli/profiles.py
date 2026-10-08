@@ -2042,6 +2042,21 @@ def _stop_gateway_process(profile_dir: Path) -> None:
                 "(stale/poisoned PID record, #89315)."
             )
             return
+        # …and a PID stamped in another namespace names an unrelated process here (#123081).
+        # Under ``PrivatePIDs=`` this gateway recorded PID 1, so without this the stop path
+        # would SIGTERM the host's init — an irreversible action decided by a number whose
+        # meaning is namespace-relative. The home check above cannot catch it: the record's
+        # home IS this profile. Read-only verdict, so nothing else about the flow changes; a
+        # record with no stamp (pre-stamp build) still stops as before.
+        from gateway.status import describe_pid_namespace, pid_checkable_from
+        if not pid_checkable_from(data.get("pidns")):
+            print(
+                f"✗ Refusing to stop PID {pid}: it was stamped in PID namespace "
+                f"{data.get('pidns') or 'unrecorded'} and this process is in "
+                f"{describe_pid_namespace()}. That PID names an unrelated process from here, "
+                "so stopping it could signal a process this profile does not own (#123081)."
+            )
+            return
         # terminate_pid picks the Windows primitive (taskkill /T cascades to children; raw
         # os.kill with SIGKILL fails at import on Windows).
         expected_start_time = data.get("start_time")

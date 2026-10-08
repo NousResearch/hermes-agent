@@ -149,6 +149,61 @@ def test_restore_validates_real_stash_and_each_import(probe_root, monkeypatch, c
         assert f'git stash apply {ref}' in output
 
 
+def test_restore_without_python_is_not_judged_by_install_state_imports(probe_root, monkeypatch):
+    """#130101: a docs-only stash cannot break an import. The probe's outcome may still change
+    between its two runs for install reasons (launch preparation relaunching under the live
+    update: ``SystemExit(0)``), and that difference must not reject the restore."""
+    git(probe_root, 'init', '-q', '-b', 'main')
+    (probe_root / 'consumer.py').write_text(
+        "import pathlib\nflag = pathlib.Path(__file__).with_name('prepared')\n"
+        "if flag.exists():\n    raise SystemExit(0)\nflag.touch()\n", encoding='utf-8')
+    (probe_root / '.gitignore').write_text('prepared\n', encoding='utf-8')
+    notes = probe_root / 'notes.md'
+    notes.write_text('upstream\n', encoding='utf-8')
+    git(probe_root, 'add', '.')
+    git(probe_root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'base')
+    notes.write_text('my local docs edit\n', encoding='utf-8')
+    ref = hermes_main._stash_local_changes_if_needed(['git'], probe_root)
+    monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ('consumer',))
+
+    assert hermes_main._restore_stashed_changes(['git'], probe_root, ref, prompt_user=False)
+    assert notes.read_text(encoding='utf-8') == 'my local docs edit\n'
+    assert not git(probe_root, 'stash', 'list')
+
+
+@pytest.mark.parametrize('kind', ['native-extension', 'data-file'])
+def test_restore_without_python_that_breaks_an_import_is_rejected(probe_root, monkeypatch, capsys, kind):
+    """Only demonstrably non-runtime restores skip the import check. A restored native extension
+    takes precedence over the healthy ``consumer.py``, and a data file read at import time is
+    runtime input too; neither is ``.py``, and both must still reject the restore."""
+    import importlib.machinery
+
+    git(probe_root, 'init', '-q', '-b', 'main')
+    (probe_root / 'consumer.py').write_text(
+        "import json, pathlib\nVALUE = json.loads(pathlib.Path(__file__).with_name('consumer.json').read_text())\n",
+        encoding='utf-8')
+    (probe_root / 'consumer.json').write_text('1\n', encoding='utf-8')
+    git(probe_root, 'add', '.')
+    git(probe_root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'base')
+    if kind == 'native-extension':
+        local = probe_root / ('consumer' + importlib.machinery.EXTENSION_SUFFIXES[0])
+        local.write_bytes(b'not a native extension\n')
+    else:
+        local = probe_root / 'consumer.json'
+        local.write_text('{not json\n', encoding='utf-8')
+    ref = hermes_main._stash_local_changes_if_needed(['git'], probe_root)
+    monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ('consumer',))
+
+    with pytest.raises(SystemExit) as error:
+        hermes_main._restore_stashed_changes(['git'], probe_root, ref, prompt_user=False)
+    assert error.value.code == 1
+    assert 'agent import consumer' in capsys.readouterr().out
+    assert not git(probe_root, 'status', '--porcelain')
+    assert git(probe_root, 'stash', 'list')
+
+
 @pytest.mark.parametrize('error', [EOFError(), UnicodeDecodeError('utf-8', b'\xff', 0, 1, 'invalid')])
 def test_unreadable_stash_prompt_keeps_work(tmp_path, monkeypatch, capsys, error):
     def unreadable(*_):

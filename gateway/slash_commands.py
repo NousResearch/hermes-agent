@@ -935,14 +935,18 @@ class GatewaySlashCommandsMixin(
         return run_approval_mode_command(requested).message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
-        from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
+        """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
+        persisted on the routing entry so it survives a gateway restart."""
+        from tools.approval_yolo import toggle_session_yolo
         session_key = self._session_key_for_source(event.source)
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            return EphemeralReply(t("gateway.yolo.disabled"))
-        enable_session_yolo(session_key)
-        return EphemeralReply(t("gateway.yolo.enabled"))
+        persisted, persist = False, None
+        if (store := self.session_store) is not None:
+            # A first-message /yolo has no routing entry yet; materialize it so the flag has a home.
+            persisted = (await self.async_session_store.get_or_create_session(event.source)).yolo is True
+            persist = lambda on: store.set_session_yolo(session_key, on)  # noqa: E731
+        # Off the loop: the persist is a routing-store write (thread-safe, like AsyncSessionStore's calls).
+        enable = await asyncio.to_thread(toggle_session_yolo, session_key, persisted=persisted, persist=persist)
+        return EphemeralReply(t("gateway.yolo.enabled" if enable else "gateway.yolo.disabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose — cycle tool progress display mode (off → new → all → verbose → log) per
@@ -1151,6 +1155,26 @@ class GatewaySlashCommandsMixin(
             desc = info.get("description") or t("gateway.bundles.default_desc", count=len(skills))
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
+
+    async def _hm_cmd_initiate_setup(self, event, source, _quick_key):
+        from agent.initiate_setup_prompt import build_initiate_setup_prompt
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from hermes_cli.setup_profile import primary_profile
+        from hermes_constants import get_hermes_home
+        from model_tools import get_tool_definitions
+
+        def build() -> str:
+            with self._profile_scope_for_source(source):
+                enabled, disabled = self._resolve_turn_toolsets(
+                    _load_gateway_config(), source, _platform_config_key(source.platform))
+                tools = get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
+                                             skip_tool_search_assembly=True)
+                return build_initiate_setup_prompt(
+                    source.platform.value, [tool["function"]["name"] for tool in tools],
+                    primary_profile(get_hermes_home()))
+
+        return await self._hm_rewrite_turn_to_prompt(
+            event, source, "initiate-setup", t("gateway.initiate_setup.ack"), build)
 
     def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
         """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.

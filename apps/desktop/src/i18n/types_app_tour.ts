@@ -24,4 +24,6 @@ export interface HandoffTourTranslations {
   sessionsText: string
   stayTitle: string
   stayText: string
+  localTitle: string
+  localText: (model: string) => string
 }

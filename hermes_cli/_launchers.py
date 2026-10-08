@@ -850,6 +850,12 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     directory in the User PATH -- the same two things scripts/install.ps1 does --
     so an update converges a machine installed under the older venv\\Scripts
     convention instead of leaving it there forever.
+
+    The User PATH is per-user shared state: a launch that only borrows this
+    checkout (a second checkout run under a foreign data root -- a rehearsal
+    sandbox, a per-task home) still publishes the borrower's own bin, but never
+    registers it, or every ``hermes`` on the host would resolve into the
+    borrower's tree.
     """
     from hermes_constants import get_default_hermes_root
 
@@ -863,6 +869,9 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
         written = ensure_install_launchers(root, directory)
         if len(written) != len(WINDOWS_BIN_LAUNCHERS):
             return {"ok": False, "error": "source launcher publication failed"}
+        if owning_home_root(root) is not None:
+            return {"ok": True, "skipped": "borrowed-root",
+                    "written": [Path(path).name for path in written]}
         return {"ok": True, "path": _register_windows_user_path(directory),
                 "written": [Path(path).name for path in written]}
     except OSError as exc:

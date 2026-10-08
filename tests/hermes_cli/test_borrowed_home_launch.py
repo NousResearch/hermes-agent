@@ -190,12 +190,13 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     assert len(syncs) == 1 and completion_tail == []
 
 
-def test_a_foreign_owned_checkout_degrades_without_retrying_its_refused_sync(
+def test_a_foreign_owned_checkout_runs_silently_without_retrying_its_refused_sync(
     tmp_path, monkeypatch, capsys
 ):
     """A sudo launch runs the user's checkout from root's default data root, which owns no
-    state for it; the borrowed sync is refused cross-user every time, so it degrades once
-    with a remedy that works instead of announcing a failed source update (#135181)."""
+    state for it; the borrowed sync is refused cross-user every time. The launch owes the
+    borrowed command nothing but itself (#135181): nothing is prepared, nothing is
+    updated, and no ownership or update chatter precedes the command's own output."""
     import os
 
     import pm
@@ -211,10 +212,9 @@ def test_a_foreign_owned_checkout_degrades_without_retrying_its_refused_sync(
                         lambda *a, **kw: pytest.fail("synced a foreign-owned checkout"))
 
     assert venv_sync.prepare_launch(root, ["gateway", "stop"]) is None
-    err = capsys.readouterr().err
-    assert "owned by uid" in err
-    assert "run `hermes update` as the owning user" in err
-    assert "preparing dependencies" not in err
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completion_tail):

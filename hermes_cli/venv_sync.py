@@ -483,18 +483,13 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli.update_lock import UpdateLock
 
     if not current:
-        foreign_owner = _foreign_checkout_owner(root)
-        if foreign_owner is not None:
+        if _foreign_checkout_owner(root) is not None:
             # sudo strips HERMES_HOME, so root's default data root borrows the invoking
             # user's checkout and owns no state for it (#135181); the sync below is
-            # refused cross-user on every command. Degrade once with the remedy that
-            # works instead of announcing a source-update failure each launch.
-            print(
-                f"hermes: {root} is owned by uid {foreign_owner}, not this user; "
-                "continuing with the existing environment — run `hermes update` as the "
-                "owning user to update this checkout",
-                file=sys.stderr, flush=True,
-            )
+            # refused cross-user on every command. The borrowed command (a stop, a
+            # status) owes no announcement: it simply runs on the existing
+            # environment, so the launch stays silent (#135181: nothing is
+            # prepared, nothing is updated, nothing is printed).
             return None
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():

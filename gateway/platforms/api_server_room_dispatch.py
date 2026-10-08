@@ -22,8 +22,9 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
+    home = self._run_idempotency_store.room_origin_home(dispatch.as_mapping())
     seed = (
-        f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
+        f"{home}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
     session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
 

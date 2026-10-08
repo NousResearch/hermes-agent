@@ -70,7 +70,8 @@ async def test_mass_cancellation_disband_compacts_without_fabricating_absence(tm
 
 
 @pytest.mark.asyncio
-async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, monkeypatch):
+@pytest.mark.parametrize('successor_home', ['home', 'successor'])
+async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, monkeypatch, successor_home):
     adapter = _adapter(tmp_path / 'runs.db')
     entered, release = asyncio.Event(), asyncio.Event()
     history = adapter._conversation_history_for_session
@@ -90,8 +91,9 @@ async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, m
             await asyncio.wait_for(entered.wait(), 10)
             successor = await cli.post('/v1/room-members/invitations',
                 headers={'Authorization': 'Bearer test-room-key'}, json={
-                    'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'successor',
-                    'authority_epoch': 2, 'member_id': 'member-1'})
+                    'room_id': 'room-1', 'home_install_id': successor_home, 'authority_gateway_id': 'successor',
+                    'authority_epoch': 2, 'member_id': 'member-1', 'previous_authority': {
+                        'home_install_id': 'home', 'authority_gateway_id': 'home', 'authority_epoch': 1}})
             assert successor.status == 201
             release.set()
             refused = await pending
@@ -105,10 +107,11 @@ async def test_successor_epoch_fences_admission_paused_before_writer(tmp_path, m
             agent.run_conversation.return_value = {'final_response': 'new owner', 'messages': []}
             agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
             create.side_effect, create.return_value = None, agent
-            body['hosted_room_dispatch'].update(authority_epoch=2, authority_gateway_id='successor', task_id='new-task')
+            body['hosted_room_dispatch'].update(home_install_id=successor_home, authority_epoch=2,
+                                               authority_gateway_id='successor', task_id='new-task')
             headers = {**_headers(invitation['grant']), 'Idempotency-Key': 'room:new-task:1'}
             accepted = await cli.post('/v1/runs', headers=headers, json=body)
-            assert accepted.status == 202
+            assert accepted.status == 202, await accepted.json()
             await asyncio.wait_for(asyncio.gather(*adapter._active_run_tasks.values()), 10)
             assert agent.run_conversation.call_count == 1
     finally:

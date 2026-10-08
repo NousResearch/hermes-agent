@@ -23,3 +23,11 @@ def test_target_owner_retirement_invitation_preserves_live_reservation(home, mon
     assert decode_room_grant(gateway_room_grant_secret(), ordinary["grant"], permission="dispatch")
     with sqlite3.connect(hosted_rooms.default_db_path()) as conn:
         assert conn.execute("SELECT * FROM hosted_room_peer_reservations").fetchall() == before
+
+    moved = {**fields, "home_install_id": "new-home", "authority_gateway_id": "new-home", "authority_epoch": 2}
+    assert "error" in srv._methods["groups.peer.invite"](3, moved)
+    with sqlite3.connect(hosted_rooms.default_db_path()) as conn:
+        assert conn.execute("SELECT * FROM hosted_room_peer_reservations").fetchall() == before
+    linked = _result(srv._methods["groups.peer.invite"](4, {**moved, "previous_authority": {
+        key: fields[key] for key in ("home_install_id", "authority_gateway_id", "authority_epoch")}}))
+    assert decode_room_grant(gateway_room_grant_secret(), linked["grant"], permission="dispatch")["home_install_id"] == "new-home"

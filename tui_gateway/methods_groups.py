@@ -155,13 +155,13 @@ def _room_link_run_storage_durable() -> bool:
     return bool(getattr(store, "durable", False))
 
 
-def _record_peer_run_authority(claims, *, publish=False, body=None):
+def _record_peer_run_authority(claims, *, publish=False, body=None, db_path=None):
     from gateway.platforms.api_server_room_grants import _retirement_only, _previous_authority
     if _bound_server is None:
         if _retirement_only(claims):
             raise ValueError("retirement requires retained target authority")
         return  # Embedded callers expose no peer-run transport/store.
-    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
     store = _bound_server._run_idempotency_store
     authority = room_authority(claims)
     if _retirement_only(claims):
@@ -169,10 +169,18 @@ def _record_peer_run_authority(claims, *, publish=False, body=None):
             raise ValueError("retirement authority is not retained")
         return
     previous = _previous_authority(claims, body or {})
-    if not store.accepts_room_authority(authority, previous):
+    namespace = room_namespace(claims)
+    if not store.accepts_room_authority(authority, previous, namespace):
         raise ValueError("room authority has already advanced")
+    if not publish and previous is None and not store.knows_room_authority(authority):
+        from gateway import hosted_rooms
+        with hosted_rooms._transaction(db_path or hosted_rooms.default_db_path()) as conn:
+            existing = conn.execute("SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=? AND target_profile=?",
+                (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchone()
+        if existing is not None:
+            raise ValueError("room origin requires an explicit predecessor")
     previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
-    if publish and not store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home):
+    if publish and not store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home, namespace):
         raise ValueError("room authority has already advanced")
 
 
@@ -296,10 +304,10 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
         ttl_seconds=ttl, **({"permissions": ("status", "retire")} if retirement_only else {}))
     claims = decode_room_grant(grant_secret, token, permission="status")
-    _record_authority(claims, body=params)
+    _record_authority(claims, body=params, db_path=db_path)
     if not retirement_only:
         reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
-        _record_authority(claims, publish=True, body=params)
+        _record_authority(claims, publish=True, body=params, db_path=db_path)
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,

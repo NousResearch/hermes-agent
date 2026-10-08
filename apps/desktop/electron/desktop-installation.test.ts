@@ -178,7 +178,13 @@ test(
       const filePath = path.join(directory, 'installation.json')
       const repairPath = `${filePath}.repair.lock`
       const gone = spawnSync(process.execPath, ['-p', 'process.pid'], { encoding: 'utf8' })
-      const peerBody = `${process.pid}\nct:${formatCreateTime(processCreateTimeSync(process.pid)!)}\n`
+      // The competing owner is a different live process. Using our own PID
+      // exercises Electron's own-process identity path instead, which plain
+      // Node implements with a fresh Windows CIM query on every contention poll.
+      const peerPid = process.ppid
+      const peerCreateTime = processCreateTimeSync(peerPid)
+      assert.notEqual(peerCreateTime, null, 'the live parent has a verifiable creation time')
+      const peerBody = `${peerPid}\nct:${formatCreateTime(peerCreateTime!)}\n`
       fs.writeFileSync(repairPath, `${gone.stdout.trim()}\n`)
 
       const realRead = fs.readFileSync
@@ -204,14 +210,15 @@ test(
       }
 
       assert.equal(fs.readFileSync(repairPath, 'utf8'), peerBody, "the peer's live lock survives")
+      assert.ok(lockReads > 2, 'the replacement lock is observed during subsequent contention polls')
       assert.deepEqual(
         fs.readdirSync(directory).filter(name => name.endsWith('.reclaim')),
         [],
         'no rename claim is left behind'
       )
     }),
-  // Forty synchronous contention polls use real CIM in plain Node on Windows.
-  process.platform === 'win32' ? 360_000 : 5_000
+  // Real Windows CIM probes the foreign owner's identity once per waiter.
+  process.platform === 'win32' ? 60_000 : 5_000
 )
 
 // Review 5411222842: the repair lock judged its holder with a second copy of

@@ -9,9 +9,14 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler_cleanup import cron_run_history_retention
+from cron.scheduler import (
+    _finalize_cron_session,
+    _teardown_cron_agent,
+    run_job,
+)
 from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
@@ -50,6 +55,36 @@ class HangingAgent:
         self.release.wait()
 
 
+def test_finalize_prunes_run_history_before_releasing_session_db():
+    session_db = MagicMock()
+    session_db.get_compression_tip.return_value = None
+    session_db.session_lifecycle_statuses.return_value = {"cron_job_20260912_120000": "complete"}
+    session_db.prune_cron_job_runs.return_value = 2
+    agent = MagicMock()
+
+    with patch("cron.scheduler._BoundedCronSessionDB", side_effect=lambda db, _job: db), \
+         patch("cron.scheduler_cleanup.cron_run_history_retention", return_value=17), \
+         patch("hermes_state_registry.release_or_close") as release:
+        _finalize_cron_session(
+            session_db, agent, "job", "Nightly check", "cron_job_20260912_120000"
+        )
+
+    session_db.prune_cron_job_runs.assert_called_once_with("job", keep=17)
+    assert session_db.method_calls.index(
+        call.end_session("cron_job_20260912_120000", "cron_complete")
+    ) < session_db.method_calls.index(call.prune_cron_job_runs("job", keep=17))
+    release.assert_called_once_with(session_db)
+
+
+def test_run_history_retention_reads_config(monkeypatch):
+    monkeypatch.setattr(
+        "cron.jobs._cron_config_number",
+        lambda key, default, cast: 99 if key == "run_history_retention" else cast(default),
+    )
+
+    assert cron_run_history_retention() == 99
+
+
 def test_run_job_bounds_sessiondb_finalization(tmp_path):
     release = threading.Event()
     fake_db = HangingSessionDB(release)
@@ -63,7 +98,7 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
              patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
+             patch("cron.scheduler_cleanup._cron_cleanup_timeout_seconds", return_value=0.02):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -145,7 +180,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
              patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
+             patch("cron.scheduler_cleanup._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
              patch.object(sched, "advance_next_runs"), \
              patch.object(sched, "save_job_output", return_value="/tmp/out"), \

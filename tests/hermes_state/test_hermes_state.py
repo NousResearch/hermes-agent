@@ -509,9 +509,6 @@ class TestSessionLifecycle:
         assert db.get_ancestor_display_prefix("branch") == []
 
 
-
-
-
     def test_update_session_cwd_persists_git_branch(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")
@@ -519,22 +516,6 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] == "pets-feature"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     def test_end_session_first_reason_wins_across_concurrent_connections(
@@ -590,15 +571,6 @@ class TestSessionLifecycle:
             peer.close()
 
 
-
-
-
-
-
-
-
-
-
     def test_update_session_model_clears_browser_lock_and_preserves_lineage(self, db):
         """A later /model switch must replace, not compete with, a Browser lock."""
         db.create_session(
@@ -624,12 +596,6 @@ class TestSessionLifecycle:
         assert model_config["_branched_from"] == "parent-session"
 
 
-
-
-
-
-
-
     def test_first_accounted_route_replaces_all_route_fields_atomically(self, db):
         db.create_session(session_id="route", source="cli", model="primary")
         db.update_session_billing_route(
@@ -645,16 +611,6 @@ class TestSessionLifecycle:
         assert row["billing_provider"] == "fallback-provider"
         assert row["billing_base_url"] is None
         assert row["billing_mode"] is None
-
-
-
-
-
-
-
-
-
-
 
 
     def test_cjk_search_falls_back_to_like_when_trigram_unavailable(
@@ -701,7 +657,6 @@ class TestMessageStorage:
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
-
 
 
     def test_settled_open_issues_no_main_db_writes(self, tmp_path, monkeypatch):
@@ -809,30 +764,6 @@ class TestMessageStorage:
             session_db.close()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message(
@@ -878,14 +809,6 @@ class TestMessageStorage:
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]
-
-
-
-
-
-
-
-
 
 
 # =========================================================================
@@ -936,8 +859,6 @@ class TestTimestampPreservation:
         assert raw == [ts]
 
 
-
-
     def test_replace_messages_preserves_timestamps(self, db):
         """Message dicts with ``timestamp`` passed to ``replace_messages``
         retain those timestamps after the rewrite."""
@@ -951,9 +872,6 @@ class TestTimestampPreservation:
         msgs_out = db.get_messages("s1")
         assert [m["timestamp"] for m in msgs_out] == [100.0, 200.0, 300.0]
         assert self._raw_timestamps(db, "s1") == [100.0, 200.0, 300.0]
-
-
-
 
 
     def test_compression_replace_roundtrip_preserves_timestamps(self, db):
@@ -999,10 +917,6 @@ class TestFTS5Search:
         assert any("docker" in s.lower() or "Docker" in s for s in snippets)
         # Results never carry full content; snippet + metadata only.
         assert all("content" not in r for r in results)
-
-
-
-
 
 
     def test_search_returns_context(self, db):
@@ -1060,10 +974,6 @@ class TestFTS5Search:
         assert ':' not in s('error:timeout')
 
 
-
-
-
-
     def test_long_search_query_is_capped_and_does_not_crash(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="bounded sanitizer target")
@@ -1109,13 +1019,6 @@ class TestCJKSearchFallback:
         assert f("") is False
 
 
-
-
-
-
-
-
-
         # No CJK in query → LIKE fallback must not run. We don't assert this
         # directly (no instrumentation), but the FTS5 path produces an
         # FTS5-style snippet with highlight markers when the term is short.
@@ -1133,7 +1036,6 @@ class TestCJKSearchFallback:
         assert len(results) == 1
 
 
-
     def test_cjk_like_escapes_wildcards(self, db):
         """Special characters (%, _) in CJK queries are treated as literals."""
         db.create_session(session_id="s1", source="cli")
@@ -1144,9 +1046,6 @@ class TestCJKSearchFallback:
         results = db.search_messages("100%完成")
         assert len(results) == 1
         assert results[0]["session_id"] == "s1"
-
-
-
 
 
 # =========================================================================
@@ -1187,11 +1086,6 @@ class TestCounts:
         assert db.session_count(source="telegram") == 1
 
 
-
-
-
-
-
     def test_session_count_ge_at_threshold(self, db):
         """session_count_ge should True when count >= n."""
         db.create_session("s1", "cli")
@@ -1211,7 +1105,6 @@ class TestCounts:
         assert db.message_count() == 2
 
 
-
 # =========================================================================
 # Delete and export
 # =========================================================================
@@ -1226,26 +1119,14 @@ class TestDeleteAndExport:
         assert db.message_count(session_id="s1") == 0
 
 
-
-
-
     def test_resolve_session_id_ambiguous_prefix_returns_none(self, db):
         db.create_session(session_id="20260315_092437_c9a6aa", source="cli")
         db.create_session(session_id="20260315_092437_c9a6bb", source="cli")
         assert db.resolve_session_id("20260315_092437_c9a6") is None
 
 
-
-
     def test_export_nonexistent(self, db):
         assert db.export_session("nope") is None
-
-
-
-
-
-
-
 
 
     def test_import_sessions_rejects_oversized_payloads_atomically(self, db):
@@ -1397,10 +1278,6 @@ class TestPruneSessionFilters:
         assert db.get_session("real") is not None
 
 
-
-
-
-
     @staticmethod
     def _mk_rich(db, sid, **cols):
         """Create an ended session then set arbitrary sessions columns."""
@@ -1412,10 +1289,6 @@ class TestPruneSessionFilters:
             f"UPDATE sessions SET {sets} WHERE id = ?", (*cols.values(), sid)
         )
         db._conn.commit()
-
-
-
-
 
 
     def test_title_like_underscore_is_literal_not_a_wildcard(self, db):
@@ -1575,9 +1448,6 @@ class TestBulkDeleteSessions:
         assert db.get_session("c") is not None
 
 
-
-
-
     def test_orphans_children_of_deleted_parents(self, db):
         """Bulk-deleting a parent leaves its children alive but
         re-parented to NULL. Same contract as the single-session
@@ -1651,9 +1521,6 @@ class TestDeleteEmptySessions:
         assert db.count_empty_sessions() == 0
 
 
-
-
-
     def test_cleans_up_on_disk_transcript_files(self, db, tmp_path):
         """When ``sessions_dir`` is provided, transcript files left
         behind by a crashed gateway (``request_dump_*.json``) are swept
@@ -1690,12 +1557,6 @@ class TestSessionTitle:
 
         session = db.get_session("s1")
         assert session["title"] == "My Session"
-
-
-
-
-
-
 
 
     def test_title_empty_string_normalized_to_none(self, db):
@@ -1829,8 +1690,6 @@ class TestSessionTitleIndexRepair:
             reopened.close()
 
 
-
-
 class TestSessionTitleLineage:
     """Renaming a compression continuation back to its base title must succeed
     by transferring the title off the ended, hidden predecessor.
@@ -1891,17 +1750,11 @@ class TestSessionTitleLineage:
         assert [(r["id"], r["title"]) for r in rows] == [("tip", "renamed tip")]
 
 
-
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 
     def test_normal_title_unchanged(self):
         assert SessionDB.sanitize_title("My Project") == "My Project"
-
-
-
-
-
 
 
     def test_control_chars_stripped(self):
@@ -1910,21 +1763,10 @@ class TestSanitizeTitle:
         assert SessionDB.sanitize_title("\x07\x08test\x1b") == "test"
 
 
-
-
-
-
-
     def test_exceeds_max_length_raises(self):
         title = "A" * 101
         with pytest.raises(ValueError, match="too long"):
             SessionDB.sanitize_title(title)
-
-
-
-
-
-
 
 
 class TestSchemaInit:
@@ -1938,11 +1780,6 @@ class TestSchemaInit:
             assert mode == "delete"
         else:
             assert mode == "wal"
-
-
-
-
-
 
 
     def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
@@ -1972,11 +1809,6 @@ class TestSchemaInit:
         assert binding["session_id"] == "topic-session"
         assert db.get_meta("telegram_dm_topic_schema_version") == "3"
         db.close()
-
-
-
-
-
 
 
     def test_schema_sql_is_source_of_truth(self, db):
@@ -2588,10 +2420,6 @@ class TestFtsRebuildLoopWithoutTrigram:
             db.close()
 
 
-
-
-
-
 class TestTitleLineage:
     """Tests for title lineage resolution and auto-numbering."""
 
@@ -2601,16 +2429,12 @@ class TestTitleLineage:
         assert db.resolve_session_by_title("my project") == "s1"
 
 
-
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 
     def test_next_title_no_existing(self, db):
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
-
-
-
 
 
 class TestTitleSqlWildcards:
@@ -2624,8 +2448,6 @@ class TestTitleSqlWildcards:
         db.set_session_title("s2", "testXproject #2")
         # Resolving "test_project" should return s1 (exact), not s2
         assert db.resolve_session_by_title("test_project") == "s1"
-
-
 
 
 class TestListSessionsRich:
@@ -2716,9 +2538,6 @@ class TestListSessionsRich:
             "slack-sess", source="slack", session_key="agent:main:slack:ch:2", chat_id="2"
         )
         assert db.get_session("slack-sess")["created_source"] == "slack"
-
-
-
 
 
     def test_last_active_prefers_session_activity_heartbeat(self, db):
@@ -2824,12 +2643,6 @@ class TestListSessionsRich:
         assert rows[0]["last_active"] == heartbeat
         activity = _activity_snapshot(db, "gw-1")
         assert activity["last_activity_description"] == "compressing context"
-
-
-
-
-
-
 
 
     def test_rich_list_session_key_filter_precedes_limit(self, db):
@@ -3114,8 +2927,6 @@ class TestListSessionsRich:
         assert db.get_session("branch") is not None
 
 
-
-
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
         db.create_session("root", "cli")
@@ -3151,7 +2962,6 @@ class TestListSessionsRich:
         compact = {row["id"]: row for row in db.list_sessions_rich(compact_rows=True)}
         assert compact["reset_child"]["_reset_from"] == "parent"
         assert compact["branch_child"]["_branched_from"] == "parent"
-
 
 
 class TestCompressionChainProjection:
@@ -3416,7 +3226,6 @@ class TestCompressionChainProjection:
         assert "seg-prev" not in listed_ids or "live-tip" in listed_ids
 
 
-
     def test_list_surfaces_tip_for_compressed_root(self, db):
         """The list must show the tip's id/message_count/preview in place of
         the root row, so users can see and resume the live conversation.
@@ -3529,9 +3338,6 @@ class TestCompressionChainProjection:
         assert single_calls == []
 
 
-
-
-
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not
@@ -3574,9 +3380,6 @@ class TestExcludeSources:
         assert "s2" not in ids
 
 
-
-
-
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")
@@ -3586,11 +3389,6 @@ class TestExcludeSources:
         sources = [r["source"] for r in results]
         assert "cli" in sources
         assert "tool" not in sources
-
-
-
-
-
 
 
 # =========================================================================
@@ -3618,9 +3416,6 @@ class TestConcurrentWriteSafety:
         assert row["model"] == "test-model"
 
 
-
-
-
 # =========================================================================
 # Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
 # =========================================================================
@@ -3632,7 +3427,6 @@ class TestStateMeta:
     def test_set_then_get_meta(self, db):
         db.set_meta("foo", "bar")
         assert db.get_meta("foo") == "bar"
-
 
 
 class TestVacuum:
@@ -3836,8 +3630,6 @@ class TestVacuum:
 class TestOptimizeFts:
 
 
-
-
     def test_incremental_merge_bounded_commands_per_present_index(self, db):
         """Each pass issues bounded 'merge' commands, never 'optimize'."""
         db.create_session(session_id="s1", source="cli")
@@ -3867,9 +3659,6 @@ class TestOptimizeFts:
         assert not any("'optimize'" in sql for sql in statements)
 
 
-
-
-
     def test_write_path_merges_fts_only_at_cadence_boundary(self, db, monkeypatch):
         """Routine writes use bounded merge and never full optimize."""
         db._FTS_MERGE_EVERY_N_WRITES = 5
@@ -3896,7 +3685,6 @@ class TestOptimizeFts:
         db.append_message(session_id="s1", role="user", content="needle 8")
         assert calls == [500, 500]  # The tenth write is the next boundary.
         assert len(db.search_messages("needle")) == 9
-
 
 
 class TestAutoMaintenance:
@@ -4001,9 +3789,6 @@ class TestAutoMaintenance:
         assert (sessions_dir / "new.jsonl").exists()
 
 
-
-
-
 # =========================================================================
 # FTS5 indexing of tool_calls / tool_name (#16751)
 # =========================================================================
@@ -4040,9 +3825,6 @@ class TestFTS5ToolCallIndexing:
         )
         results = db.search_messages("UNIQUESEARCHTOKEN")
         assert len(results) == 1
-
-
-
 
 
 class TestFTS5ToolCallMigration:
@@ -4401,10 +4183,6 @@ class TestFTSExternalContentMigration:
             assert db.get_meta("fts_storage_version") == str(FTS_STORAGE_VERSION)
         finally:
             db.close()
-
-
-
-
 
 
     def _simulate_pre_fix_demote_crash_window(self, db):
@@ -4868,7 +4646,6 @@ class TestFTSExternalContentMigration:
             db.close()
 
 
-
 # ---------------------------------------------------------------------------
 # apply_wal_with_fallback — read-only probe tests
 # ---------------------------------------------------------------------------
@@ -4911,10 +4688,6 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire on a fresh (non-WAL) connection"
         )
-
-
-
-
 
 
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
@@ -4963,10 +4736,6 @@ class TestApplyWalProbe:
             assert not deleted_fds, f"stale deleted WAL/SHM FDs: {deleted_fds}"
 
 
-
-
-
-
 class TestSessionArchive:
     """Soft-archiving hides a session from default listings without deleting it."""
 
@@ -4991,7 +4760,6 @@ class TestSessionArchive:
         ids = [s["id"] for s in db.list_sessions_rich()]
         assert ids == ["live"]
         assert db.session_count() == 1
-
 
 
 class TestSessionPinAndStaleArchive:
@@ -5076,8 +4844,6 @@ class TestSessionPinAndStaleArchive:
         assert len(with_pins) == len(page) + 1
 
 
-
-
     # ── stale archive ─────────────────────────────────────────────────────
 
 
@@ -5092,10 +4858,7 @@ class TestSessionPinAndStaleArchive:
         assert db.get_session("keep")["archived"] == 1
 
 
-
-
     # ── throttled wrapper ─────────────────────────────────────────────────
-
 
 
 class TestSessionIdSearch:
@@ -5116,10 +4879,6 @@ class TestSessionIdSearch:
         ]
         assert [s["id"] for s in db.search_sessions_by_id("20260603")] == ["20260603_090200_abcd12"]
         assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
-
-
-
-
 
 
 class TestListCronJobRuns:
@@ -5163,7 +4922,6 @@ class TestListCronJobRuns:
         assert runs[0]["last_active"] >= runs[0]["started_at"]
 
 
-
     def test_limit_and_offset_paging(self, db):
         base = 1_700_000_000.0
         for i in range(10):
@@ -5178,7 +4936,6 @@ class TestListCronJobRuns:
         # Combined window is still newest-first and contiguous.
         combined = [r["started_at"] for r in page1 + page2]
         assert combined == sorted(combined, reverse=True)
-
 
 
 def test_gateway_session_peer_round_trip_and_recovery(db):
@@ -5344,16 +5101,6 @@ def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     assert db.get_session("keyless")["profile_name"] == "bot2"
 
 
-
-
-
-
-
-
-
-
-
-
 def test_find_session_by_origin_matching_rules(db):
     db.create_session(
         "gw-o1", "telegram", user_id="u1",
@@ -5397,16 +5144,6 @@ def test_find_session_by_origin_matching_rules(db):
     ) is None
 
 
-
-
-
-
-
-
-
-
-
-
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 
@@ -5430,8 +5167,6 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
-
-
 
 
 def test_refresh_cannot_resurrect_a_lock_already_reclaimed(db, monkeypatch):
@@ -5478,9 +5213,6 @@ class TestCompactRows:
         assert "system_prompt" not in rows[0]
 
 
-
-
-
     def test_batch_compact_rows_omits_system_prompt_keeps_git_fields(self, db):
         """_get_session_rich_rows_batch(compact_rows=True) must apply the same
         schema-derived compact projection as the single-row path: no
@@ -5522,10 +5254,6 @@ class TestCompactRows:
         assert "system_prompt" not in tip
         assert tip["git_branch"] == "dev"
         assert tip["git_repo_root"] == "/tmp/w2"
-
-
-
-
 
 
 # =========================================================================
@@ -5779,9 +5507,6 @@ class TestGetMessagesPagination:
         assert export_exc.value.limit == 3
 
 
-
-
-
 # =========================================================================
 # Lone-surrogate persistence
 # =========================================================================
@@ -5807,18 +5532,13 @@ class TestLoneSurrogatePersistence:
         assert rows[1]["content"] == "scraped � price"
 
 
-
-
     # -- sibling raw-str bind sites (follow-up widening of the same bug class)
-
-
 
 
     def test_set_latest_user_api_content_survives_lone_surrogate(self, db):
         db.create_session("s1", source="cli")
         db.append_message("s1", "user", "turn text")
         assert db.set_latest_user_api_content("s1", "turn text", self.DIRTY) == 1
-
 
 
 class TestDisplayMetadataPersistence:
@@ -5851,7 +5571,6 @@ class TestDisplayMetadataPersistence:
         reloaded = db.get_messages_as_conversation("s1")
         assert reloaded[0]["display_kind"] == "async_delegation_complete"
         assert reloaded[0]["display_metadata"] == meta
-
 
 
 class TestDisplayMetadataReadPaths:
@@ -6034,7 +5753,6 @@ class TestGatewayRoutingPkHeal:
             assert entries == {"agent:main:telegram:dm:1": "{}"}
         finally:
             db.close()
-
 
 
     def test_current_shape_left_untouched(self, tmp_path, db):
@@ -6322,7 +6040,6 @@ class TestFtsRebuildFinishWithoutTrigram:
             assert db.search_messages("zebra")
         finally:
             db.close()
-
 
 
 class TestPerformancePragmasEndToEnd:

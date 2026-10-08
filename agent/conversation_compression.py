@@ -31,7 +31,10 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
-from agent.conversation_compression_telemetry import _emit_aborted_attempt_telemetry, _emit_compression_attempt_telemetry
+from agent.conversation_compression_telemetry import (
+    _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
+    _emit_compression_attempt_telemetry,
+)
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
@@ -4043,10 +4046,15 @@ def _route_codex_compaction(
     """Codex owns the real thread: run its own compact under the commit fence bracket."""
     if commit_fence is not None and not commit_fence.begin_commit(getattr(agent, "_hard_interrupt_requested", None)):
         attempt.restore_compressor(agent.context_compressor)
+        _emit_bypassed_attempt_telemetry(
+            agent, attempt.started_at, commit_status="aborted", failure_class="commit_fence_cancelled",
+            approx_tokens=approx_tokens, route="codex_app_server",
+        )
         return messages, _existing_system_prompt(agent, system_message)
     try:
         return _compress_context_via_codex_app_server(
-            agent, messages, system_message, approx_tokens=approx_tokens, task_id=task_id, force=force
+            agent, messages, system_message, approx_tokens=approx_tokens, task_id=task_id, force=force,
+            started_at=attempt.started_at,
         )
     finally:
         if commit_fence is not None:
@@ -4110,8 +4118,8 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
-    trigger: Why this attempt runs (``"overflow"`` for provider-rejected requests); defaults to manual/auto
-    from ``force``. Feeds attempt telemetry only.
+    trigger: Why this attempt runs (``"overflow"``, ``"pre_api"``, ``"post_tool"``, ``"idle"``, ...); defaults
+    to manual/auto from ``force``. Feeds attempt telemetry only; shared metrics bucket it coarsely.
     snapshot_is_current: Optional host snapshot validation after durable lease admission. This protects
     edits completed before admission; it is not a substitute for the host's final publication fence.
     """
@@ -4137,6 +4145,7 @@ def compress_context(
     # All automatic entrypoints honor compressor cooldown/breaker state; hygiene's
     # fresh AIAgent loads the persisted streak via bind_session_state() first.
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
+        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens)
         return messages, _existing_system_prompt(agent, system_message)
 
     _pre_msg_count = len(messages)
@@ -4183,6 +4192,10 @@ def compress_context(
         return messages, _existing_system_prompt(agent, system_message)
     _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
     if _adopted is not None:
+        _emit_bypassed_attempt_telemetry(
+            agent, attempt.started_at, commit_status="skipped", failure_class="session_ownership_lost",
+            approx_tokens=approx_tokens,
+        )
         return _adopted
 
     # Snapshot durable cooldown only once we own the lease. Runs for force=True
@@ -4194,12 +4207,17 @@ def compress_context(
         # Durable cooldown read failed under a built-in compressor: force=True could
         # clear an unknown newer row before cancellation could restore it. Abort.
         lease.release()
+        _emit_bypassed_attempt_telemetry(
+            agent, attempt.started_at, commit_status="aborted", failure_class="cooldown_state_unreadable",
+            approx_tokens=approx_tokens,
+        )
         return messages, _existing_system_prompt(agent, system_message)
 
     # Another path may have compacted this session in place since construction;
     # re-read breaker state under the lock, not the bind_session_state() snapshot.
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown, include_cooldown=False):
         lease.release()
+        _emit_blocked_attempt_telemetry(agent, attempt.started_at, approx_tokens)
         return messages, _existing_system_prompt(agent, system_message)
 
     # Interrupts/redirects must not tear a summary in half. Use the explicit stop

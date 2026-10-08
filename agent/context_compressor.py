@@ -5495,7 +5495,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: list[dict[str, Any]], messages: list[dict[str, Any]], n_messages: int,
-        spare_pending_images: bool,
+        spare_pending_images: bool, pruned_count: int = 0,
     ) -> list[dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5532,6 +5532,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
+        self._record_compression_effect(n_messages, compressed, pre_estimate, pruned_count, _pruned_replay)
         self._last_compression_made_progress = True
 
         # Compaction frees the biggest allocation: hand pages back to the OS (glibc/config-gated,
@@ -5658,7 +5659,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
+        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(
         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,

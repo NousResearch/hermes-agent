@@ -1,3 +1,40 @@
+/* Hermes UI motion: a one-shot compositor-friendly entrance that preserves layout and respects reduced-motion. */
+@keyframes hermes-ui-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 5px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.hermes-ui-shell {
+  animation: hermes-ui-enter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: 50% 0;
+}
+
+.hermes-ui-shell :is(button, [role='button'], a):not([aria-disabled='true']) {
+  transition:
+    transform 140ms ease,
+    filter 140ms ease;
+}
+
+.hermes-ui-shell :is(button, [role='button'], a):not([aria-disabled='true']):active {
+  transform: scale(0.985);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-ui-shell {
+    animation: none;
+  }
+
+  .hermes-ui-shell :is(button, [role='button'], a) {
+    transition: none;
+  }
+}
+
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';

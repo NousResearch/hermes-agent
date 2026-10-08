@@ -28,7 +28,6 @@ from plugins.dashboard_auth._shared import (
     TOKEN_ENDPOINT_TIMEOUT_SEC as _TOKEN_ENDPOINT_TIMEOUT_SEC,
     JwtOAuthProvider,
     SkipRegistration,
-    _request_limited_response,
     exchange_token,
     load_config_section,
     parse_json_body,
@@ -138,8 +137,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         extra_data, extra_headers = self._token_endpoint_auth(disco)
         data = {"token": refresh_token, "token_type_hint": "refresh_token", "client_id": self._client_id, **extra_data}
         try:
-            _request_limited_response(
-                "POST", endpoint, data=data, headers={**JSON_HEADERS, **extra_headers}, timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC)
+            httpx.post(endpoint, data=data, headers={**JSON_HEADERS, **extra_headers}, timeout=_TOKEN_ENDPOINT_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
         return None
@@ -215,8 +213,7 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
             # canonicalises .well-known; proxies upgrade http→https) and httpx defaults to
             # not following. The token/revocation POSTs deliberately do NOT follow
             # redirects (they carry an auth code / refresh token).
-            response = _request_limited_response(
-                "GET", url, headers=JSON_HEADERS, timeout=_DISCOVERY_TIMEOUT_SEC, follow_redirects=True)
+            response = httpx.get(url, headers=JSON_HEADERS, timeout=_DISCOVERY_TIMEOUT_SEC, follow_redirects=True)
         except httpx.RequestError as exc:
             raise ProviderError(f"OIDC discovery unreachable: {exc}") from exc
         if response.status_code != 200:

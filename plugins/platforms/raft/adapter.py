@@ -313,7 +313,8 @@ class RaftAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         path = str(extra.get("path", DEFAULT_PATH) or DEFAULT_PATH).strip() or DEFAULT_PATH
         self._path: str = path if path.startswith("/") else f"/{path}"
-        self._bridge_token: str = str(extra.get("bridge_token", ""))
+        # `or ""`: a null YAML value must reach connect()'s auto-generated token, not become "None".
+        self._bridge_token: str = str(extra.get("bridge_token") or "").strip()
         self._runtime_session: str = str(extra.get("runtime_session", DEFAULT_RUNTIME_SESSION) or DEFAULT_RUNTIME_SESSION)
         self._max_body_bytes: int = int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
         self._runner = None

@@ -45,7 +45,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # feeds the `hermes tools` picker, the dashboard selects and the auto-correction sets below.
 # DeepInfra has no static list: its picker reads the live catalog.
 STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
+    "local": ["base", "tiny", "small", "medium", "large-v3", "turbo"],
     "groq": ["whisper-large-v3-turbo", "whisper-large-v3"],
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
     "mistral": ["voxtral-mini-latest", "voxtral-mini-2602"],

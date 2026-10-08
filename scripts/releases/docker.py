@@ -170,6 +170,26 @@ def published_digest(tag: str, run=output) -> str:
     return digest
 
 
+def promote_published(version: str, *, run=output) -> None:
+    """Move the aliases from the digest a published ``vX.Y.Z`` receipt binds.
+
+    The ordered publication pass normally does this after the R2 channel head
+    moves; this re-enters only the alias step, from the receipt alone.
+    """
+    from scripts.releases.versioning import tag_record
+
+    tag = f"v{version}"
+    if not STABLE_TAG_RE.fullmatch(tag):
+        raise DockerReleaseError(f"Not a stable version: {version!r}")
+    run(["git", "fetch", "origin", f"+refs/tags/{tag}:refs/tags/{tag}"])
+    if run(["git", "cat-file", "-t", f"refs/tags/{tag}"]) != "tag":
+        raise DockerReleaseError(f"{tag} is not an annotated receipt tag")
+    receipt = tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+    if not isinstance(receipt, dict) or receipt.get("version") != version:
+        raise DockerReleaseError(f"{tag} carries no release receipt")
+    promote_stable(receipt["claimTag"], receipt["dockerManifestDigest"], run=run)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -187,9 +207,14 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("--commit", required=True)
     p_verify.add_argument("manifest", help="Path to the downloaded manifest JSON")
 
+    p_promote = sub.add_parser("promote", help="Move stable/latest onto a published release's receipt-bound image")
+    p_promote.add_argument("--version", required=True, help="Published version, for example 0.21.6")
+
     args = parser.parse_args(argv)
     try:
-        if args.command == "manifest":
+        if args.command == "promote":
+            promote_published(args.version)
+        elif args.command == "manifest":
             archive_hashes = {}
             for arch, path in (("amd64", args.archive_amd64), ("arm64", args.archive_arm64)):
                 if path:
@@ -206,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 manifest = parse_manifest(handle.read())
             verify_manifest(manifest, args.tag, args.commit)
             print(json.dumps(manifest))
-    except DockerReleaseError as exc:
+    except (DockerReleaseError, subprocess.CalledProcessError) as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
     return 0

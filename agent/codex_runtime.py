@@ -58,6 +58,12 @@ def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tup
         logger.debug(fail_msg, *fail_args, exc_info=True)
 
 
+def _review_runs_before_final(agent: Any) -> bool:
+    """Whether this foreground turn must withhold terminal assistant text for review."""
+    settings = getattr(agent, "_background_review_turn_settings", None) or {}
+    return bool(settings.get("enabled", True)) and settings.get("timing") == "before_final"
+
+
 def _codex_request_failure_details(error: BaseException) -> tuple[int | None, str]:
     """(serialized request bytes, exception class chain); the buffered ``httpx.Request`` content
     on OpenAI connection errors gives the exact byte count without logging payloads or URLs."""
@@ -411,6 +417,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
     def _fire_delta(params: dict, attr: str) -> None:
         text = _delta_text(params)
+        # This runtime does not label an agentMessage as commentary vs terminal until the turn
+        # completes. Strict review timing therefore withholds all assistant-text deltas; tool and
+        # reasoning progress remain live, and the final text leaves in the terminal result.
+        if attr == "_fire_stream_delta" and _review_runs_before_final(agent):
+            return
         # Single-writer guard (#65991): a superseded stream must not pollute the turn's accumulated text
         # (which also feeds the interim-visible-text de-dup comparison), even when a caller reaches this
         # directly (the tool-suppressed content path) rather than through _fire_stream_delta.
@@ -419,10 +430,13 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
-        # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
-        if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
-            agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
-                     args=({"role": "assistant", "content": text},))
+        # Completed agentMessage items can also be the terminal answer. In strict mode they are
+        # withheld for the same reason as deltas and delivered only by the completed turn result.
+        if not _review_runs_before_final(agent):
+            # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
+            if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
+                agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
+                         args=({"role": "assistant", "content": text},))
         # Each agentMessage item is its own delivered message: the completed item was just compared
         # against ITS deltas, so drop them before the next item's deltas arrive. Otherwise the buffer
         # holds "commentary + final", the final agentMessage no longer prefix-matches, and it is
@@ -693,31 +707,6 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     return flush_ok is True
 
 
-def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
-    # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
-    agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
-    _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
-    # Skill nudge check AFTER iters were incremented (same as chat_completions).
-    should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
-                            and "skill_manage" in agent.valid_tool_names)
-    if should_review_skills:
-        agent._iters_since_skill = 0
-    # External memory sync skipped on interrupt/error (no partial transcripts).
-    if not turn.interrupted and turn.error is None:
-        _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
-        ))
-    # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
-        _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
-            messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
-        ))
-    return usage_result
-
-
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
                               effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
@@ -753,7 +742,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
-    usage_result = _finish_codex_turn(
+    from agent.app_server_turn_finalization import finish_app_server_turn
+    usage_result = finish_app_server_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
     return _turn_result(

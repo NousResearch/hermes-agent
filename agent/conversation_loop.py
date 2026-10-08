@@ -1631,6 +1631,8 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    from agent.background_review_timing import snapshot_turn_settings
+    snapshot_turn_settings(agent)
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1640,6 +1642,8 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
+        agent._background_review_turn_settings = None
+        agent._deferred_completion_banner = None
         return codex_result
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)

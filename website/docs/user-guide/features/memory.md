@@ -401,6 +401,41 @@ auxiliary:
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
 
+### Choosing the completion boundary (`timing`)
+
+Automatic review defaults to the historical background lifecycle: the foreground
+turn returns first, then a daemon review may call a model and update memory or
+skills. Set `timing: before_final` when the user-visible terminal response must be
+a true side-effect boundary:
+
+```yaml
+auxiliary:
+  background_review:
+    timing: before_final  # background (default) | before_final
+```
+
+In `before_final` mode Hermes runs the review inline after the foreground
+transcript is durable and before it emits the final response or completion
+banner. The review does not enter the managed-local idle queue and does not
+create a daemon thread. Terminal assistant text is intentionally held back
+for the turn, while tool and reasoning progress can remain visible. Runtimes
+that cannot distinguish commentary from the terminal assistant message
+withhold all assistant text. Cancellation, review usage accounting, write
+controls, and review summaries use the same fork lifecycle as background mode.
+Review failure is fail-open: the foreground answer is still returned. If a previous
+review still owns the slot, Hermes requests cancellation and waits for the existing
+bounded acknowledgement deadline, then tries to acquire a new token. If the old
+request is still running, the turn logs the skip and includes
+`background_review: {timing: before_final, status: skipped, reason: previous_review_still_running}`
+in its result. `status: ran` means the inline worker returned; `status: failed`
+reports a setup or invocation error. The old token remains owned by its worker
+until that worker acknowledges completion.
+
+The default `background` mode prioritizes foreground latency. `before_final`
+places this turn's admitted review behind the completion boundary. Callers that
+require a review to run can inspect the result disposition and handle a reported
+skip or failure explicitly.
+
 ### Capping review cost (`max_input_tokens`)
 
 The review loop replays the conversation on every provider request it makes,

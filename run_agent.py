@@ -767,8 +767,6 @@ class AIAgent(
             if not enabled:
                 return
 
-        # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
-        # alias the live history's nested tool_calls/content.
         # Structural clone at the single chokepoint every review path (automatic, /refine, idle-queue
         # deferral) goes through. See #100795.
         from agent.turn_finalizer import _clone_background_review_messages
@@ -780,6 +778,8 @@ class AIAgent(
             QUEUE.enqueue(self, _review_queue_key(self), kwargs)
             return
         self._spawn_background_review_now(**kwargs)
+
+    _run_background_review_before_final = _forward("agent.background_review_timing", "run_inline_review")
 
     def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,

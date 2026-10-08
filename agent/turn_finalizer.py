@@ -749,7 +749,6 @@ def finalize_turn(
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
-    agent._stream_callback = None  # don't leak into future calls
 
     # A voice turn's model route ends with the turn: memory sync and the background review
     # below (and the next turn) run on the session's main model.
@@ -771,21 +770,11 @@ def finalize_turn(
         interrupted=interrupted, messages=messages,
     )
 
-    # Background memory/skill review runs AFTER delivery so it never competes with the
-    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
-    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
-    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills)
-    ):
-        with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
+    from agent.background_review_timing import finalize_review
+    review_disposition = finalize_review(
+        agent, messages, final_response, interrupted, _should_review_memory, _should_review_skills)
+    if review_disposition is not None:
+        result["background_review"] = review_disposition
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
@@ -805,4 +794,7 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+
+    from agent.background_review_timing import finish_terminal_boundary
+    finish_terminal_boundary(agent)
     return result

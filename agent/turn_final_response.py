@@ -371,6 +371,6 @@ def finish_text_response(
         )
 
     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
-    if not agent.quiet_mode:
-        agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+    from agent.background_review_timing import publish_completion_banner
+    publish_completion_banner(agent, api_call_count)
     return _verdict("break")

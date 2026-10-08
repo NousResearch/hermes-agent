@@ -205,6 +205,10 @@ fallback_providers:
 | Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
+:::info Gating fallback with a plugin
+Every automatic switch onto a chain entry — mid-turn and at startup/resolution time — first fires the [`pre_fallback_activate`](./hooks.md#pre_fallback_activate) plugin hook. A plugin returning `{"action": "block"}` keeps the session on its primary, which lets you require consent (per session, per cron job, or by asking through the approval UI) before Hermes spends on a different provider.
+:::
+
 :::tip
 There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
 :::

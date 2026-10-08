@@ -868,10 +868,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
     _refused_entries = []
-    for _fb in _fallback_entries(fallback_model):
+    from hermes_cli.fallback_config import gated_fallback_entries, resolve_entry_api_key
+    for _fb in gated_fallback_entries(_fallback_entries(fallback_model), None, agent.provider, agent.model, on_veto=lambda p, _m, why: _refused_entries.append((p, why))):
         _fb_provider = str(_fb["provider"])
         try:
-            from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,

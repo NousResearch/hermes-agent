@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -165,3 +165,44 @@ def scoped_fallback_chain(
         logger.warning("%s fallback_providers has no usable routes; using the %s default",
                        owner, "pinned" if pinned else "inherited")
     return normalized or default
+
+
+def _startup_failure_reason(primary_exc: BaseException | None) -> str:
+    if primary_exc is None:
+        return "primary provider unavailable"
+    from hermes_cli.auth import AuthError, primary_failure_wording
+    if isinstance(primary_exc, AuthError):
+        return primary_failure_wording(primary_exc)[1]
+    return type(primary_exc).__name__
+
+
+def gated_fallback_entries(
+    entries: Iterable[Any] | None,
+    primary_exc: BaseException | None = None,
+    from_provider: Any = "",
+    from_model: Any = "",
+    *,
+    platform: str = "",
+    job_id: str = "",
+    session_id: str = "",
+    on_veto: Callable[[str, str, str], None] | None = None,
+) -> Iterator[Any]:
+    """Yield a resolution-time walker's fallback entries, asking the ``pre_fallback_activate`` plugin hook
+    (stage ``"startup"``, agent/fallback_gate.py) right before each usable ``{provider, model}`` entry is
+    tried. A veto ends the walk — the caller then reports the primary's own error — after
+    ``on_veto(provider, model, message)``. Malformed entries pass through so the walker's own checks apply."""
+    from agent.fallback_gate import fallback_veto, log_fallback_veto
+    for entry in entries or ():
+        provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
+        model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
+        if provider and model:
+            message = fallback_veto(
+                "startup", session_id=session_id, platform=platform, job_id=job_id, from_provider=str(from_provider or ""),
+                from_model=str(from_model or ""), to_provider=provider, to_model=model,
+                reason=_startup_failure_reason(primary_exc))
+            if message is not None:
+                log_fallback_veto("startup", provider, model, message)
+                if on_veto is not None:
+                    on_veto(provider, model, message)
+                return
+        yield entry

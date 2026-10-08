@@ -1789,7 +1789,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             job_id, "auth" if is_auth else "transient network", resolve_exc,
             "trying fallback" if chain else (
                 "not falling back: the job is pinned" if _job_route_pinned(job) else "no fallback configured"))
-        for entry in chain:
+        from hermes_cli.fallback_config import effective_runtime_provider, gated_fallback_entries, resolve_entry_api_key
+        for entry in gated_fallback_entries(chain, resolve_exc, requested, model, platform="cron", job_id=str(job_id or "")):
             if not isinstance(entry, dict):
                 continue
             fb_provider = str(entry.get("provider") or "").strip()
@@ -1797,8 +1798,6 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-
                 fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
                 if entry.get("base_url"):
                     fb_kwargs["explicit_base_url"] = entry["base_url"]

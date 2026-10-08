@@ -12,6 +12,7 @@ import {
   announceNewSessionDraftKey,
   clearSessionDraft,
   mainComposerScope,
+  reloadPersistedDrafts,
   rotateFreshDraftKey,
   stashSessionDraft,
   takeSessionDraft
@@ -273,6 +274,7 @@ afterEach(() => {
   announceNewSessionDraftKey(null)
   $newChatRoute.set(null)
   window.localStorage.clear()
+  window.sessionStorage.clear()
   vi.resetAllMocks()
   setActiveSessionId(null)
   setSelectedStoredSessionId(null)
@@ -280,6 +282,37 @@ afterEach(() => {
   setBusy(false)
   setAwaitingResponse(false)
   setMessages([])
+})
+
+it('a full restart while an ACK is pending hydrates the original draft operation instead of admitting it twice', async () => {
+  const admissions = new Set<string>()
+  let calls = 0
+
+  const onSubmit = vi.fn((_text: string, options?: { submission_id?: string }) => {
+    const id = options!.submission_id!
+    // Persistence precedes even the first transport call, not its rejection.
+    expect(takeSessionDraft('stored-B').retry?.id).toBe(id)
+    admissions.add(id)
+    calls++
+
+    return calls === 1 ? new Promise<boolean>(() => {}) : Promise.resolve(true)
+  })
+
+  stashSessionDraft('stored-B', 'restart pending text', [])
+  const first = seed({ onSubmit })
+  act(() => handles.submit.submitDraft())
+  expect(onSubmit).toHaveBeenCalledOnce()
+  const original = onSubmit.mock.calls[0][1]!.submission_id
+  first.unmount()
+  // Application exit discards sessionStorage; the actual persisted draft is
+  // then loaded through the production draft hydration path in a new mount.
+  window.sessionStorage.clear()
+  reloadPersistedDrafts()
+  seed({ onSubmit })
+  expect(handles.draft.draftRetryRef.current?.id).toBe(original)
+  await act(async () => handles.submit.submitDraft())
+  expect(onSubmit.mock.calls[1][1]!.submission_id).toBe(original)
+  expect(admissions.size).toBe(1)
 })
 
 it('keeps a late rejected B submit out of A’s draft and next ordinary Send (#66661)', async () => {
@@ -352,6 +385,7 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   const rendered = seed({ onSubmit })
   act(() => handles.submit.submitDraft())
   expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining('draft B'), {
+    submission_id: expect.any(String),
     attachments: [attachmentB],
     composerScope: 'stored-B'
   })
@@ -389,6 +423,7 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   onSubmit.mockResolvedValueOnce(false)
   await act(async () => handles.submit.submitDraft())
   expect(onSubmit).toHaveBeenLastCalledWith(expect.stringContaining('draft B'), {
+    submission_id: expect.any(String),
     attachments: [attachmentB],
     composerScope: 'stored-B'
   })

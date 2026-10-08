@@ -4,6 +4,7 @@ import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
 
+import { type ComposerDraftRetry, deserializeSessionDraft, serializeSessionDraft } from './composer-draft-retry'
 import { recordDislike, recordFriction } from './desktop-metrics'
 
 /** Release blob: chip previews created for OS image drops (see #63682). */
@@ -236,7 +237,8 @@ export const mainComposerScope = createComposerAttachmentScope($composerAttachme
 
 // Per-thread draft stash for the decoupled composer. Session lifecycle never
 // touches this — only ChatBar's scope swap reads/writes it. Text mirrors to
-// localStorage; attachments are memory-only (blobs, upload state).
+// localStorage; ordinary attachments are memory-only. An uncertain send retains
+// its operation ID and attachment references (never renderer blob previews).
 export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
 
 export const NEW_SESSION_DRAFT_KEY = '__new__'
@@ -246,6 +248,7 @@ const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 export interface SessionDraft {
   attachments: ComposerAttachment[]
   text: string
+  retry?: ComposerDraftRetry
 }
 
 // Stable only for the lifetime of the current sessionless chat (#66662). The
@@ -296,7 +299,8 @@ export const $restoredDraftNotice = atom<RestoredDraftNotice | null>(null)
 
 const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   attachments: draft.attachments.map(attachment => ({ ...attachment })),
-  text: draft.text
+  text: draft.text,
+  ...(draft.retry ? { retry: { ...draft.retry, attachmentIds: [...draft.retry.attachmentIds] } } : {})
 })
 
 function loadPersistedDraftTexts(): [string, SessionDraft][] {
@@ -307,10 +311,11 @@ function loadPersistedDraftTexts(): [string, SessionDraft][] {
       return []
     }
 
-    return Object.entries(JSON.parse(raw) as Record<string, string>).map(([key, text]) => [
-      key,
-      { attachments: [], text }
-    ])
+    return Object.entries(JSON.parse(raw) as Record<string, unknown>).flatMap(([key, value]) => {
+      const draft = deserializeSessionDraft(value)
+
+      return draft ? [[key, draft] as [string, SessionDraft]] : []
+    })
   } catch {
     return []
   }
@@ -408,7 +413,7 @@ export function reloadPersistedDrafts(): void {
 
   for (const [key, draft] of incoming) {
     const local = draftsBySession.get(key)
-    draftsBySession.set(key, local?.attachments.length ? { ...local, text: draft.text } : draft)
+    draftsBySession.set(key, local?.attachments.length && !draft.retry ? { ...draft, attachments: local.attachments } : draft)
     publishDraftTitle(key, deriveDraftTitle(draft.text))
   }
 
@@ -471,38 +476,39 @@ export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDe
   return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
 }
 
-function persistDraftTexts() {
+function persistDraftTexts(required = false) {
   try {
     const entries = [...draftsBySession]
       .filter(([, draft]) => draft.text)
       .slice(-MAX_PERSISTED_DRAFTS)
-      .map(([key, draft]) => [key, draft.text] as const)
+      .map(([key, draft]) => [key, serializeSessionDraft(draft)] as const)
 
     if (entries.length === 0) {
       window.localStorage.removeItem(SESSION_DRAFTS_STORAGE_KEY)
     } else {
       window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
     }
-  } catch {
+  } catch (error) {
+    if (required) { throw error }
     // Best-effort only — quota/private-mode must never break typing.
   }
 }
 
-export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[]) {
+export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[], retry?: ComposerDraftRetry) {
   const key = draftKey(scope)
 
   // Delete-then-set keeps MRU order for MAX_PERSISTED_DRAFTS eviction.
   draftsBySession.delete(key)
 
   if (text.trim() || attachments.length > 0) {
-    draftsBySession.set(key, cloneDraft({ attachments, text }))
+    draftsBySession.set(key, cloneDraft({ attachments, text, ...(retry ? { retry } : {}) }))
   } else if (isFreshDraftScope(key)) {
     // The fresh draft was sent or emptied — a restore notice has nothing left
     // to undo.
     $restoredDraftNotice.set(null)
   }
 
-  persistDraftTexts()
+  persistDraftTexts(Boolean(retry?.pending))
   publishDraftTitle(key, deriveDraftTitle(text))
 }
 
@@ -513,6 +519,14 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 }
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
+
+export function retireSessionDraftSubmission(scope: string | null | undefined, id: string): void {
+  const key = draftKey(scope)
+  const saved = new Map(loadPersistedDraftTexts()).get(key)
+
+  // Another window may have already written its newer draft into the shared row.
+  if (saved?.retry?.id === id && draftsBySession.get(key)?.retry?.id === id) { clearSessionDraft(scope) }
+}
 
 /**
  * Stored draft scopes that hold content, excluding the new-chat key. The
@@ -553,7 +567,7 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
     return false
   }
 
-  stashSessionDraft(toKey, source.text, source.attachments)
+  stashSessionDraft(toKey, source.text, source.attachments, source.retry)
   clearSessionDraft(fromKey)
 
   return true

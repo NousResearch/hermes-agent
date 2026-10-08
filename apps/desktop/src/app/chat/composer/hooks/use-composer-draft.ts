@@ -25,6 +25,7 @@ import {
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
+import { type ComposerDraftRetry, draftRetryTextMatches, matchingDraftRetry, visibleSessionDraft } from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
@@ -122,6 +123,7 @@ export function useComposerDraft({
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
+  const draftRetryRef = useRef<ComposerDraftRetry | undefined>(undefined)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
@@ -299,8 +301,13 @@ export function useComposerDraft({
     }
   }, [appendExternalText, focusInput, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
+  const stashAt = useCallback((scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get(), retry?: ComposerDraftRetry) => {
+    if (!retry && draftRetryRef.current?.pending && !text.trim() && !attachments.length) { return }
+    const retained = retry ?? matchingDraftRetry(draftRetryRef.current, text, attachments)
+
+    if (retry && (scope === draftScopeRef.current || (!scope && isFreshDraftScope(draftScopeRef.current)))) { draftRetryRef.current = retry }
+    stashSessionDraft(scope, text, attachments, retained)
+  }, [attachmentScope])
 
   // Draft read/write bus (plugin SDK `host.composer`): answer for the sessions
   // this composer owns — the runtime id, the queue/stored key (tiles run with
@@ -350,7 +357,9 @@ export function useComposerDraft({
     )
   }, [inputDisabled, paintDraft, target])
 
-  const loadIntoComposer = (text: string, attachments: ComposerAttachment[], preserveFocusedCaret = false) => {
+  const loadIntoComposer = (text: string, attachments: ComposerAttachment[], preserveFocusedCaret = false, retry?: ComposerDraftRetry) => {
+    draftRetryRef.current = retry
+
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
     // state got restored into the composer (session switch, queue-edit
     // restore, history browse) without logging any raw content. REF_RE has the
@@ -370,7 +379,8 @@ export function useComposerDraft({
     paintDraft(text, false, preserveFocusedCaret)
   }
 
-  const clearDraft = useCallback(() => {
+  const clearDraft = useCallback((retainRetry = false) => {
+    draftRetryRef.current = retainRetry && draftRetryRef.current ? { ...draftRetryRef.current, pending: true } : undefined
     setComposerText('')
     draftRef.current = ''
 
@@ -422,6 +432,8 @@ export function useComposerDraft({
   useEffect(() => {
     const sync = () => {
       const text = composerRuntime.getState().text
+
+      if (text.trim() ? !draftRetryTextMatches(draftRetryRef.current, text) : !draftRetryRef.current?.pending) { draftRetryRef.current = undefined }
       draftRef.current = text
       // Composer suggestion pills for THIS session's draft (debounced +
       // change-gated in the bus — this is just a timer reset).
@@ -462,7 +474,7 @@ export function useComposerDraft({
       unsubscribe()
       window.clearTimeout(draftPersistTimerRef.current)
     }
-  }, [composerRuntime, queueEditRef])
+  }, [composerRuntime, queueEditRef, stashAt])
 
   const insertText = (text: string) => {
     const base = draftRef.current
@@ -552,8 +564,8 @@ export function useComposerDraft({
 
     draftScopeRef.current = activeQueueSessionKey
 
-    const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
-    loadIntoComposer(text, attachments, true)
+    const { attachments, text, retry } = visibleSessionDraft(takeSessionDraft(activeQueueSessionKey))
+    loadIntoComposer(text, attachments, true, retry)
 
     return () => {
       const latestText = syncDraftFromEditor()
@@ -588,8 +600,8 @@ export function useComposerDraft({
     }
 
     reloadPersistedDrafts()
-    const stashed = takeSessionDraft(draftScopeRef.current)
-    loadIntoComposer(stashed.text, stashed.attachments)
+    const stashed = visibleSessionDraft(takeSessionDraft(draftScopeRef.current))
+    loadIntoComposer(stashed.text, stashed.attachments, false, stashed.retry)
   }
 
   const syncDraftRef = useRef(syncDraft)
@@ -628,13 +640,14 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [syncDraftFromEditor])
+  }, [syncDraftFromEditor, stashAt])
 
   return {
     activeQueueSessionKeyRef,
     clearDraft,
     draftScopeRef,
     draftRef,
+    draftRetryRef,
     editorRef,
     focusInput,
     hasText,

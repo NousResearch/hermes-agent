@@ -17,7 +17,6 @@ import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding-chat/assembly'
-import { OnboardingSkip } from '@/components/onboarding-chat/skip'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -30,7 +29,6 @@ import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
@@ -60,6 +58,7 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
+import { ComposerDraftNotices } from './draft-notices'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
@@ -73,7 +72,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerScreenshot } from './hooks/use-composer-screenshot'
-import { useComposerSubmit } from './hooks/use-composer-submit'
+import { useComposerSubmit, useHaltComposerRun } from './hooks/use-composer-submit'
 import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
@@ -86,9 +85,7 @@ import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { LocalSetupCard } from './local-setup-card'
-import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
-import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
@@ -104,7 +101,6 @@ import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
-import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -283,6 +279,7 @@ export function ChatBar({
     clearDraft,
     draftScopeRef,
     draftRef,
+    draftRetryRef,
     editorRef,
     focusInput,
     hasText,
@@ -383,11 +380,7 @@ export function ChatBar({
   // only trace). Interrupts that exist to advance the queue (send-now-while-
   // busy) call the raw onCancel and keep draining on settle. Parked entries
   // stay in the panel until resumed, sent, edited, or deleted.
-  const haltRun = useCallback(() => {
-    parkQueuedPrompts(activeQueueSessionKeyRef.current)
-
-    return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel])
+  const haltRun = useHaltComposerRun(activeQueueSessionKeyRef, onCancel)
 
   const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,
@@ -412,7 +405,7 @@ export function ChatBar({
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  const { queueDraft, restorePreparedInput, steerDraft, submitDraft } = useComposerSubmit({
     busyInputMode,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
@@ -422,6 +415,7 @@ export function ChatBar({
     disabled,
     draftScopeRef,
     draftRef,
+    draftRetryRef,
     drainNextQueued,
     editorRef,
     exitQueuedEdit,
@@ -1292,17 +1286,14 @@ export function ChatBar({
           {/* Aligned to the composer SURFACE, which sits inside the composer's
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
-          <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
-            <ActionBadges sessionId={statusSessionId} />
-            <SuggestionPills sessionId={statusSessionId} />
-            <PreparedImageRecovery
-              occupied={hasText || attachments.length > 0 || busy || disabled}
-              onRestore={loadIntoComposer}
-              request={requestBusyConfig}
-              sessionKey={activeQueueSessionKey}
-            />
-            <OnboardingSkip />
-          </div>
+          <ComposerDraftNotices
+            className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}
+            occupied={hasText || attachments.length > 0 || busy || disabled}
+            onRestore={restorePreparedInput}
+            request={requestBusyConfig}
+            sessionKey={activeQueueSessionKey}
+            statusSessionId={statusSessionId}
+          />
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
               grows upward over the thread and the dock's own measurement covers

@@ -3,7 +3,7 @@ import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEf
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
-import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { PaneGroupContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import {
   clearComposerTerminalSelections,
@@ -89,6 +89,7 @@ function renderSubmitHook({
     return (
       <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: scopeTarget }}>
         <ComposerSurfaceProvider value={resolvedSurfaceId}>
+          <PaneGroupContext value={resolvedSurfaceId ?? 'window'}>
           <PaneVisibleContext.Provider value={paneVisible}>
             <div
               data-composer-surface-id={resolvedSurfaceId ?? undefined}
@@ -98,6 +99,7 @@ function renderSubmitHook({
               {children}
             </div>
           </PaneVisibleContext.Provider>
+          </PaneGroupContext>
         </ComposerSurfaceProvider>
       </ComposerScopeProvider>
     )
@@ -157,6 +159,35 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('restores a synchronous send failure and releases the attempt so its retry keeps one identity', async () => {
+    const h = renderSubmitHook()
+    h.onSubmit.mockImplementationOnce(() => { throw new Error('synchronous failure') })
+    await act(async () => { requestComposerSubmit('retry sync failure', { surfaceId: h.composerSurfaceId, target: 'main' }) })
+    expect(h.loadIntoComposer).toHaveBeenCalled()
+    await act(async () => { requestComposerSubmit('retry sync failure', { surfaceId: h.composerSurfaceId, target: 'main' }) })
+    const attempts = h.onSubmit.mock.calls as unknown as Array<[string, { submission_id: string }]>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1][1].submission_id).toBe(attempts[0][1].submission_id)
+  })
+  it('keeps failed-draft retry identity in its own composer instead of sharing identical sends', async () => {
+    const first = renderSubmitHook()
+    const second = renderSubmitHook()
+    first.onSubmit.mockResolvedValueOnce(false)
+
+    const send = (h: ReturnType<typeof renderSubmitHook>) => act(async () => {
+      requestComposerSubmit('same text', { surfaceId: h.composerSurfaceId, target: 'main' })
+    })
+
+    await send(first)
+    await send(second)
+    await send(first)
+    const a = first.onSubmit.mock.calls as unknown as Array<[string, { submission_id: string }]>
+    const b = second.onSubmit.mock.calls as unknown as Array<[string, { submission_id: string }]>
+    expect(a[0][1].submission_id).not.toBe(b[0][1].submission_id)
+    expect(a[1][1].submission_id).toBe(a[0][1].submission_id)
+    await send(first)
+    expect(a[2][1].submission_id).not.toBe(a[0][1].submission_id)
+  })
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')
@@ -240,7 +271,7 @@ describe('useComposerSubmit external request routing', () => {
     })
 
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith('[setup] links opened', {
-      composerScope: 'stored-session',
+      submission_id: expect.any(String), composerScope: 'stored-session',
       displayKind: 'hidden'
     })
     expect(onSteer).not.toHaveBeenCalled()
@@ -264,7 +295,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(visibleMain.onSubmit).toHaveBeenCalledWith('ship this branch', {
-        composerScope: 'session-a'
+        submission_id: expect.any(String), composerScope: 'session-a'
       })
     )
     expect(visibleMain.onSubmit).toHaveBeenCalledTimes(1)
@@ -281,7 +312,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(tile.onSubmit).toHaveBeenCalledWith('ship project B', {
-        composerScope: 'tile-session'
+        submission_id: expect.any(String), composerScope: 'tile-session'
       })
     )
     expect(main.onSubmit).not.toHaveBeenCalled()
@@ -295,7 +326,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(second.onSubmit).toHaveBeenCalledWith('ship exactly one session', {
-        composerScope: 'session-second'
+        submission_id: expect.any(String), composerScope: 'session-second'
       })
     )
     expect(first.onSubmit).not.toHaveBeenCalled()
@@ -313,7 +344,7 @@ describe('useComposerSubmit external request routing', () => {
 
     await waitFor(() =>
       expect(visibleB.onSubmit).toHaveBeenCalledWith('ship session B', {
-        composerScope: 'session-b'
+        submission_id: expect.any(String), composerScope: 'session-b'
       })
     )
     expect(hiddenA.onSubmit).not.toHaveBeenCalled()
@@ -458,7 +489,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', { composerScope: 'stored-session' })
+      expect(onSubmit).toHaveBeenCalledWith('/compress preserve context', { submission_id: expect.any(String), composerScope: 'stored-session' })
     )
     expect(clearDraft).toHaveBeenCalledTimes(1)
     expect(onSteer).not.toHaveBeenCalled()
@@ -508,7 +539,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('ordinary question', {
         attachments: [],
-        composerScope: 'stored-session'
+        submission_id: expect.any(String), composerScope: 'stored-session'
       })
     )
     expect(onSteer).not.toHaveBeenCalled()
@@ -524,7 +555,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
+      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ submission_id: expect.any(String), composerScope: 'stored-session' }))
     )
   })
 
@@ -542,7 +573,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('look at @terminal:`zsh:23-58`', {
         attachments: [],
-        composerScope: 'stored-session'
+        submission_id: expect.any(String), composerScope: 'stored-session'
       })
     )
     expect(onSteer).not.toHaveBeenCalled()
@@ -846,7 +877,7 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { composerScope: 'stored-session' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', { submission_id: expect.any(String), composerScope: 'stored-session' }))
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
   })

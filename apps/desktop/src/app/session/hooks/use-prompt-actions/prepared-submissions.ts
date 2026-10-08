@@ -5,6 +5,8 @@ import type { SubmissionDestination } from './submission-destination'
 import type { SubmitTextOptions } from './utils'
 
 const STORAGE_KEY = 'hermes.desktop.preparedSubmissions.v1'
+// Keep upstream's successful-admission fence if durable cleanup fails.
+const retired = new Set<string>()
 
 export interface PreparedSubmission {
   id: string
@@ -15,11 +17,6 @@ export interface PreparedSubmission {
   params: Record<string, unknown>
   legacyAttempted?: boolean
 }
-
-// Admitted entries whose durable removal failed (ENOSPC/EIO). Their identity is spent: this
-// window never adopts, lists or slots them again, so a later send is never deduplicated
-// into an earlier admission. The entry's Web Lock stays held until the removal lands.
-const retired = new Set<string>()
 
 // A journal, not an automatic outbox. Only an explicit retry may reuse an
 // uncertain admission. Read storage each time so a remount cannot lose it.
@@ -34,7 +31,7 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
     throw new Error('Invalid prepared submission journal')
   }
 
-  for (const key of retired) {delete (parsed as Record<string, PreparedSubmission>)[key]}
+  for (const key of retired) { delete (parsed as Record<string, PreparedSubmission>)[key] }
 
   return parsed as Record<string, PreparedSubmission>
 }
@@ -53,121 +50,106 @@ export function preparedSubmissionKey(
     attachments.map(a => a.occurrenceId ?? a.id),
     options?.displayKind,
     Boolean(options?.fromQueue),
-    // Slash expands once, then retries the prepared wire payload, not a new
-    // generated ID/expansion. Explicit queue IDs remain distinct intents.
-    options?.retryText && !options.fromQueue ? null : options?.submission_id
+    // Identity belongs to one send, never to its text or to another window.
+    // Only a caller explicitly retrying the retained input supplies this ID.
+    options?.submission_id ?? crypto.randomUUID()
   ])
 }
 
-export async function listPreparedImageDrafts(target: string, scopeKey: string) {
+export async function listPreparedDrafts(target: string, scopeKey: string) {
   return Object.entries(await readJournal()).flatMap(([key, entry]) => {
-    const [scope, session, text, , displayKind, fromQueue, submissionId] = JSON.parse(key)
+    const [scope, session, text, , displayKind, fromQueue] = JSON.parse(key)
 
-    // Restoring an ordinary draft must recreate its exact retry key. Queue and
-    // slash submissions own their recovery. Historical slash keys intentionally
-    // omit submissionId, so the retained invocation must also be excluded.
-    return scope === scopeKey && session === target && !displayKind && !fromQueue && !submissionId &&
-      !String(text).trimStart().startsWith('/') &&
-      !entry.legacyAttempted && entry.attachments.some(attachment => attachment.kind === 'image')
-      ? [{ key, text: String(text), attachments: entry.attachments }]
+    // Recover one explicit operation, including text/slash sends which may no
+    // longer fit in the shared draft row after another window writes there.
+    return scope === scopeKey && session === target && !displayKind && !entry.legacyAttempted
+      ? [{ key, submissionId: entry.id, text: String(text), attachments: entry.attachments, fromQueue: Boolean(fromQueue) }]
       : []
   })
 }
 
 export async function readPreparedSubmission(key: string): Promise<PreparedSubmission | undefined> {
-  return (await readJournal())[key]
-}
-
-// Uncertain sends this window journaled or adopted: journal key -> release of its Web Lock.
-// The journal is shared by every window of the origin; a held lock marks an entry whose
-// window is alive, and only that window may retry it. A closed window's lock is freed, so its
-// entry stays adoptable after a reload. Without Web Locks there is no other window to exclude.
-const owned = new Map<string, () => void>()
-
-function holdPreparedSubmission(key: string): Promise<boolean> {
-  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
-
-  if (owned.has(key)) { return Promise.resolve(true) }
-
-  if (!locks) {
-    owned.set(key, () => undefined)
-
-    return Promise.resolve(true)
-  }
-
-  return new Promise<boolean>(acquired => {
-    void locks.request(`${STORAGE_KEY}.${key}`, { ifAvailable: true }, lock => {
-      if (!lock) {
-        acquired(false)
-
-        return null
-      }
-
-      return new Promise<void>(release => {
-        owned.set(key, release)
-        acquired(true)
-      })
-    })
-  })
-}
-
-const intentVariant = (intent: string, key: string) => key === intent || key.startsWith(`${intent.slice(0, -1)},`)
-
-/** The retained entry an explicit retry of `intent` may reuse: this window's own, or one a
- *  closed window left. A live other window's uncertain send is never adopted. */
-export async function adoptPreparedSubmission(intent: string): Promise<{ key: string; entry: PreparedSubmission } | undefined> {
   const journal = await readJournal()
 
-  for (const key of Object.keys(journal).filter(key => intentVariant(intent, key)).sort()) {
-    if (await holdPreparedSubmission(key)) { return { key, entry: journal[key] } }
-  }
-
-  return undefined
+  return journal[retainedSubmissionKey(journal, key)]
 }
 
-/** A journal key for a NEW send of `intent`, held by this window. Never another live window's
- *  entry, so a separate send from another window cannot overwrite or share its identity. */
-export async function preparedSubmissionSlot(intent: string): Promise<string> {
-  if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) { return intent }
-  const key = JSON.stringify([...JSON.parse(intent), crypto.randomUUID()])
-  await holdPreparedSubmission(key)
+function submissionScope(key: string): unknown[] | undefined {
+  try {
+    const parts = JSON.parse(key)
 
-  return key
+    // The preceding release appended an eighth per-window slot to this key.
+    return Array.isArray(parts) && (parts.length === 7 || parts.length === 8) ? parts : undefined
+  } catch { return undefined }
+}
+
+function retainedSubmissionKey(journal: Record<string, PreparedSubmission>, key: string): string {
+  if (journal[key]) { return key }
+  const requested = submissionScope(key)
+
+  if (typeof requested?.[6] !== 'string') { return key }
+
+  // A renderer rehydration can change whitespace or chip staging metadata.
+  // Only the explicitly restored UUID and exact owner/session select its
+  // committed payload; equal text in another operation never grants a retry.
+  return Object.keys(journal).find(candidate => {
+    const saved = submissionScope(candidate)
+
+    return journal[candidate].id === requested[6] && saved?.[0] === requested[0] && saved?.[1] === requested[1]
+  }) ?? key
+}
+
+export async function readRetryablePreparedSubmission(key: string): Promise<PreparedSubmission | undefined> {
+  const entry = await readPreparedSubmission(key)
+
+  if (entry?.legacyAttempted) {
+    throw new Error('The previous send may have completed, but its acknowledgement was lost. Check the conversation history before sending a new message; this send cannot be retried safely.')
+  }
+
+  return entry
+}
+
+export async function retireAcceptedSubmission(key: string, report: (error: unknown) => void): Promise<void> {
+  // The admission ACK stays authoritative even when local journal cleanup fails.
+  try { await removePreparedSubmission(key) } catch (error) { report(error) }
 }
 
 export async function writePreparedSubmission(key: string, entry: PreparedSubmission): Promise<void> {
   const native = window.hermesDesktop?.preparedSubmissions
 
   if (native) {
-    await native.update(key, JSON.stringify(entry))
-    retired.delete(key)
+    const retainedKey = retainedSubmissionKey(await readJournal(), key)
+    await native.update(retainedKey, JSON.stringify(entry))
+    retired.delete(retainedKey)
 
     return
   }
 
   const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
-  journal[key] = entry
+  const retainedKey = retainedSubmissionKey(journal, key)
+  journal[retainedKey] = entry
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
-  retired.delete(key)
+  retired.delete(retainedKey)
 }
 
-/** Retire an admitted entry. Its identity is spent before the durable write is attempted, so a
- *  failed removal can only leave a stale file entry, never a reusable one. */
 export async function removePreparedSubmission(key: string): Promise<void> {
   const native = window.hermesDesktop?.preparedSubmissions
-  retired.add(key)
 
   if (native) {
-    await native.update(key, null)
-  } else {
-    const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
-    delete journal[key]
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+    const retainedKey = retainedSubmissionKey(await readJournal(), key)
+    retired.add(retainedKey)
+    await native.update(retainedKey, null)
+    retired.delete(retainedKey)
+
+    return
   }
 
-  retired.delete(key)
-  owned.get(key)?.()
-  owned.delete(key)
+  const journal: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
+  const retainedKey = retainedSubmissionKey(journal, key)
+  retired.add(retainedKey)
+  delete journal[retainedKey]
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  retired.delete(retainedKey)
 }

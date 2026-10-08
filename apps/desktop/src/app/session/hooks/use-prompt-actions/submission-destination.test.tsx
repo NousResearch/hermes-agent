@@ -79,6 +79,37 @@ afterEach(() => {
 })
 
 describe('submission intent destinations', () => {
+  it('keeps an acknowledged send accepted when the native journal cannot retire it', async () => {
+    const original = window.hermesDesktop
+    const { deps, requestGateway } = setup()
+    window.hermesDesktop = { ...original, preparedSubmissions: {
+      read: async () => '{}',
+      update: async (_key: string, value: string | null) => { if (value === null) { throw new Error('disk full') } }
+    } } as never
+
+    try {
+      const hook = renderHook(() => useSubmitPrompt(deps))
+      await act(async () => { expect(await hook.result.current('delivered')).toBe(true) })
+      expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')).toHaveLength(1)
+    } finally { window.hermesDesktop = original }
+  })
+  it('separate mounted composers submit identical text as distinct intents while an explicit retry retains its payload', async () => {
+    const first = setup()
+    const second = setup()
+    first.requestGateway.mockRejectedValueOnce(new Error('lost acknowledgement'))
+    const a = renderHook(() => useSubmitPrompt(first.deps))
+    const b = renderHook(() => useSubmitPrompt(second.deps))
+    await act(async () => { expect(await a.result.current('same text')).toBe(false) })
+    const original = first.requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]!
+    await act(async () => { expect(await b.result.current('same text')).toBe(true) })
+    const other = second.requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]!
+    expect(other.submission_id).not.toBe(original.submission_id)
+    const retained = Object.values(JSON.parse(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!))
+    expect(retained).toHaveLength(1)
+    expect(retained[0]).toMatchObject({ id: original.submission_id, params: original })
+    await act(async () => { expect(await a.result.current('same text', { submission_id: String(original.submission_id) })).toBe(true) })
+    expect(first.requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(original)
+  })
   it('stages canonical images on the captured owner without a legacy image RPC', async () => {
     const { uploadComposerAttachment } = await import('.')
     const original = window.hermesDesktop
@@ -109,12 +140,12 @@ describe('submission intent destinations', () => {
     deps.syncAttachmentsForSubmit.mockResolvedValue({ sessionId: 'runtime-a', attachments: [image] } as never)
     requestGateway.mockRejectedValueOnce(new Error('connection closed'))
     let hook = renderHook(() => useSubmitPrompt(deps))
-    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(false) })
+    await act(async () => { expect(await hook.result.current('image retry', { submission_id: 'image-retry', attachments: [image] })).toBe(false) })
     const first = requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]
     expect(first?.attachments).toEqual([{ path: image.path, mime: image.mime }])
     hook.unmount()
     hook = renderHook(() => useSubmitPrompt(deps))
-    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(true) })
+    await act(async () => { expect(await hook.result.current('image retry', { submission_id: 'image-retry', attachments: [image] })).toBe(true) })
     expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(first)
     expect(deps.syncAttachmentsForSubmit).toHaveBeenCalledOnce()
     expect(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).not.toContain('image retry')
@@ -172,7 +203,7 @@ describe('submission intent destinations', () => {
     requestGateway.mockRejectedValueOnce(new Error('connection closed'))
     let hook = renderHook(() => useSubmitPrompt(deps))
     await act(async () => {
-      expect(await hook.result.current('retry me')).toBe(false)
+      expect(await hook.result.current('retry me', { submission_id: 'explicit-retry' })).toBe(false)
     })
     const journal = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
     expect(journal).toContain('retry me')
@@ -197,7 +228,7 @@ describe('submission intent destinations', () => {
     hook = renderHook(() => useSubmitPrompt(deps))
     const { result } = hook
     await act(async () => {
-      expect(await result.current('retry me')).toBe(true)
+      expect(await result.current('retry me', { submission_id: 'explicit-retry' })).toBe(true)
     })
 
     const calls = requestGateway.mock.calls.filter(
@@ -283,7 +314,7 @@ describe('submission intent destinations', () => {
     const input = slash ? '/private-skill' : 'first prompt'
     let hook = mount()
     await act(async () => {
-      expect(await hook.result.current(input)).toBe(false)
+      expect(await hook.result.current(input, { submission_id: 'new-session-retry' })).toBe(false)
     })
     const serialized = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
     expect(serialized).toBeTruthy()
@@ -294,7 +325,7 @@ describe('submission intent destinations', () => {
     loseAck = false
     hook = mount()
     await act(async () => {
-      expect(await hook.result.current(input)).toBe(true)
+      expect(await hook.result.current(input, { submission_id: 'new-session-retry' })).toBe(true)
     })
     expect(accepted.size).toBe(1)
     expect(deps.createBackendSessionForSend).toHaveBeenCalledTimes(1)
@@ -328,14 +359,14 @@ describe('submission intent destinations', () => {
       })
       let hook = renderHook(() => useSubmitPrompt(deps))
       await act(async () => {
-        expect(await hook.result.current('receipt')).toBe(mode === '4094')
+        expect(await hook.result.current('receipt', { submission_id: `receipt-${mode}` })).toBe(mode === '4094')
       })
       hook.unmount()
       hook = renderHook(() => useSubmitPrompt(deps))
 
       if (mode !== '4094') {
         await act(async () => {
-          expect(await hook.result.current('receipt')).toBe(false)
+          expect(await hook.result.current('receipt', { submission_id: `receipt-${mode}` })).toBe(false)
         })
         const attempts = requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')
 

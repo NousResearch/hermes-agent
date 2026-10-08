@@ -48,11 +48,9 @@ import type { CreateBackendSessionForSend } from '../use-session-actions/create-
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
-  adoptPreparedSubmission,
-  type PreparedSubmission,
   preparedSubmissionKey,
-  preparedSubmissionSlot,
-  removePreparedSubmission,
+  readRetryablePreparedSubmission,
+  retireAcceptedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
@@ -430,29 +428,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const captured =
         options?.destination ?? captureSubmissionDestination(targetStoredSessionId ?? sessionId, ambientRequestGateway)
 
+      const requestedSubmissionId = options?.submission_id ?? crypto.randomUUID()
+
       const retryKeyForTarget = () =>
         preparedSubmissionKey(
           resolveComposerSessionKey(targetStoredSessionId ?? sessionId, $sessions.get()),
           captured,
           rawText,
           attachments,
-          options
+          { ...options, submission_id: requestedSubmissionId }
         )
 
       let startingRouteToken = getRouteToken()
-      let retained: PreparedSubmission | undefined
-      let retainedKey: string | undefined
+      let retained: Awaited<ReturnType<typeof readRetryablePreparedSubmission>>
 
       try {
-        const adopted = await adoptPreparedSubmission(retryKeyForTarget())
-        retained = adopted?.entry
-        retainedKey = adopted?.key
-
-        // A legacy send has no deduplication identity. After an ambiguous ACK
-        // even an upgraded server cannot safely admit it under the saved ID.
-        if (retained?.legacyAttempted) {
-          return false
-        }
+        retained = await readRetryablePreparedSubmission(retryKeyForTarget())
       } catch (err) {
         notifyError(err, copy.promptFailed)
 
@@ -464,7 +455,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         : captured
 
       const requestGateway = destination.requestGateway
-      const submissionId = retained?.id ?? options?.submission_id ?? crypto.randomUUID()
+      const submissionId = retained?.id ?? requestedSubmissionId
 
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
@@ -1073,7 +1064,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           params: submitParams(liveSessionId)
         }
 
-        const retryKey = retainedKey ?? (await preparedSubmissionSlot(retryKeyForTarget()))
+        const retryKey = retryKeyForTarget()
         await writePreparedSubmission(retryKey, prepared)
 
         if (sessionDriftReason()) {
@@ -1264,9 +1255,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        // The gateway admitted it: a failed journal retirement (ENOSPC/EIO) must not report a
-        // delivered prompt as failed and invite a resend. The identity is retired in memory.
-        await removePreparedSubmission(retryKey).catch(error => console.warn('[prepared-submission-retire]', error))
+        await retireAcceptedSubmission(retryKey, error => console.warn('[prepared-submission-retire]', error))
 
         // The prompt is now accepted. Report the EXACT identity it landed on
         // (recovered id included) so a caller that must prove delivery — the

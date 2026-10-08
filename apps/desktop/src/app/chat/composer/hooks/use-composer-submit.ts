@@ -1,7 +1,7 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
-import { type RefObject, useLayoutEffect, useRef } from 'react'
+import { type RefObject, useCallback, useLayoutEffect, useRef } from 'react'
 
-import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
@@ -12,12 +12,14 @@ import {
   clearSessionDraft,
   type ComposerAttachment,
   freezeComposerTransportPayload,
-  isFreshDraftScope
+  isFreshDraftScope,
+  retireSessionDraftSubmission
 } from '@/store/composer'
+import type { ComposerDraftRetry } from '@/store/composer-draft-retry'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
+import { enqueueQueuedPrompt, parkQueuedPrompts, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -27,22 +29,25 @@ import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
+import { composerSubmissionSlot, invokeComposerSubmission, prepareComposerOperation, prepareComposerSubmission, readComposerSubmission, rehomeComposerSubmission, retireComposerSubmission } from './composer-submission-journal'
+
 interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
   busyInputMode?: BusyInputMode | null
-  clearDraft: () => void
+  clearDraft: (retainRetry?: boolean) => void
   disabled: boolean
   draftScopeRef: RefObject<string | null>
   draftRef: RefObject<string>
+  draftRetryRef?: RefObject<ComposerDraftRetry | undefined>
   drainNextQueued: () => Promise<boolean>
   editorRef: RefObject<HTMLDivElement | null>
   exitQueuedEdit: (action: 'cancel' | 'save') => boolean
   focusInput: () => void
   inputDisabled: boolean
-  loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
+  loadIntoComposer: (text: string, attachments: ComposerAttachment[], preserveFocusedCaret?: boolean, retry?: ComposerDraftRetry) => void
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
@@ -52,7 +57,15 @@ interface UseComposerSubmitArgs {
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
-  stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[], retry?: ComposerDraftRetry) => void
+}
+
+export function useHaltComposerRun(scope: RefObject<string | null>, cancel: ChatBarProps['onCancel']) {
+  return useCallback(() => {
+    parkQueuedPrompts(scope.current)
+
+    return cancel()
+  }, [scope, cancel])
 }
 
 /**
@@ -74,6 +87,7 @@ export function useComposerSubmit({
   disabled,
   draftScopeRef,
   draftRef,
+  draftRetryRef,
   drainNextQueued,
   editorRef,
   exitQueuedEdit,
@@ -96,6 +110,8 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const paneGroup = usePaneGroup()
+  const activeSubmissions = useRef(new Set<string>())
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -117,6 +133,40 @@ export function useComposerSubmit({
 
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
+    let slot = composerSubmissionSlot(target?.storedSessionId ?? draftScopeRef.current, scope, paneGroup)
+    let submissionId: string
+    let retry: ComposerDraftRetry | undefined
+
+    const restore = () => {
+      const retained = retry && { ...retry, pending: false }
+      stashAt(restoreScope, text, submittedAttachments, retained)
+
+      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
+        loadIntoComposer(text, submittedAttachments, false, retained)
+      }
+    }
+
+    try {
+      const prepared = prepareComposerOperation({ slot, text, attachments: submittedAttachments,
+        active: activeSubmissions.current, restored: draftRetryRef?.current, target, displayKind,
+        allowWindowRecovery: !draftRetryRef })
+
+      submissionId = prepared.id
+      retry = prepared.retry
+
+      if (retry) {
+        // The saved draft itself carries provenance across a full application
+        // restart, even if the process dies before a rejected reply arrives.
+        stashAt(restoreScope, text, submittedAttachments, retry)
+      }
+    } catch (error) {
+      restore()
+      notifyError(error, copy.promptFailed)
+
+      return
+    }
+
+    activeSubmissions.current.add(submissionId)
 
     // Only this operation's explicit session.create handoff may re-home a
     // pre-session submit. A null → stored render can also be user navigation.
@@ -124,34 +174,44 @@ export function useComposerSubmit({
       submittedScope === null
         ? {
             onComposerScopeAssigned: (scope: string) => {
+              if (retry) {
+                stashAt(scope, text, submittedAttachments, retry)
+                retireSessionDraftSubmission(restoreScope, submissionId)
+              }
+
+              slot = rehomeComposerSubmission(slot, scope, submissionId)
               restoreScope = scope
             }
           }
         : {}
 
-    const restore = () => {
-      stashAt(restoreScope, text, submittedAttachments)
-
-      if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
-        loadIntoComposer(text, submittedAttachments)
-      }
-    }
-
     // A hidden submit is machine text (a setup note, never something the user
     // typed), so a rejection drops it instead of loading it into the draft.
     const rejected = displayKind ? () => {} : restore
 
-    void Promise.resolve(
-      onSubmit(text, {
+    void invokeComposerSubmission(onSubmit, text, {
         ...target,
+        submission_id: submissionId,
+        ...(retry?.fromQueue ? { fromQueue: true } : {}),
         ...(attachments ? { attachments } : {}),
         composerScope: submittedScope,
         ...assignment,
         ...(displayKind ? { displayKind } : {})
       })
-    )
-      .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
+      .then(accepted => {
+        if (accepted === false) { rejected();
+
+ return }
+
+        try { retireComposerSubmission(slot, submissionId) } catch (error) { notifyError(error, copy.promptFailed) }
+
+        if (retry) { retireSessionDraftSubmission(restoreScope, submissionId) }
+        else { clearSessionDraft(submittedScope) }
+
+        if (draftRetryRef?.current?.id === submissionId) { draftRetryRef.current = undefined }
+      })
       .catch(rejected)
+      .finally(() => activeSubmissions.current.delete(submissionId))
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
@@ -255,7 +315,7 @@ export function useComposerSubmit({
       }
 
       triggerHaptic('submit')
-      clearDraft()
+      clearDraft(true)
       dispatchSubmit(text)
     } else if (!blockingPrompt && !attachments.length && text.trim()) {
       // Busy Send follows the backend busy-input policy: interrupt redirects
@@ -389,7 +449,7 @@ export function useComposerSubmit({
       const submittedAttachments = cloneAttachments(attachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
-      clearDraft()
+      clearDraft(true)
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
@@ -479,5 +539,19 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
+  const restorePreparedInput = (text: string, attachments: ComposerAttachment[], id: string, fromQueue?: boolean) => {
+    try {
+      const slot = composerSubmissionSlot(activeQueueSessionKey, scope, paneGroup)
+      prepareComposerSubmission(slot, text, attachments, activeSubmissions.current, id, fromQueue)
+      const retry = readComposerSubmission(slot)!
+      stashAt(activeQueueSessionKey, text, attachments, retry)
+      loadIntoComposer(text, attachments, false, retry)
+
+      return true
+    } catch (error) { notifyError(error, copy.promptFailed);
+
+ return false }
+  }
+
+  return { dispatchSubmit, queueDraft, restorePreparedInput, steerDraft, submitDraft }
 }

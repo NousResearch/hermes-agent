@@ -20,7 +20,7 @@ test('reopened composer offers exact image occurrence only for its original dest
   expect(screen.queryByRole('button')).toBeNull()
   view.rerender(<PreparedImageRecovery occupied={false} onRestore={restore} request={request} sessionKey="original" />)
   fireEvent.click(await screen.findByRole('button', { name: 'Restore image draft' }))
-  expect(restore).toHaveBeenCalledWith('  retained image  ', attachments)
+  expect(restore).toHaveBeenCalledWith('  retained image  ', attachments, 'submission', false)
   expect(request).not.toHaveBeenCalled()
 })
 

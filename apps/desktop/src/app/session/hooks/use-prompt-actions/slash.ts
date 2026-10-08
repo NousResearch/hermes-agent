@@ -68,7 +68,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
-import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
+import { preparedSubmissionKey, readPreparedSubmission } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
 import { captureSubmissionDestination } from './submission-destination'
@@ -234,12 +234,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // or after a reload. It rides retryOptions so a prepared-submission retry stays hidden too.
       const retryOptions = {
         ...options,
+        submission_id: options?.submission_id ?? crypto.randomUUID(),
         retryText: rawCommand,
         ...(options?.hidden && { displayKind: 'hidden' as const })
       }
 
       try {
-        const prepared = (await adoptPreparedSubmission(
+        const prepared = await readPreparedSubmission(
           preparedSubmissionKey(
             resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
             destination,
@@ -247,7 +248,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             options?.attachments ?? $composerAttachments.get(),
             retryOptions
           )
-        ))?.entry
+        )
 
         if (prepared) {
           return await submitPromptText(prepared.text, {
@@ -265,7 +266,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         return false
       }
 
-      const submissionId = options?.submission_id ?? crypto.randomUUID()
+      const submissionId = retryOptions.submission_id
 
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime

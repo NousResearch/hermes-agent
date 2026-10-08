@@ -1,5 +1,6 @@
 """Cron subcommand for hermes CLI."""
 
+import ast
 import contextlib
 import json
 import re
@@ -695,8 +696,29 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
 
+def _unwrap_test(value: str) -> Optional[Any]:
+    """``ast.literal_eval`` wrapper used by the doctor repr check (issue #132867)."""
+    try:
+        return ast.literal_eval(value.strip())
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return value
+
+
 def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
+    # A skills field holding the Python repr of a list ("['a', 'b']") loads zero skills at
+    # fire time (the loader skips the bogus name silently) and used to read as clean here.
+    # The storage layer heals repr-shaped entries on read; doctor still flags pre-heal
+    # stores so the user learns the job was silently running without its skills (#132867).
+    for field in ("skills", "skill"):
+        value = job.get(field)
+        if (isinstance(value, str) and value.strip().startswith(("['", "[\"", "(\"", "('"))
+                and _unwrap_test(value) is not value):
+            issues.append(
+                f"skills field holds a string repr of a list, so no skill ever loads: "
+                f"{field}={value!r}. Re-save the job with an actual list "
+                f"(e.g. cronjob(action='update', job_id=..., skills=[...])).")
+            break
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:

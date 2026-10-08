@@ -2,6 +2,7 @@
 """Cron job storage: ~/.hermes/cron/jobs.json; output in
 ~/.hermes/cron/output/{job_id}/{timestamp}.md"""
 
+import ast
 import contextlib
 import copy
 from contextvars import ContextVar
@@ -435,8 +436,38 @@ def _job_output_dir(job_id: str) -> Path:
     return _current_cron_store().output_dir / text
 
 
+def _unwrap_skill_repr(items: Any) -> Any:
+    """Heal a skill list stored as a *string repr* of a list (issue #132867).
+
+    A model caller can pass ``skills="['a', 'b']"``; the tool-side normalization unwraps it
+    on create/update, but records written before that fix (or via direct store edits) still
+    hold one bogus skill literally named ``['a', 'b']`` — the fire-time loader silently skips
+    it and ``cron doctor`` reports the record clean. When a bracketed string parses
+    (``ast.literal_eval``) as a list/tuple, return the parsed sequence; anything else passes
+    through untouched.
+    """
+    if not (isinstance(items, str) and len(items) >= 2):
+        return items
+    text = items.strip()
+    if not ((text.startswith("[") and text.endswith("]"))
+            or (text.startswith("(") and text.endswith(")"))):
+        return items
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return items
+    return parsed if isinstance(parsed, (list, tuple)) else items
+
+
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
+    skills = _unwrap_skill_repr(skills)
+    skill = _unwrap_skill_repr(skill)
+    # A repr-shaped `skill` can unwrap to a whole list ("['a', 'b']" -> ['a', 'b']);
+    # treat that as the skills list rather than one entry wrapping it.
+    if isinstance(skill, (list, tuple)):
+        skills = list(skill) if skills is None else skills
+        skill = None
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):

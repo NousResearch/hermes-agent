@@ -1,6 +1,7 @@
 """Cron job argument normalization, validation and result shaping (re-exported by
 tools/cronjob_tools.py)."""
 
+import ast
 import contextlib
 import logging
 from datetime import datetime, timedelta
@@ -226,7 +227,37 @@ def _clean_str_list(items: Any) -> List[str]:
     return [s for s in (str(i).strip() for i in items) if s]
 
 
+def _unwrap_skill_repr(items: Any) -> Any:
+    """Un-wrap a skill list the model passed as a *string repr* of a list (issue #132867).
+
+    A caller that sends ``skills="['a', 'b']"`` would otherwise survive every normalization
+    step as one bogus skill literally named ``['a', 'b']``: jobs store it, the fire-time
+    loader silently skips it, and ``cron doctor`` reports the record clean. When the string
+    parses (``ast.literal_eval``) as a list/tuple, return the parsed sequence so downstream
+    normalization sees the real skill names; anything else (legit single names, unparseable
+    text) passes through untouched.
+    """
+    if not (isinstance(items, str) and len(items) >= 2):
+        return items
+    text = items.strip()
+    if not ((text.startswith("[") and text.endswith("]"))
+            or (text.startswith("(") and text.endswith(")"))):
+        return items
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return items
+    return parsed if isinstance(parsed, (list, tuple)) else items
+
+
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+    skills = _unwrap_skill_repr(skills)
+    skill = _unwrap_skill_repr(skill)
+    # A repr-shaped `skill` can unwrap to a whole list ("['a', 'b']" -> ['a', 'b']);
+    # treat that as the skills list rather than one entry wrapping it.
+    if isinstance(skill, (list, tuple)):
+        skills = list(skill) if skills is None else skills
+        skill = None
     if skills is None:
         skills = [skill] if skill else []
     elif isinstance(skills, str):

@@ -77,3 +77,8 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
 
     add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)
+
+    # Hosted connector accounts sit next to MCP servers in `hermes --help`.
+    from hermes_cli.subcommands.connectors import build_connectors_parser
+
+    build_connectors_parser(subparsers)

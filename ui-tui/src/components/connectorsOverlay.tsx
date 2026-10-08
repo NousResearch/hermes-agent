@@ -8,7 +8,7 @@ import type {
   ConnectorsListResult
 } from '@hermes/shared/gateway-events'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   accountName,
@@ -300,6 +300,35 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     }
   }
 
+  const addAppKey = (current: Extract<Stage, { kind: 'addApp' }>, key: KeyLike & { return: boolean }) => {
+    if (key.escape) {
+      return setStage({ kind: 'list' })
+    }
+
+    if (key.upArrow || key.downArrow) {
+      const next = (current.idx + (key.upArrow ? -1 : 1) + current.apps.length) % current.apps.length
+
+      return setStage({ ...current, idx: next })
+    }
+
+    if (key.return) {
+      setErr('')
+      setStage({ app: current.apps[current.idx]!, draft: '', kind: 'addName' })
+    }
+  }
+
+  const linkKey = (current: Extract<Stage, { kind: 'link' }>, key: KeyLike & { return: boolean }) => {
+    if (key.escape) {
+      setStage({ kind: 'list' })
+
+      return setNotice(T.connectors.notice.stopped)
+    }
+
+    if (key.return && current.target?.connect_url) {
+      setNotice(openExternalUrl(current.target.connect_url) ? '' : T.connectors.notice.browserDidNotOpen)
+    }
+  }
+
   useInput((ch, key) => {
     if (busy) {
       return
@@ -321,23 +350,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         return
 
       case 'addApp':
-        if (key.escape) {
-          return setStage({ kind: 'list' })
-        }
-
-        if (key.upArrow || key.downArrow) {
-          const next = (stage.idx + (key.upArrow ? -1 : 1) + stage.apps.length) % stage.apps.length
-
-          return setStage({ ...stage, idx: next })
-        }
-
-        if (key.return) {
-          setErr('')
-
-          return setStage({ app: stage.apps[stage.idx]!, draft: '', kind: 'addName' })
-        }
-
-        return
+        return addAppKey(stage, key)
 
       case 'confirm':
         if (ch === 'y' || ch === 'Y') {
@@ -345,16 +358,9 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         }
 
         return setStage({ kind: 'list' })
+
       case 'link':
-        if (key.escape) {
-          setStage({ kind: 'list' })
-
-          return setNotice(T.connectors.notice.stopped)
-        }
-
-        if (key.return && stage.target?.connect_url) {
-          setNotice(openExternalUrl(stage.target.connect_url) ? '' : T.connectors.notice.browserDidNotOpen)
-        }
+        return linkKey(stage, key)
     }
   })
 
@@ -412,44 +418,11 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   }
 
   if (stage.kind === 'addApp') {
-    const { items, offset } = windowItems(stage.apps, stage.idx, VISIBLE)
-
-    return (
-      <Box flexDirection="column" width={width}>
-        {title}
-        <Text color={t.color.text}>{T.connectors.add.pickApp}</Text>
-        {items.map((app, i) => (
-          <Text color={t.color.muted} {...chipRowProps(t, offset + i === stage.idx)} key={app} wrap="truncate-end">
-            {offset + i === stage.idx ? '▸ ' : '  '}
-            {app}
-          </Text>
-        ))}
-        {footer}
-        <OverlayHint t={t}>{T.connectors.add.pickHint}</OverlayHint>
-      </Box>
-    )
+    return <AppPicker footer={footer} stage={stage} t={t} title={title} width={width} />
   }
 
   if (stage.kind === 'link') {
-    const heading = stage.reconnect
-      ? T.connectors.link.reconnectTitle(stage.app, stage.name)
-      : T.connectors.link.title(stage.app, stage.name)
-
-    return (
-      <Box flexDirection="column" width={width}>
-        {title}
-        <Text color={t.color.text}>{heading}</Text>
-        {stage.target?.connect_url ? (
-          <Text color={t.color.accent}>{stage.target.connect_url}</Text>
-        ) : (
-          <Text color={t.color.muted}>{T.connectors.link.starting}</Text>
-        )}
-        {stage.target?.detail ? <Text color={t.color.error}>{stage.target.detail}</Text> : null}
-        <Text color={t.color.muted}>{T.connectors.link.waiting}</Text>
-        {footer}
-        <OverlayHint t={t}>{T.connectors.link.hint}</OverlayHint>
-      </Box>
-    )
+    return <LinkView footer={footer} stage={stage} t={t} title={title} width={width} />
   }
 
   const labels = view.rows.map(row => accountRowText(row, statusLabel(T, row), T.connectors.unnamedTag))
@@ -485,6 +458,58 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       ) : null}
       {footer}
       <OverlayHint t={t}>{T.connectors.hint}</OverlayHint>
+    </Box>
+  )
+}
+
+interface StageViewProps<K extends Stage['kind']> {
+  footer: ReactNode
+  stage: Extract<Stage, { kind: K }>
+  t: Theme
+  title: ReactNode
+  width: number
+}
+
+function AppPicker({ footer, stage, t, title, width }: StageViewProps<'addApp'>) {
+  const T = useT()
+  const { items, offset } = windowItems(stage.apps, stage.idx, VISIBLE)
+
+  return (
+    <Box flexDirection="column" width={width}>
+      {title}
+      <Text color={t.color.text}>{T.connectors.add.pickApp}</Text>
+      {items.map((app, i) => (
+        <Text color={t.color.muted} {...chipRowProps(t, offset + i === stage.idx)} key={app} wrap="truncate-end">
+          {offset + i === stage.idx ? '▸ ' : '  '}
+          {app}
+        </Text>
+      ))}
+      {footer}
+      <OverlayHint t={t}>{T.connectors.add.pickHint}</OverlayHint>
+    </Box>
+  )
+}
+
+function LinkView({ footer, stage, t, title, width }: StageViewProps<'link'>) {
+  const T = useT()
+
+  const heading = stage.reconnect
+    ? T.connectors.link.reconnectTitle(stage.app, stage.name)
+    : T.connectors.link.title(stage.app, stage.name)
+
+  return (
+    <Box flexDirection="column" width={width}>
+      {title}
+      <Text color={t.color.text}>{heading}</Text>
+      {stage.target?.connect_url ? (
+        <Text color={t.color.accent}>{stage.target.connect_url}</Text>
+      ) : (
+        <Text color={t.color.muted}>{T.connectors.link.starting}</Text>
+      )}
+      {stage.target?.detail ? <Text color={t.color.error}>{stage.target.detail}</Text> : null}
+      <Text color={t.color.muted}>{T.connectors.link.waiting}</Text>
+      {footer}
+      <OverlayHint t={t}>{T.connectors.link.hint}</OverlayHint>
     </Box>
   )
 }

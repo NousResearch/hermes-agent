@@ -31,55 +31,32 @@ const buildOverlayState = (): OverlayState => ({
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
-export const $isBlocked = computed(
-  $overlayState,
-  ({
-    agents,
-    approval,
-    billing,
-    clarify,
-    confirm,
-    connection,
-    connectors,
-    journey,
-    modelPicker,
-    pager,
-    petPicker,
-    pluginsHub,
-    secret,
-    sessions,
-    skillsHub,
-    subscription,
-    sudo,
-    vaultCode,
-    vaultSaveLogin,
-    vaultUnlock,
-    widget
-  }) =>
-    Boolean(
-      agents ||
-      approval ||
-      billing ||
-      clarify ||
-      confirm ||
-      connection ||
-      connectors ||
-      journey ||
-      modelPicker ||
-      pager ||
-      petPicker ||
-      pluginsHub ||
-      secret ||
-      sessions ||
-      skillsHub ||
-      subscription ||
-      sudo ||
-      vaultCode ||
-      vaultSaveLogin ||
-      vaultUnlock ||
-      widget
-    )
-)
+// Every overlay that suspends text input. `ambient` is the one non-blocking key.
+const BLOCKING_KEYS = [
+  'agents',
+  'approval',
+  'billing',
+  'clarify',
+  'confirm',
+  'connection',
+  'connectors',
+  'journey',
+  'modelPicker',
+  'pager',
+  'petPicker',
+  'pluginsHub',
+  'secret',
+  'sessions',
+  'skillsHub',
+  'subscription',
+  'sudo',
+  'vaultCode',
+  'vaultSaveLogin',
+  'vaultUnlock',
+  'widget'
+] as const satisfies readonly (keyof OverlayState)[]
+
+export const $isBlocked = computed($overlayState, overlay => BLOCKING_KEYS.some(key => Boolean(overlay[key])))
 
 /**
  * Does an open overlay actually PAINT OVER the status rule?

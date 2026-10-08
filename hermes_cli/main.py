@@ -388,7 +388,6 @@ from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
-from hermes_cli.subcommands.connectors import build_connectors_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
@@ -3448,7 +3447,6 @@ def _build_cli_parser():
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
-    build_connectors_parser(subparsers)
     build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_usage_parser(subparsers)

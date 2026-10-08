@@ -94,19 +94,33 @@ result = store.clear_stored_system_prompts()
 # {"cleared": 3, "storage_mode": "out-of-line"}
 ```
 
-Semantics, identical across backends:
+Per-operation behavior of the SQLite reference (other backends must implement
+an equivalent `clear_stored_system_prompts` operation, not this SQLite layout):
 
 - **Never deletes sessions.** Session rows survive; only prompt snapshots are
   invalidated.
-- **Both storage layouts.** `storage_mode` reports which was found:
+- **Both SQLite storage layouts.** `storage_mode` reports which was found:
   `"out-of-line"` (prompt text in a `system_prompts` table referenced by
   `sessions.system_prompt_hash` — references are NULLed before the
   unreferenced snapshot rows are deleted, so no foreign key ever dangles),
   `"inline"` (legacy text column on `sessions`, blanked), or `"unknown"`
   (neither column exists; nothing to do).
 - **Idempotent.** Nothing stored (or already cleared) → `cleared == 0`.
-- **One transaction.** The whole invalidation is atomic; a crash mid-clear
-  leaves the store fully intact.
+- **SQLite atomicity is scoped to this call.** SQLite's `_execute_write`
+  wraps the reference implementation's UPDATE and snapshot sweep in one
+  `BEGIN IMMEDIATE` transaction. Failure before commit rolls both back;
+  after commit, both changes are durable. This is not a transaction or
+  consistent snapshot spanning `get_session`, title methods, search, and
+  `clear_stored_system_prompts`; the protocol provides no public unit-of-work.
+  Another backend must provide equivalent per-operation invalidation semantics
+  itself. The private write helper may retry a callback after a lock/busy
+  failure, so its callback must tolerate replay; an IOERR after the callback
+  starts is not blindly replayed because commit status may be unknown.
+
+For reads, treat a cleared prompt as **unset**, not as a portable Python value:
+SQLite's out-of-line `get_session(...)["system_prompt"]` resolves to `None`,
+while a direct read of a true legacy inline row cleared by the inline branch
+returns `''`. Do not rely on `is None` across layouts or backends.
 
 ## Extension rules
 

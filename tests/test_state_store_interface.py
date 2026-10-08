@@ -140,6 +140,35 @@ def test_clear_out_of_line_nulls_references_and_deletes_snapshots(db):
     assert db.get_session("s1")["system_prompt"] is None
 
 
+def test_clear_out_of_line_rolls_back_update_when_snapshot_sweep_fails(db, monkeypatch):
+    db.create_session("s1", source="cli", system_prompt="prompt one")
+    db.create_session("s2", source="cli", system_prompt="prompt two")
+    sessions_sql = "SELECT id, system_prompt, system_prompt_hash FROM sessions ORDER BY id"
+    snapshots_sql = "SELECT hash, prompt FROM system_prompts ORDER BY hash"
+    sessions_before = _rows(db, sessions_sql)
+    snapshots_before = _rows(db, snapshots_sql)
+    assert len(snapshots_before) == 2
+    assert all(row["system_prompt_hash"] is not None for row in sessions_before)
+
+    def fail_after_update(conn):
+        # The UPDATE happened in this transaction, before the snapshot sweep.
+        assert all(
+            row["system_prompt_hash"] is None and row["system_prompt"] is None
+            for row in conn.execute(sessions_sql)
+        )
+        assert [dict(row) for row in conn.execute(snapshots_sql)] == snapshots_before
+        raise RuntimeError("injected snapshot sweep failure")
+
+    monkeypatch.setattr(db, "_delete_unreferenced_system_prompts", fail_after_update)
+    with pytest.raises(RuntimeError, match="injected snapshot sweep failure"):
+        db.clear_stored_system_prompts()
+
+    assert _rows(db, sessions_sql) == sessions_before
+    assert _rows(db, snapshots_sql) == snapshots_before
+    assert db.get_session("s1")["system_prompt"] == "prompt one"
+    assert db.get_session("s2")["system_prompt"] == "prompt two"
+
+
 def test_clear_is_idempotent(db):
     db.create_session("s1", source="cli", system_prompt="prompt one")
     first = db.clear_stored_system_prompts()
@@ -262,7 +291,7 @@ def test_clear_upgrades_legacy_inline_text_through_a_real_open(tmp_path):
         result = handle.clear_stored_system_prompts()
         assert result == {"cleared": 1, "storage_mode": "out-of-line"}
         row = handle.get_session("legacy1")
-        assert row is not None and not (row["system_prompt"] or "")
+        assert row is not None and row["system_prompt"] is None
     finally:
         handle.close()
 

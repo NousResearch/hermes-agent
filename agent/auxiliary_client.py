@@ -4805,12 +4805,12 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
-    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); OpenAI models
-    (GPT-5.5/5.6) → Bedrock Mantle's OpenAI Responses endpoint; everything else → Converse API."""
+    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
+    → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
     try:
         from agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
-            is_openai_bedrock_model, bedrock_openai_base_url, resolve_bedrock_bearer_token,
+            bedrock_openai_uses_mantle, bedrock_openai_base_url, resolve_bedrock_bearer_token,
             configure_bedrock_openai_client_kwargs,
         )
         from agent.anthropic_adapter import build_anthropic_bedrock_client
@@ -4826,7 +4826,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     region = resolve_bedrock_runtime_region()
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
-    if is_openai_bedrock_model(final_model):
+    if bedrock_openai_uses_mantle(final_model):
         # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
         client_kwargs: Dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
@@ -6706,12 +6706,10 @@ def _merge_aux_extra_body(
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.
     merged_extra.update(caller_reasoning_fields)
-    if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if caller_disabled:
-            merged_extra["reasoning"] = {"enabled": False}
-        else:
-            # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
-            merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    if not projection.handles_reasoning:
+        # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
+        from agent.reasoning_effort import generic_nested_reasoning
+        merged_extra.update(generic_nested_reasoning(reasoning_config))
     # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
     # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
     # OpenAI-compat wire from any aux task (#112010).

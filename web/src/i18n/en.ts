@@ -128,6 +128,7 @@ export const en: Translations = {
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Active Sessions",

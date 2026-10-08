@@ -1087,7 +1087,7 @@ _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
-    "compress": _cmd_compress, "compact": _cmd_compress,
+    "compress": _cmd_compress, "compact": _cmd_compress, "initiate-setup": lambda *a: _cmd_initiate_setup(*a),
     "memory": _cmd_memory, "skills": _cmd_skills}
 
 @method("command.dispatch")
@@ -1608,8 +1608,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)

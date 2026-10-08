@@ -437,7 +437,9 @@ class TestVerifySession:
         return p
 
     def test_expired_token_returns_none(self, provider, rsa_keypair):
-        token = _mint_token(rsa_keypair, ttl_seconds=-1)
+        # Well past the 60s default leeway — a just-expired token is accepted
+        # within the clock-skew window (RFC 7519 §4.1.4), a long-dead one is not.
+        token = _mint_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
     def test_wrong_audience_raises_provider_error(self, provider, rsa_keypair):

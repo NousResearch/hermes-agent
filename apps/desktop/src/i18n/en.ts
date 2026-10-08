@@ -1,8 +1,17 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
+import { enAppTour, enHandoffTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
+import { enBilling } from './en_billing'
+import { enBoot } from './en_boot'
+import { enCatalogInstall } from './en_catalog_install'
+import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
+import { enNotices } from './en_notices'
+import { enOnboarding } from './en_onboarding'
+import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enUninstallSection } from './en_uninstall_section'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -17,6 +26,7 @@ export const en: Translations = {
     }
   },
   sharedMetrics: enSharedMetrics,
+  appTour: enAppTour,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: {
@@ -393,86 +403,7 @@ export const en: Translations = {
     revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
 
-  boot: {
-    ready: 'Hermes Desktop is ready',
-    desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
-    steps: {
-      connectingGateway: 'Connecting live desktop gateway',
-      loadingSettings: 'Loading Hermes settings',
-      loadingSessions: 'Loading recent sessions',
-      retryingRemoteBackend: 'Reconnecting to the remote Hermes backend…',
-      startingDesktopConnection: 'Starting desktop connection',
-      startingHermesDesktop: 'Starting Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited:
-        'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
-      backgroundExitedDuringStartup: 'Hermes stopped right after it started.',
-      backendStopped: 'Hermes stopped working in the background',
-      restartHermes: 'Restart Hermes',
-      openLogs: 'Open logs',
-      desktopBootFailed: "Hermes couldn't start",
-      gatewayConnectionLost: 'Hermes lost its connection',
-      gatewayConnectionLostDetail:
-        'Still trying to reconnect. You can keep reading and drafting. If this keeps up, reconnect now or check your connection settings.',
-      reconnectNow: 'Reconnect now',
-      connectionSettings: 'Connection settings',
-      gatewaySignInRequired: 'Your remote Hermes signed you out',
-      gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
-      signInAgain: 'Sign in again',
-      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
-    },
-    // Plain causes for a local backend boot failure (`classifyBootFailure`);
-    // the raw output stays behind "Show recent logs".
-    causes: {
-      exitedEarly: "Hermes' background service stopped right after starting.",
-      timedOut: "Hermes' background service didn't answer in time.",
-      permission: "Hermes couldn't write to its data folder (permission problem).",
-      diskFull: 'The disk is full, so Hermes could not start.',
-      portInUse: 'Another program is using the network port Hermes needs.',
-      installMissing: "Part of Hermes' installation is missing. Choose Repair install to put it back."
-    },
-    failure: {
-      title: "Hermes couldn't start",
-      description:
-        "Hermes' background service didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
-      details: 'Details',
-      remoteTitle: 'Remote gateway sign-in required',
-      remoteDescription:
-        'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
-      retry: 'Retry',
-      repairInstall: 'Repair install',
-      useLocalGateway: 'Use local gateway',
-      gatewaySettings: 'Gateway settings',
-      back: 'Back',
-      openLogs: 'Open logs',
-      repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
-      bundledReinstallHint:
-        'This bundled install can’t repair itself from inside the app — reinstall the app to restore its backend.',
-      reinstallApp: 'Reinstall the app',
-      remoteSignInHint: signInLabel =>
-        `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
-      signOutAndSignIn: 'Sign out & sign in',
-      remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
-      cloudDownTitle: 'Nous Cloud agent is down',
-      cloudDownDescription:
-        'The Nous-managed cloud agent this gateway connects to is returning a server error. It cannot be restarted from here — check its status, switch to the local gateway, or get support.',
-      cloudDownHint:
-        'The buttons below open the Nous Portal (instance status and controls) and our Discord for support.',
-      cloudDownCheckPortal: 'Check Portal status',
-      cloudDownDiscord: 'Get help on Discord',
-      hideRecentLogs: 'Hide recent logs',
-      showRecentLogs: 'Show recent logs',
-      signedInTitle: 'Signed in',
-      signedInMessage: 'Reconnecting to the remote gateway…',
-      signInIncompleteTitle: 'Sign-in incomplete',
-      signInIncompleteMessage: 'The login window closed before authentication finished.',
-      signInFailed: 'Sign-in failed',
-      signInToRemoteGateway: 'Sign in to remote gateway',
-      signInWithProvider: provider => `Sign in with ${provider}`,
-      identityProvider: 'your identity provider'
-    }
-  },
+  boot: enBoot.boot,
 
   notifications: {
     sharedProfileWarning:
@@ -578,19 +509,9 @@ export const en: Translations = {
     }
   },
 
-  remoteDisplayBanner: {
-    message: reason =>
-      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
-  },
+  ...enNotices,
 
-  billingBlock: {
-    titleNous: 'Out of Nous credits',
-    titleProvider: provider => `Out of credits — ${provider}`,
-    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
-    openBilling: 'Open billing',
-    addCredits: 'Add credits',
-    dismiss: 'Dismiss'
-  },
+  ...enBilling,
 
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
@@ -1238,37 +1159,7 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
-    uninstallSection: {
-      dangerZone: 'Danger zone',
-      checkingInstalled: 'Checking what’s installed…',
-      uninstallHermes: 'Uninstall Hermes',
-      chooseHowMuch:
-        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
-      confirmUninstall: 'Confirm uninstall',
-      confirmBody: what => `This removes ${what}. This can’t be undone.`,
-      appLabel: 'App:',
-      couldNotStart: 'Uninstall could not start.',
-      uninstalling: 'Uninstalling…',
-      yesUninstall: 'Yes, uninstall',
-      options: {
-        gui: {
-          title: 'Uninstall Chat GUI only',
-          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
-          consequence: 'the desktop Chat GUI (this app and its data)'
-        },
-        lite: {
-          title: 'Uninstall GUI + agent, keep my data',
-          description:
-            'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
-          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
-        },
-        full: {
-          title: 'Uninstall everything',
-          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
-          consequence: 'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
-        }
-      }
-    },
+    uninstallSection: enUninstallSection,
     poolLimits: {
       warmBotBackendsAria: 'Warm bot backends',
       warmBotBackendsTitle: 'Warm Bot Backends',
@@ -1358,6 +1249,12 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
+      developerTitle: 'Developer',
+      resetOnboardingTitle: 'Reset onboarding',
+      resetOnboardingDesc:
+        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
+      resetOnboardingAction: 'Reset',
+      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -1781,138 +1678,7 @@ export const en: Translations = {
       moaReferenceHint: 'advises once per turn by default',
       tasks: enAuxTasks
     },
-    localModels: {
-      connectionChanged: 'Local models connection changed',
-      title: 'Local Models',
-      runtimeTitle: 'Local runtime',
-      runtimeReady: backend => `Ready · ${backend}`,
-      serverRunning: 'Running',
-      runtimeInstalled: 'llama.cpp runtime installed',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Build ${tag}, ${backend} backend. Hermes starts and manages the server for you.`,
-      installTitle: 'Install the local runtime',
-      installDetail:
-        'Downloads the llama.cpp inference engine (a few hundred MB). Models you download run entirely on this machine — no account, nothing leaves your computer.',
-      installAction: 'Install runtime',
-      installing: 'Installing runtime…',
-      installFailed: 'Runtime install failed',
-      hardwareTitle: 'This machine',
-      hardwareLoading: 'Checking your hardware…',
-      vram: label => `${label} GPU memory`,
-      ram: label => `${label} RAM`,
-      unifiedMemory: 'Unified memory',
-      modelsTitle: 'Models',
-      recommended: 'Recommended',
-      /* The Recommended badge's tooltip, keyed by the resolver branch that
-         made the pick. Qualitative on purpose: predictions order candidates,
-         they are not promises to print. */
-      recommendedReason: {
-        'best-quality-resident':
-          'The highest-quality model that runs entirely on your GPU at full speed. Picks weigh quality against predicted speed on this hardware.',
-        'speed-gated-quality':
-          'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
-        'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
-      } as Record<string, string>,
-      noRecommendationTitle: 'No automatic recommendation for this machine',
-      noRecommendationDetail:
-        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
-      noRecommendationAction: 'Browse models',
-      downloaded: 'Downloaded',
-      downloadAction: size => `Download · ${size}`,
-      downloadProgress: (done, total) => `${done} of ${total}`,
-      downloadStatusRunning: 'Downloading',
-      downloadSpeed: rate => `${rate}`,
-      downloadEta: time => `~${time} left`,
-      downloadEtaSeconds: count => `${count} sec`,
-      downloadEtaMinutes: count => `${count} min`,
-      downloadEtaHours: (hours, minutes) => (minutes ? `${hours} h ${minutes} min` : `${hours} h`),
-      downloadPausedLabel: 'Paused',
-      downloadPauseAction: 'Pause',
-      downloadResumeAction: 'Resume',
-      downloadDoneToast: model => `${model} is ready.`,
-      installDoneToast: 'Local runtime installed and ready.',
-      quickstartTitle: 'Run a model on this machine',
-      quickstartDetail: (model, size) =>
-        `One click sets everything up: the local engine, ${model} (${size} download), and your default for new chats. Nothing leaves this computer.`,
-      quickstartDetailReady: model =>
-        `One click makes ${model} your default for new chats. Everything runs on this machine.`,
-      quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Let me choose',
-      quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
-      quickstartFailed: 'Local model setup failed',
-      quickstartStageEngine: 'Engine',
-      quickstartStageModel: 'Model',
-      quickstartStageFinish: 'Finish',
-      useAction: 'Use',
-      activePill: 'Default',
-      updateTitle: 'Engine update available',
-      updateDetail: (next, current) =>
-        `A newer llama.cpp build (${next}) is ready to install — you're on ${current}. Models keep working during the download.`,
-      updateAction: 'Update engine',
-      updating: 'Updating engine…',
-      upToDateTitle: 'Engine up to date',
-      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}).`,
-      activeDetail: 'New chats use this model — it loads when you send your first message',
-      activeNotLoaded: 'Loads on your first message',
-      loadedPill: 'In memory',
-      placementResident: 'all on GPU',
-      placementSpilled: 'partly in RAM',
-      placementResidentTip: 'Running entirely in GPU memory at this context window — full speed.',
-      placementSpilledTip:
-        'Part of this model runs from system RAM — it works, but slower. A more compact build or a smaller context would fit fully.',
-      loadingPill: 'Loading…',
-      ejectTip: 'Free GPU memory (loads again on the next message)',
-      ejected: 'Model unloaded — GPU memory freed.',
-      ejectFailed: 'Could not unload the model',
-      stopServer: 'Turn off',
-      startServer: 'Turn on',
-      runtimeRunningDetail:
-        'The local server is running. Turning it off frees all GPU memory and stops new chats from using local models until you turn it back on.',
-      serverStopped: 'Local server stopped — GPU memory freed.',
-      serverStarted: 'Local server running.',
-      serverStopFailed: 'Could not stop the local server',
-      serverStartFailed: 'Could not start the local server',
-      activating: 'Starting…',
-      activateFailed: model => `Could not switch to ${model}`,
-      activateDoneToast: model => `New chats use ${model}.`,
-      downloadFailed: model => `Download of ${model} failed`,
-      downloadPauseFailed: model => `Couldn’t pause the download of ${model}`,
-      downloadResumeFailed: model => `Couldn’t resume the download of ${model}`,
-      pillFitsGpu: 'Fits your GPU',
-      pillUsesRam: 'Uses system RAM',
-      pillTooBig: 'Too big for this machine',
-      browseTitle: 'Find more models',
-      browseHint:
-        'Search all of Hugging Face. Models you download here are sized to your machine automatically, but not tested by us.',
-      browsePlaceholder: 'Search models by name or author…',
-      browseSearching: 'Searching Hugging Face',
-      browseListing: 'Reading model files',
-      browseShowFiles: 'Show files',
-      browseRefresh: 'Refresh',
-      browseDownloads: 'downloads',
-      browseLikes: 'likes',
-      browseGated: 'requires Hugging Face sign-in',
-      browseNoGguf: 'No compatible model files found.',
-      browseFitUnknown: 'Fit unknown',
-      browseAlreadyDownloaded: 'Already downloaded.',
-      addedByYou: 'Added by you',
-      browseDownloadStarted: 'Downloading {name}',
-      browseDownloadAria: 'Download {name}',
-      sideloadButton: 'Add model file',
-      sideloadTitle: 'Choose a GGUF model file',
-      sideloadDone: 'Added {name}.',
-      sideloadAlreadyPresent: 'Already in your library.',
-      pillFullContext: max => `Full ${max} context`,
-      pillFullContextTip: "Runs at the model's complete context window from the start",
-      pillUpTo: max => `Up to ${max} context`,
-      pillGrowsTip: 'Grows automatically as your conversation needs more room',
-      pillVision: 'Sees images',
-      deleteAction: 'Delete model',
-      deleteConfirm: model => `Delete ${model} from disk?`,
-      deleted: model => `${model} deleted.`,
-      deleteFailed: 'Delete failed'
-    },
+    localModels: enLocalModels,
     billing: {
       perMonth: amount => `${amount}/mo`,
       creditsPerMonth: amount => `${amount} credits/mo`,
@@ -3350,6 +3116,9 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
+    // Queued trigger feedback in Run History: the backend accepted the trigger
+    // but has not materialized the run session yet (#70826).
+    queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',
@@ -3559,86 +3328,7 @@ export const en: Translations = {
       guide: 'Recovery guide'
     },
     noFilterMatches: 'No sessions match these filters',
-    projects: {
-      showAllSessions: 'Show all sessions',
-      sectionLabel: 'Projects',
-      home: 'Home',
-      autoDiscovered: 'Auto-discovered',
-      newButton: 'New project',
-      createTitle: 'New project',
-      createDesc: 'Name a workspace and add one or more folders.',
-      renameTitle: 'Rename project',
-      addFolderTitle: 'Add folder',
-      namePlaceholder: 'e.g. Skunkworks',
-      foldersLabel: 'Folders',
-      ideaLabel: 'Idea',
-      ideaPlaceholder: "What's this project about? (saved to IDEA.md)",
-      ideaGenerate: 'Generate idea',
-      ideaGenerating: 'Generating…',
-      ideaShuffle: 'Shuffle templates',
-      noFolders: 'No folders added yet.',
-      addFolder: 'Add folder',
-      primaryBadge: 'primary',
-      removeFolder: 'Remove',
-      create: 'Create',
-      menu: 'Actions',
-      menuRename: 'Rename…',
-      menuAppearance: 'Appearance',
-      noColor: 'No color',
-      menuAddFolder: 'Add folder',
-      menuSetActive: 'Set active',
-      menuDelete: 'Delete',
-      moveToProject: 'Move to project',
-      movedTo: name => `Moved to ${name}`,
-      moveFailed: 'Could not move session',
-      moveNoFolder: 'That project has no folder to move into',
-      moveNoProjects: 'No other projects',
-      reveal: 'Reveal in folder',
-      copyPath: 'Copy path',
-      removeFromSidebar: 'Hide from sidebar',
-      createdInPreviousContext:
-        "Project created on the previous connection or profile. Switch back to find it; IDEA.md wasn't written.",
-      createFailed: 'Could not create project',
-      staleBackend:
-        'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',
-      deleteConfirm: 'This removes the saved project from Hermes. Files, git repos, and worktrees stay untouched.',
-      startWork: 'New worktree',
-      newWorktreeTitle: 'New worktree',
-      newWorktreeDesc: 'Name the branch for this worktree.',
-      branchPlaceholder: 'e.g. my-feature',
-      branchOff: () => ({ after: '', before: 'branch off ' }),
-      baseBranchPlaceholder: 'Search branches…',
-      baseBranchNone: 'No branches found',
-      startWorkFailed: 'Could not create worktree',
-      worktreeStaleBackend:
-        'Update the Hermes backend to create worktrees over this remote connection — it predates the git worktree API.',
-      worktreeProjectLabel: 'Project',
-      worktreeProjectPlaceholder: 'Search projects…',
-      worktreeProjectNone: 'No projects with a folder',
-      convertBranch: 'Convert a branch…',
-      convertBranchTitle: 'Convert a branch',
-      convertBranchDesc: 'Open checked-out branches, or create a worktree for a free branch.',
-      convertBranchPlaceholder: 'Search branches…',
-      convertBranchInstead: 'Convert an existing branch',
-      branchOpenExisting: 'open',
-      branchSwitchHome: 'switch home',
-      branchCreateWorktree: 'new worktree',
-      branchTrackRemote: 'track remote',
-      branchesLoading: 'Loading branches…',
-      noBranches: 'No branches found',
-      removeWorktree: 'Remove worktree',
-      removeWorktreeFailed: 'Could not remove worktree (uncommitted changes?)',
-      removeWorktreeConfirm:
-        'Remove it from git (deletes the worktree directory; the branch stays), or just hide the lane from the sidebar and leave the worktree on disk.',
-      removeWorktreeDirty:
-        'This worktree has uncommitted changes. Force-remove it (discards those changes), or just hide the lane and keep it on disk.',
-      forceRemove: 'Force remove',
-      enter: label => `Open ${label}`,
-      reorder: label => `Reorder ${label}`,
-      toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
-      showAllCount: count => `Show all ${count} sessions`,
-      back: 'All projects'
-    },
+    projects: enProjects,
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
     loading: 'Loading…',
@@ -3869,6 +3559,11 @@ export const en: Translations = {
     editingQueuedInComposer: 'Editing queued turn in composer',
     restoredDraftNotice: 'Restored your unsent message',
     restoredDraftUndo: 'Undo',
+    localSetup: {
+      title: 'This could run on your computer',
+      text: (model: string) => `${model} fits this machine. Free, and chats stay on your computer.`,
+      action: 'Show me'
+    },
     queueEdit: 'Edit',
     queueExpand: 'Expand',
     queueCollapse: 'Collapse',
@@ -4232,10 +3927,10 @@ export const en: Translations = {
       restarting: 'Backend restarting to load the update…',
       notAvailable: 'Update not available for this backend.',
       failed: 'Backend update failed.',
-      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.',
+      owed: steps => `Backend updated, but still owed: ${steps}. Re-run \`hermes update\` to finish them.`
     },
-    // Update-status overlay + version-details (mechanism-aware update UI).
-    appName: 'Hermes',
+    appName: 'Hermes', // Update-status overlay + version-details (mechanism-aware update UI).
     version: (value: string) => `Version ${value}`,
     versionUnavailable: 'Version unavailable',
     checkNow: 'Check now',
@@ -4282,20 +3977,7 @@ export const en: Translations = {
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
-  handoffTour: {
-    profileTitle: 'Your first task runs on the default profile',
-    profileText:
-      'This rail switches profiles. The one lit up now is default, where the task session lives. The other one is the setup profile, where the welcome chat lives.',
-    sessionsTitle: 'Each profile keeps its own sessions',
-    sessionsText:
-      'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
-    stayTitle: 'Hermes is one click away',
-    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
-  },
-  guidedGreeting: {
-    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
-    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
-  },
+  handoffTour: enHandoffTour,
   install: {
     stageStates: {
       pending: 'Pending',
@@ -4376,92 +4058,7 @@ export const en: Translations = {
     openLogs: 'Open logs'
   },
 
-  onboarding: {
-    headerTitle: "Let's get you setup with Hermes Agent",
-    headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
-    preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
-    starting: 'Starting Hermes…',
-    lookingUpProviders: 'Looking up providers...',
-    collapse: 'Collapse',
-    otherProviders: 'Other providers',
-    haveApiKey: 'I have an API key',
-    chooseLater: "I'll choose a provider later",
-    recommended: 'Recommended',
-    connected: 'Connected',
-    featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
-    fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
-    localModelsTitle: 'Run models locally',
-    localModelsPitch: 'No account needed — download a model and run it on this machine',
-    openRouterPitch: 'One key, hundreds of models — a solid default',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'direct model API',
-        description: 'Direct access to models hosted by Fireworks AI.'
-      },
-      openrouter: {
-        short: 'one key, many models',
-        description: 'Hosts hundreds of models behind a single key. Good default for new installs.'
-      },
-      openai: { short: 'GPT-class models', description: 'Direct access to OpenAI models.' },
-      gemini: { short: 'Gemini models', description: 'Direct access to Google Gemini models.' },
-      xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
-      local: {
-        short: 'self-hosted',
-        description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
-      }
-    },
-    backToSignIn: 'Back to sign in',
-    getKey: 'Get a key',
-    replaceCurrent: 'Replace current value',
-    pasteApiKey: 'Paste API key',
-    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
-    localModelNamePlaceholder: 'Model name (e.g. command-a-plus-05-2026)',
-    couldNotSave: 'Could not save credential.',
-    connecting: 'Connecting',
-    update: 'Update',
-    flowSubtitles: {
-      pkce: 'Opens your browser to sign in, then continues here',
-      device_code: 'Opens a verification page in your browser — Hermes connects automatically',
-      external: 'Sign in once in your terminal, then come back to chat'
-    },
-    startingSignIn: provider => `Starting sign-in for ${provider}...`,
-    verifyingCode: provider => `Verifying your code with ${provider}...`,
-    connectedProvider: provider => `${provider} connected`,
-    connectedPicking: provider => `${provider} connected. Picking a default model...`,
-    signInFailed: 'Sign-in failed. Try again.',
-    signInExpired:
-      'The sign-in page timed out before you finished. Try again and complete the browser step within a few minutes, or use an API key instead.',
-    signInDidNotFinish: provider =>
-      `Sign-in with ${provider} did not finish. Check your internet connection and try again, or pick a different provider.`,
-    tryAgain: 'Try again',
-    useApiKeyInstead: 'Use an API key',
-    errorDetails: 'Details',
-    pickDifferentProvider: 'Pick a different provider',
-    signInWith: provider => `Sign in with ${provider}`,
-    openedBrowser: provider => `We opened ${provider} in your browser.`,
-    authorizeThere: 'Authorize Hermes there.',
-    copyAuthCode: 'Copy the authorization code and paste it below.',
-    pasteAuthCode: 'Paste authorization code',
-    reopenAuthPage: 'Re-open authorization page',
-    autoBrowser: provider =>
-      `We opened ${provider} in your browser. Authorize Hermes there and you'll be connected automatically — nothing to copy or paste.`,
-    reopenSignInPage: 'Re-open sign-in page',
-    waitingAuthorize: 'Waiting for you to authorize...',
-    externalPending: provider =>
-      `${provider} signs in through its own CLI. Run this command in a terminal, then come back and pick "I've signed in":`,
-    signedIn: "I've signed in",
-    deviceCodeOpened: provider => `We opened ${provider} in your browser. Enter this code there:`,
-    reopenVerification: 'Re-open verification page',
-    copy: 'Copy',
-    defaultModel: 'Default model',
-    freeTier: 'Free tier',
-    pro: 'Pro',
-    free: 'Free',
-    price: (input, output) => `${input} in / ${output} out per Mtok`,
-    change: 'Change',
-    startChatting: 'Begin',
-    docs: provider => `${provider} docs`
-  },
+  onboarding: enOnboarding,
 
   freeTier: {
     providerRowTitle: 'Nous · free tier',
@@ -4510,6 +4107,12 @@ export const en: Translations = {
       "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
     alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    offer: {
+      heading: 'Keep going with Hermes',
+      body: "You're on the free allowance. If you keep using Hermes, you'll start running into limits. Sign in with a free Nous account for a bigger allowance.",
+      signIn: 'Sign in',
+      notNow: 'Not now'
+    },
     setupFailed: {
       gateClosed:
         "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",
@@ -4711,7 +4314,7 @@ export const en: Translations = {
         title: 'Context Usage',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      focusedSince: 'Focused since',
+      focusedSince: 'Focused for',
       focusedSinceTitle: 'Time since this chat was focused — not how long a turn has been running',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Shift+click toggles globally.',
       yoloOff: 'YOLO off. Shift+click toggles globally.',
@@ -5257,33 +4860,37 @@ export const en: Translations = {
       confirmAndContinueLabel: 'Confirm and continue',
       singleSelectHint: 'Pick one',
       multiSelectHint: 'Select all that apply',
+      oneQuestion: '1 question',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
     },
-    catalogInstall: {
-      preparing: 'Preparing the install…',
-      install: 'Install',
-      advanced: 'Advanced',
-      skip: 'Skip',
-      installing: 'Installing…',
-      installed: 'Installed',
-      notInstalled: 'Not installed',
-      failed: 'Failed',
-      showNames: 'show names',
-      hideNames: 'hide names',
-      skill: name => `skill ${name}`,
-      kind: { plugin: 'plugin', skill: 'skill' },
-      tier: { official: 'official', community: 'community' },
-      targetProfile: profile => `Installs into your ${profile} profile`,
-      sendFailed: 'Could not send your answer. Try again.',
-      commitLabel: 'Commit',
-      subdirLabel: 'Folder',
-      securityHeading: 'Security',
-      scan: { passed: 'Scan passed', warnings: 'Scan found warnings', failed: 'Scan failed' },
-      requirementsLabel: 'Requires',
-      credentialsHeading: 'Credentials'
+    setupChoose: {
+      kinds: {
+        accent: 'Accent color',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Appearance'
+      },
+      loading: 'Loading options…',
+      unavailable: "This list isn't available right now. Reply in chat instead.",
+      findApp: 'Find an app',
+      customColor: 'Custom color',
+      plugin: 'Plugin',
+      startsLater: "We'll set these up when you start."
     },
+    startChat: {
+      starting: title => `Starting “${title}”…`,
+      startingUntitled: 'Starting a chat…',
+      untitled: 'New chat',
+      notStarted: "Couldn't start that chat.",
+      retry: 'Retry',
+      inProfile: profile => `In ${profile}`,
+      open: 'Open',
+      openFailed: "Couldn't open the chat"
+    },
+    catalogInstall: enCatalogInstall,
     mcpSetup: {
       installTitle: 'Add MCP servers',
       enableTitle: 'Enable MCP servers',
@@ -5394,6 +5001,8 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
+        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
+        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },
@@ -5586,11 +5195,6 @@ export const en: Translations = {
         title: 'A local engine update is available',
         text: 'Update the engine that runs your local models. Active local requests may be interrupted.',
         action: 'Update now'
-      },
-      'local-setup': {
-        title: 'This machine can run models locally',
-        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
-        action: 'Set it up'
       },
       'right-pane': {
         title: 'The working pane',

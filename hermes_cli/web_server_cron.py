@@ -249,6 +249,17 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         context_from = _cron_string_list(body.context_from)
         _validate_dashboard_cron_context_from(context_from, profile_name)
         no_agent = bool(body.no_agent)
+        # Finite repeat: non-positive counts are a client error (the core chokepoint
+        # would silently make them unlimited — indistinguishable from omission);
+        # everything else (int, 'forever'/'once'/'3') coerces through the shared
+        # normalize_repeat_value, the same validation the CLI uses.
+        repeat = body.repeat
+        if repeat is not None:
+            if isinstance(repeat, int) and not isinstance(repeat, bool) and repeat < 1:
+                raise HTTPException(
+                    status_code=400, detail="repeat must be a positive integer")
+            from cron.jobs import normalize_repeat_value
+            repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
         return _mutate_cron_for_profile(
@@ -257,6 +268,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),

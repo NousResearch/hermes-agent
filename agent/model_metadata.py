@@ -1885,33 +1885,45 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
     from agent.codex_headers import codex_account_headers
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-    try:
-        entries, status = fetch_codex_catalog_entries(
-            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify()),
-            base_url=base_url,
-        )
-        if status != 200:
-            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
-            _remember_no_codex_catalog(cache_key)
-            return {}, False
-    except Exception as exc:
-        logger.debug("Codex /models probe failed: %s", exc)
+    from agent.codex_catalog_fetch import fetch_catalog_patiently
+    from hermes_cli.codex_models import CODEX_CATALOG_BACKGROUND_TIMEOUT, CODEX_CATALOG_FOREGROUND_TIMEOUT
+
+    def _store(entries: List[Any], at: float) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        max_result: Dict[str, int] = {}
+        for item in entries:
+            slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
+            if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
+                result[slug.strip()] = ctx
+                if isinstance(max_ctx, int) and max_ctx > 0:
+                    max_result[slug.strip()] = max_ctx
+        if result:
+            # Max first: a reader that sees the fresh context entry must also see its cap.
+            _codex_oauth_max_context_cache[cache_key] = max_result
+            _codex_oauth_context_cache[cache_key] = (result, at)
+        return result
+
+    # A slow account's answer (~30 s for some) lands in the in-process caches when it arrives, so
+    # the turn after a timed-out probe resolves live instead of re-blocking on the same request.
+    answer = fetch_catalog_patiently(
+        cache_key,
+        lambda: fetch_codex_catalog_entries(
+            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, CODEX_CATALOG_BACKGROUND_TIMEOUT),
+                                                verify=model_metadata_http.resolve_verify()),
+            base_url=base_url),
+        foreground_timeout=CODEX_CATALOG_FOREGROUND_TIMEOUT,
+        on_complete=lambda result: _store(result[0], time.time()))
+    if answer is None:
+        return {}, False  # still running in the background; the negative memo is NOT set
+    entries, status = answer
+    if status != 200:
+        logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    result: Dict[str, int] = {}
-    max_result: Dict[str, int] = {}
-    for item in entries:
-        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
-        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
-            result[slug.strip()] = ctx
-            if isinstance(max_ctx, int) and max_ctx > 0:
-                max_result[slug.strip()] = max_ctx
+    result = _store(entries, now)
     if not result:
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    # Max first: a reader that sees the fresh context entry must also see its cap.
-    _codex_oauth_max_context_cache[cache_key] = max_result
-    _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 

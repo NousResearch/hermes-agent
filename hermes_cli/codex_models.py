@@ -5,12 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import List, Optional
 
 from hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
+
+# The authenticated catalog (``/backend-api/codex/models``) answers in well under a second for
+# most accounts, but some take ~30 s. The caller (picker, setup wizard, /model switch) waits at
+# most CODEX_CATALOG_FOREGROUND_TIMEOUT and then falls back; the request itself keeps running for
+# up to CODEX_CATALOG_BACKGROUND_TIMEOUT and its answer is persisted so the next read is live.
+# Raising the foreground timeout instead would stall sign-in and every picker open for that long.
+CODEX_CATALOG_FOREGROUND_TIMEOUT = 5.0
+CODEX_CATALOG_BACKGROUND_TIMEOUT = 60.0
 
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
@@ -162,9 +171,11 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
 
     ``base_url`` is the host the credential is routed to (resolved together with it); the
     catalog is fetched there, never from a host the credential does not belong to (#121486).
+    Waits ``CODEX_CATALOG_FOREGROUND_TIMEOUT`` at most: a slower account's answer finishes in the
+    background and lands in the provider models cache, so the next picker open is live.
     """
     try:
-        from agent.model_metadata import _codex_catalog_probe_allowed
+        from agent.model_metadata import _codex_catalog_probe_allowed, _codex_oauth_token_fingerprint
         from hermes_cli.auth_codex import _codex_base_url
         catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
         if not _codex_catalog_probe_allowed(access_token, catalog_base):
@@ -174,14 +185,25 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
+        from agent.codex_catalog_fetch import fetch_catalog_patiently
         from agent.model_metadata import fetch_codex_catalog_entries
-        entries, _status = fetch_codex_catalog_entries(
-            lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
+
+        def _complete_in_background(result) -> None:
+            from hermes_cli.models import update_provider_cache_entry
+            update_provider_cache_entry("openai-codex", _finalize_codex_models(_ranked_slugs(result[0])))
+
+        answer = fetch_catalog_patiently(
+            _codex_oauth_token_fingerprint(access_token, catalog_base),
+            lambda: fetch_codex_catalog_entries(
+                lambda url: httpx.get(url, headers=headers, timeout=CODEX_CATALOG_BACKGROUND_TIMEOUT),
+                base_url=catalog_base),
+            foreground_timeout=CODEX_CATALOG_FOREGROUND_TIMEOUT, on_complete=_complete_in_background)
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
-
-    return _finalize_codex_models(_ranked_slugs(entries))
+    if answer is None:
+        return []
+    return _finalize_codex_models(_ranked_slugs(answer[0]))
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:

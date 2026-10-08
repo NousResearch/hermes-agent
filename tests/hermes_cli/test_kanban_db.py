@@ -1097,7 +1097,9 @@ class TestSharedBoardPaths:
         self._set_home(monkeypatch, tmp_path, default_home)
         kb.init_db()
         with kbc.connect() as conn:
-            task_id = kb.create_task(conn, title="cross-profile")
+            # assignee='default' satisfies the ready owner gate (t_f7992f0f):
+            # a managed profiles/ home must not mint ownerless ready cards.
+            task_id = kb.create_task(conn, title="cross-profile", assignee="default")
 
         # Worker switches to the profile HERMES_HOME and reads.
         monkeypatch.setenv("HERMES_HOME", str(profile_home))

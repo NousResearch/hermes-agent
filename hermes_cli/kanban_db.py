@@ -30,6 +30,10 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
+
+# Fail-closed ready-lane owner gate (t_f7992f0f): lanes that are legitimate
+# owners without being spawnable profiles (pulled by other gateways).
+HUMAN_READY_LANES = frozenset({"jacob"})
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -1274,7 +1278,23 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                default_applied = False
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                # Fail-closed ready owner gate (t_f7992f0f): a card landing in
+                # 'ready' must have a spawnable (or human-lane) owner, else it
+                # parks there forever. Empty assignee falls back to
+                # kanban.default_assignee (#27145); without either, creation
+                # is REFUSED — never silently dispatched-less.
+                if task_status == "ready":
+                    if not assignee and _ready_gate_managed():
+                        # Only a managed home fills the owner at creation;
+                        # otherwise #27145 stays a dispatcher-time decision.
+                        assignee = _default_assignee_from_config()
+                        default_applied = bool(assignee)
+                    refusal = ready_owner_refusal(assignee)
+                    if refusal:
+                        raise ValueError(f"cannot create ready task: {refusal}")
+                    assignee = _canonical_assignee(assignee)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1333,6 +1353,13 @@ def create_task(
                         task_id,
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                    )
+                if task_status == "ready" and default_applied:
+                    # Parity with the dispatcher's #27145 auto-assignment:
+                    # the audit trail says the owner came from the config.
+                    _append_event(
+                        conn, task_id, "assigned",
+                        {"assignee": assignee, "source": "kanban.default_assignee"},
                     )
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
@@ -1491,6 +1518,13 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        # Fail-closed ready owner gate (t_f7992f0f): a ready card must never
+        # be handed to a non-profile (it would rot un-dispatched); refusal
+        # names the profiles that ARE on disk so the caller can self-correct.
+        if row["status"] == "ready" and profile:
+            refusal = ready_owner_refusal(profile)
+            if refusal:
+                raise ValueError(f"cannot assign {task_id}: {refusal}")
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
             conn.execute(
@@ -2075,7 +2109,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, assignee "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -2091,6 +2125,22 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
+                # Fail-closed ready owner gate (t_f7992f0f): automatic
+                # promotion never parks an ownerless card in 'ready'. It stays
+                # in its current lane with a board-visible refusal event
+                # instead of roting silently in ready.
+                if resume_status == "ready":
+                    refusal = ready_owner_refusal(row["assignee"])
+                    if refusal:
+                        last = conn.execute(
+                            "SELECT kind FROM task_events WHERE task_id = ? "
+                            "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+                        ).fetchone()
+                        if last is None or last["kind"] != "ready_owner_refused":
+                            _append_event(
+                                conn, task_id, "ready_owner_refused", {"reason": refusal},
+                            )
+                        continue
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
                     # recover -> respawn -> exhaust -> block forever). The
@@ -3531,6 +3581,15 @@ def promote_task(
             f"`hermes kanban unlink <parent_id> {task_id}`)"
         )
 
+    # Fail-closed ready owner gate (t_f7992f0f): promotion must not park a
+    # card in 'ready' without a spawnable (or human-lane) owner.
+    owner_row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    refusal = ready_owner_refusal(owner_row["assignee"] if owner_row else None)
+    if refusal:
+        return False, f"cannot promote {task_id} to ready: {refusal}"
+
     if dry_run:
         return True, None
 
@@ -3597,6 +3656,18 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if landing_status == "ready" and resume_status == "review"
             else landing_status
         )
+        # Fail-closed ready owner gate (t_f7992f0f): never land an ownerless
+        # card in 'ready'; park it in 'todo' with a visible refusal instead.
+        if new_status == "ready":
+            owner_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            refusal = ready_owner_refusal(owner_row["assignee"] if owner_row else None)
+            if refusal:
+                new_status = "todo"
+                _append_event(
+                    conn, task_id, "ready_owner_refused", {"reason": refusal},
+                )
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
@@ -3632,6 +3703,15 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
+        # Fail-closed ready owner gate (t_f7992f0f): a review reopen without a
+        # spawnable (or human-lane) owner lands in 'todo' instead.
+        if new_status == "ready":
+            owner_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            refusal = ready_owner_refusal(owner_row["assignee"] if owner_row else None)
+            if refusal:
+                new_status = "todo"
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))
@@ -4310,6 +4390,74 @@ def list_profiles_on_disk() -> list[str]:
         except OSError:
             pass
     return sorted(names)
+
+
+def _ready_gate_managed() -> bool:
+    """True when a managed ``profiles/`` dir exists — i.e. profile discovery
+    is meaningful and the ready owner gate binds (t_f7992f0f)."""
+    from hermes_constants import get_default_hermes_root
+
+    try:
+        return (get_default_hermes_root() / "profiles").is_dir()
+    except Exception:
+        return False
+
+
+def ready_owner_refusal(assignee: Optional[str]) -> Optional[str]:
+    """Fail-closed gate for any transition INTO ``ready`` (t_f7992f0f).
+
+    ``ready`` means "the dispatcher may spawn this now": a card parked there
+    with an empty assignee (NULL class) or a non-profile assignee (phantom
+    ``flow`` class) never dispatches and silently rots. Returns ``None`` when
+    the owner is valid, else a refusal message naming the profiles that ARE
+    on disk so feeders can self-correct.
+
+    Enforcement scope: the gate binds only where profile discovery is
+    meaningful — a ``profiles/`` directory the operator manages. Where the
+    dir does not exist (fresh single-profile installs, hermetic test homes)
+    the concept of "not a real profile" is undefined and the caller is
+    trusted (the dispatcher's ``skipped_nonspawnable`` stays the backstop).
+
+    ``default`` is always live (parity with ``profiles.profile_exists``);
+    ``HUMAN_READY_LANES`` are exempt: they are legitimate owners pulled by
+    other gateways (the human ``jacob``), not spawnable profiles.
+    """
+    who = (assignee or "").strip()
+    if not _ready_gate_managed():
+        return None
+    if who == "default" or who in HUMAN_READY_LANES:
+        return None
+    valid = list_profiles_on_disk()
+    if not who:
+        return (
+            "ready requires an owner: pass --assignee <profile> (a ready card "
+            "without one would never dispatch). Valid profiles: "
+            + (", ".join(valid) or "(none on disk)")
+            + "; the human lane 'jacob' is also a valid owner"
+        )
+    if who not in valid:
+        return (
+            f"assignee '{who}' is not a spawnable profile. Valid profiles: "
+            + (", ".join(valid) or "(none on disk)")
+            + "; the human lane 'jacob' is also a valid owner"
+        )
+    return None
+
+
+# Seam: tests/conftest.py may neutralize this gate (module-attr patch) the way
+# the dispatcher's memory guard is pinned; board code must call the module attr.
+ready_owner_refusal_impl = ready_owner_refusal
+
+
+def _default_assignee_from_config() -> Optional[str]:
+    """``kanban.default_assignee`` from the active config, or None (#27145)."""
+    try:
+        from hermes_cli.config import load_config
+
+        value = (load_config().get("kanban") or {}).get("default_assignee")
+        return str(value).strip() or None
+    except Exception:
+        return None
 
 
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:

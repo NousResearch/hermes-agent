@@ -62,6 +62,43 @@ def test_protocol_face_members_exist_on_session_db():
         assert hasattr(SessionDB, member), member
 
 
+def test_get_session_reads_created_row_and_missing_id(db):
+    db.create_session("s1", source="cli", system_prompt="configured prompt")
+    row = db.get_session("s1")
+    assert isinstance(row, dict)
+    assert row["id"] == "s1"
+    assert row["source"] == "cli"
+    assert row["system_prompt"] == "configured prompt"
+    assert db.get_session("missing") is None
+
+
+def test_get_messages_as_conversation_reads_appended_user_message(db):
+    db.create_session("s1", source="cli")
+    db.append_message("s1", role="user", content="hello from the stored transcript")
+
+    conversation = db.get_messages_as_conversation("s1")
+    assert isinstance(conversation, list)
+    assert len(conversation) == 1
+    assert conversation[0]["role"] == "user"
+    assert conversation[0]["content"] == "hello from the stored transcript"
+    assert db.get_messages_as_conversation("missing") == []
+
+
+def test_get_session_title_source_reads_manual_and_automatic_provenance(db):
+    for session_id in ("manual", "derived", "llm"):
+        db.create_session(session_id, source="cli")
+        assert db.get_session_title_source(session_id) is None
+
+    assert db.set_session_title("manual", "Chosen by user")
+    assert db.set_auto_title("derived", "Derived title", source=SessionDB.TITLE_SOURCE_DERIVED)
+    assert db.set_auto_title("llm", "Generated title", source=SessionDB.TITLE_SOURCE_LLM)
+
+    assert db.get_session_title_source("manual") == SessionDB.TITLE_SOURCE_USER
+    assert db.get_session_title_source("derived") == SessionDB.TITLE_SOURCE_DERIVED
+    assert db.get_session_title_source("llm") == SessionDB.TITLE_SOURCE_LLM
+    assert db.get_session_title_source("missing") is None
+
+
 def test_search_without_fts_reads_canonical_messages(db):
     db.create_session("s1", source="cli")
     hit_id = db.append_message("s1", role="user", content="distinctive fallback needle")

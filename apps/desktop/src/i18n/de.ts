@@ -2548,9 +2548,11 @@ export const deOverrides = {
     bulkNoChange: 'Nichts zu ändern.',
     usageCount: count => `${count}× verwendet`,
     provenance: {
-      agent: 'Gelernt',
+      background_review: 'Gelernt',
+      local: 'Lokal',
       bundled: 'Integriert',
-      hub: 'Hub'
+      hub: 'Hub',
+      external: 'Extern'
     },
     emptyNoneFound: noun => `Kein ${noun} gefunden`,
     emptyNothingMatches: query => `Nichts passt zu “${query}”.`,

@@ -2543,9 +2543,11 @@ export const esOverrides = {
     bulkNoChange: 'No hay nada que cambiar.',
     usageCount: count => `usado ${count}×`,
     provenance: {
-      agent: 'Aprendido',
+      background_review: 'Aprendido',
+      local: 'Local',
       bundled: 'Integrado',
-      hub: 'Hub'
+      hub: 'Hub',
+      external: 'Externo'
     },
     emptyNoneFound: noun => `No se encontraron ${noun}`,
     emptyNothingMatches: query => `No hay coincidencias para “${query}”.`,

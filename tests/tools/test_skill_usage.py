@@ -613,3 +613,79 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
         assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
     t.join(timeout=2)
     assert entered.is_set() and other_done.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Explicit origin (#70712): human-facing source, separate from provenance.
+# ---------------------------------------------------------------------------
+
+
+def test_unclassified_local_skill_origin_is_local_not_learned(skills_home):
+    """A local skill with no usage record (created_by: None) must not classify
+    as 'learned' — conservative 'local' (#70712 acceptance: the fallback
+    provenance 'agent' means user-owned, not conversation-learned)."""
+    from tools.skill_usage import origin, provenance
+
+    _write_skill(skills_home / "skills", "mlops-model-toolkit")
+    # Ownership class stays 'agent' (editable local skill for older clients)...
+    assert provenance("mlops-model-toolkit") == "agent"
+    # ...but the human-facing origin is neutral 'local', never 'learned'.
+    assert origin("mlops-model-toolkit") == "local"
+
+
+def test_background_review_create_stamps_background_review_origin(skills_home):
+    """record_created(agent_created=True) — the background self-improvement
+    path — stamps the immutable origin the Desktop 'learned' badge keys off."""
+    from tools.skill_usage import get_record, origin, record_created
+
+    _write_skill(skills_home / "skills", "sediment")
+    record_created("sediment", agent_created=True)
+    assert get_record("sediment")["origin"] == "background_review"
+    assert origin("sediment") == "background_review"
+
+
+def test_foreground_create_origin_stays_local(skills_home):
+    """A foreground /learn create is user-directed: origin 'local', not
+    'background_review' — curator opt-in and human-facing origin stay separate."""
+    from tools.skill_usage import origin, record_created
+
+    _write_skill(skills_home / "skills", "taught")
+    record_created("taught", agent_created=False)
+    assert origin("taught") == "local"
+
+
+def test_usage_report_carries_origin_alongside_provenance(skills_home):
+    """usage_report rows expose both: legacy ownership (provenance) and the
+    explicit human-facing origin."""
+    from tools.skill_usage import bump_use, origin, record_created, usage_report
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "bundled-one")
+    _write_skill(skills_dir, "hub-one")
+    _write_skill(skills_dir, "manual")
+    _write_skill(skills_dir, "sediment")
+    (skills_dir / ".bundled_manifest").write_text("bundled-one:abc\n", encoding="utf-8")
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
+    )
+    record_created("sediment", agent_created=True)
+    for n in ("bundled-one", "hub-one", "manual", "sediment"):
+        bump_use(n)
+
+    rows = {r["name"]: r for r in usage_report()}
+    assert set(rows) == {"bundled-one", "hub-one", "manual", "sediment"}
+    # Legacy ownership unchanged for older clients.
+    assert rows["bundled-one"]["provenance"] == "bundled"
+    assert rows["hub-one"]["provenance"] == "hub"
+    assert rows["manual"]["provenance"] == "agent"
+    assert rows["sediment"]["provenance"] == "agent"
+    # Explicit origin: learned ONLY for the background-review sediment.
+    assert rows["bundled-one"]["origin"] == "bundled"
+    assert rows["hub-one"]["origin"] == "hub"
+    assert rows["manual"]["origin"] == "local"
+    assert rows["sediment"]["origin"] == "background_review"
+    # And origin() agrees with the report for every row.
+    for name, row in rows.items():
+        assert origin(name) == row["origin"]

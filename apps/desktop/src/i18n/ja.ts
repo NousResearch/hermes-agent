@@ -1537,9 +1537,11 @@ export const jaOverrides = {
     bulkNoChange: '変更するものはありません。',
     usageCount: count => `${count} 回使用`,
     provenance: {
-      agent: '学習済み',
+      background_review: '学習済み',
+      local: 'ローカル',
       bundled: '組み込み',
-      hub: 'ハブ'
+      hub: 'ハブ',
+      external: '外部'
     },
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,

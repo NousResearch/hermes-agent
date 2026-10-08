@@ -1642,9 +1642,11 @@ export const ruOverrides = {
     bulkNoChange: 'Менять нечего.',
     usageCount: count => `использован ${count}×`,
     provenance: {
-      agent: 'Научен',
+      background_review: 'Научен',
+      local: 'Локальный',
       bundled: 'Встроенный',
-      hub: 'Хаб'
+      hub: 'Хаб',
+      external: 'Внешний'
     },
     emptyNoneFound: noun => `Не найдено: ${noun}`,
     emptyNothingMatches: query => `Ничего не подходит под «${query}».`,

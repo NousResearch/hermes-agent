@@ -54,9 +54,11 @@ export const zhHantCapabilities = {
     bulkNoChange: '沒有需要變更的內容。',
     usageCount: count => `已使用 ${count} 次`,
     provenance: {
-      agent: '已學習',
+      background_review: '已學習',
+      local: '本地',
       bundled: '內建',
-      hub: '技能中心'
+      hub: '技能中心',
+      external: '外部'
     },
     emptyNoneFound: noun => `找不到${noun}`,
     emptyNothingMatches: query => `沒有符合「${query}」的內容。`,

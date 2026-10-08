@@ -2155,9 +2155,11 @@ export const zhOverrides = {
     bulkNoChange: '没有需要更改的内容。',
     usageCount: count => `已使用 ${count} 次`,
     provenance: {
-      agent: '习得',
+      background_review: '习得',
+      local: '本地',
       bundled: '内置',
-      hub: '技能中心'
+      hub: '技能中心',
+      external: '外部'
     },
     emptyNoneFound: noun => `未找到${noun}`,
     emptyNothingMatches: query => `没有匹配“${query}”的内容。`,

@@ -1202,6 +1202,10 @@ export interface SkillInfo {
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
    * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
   provenance?: 'agent' | 'bundled' | 'external' | 'hub'
+  /** Explicit human-facing origin (#70712). 'background_review' = autonomously learned;
+   * 'local' = local/custom; 'bundled'/'hub'/'external' mirror their provenance tier.
+   * Absent on older backends — fall back to provenance (never 'learned' for it). */
+  origin?: 'background_review' | 'bundled' | 'external' | 'hub' | 'local'
 }
 
 /** One entry of the built-in optional-skills catalog (optional-skills/ in the

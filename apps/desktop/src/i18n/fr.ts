@@ -2556,9 +2556,11 @@ export const frOverrides = {
     bulkNoChange: 'Rien à changer.',
     usageCount: count => `utilisé ${count}×`,
     provenance: {
-      agent: 'Appris',
+      background_review: 'Appris',
+      local: 'Local',
       bundled: 'Intégrés',
-      hub: 'Hub'
+      hub: 'Hub',
+      external: 'Externe'
     },
     emptyNoneFound: noun => `Aucun ${noun} trouvé`,
     emptyNothingMatches: query => `Rien ne correspond à « ${query} ».`,

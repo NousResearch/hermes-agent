@@ -2187,9 +2187,11 @@ export const en: Translations = {
     bulkNoChange: 'Nothing to change.',
     usageCount: count => `used ${count}×`,
     provenance: {
-      agent: 'Learned',
+      background_review: 'Learned',
+      local: 'Local',
       bundled: 'Built-in',
-      hub: 'Hub'
+      hub: 'Hub',
+      external: 'External'
     },
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,

@@ -15,7 +15,7 @@ import {
   profileScopeKey,
   setSkillEnabled
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { useI18n, type Translations } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { queryClient } from '@/lib/query-client'
@@ -41,27 +41,25 @@ import { CapabilityEmpty, SortButton } from '../primitives'
 import { OfficialSkillDetail } from './official-skill-detail'
 import { SkillDetail } from './skill-detail'
 import { categoryFor, filteredOfficial, filteredSkills, skillsQueryKey, usageOf } from './skills-data'
+import { skillOrigin } from './skill-provenance'
 
 // Sort direction for the Skills list — persisted so the tab remembers
 // most/least-used across navigations and restarts.
 const $skillsSortDesc = persistentAtom('hermes.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
 
-// Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): ReactNode {
+// Row subtitle: category, with non-default origins badged. The label keys off
+// the explicit origin (#70712): 'learned' only for background_review skills —
+// a plain local skill is 'local', never mislabeled as learned.
+function skillSubtitle(skill: SkillInfo, labels: Translations['skills']['provenance']): ReactNode {
   const category = prettyName(categoryFor(skill))
-  const provenance = skill.provenance
+  const origin = skillOrigin(skill)
 
   return (
     <>
       <span className="truncate">{category}</span>
-      {provenance === 'agent' && (
-        <Badge className="shrink-0 normal-case" variant="default">
-          learned
-        </Badge>
-      )}
-      {provenance === 'hub' && (
-        <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+      {(origin === 'background_review' || origin === 'local' || origin === 'hub') && (
+        <Badge className="shrink-0 normal-case" variant={origin === 'background_review' ? 'default' : 'muted'}>
+          {labels[origin]}
         </Badge>
       )}
     </>
@@ -313,7 +311,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   setSelectedOfficial(null)
                 }}
                 onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
+                subtitle={skillSubtitle(skill, t.skills.provenance)}
                 title={skill.name}
                 toggleLabel={skill.name}
               />

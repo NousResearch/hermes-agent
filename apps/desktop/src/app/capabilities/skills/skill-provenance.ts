@@ -29,3 +29,21 @@ export function isEditableProvenance(provenance: SkillInfo['provenance']): boole
   // place (the user pointed skills.external_dirs at them).
   return provenance === 'agent' || provenance === 'external'
 }
+
+/**
+ * The explicit human-facing origin a badge/label keys off (#70712). 'learned' is
+ * reserved for `background_review` — autonomously created by the background
+ * self-improvement fork. Everything else local is 'local'; on older backends
+ * without `origin`, the legacy `provenance` tiers are never 'learned' either.
+ */
+export function skillOrigin(skill: SkillInfo): NonNullable<SkillInfo['origin']> {
+  if (skill.origin) {
+    return skill.origin
+  }
+
+  if (skill.provenance === 'bundled' || skill.provenance === 'hub' || skill.provenance === 'external') {
+    return skill.provenance
+  }
+
+  return 'local'
+}

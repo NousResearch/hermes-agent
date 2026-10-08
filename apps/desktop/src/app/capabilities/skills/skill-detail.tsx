@@ -12,7 +12,7 @@ import { asText, prettyName } from '../../settings/helpers'
 import { DetailHeader } from '../primitives'
 
 import { parseFrontmatter } from './frontmatter'
-import { isEditableProvenance } from './skill-provenance'
+import { isEditableProvenance, skillOrigin } from './skill-provenance'
 import { categoryFor } from './skills-data'
 
 export function SkillDetail({
@@ -54,7 +54,7 @@ export function SkillDetail({
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
             {(skill.provenance === 'agent' || skill.provenance === 'hub') && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
-                {t.skills.provenance[skill.provenance]}
+                {t.skills.provenance[skillOrigin(skill)]}
               </PanelPill>
             )}
           </>

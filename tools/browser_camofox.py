@@ -398,6 +398,12 @@ def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[dict[str, A
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
+        # SEK-70 SaaS gateways serve tenant keys MCP-only — route through the
+        # MCP transport there (REST /tabs is tenant-denied).
+        from tools.browser_mcp_transport import _is_gateway_backend
+        if _is_gateway_backend():
+            from tools.browser_mcp_transport import mcp_navigate
+            return mcp_navigate(url, timeout_secs=_get_command_timeout())
         browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session, data = _navigate_tab(task_id, browser_url)
         result = {"success": True, "url": data.get("url", browser_url), "title": data.get("title", "")}
@@ -453,7 +459,29 @@ def _require_tab(task_id: Optional[str], action: Optional[str] = None) -> tuple[
     return session, (_camofox_private_page_block(session, task_id, action) if action is not None else None)
 
 
-def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[dict[str, Any]], str]) -> str:
+def _mcp_verb_route(suffix: str) -> Optional[str]:
+    """On hosted gateway backends every REST /tabs/<id>/<suffix> call is
+    denied — return the MCP tool name to route to instead (None when this
+    backend is plain REST, i.e. community Camofox)."""
+    try:
+        from tools.browser_mcp_transport import _is_gateway_backend
+    except Exception:
+        return None
+    if not _is_gateway_backend():
+        return None
+    return {
+        "snapshot": "browser_snapshot",
+        "click": "browser_click",
+        "type": "browser_type",
+        "scroll": "browser_scroll",
+        "back": "browser_back",
+        "press": "browser_press",
+        "close": "browser_close",
+        "screenshot": "browser_screenshot",
+    }.get(suffix)
+
+
+def _with_tab(task_id: Optional[str], guard_action: Optional[str], body: Callable[[Dict[str, Any]], str]) -> str:
     """Require a tab (+ private-page guard when ``guard_action`` is set), then run ``body(session)``;
     any exception becomes a ``tool_error``."""
     try:
@@ -475,6 +503,11 @@ def _tab_action(task_id: Optional[str], guard_action: Optional[str], suffix: str
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
     """Accessibility tree snapshot. ``user_task`` is deprecated and ignored —
     oversized snapshots always truncate-and-store (no LLM summarization)."""
+    # SEK-70: SaaS gateway → MCP transport.
+    route = _mcp_verb_route("snapshot")
+    if route:
+        from tools.browser_mcp_transport import mcp_snapshot
+        return mcp_snapshot()
     def body(session):
         snapshot, refs_count = _fetch_snapshot(session)
         return json.dumps({"success": True, "snapshot": snapshot, "element_count": refs_count})
@@ -484,6 +517,11 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_tas
 def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click an element by ref via Camofox."""
     clean_ref = ref.lstrip("@")  # our tool convention prefixes refs with @
+    # SEK-70: SaaS gateway → MCP transport.
+    route = _mcp_verb_route("click")
+    if route:
+        from tools.browser_mcp_transport import mcp_click
+        return mcp_click(clean_ref)
     return _tab_action(task_id, "click", "click", {"ref": clean_ref},
                        lambda data: {"success": True, "clicked": clean_ref, "url": data.get("url", "")})
 
@@ -491,6 +529,11 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
 def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     """Type text into an element by ref via Camofox."""
     try:
+        # SEK-70: SaaS gateway → MCP transport.
+        route = _mcp_verb_route("type")
+        if route:
+            from tools.browser_mcp_transport import mcp_type
+            return mcp_type(ref, text)
         session, blocked = _require_tab(task_id, "type")
         if blocked:
             return blocked
@@ -510,23 +553,45 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
     """Scroll the page via Camofox."""
+    # SEK-70: SaaS gateway → MCP transport.
+    route = _mcp_verb_route("scroll")
+    if route:
+        from tools.browser_mcp_transport import mcp_scroll
+        return mcp_scroll(direction)
     return _tab_action(task_id, None, "scroll", {"direction": direction},
                        lambda data: {"success": True, "scrolled": direction})
 
 
 def camofox_back(task_id: Optional[str] = None) -> str:
     """Navigate back via Camofox."""
+    # SEK-70: SaaS gateway → MCP transport.
+    route = _mcp_verb_route("back")
+    if route:
+        from tools.browser_mcp_transport import mcp_back
+        return mcp_back()
     return _tab_action(task_id, None, "back", {}, lambda data: {"success": True, "url": data.get("url", "")})
 
 
 def camofox_press(key: str, task_id: Optional[str] = None) -> str:
     """Press a keyboard key via Camofox."""
+    # SEK-70: SaaS gateway → MCP transport.
+    route = _mcp_verb_route("press")
+    if route:
+        from tools.browser_mcp_transport import mcp_press
+        return mcp_press(key)
     return _tab_action(task_id, "press", "press", {"key": key}, lambda data: {"success": True, "pressed": key})
 
 
 def camofox_close(task_id: Optional[str] = None) -> str:
     """Close the browser session via Camofox."""
     try:
+        # SEK-70: SaaS gateway → MCP transport (per-tab close; tenant tabs are
+        # server-side and ephemeral — the browser_close MCP verb handles it).
+        route = _mcp_verb_route("close")
+        if route:
+            from tools.browser_mcp_transport import mcp_close
+            _drop_session(task_id)
+            return mcp_close()
         session = _drop_session(task_id)
         if session:
             _delete(f"/sessions/{session['user_id']}")
@@ -537,6 +602,16 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox (parsed from the snapshot)."""
+    # SEK-70: SaaS gateway → snapshot via MCP then parse locally.
+    route = _mcp_verb_route("snapshot")
+    if route:
+        from tools.browser_mcp_transport import mcp_snapshot
+        import json as _json
+        snap_response = _json.loads(mcp_snapshot())
+        if not snap_response.get("success"):
+            return _json.dumps(snap_response)
+        images = _parse_snapshot_images(snap_response.get("snapshot", ""))
+        return _json.dumps({"success": True, "images": images, "count": len(images)})
     def body(session):
         images = _parse_snapshot_images(_snapshot_data(session).get("snapshot", ""))
         return json.dumps({"success": True, "images": images, "count": len(images)})
@@ -566,9 +641,18 @@ def _save_screenshot(content: bytes) -> str:
 def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
     def body(session):
-        resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))
-        screenshot_path = _save_screenshot(resp.content)
-        img_b64 = base64.b64encode(resp.content).decode("utf-8")
+        # SEK-70: SaaS gateway → screenshot bytes via MCP (b64 text payload).
+        route = _mcp_verb_route("screenshot")
+        if route:
+            from tools.browser_mcp_transport import mcp_screenshot_b64
+            content = mcp_screenshot_b64()
+            if content is None:
+                return tool_error("MCP screenshot failed", success=False)
+        else:
+            resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))
+            content = resp.content
+        screenshot_path = _save_screenshot(content)
+        img_b64 = base64.b64encode(content).decode("utf-8")
         annotation_context = ""
         if annotate:
             try:

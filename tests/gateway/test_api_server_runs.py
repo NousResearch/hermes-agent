@@ -1502,6 +1502,49 @@ class TestRunIdempotency:
         assert accepted.status == 202
 
     @pytest.mark.asyncio
+    async def test_task_registration_failure_does_not_consume_idempotency_key(
+        self, adapter, tmp_path
+    ):
+        from gateway.platforms import api_server_runs
+
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+
+        def fail_registration(coro):
+            coro.close()
+            raise RuntimeError("injected task registration failure")
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                headers = {"Idempotency-Key": "registration-retry"}
+
+                with patch.object(
+                    api_server_runs.asyncio,
+                    "create_task",
+                    side_effect=fail_registration,
+                ):
+                    failed = await cli.post(
+                        "/v1/runs", json={"input": "hello"}, headers=headers
+                    )
+
+                retry = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                retry_body = await retry.json()
+                await asyncio.sleep(0.1)
+
+        assert failed.status == 500
+        assert retry.status == 202
+        assert retry_body["replayed"] is False
+        assert agent.run_conversation.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_sequential_duplicate_reuses_original(self, adapter, tmp_path):
         _use_idempotency_db(adapter, tmp_path / "idem.db")
         app = _create_runs_app(adapter)

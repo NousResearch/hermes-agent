@@ -23,11 +23,14 @@ async def test_cancelled_spawn_reaps_late_child(monkeypatch):
         return child
     monkeypatch.setattr(managed.subprocess, 'Popen', spawn)
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
-    task = asyncio.create_task(managed.execute_managed(SimpleNamespace(), SimpleNamespace(session_id='s'), {}, None))
+    authority = SimpleNamespace(pending_results={})
+    task = asyncio.create_task(managed.execute_managed(
+        authority, SimpleNamespace(session_id='s'), {'admission_id': 'unstarted'}, None))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         task.cancel()
-        with pytest.raises(asyncio.CancelledError): await task
+        assert await task == ''
+        assert authority.pending_results['unstarted']['result']['interrupted'] is True
         release.set()
         assert await asyncio.to_thread(created.wait, 5)
         await asyncio.to_thread(children[0].wait, 5)

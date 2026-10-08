@@ -282,14 +282,24 @@ def _worker_env(authority):
     return env
 
 
+def _interrupted_before_bootstrap(authority, row):
+    authority.pending_results[row['admission_id']] = {
+        'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
+    return ''
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
-    env = await asyncio.to_thread(_worker_env, authority)
-    cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
-    from gateway.session_worker_spawn import acquire_process
-    process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-        cwd=cwd, stdin=subprocess.PIPE, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        env = await asyncio.to_thread(_worker_env, authority)
+        cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
+        from gateway.session_worker_spawn import acquire_process
+        process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
+            cwd=cwd, stdin=subprocess.PIPE, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
+    except asyncio.CancelledError:
+        # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
+        return _interrupted_before_bootstrap(authority, row)
     worker = ManagedWorker(process)
     workers = getattr(authority, '_managed_workers', None)
     if workers is None:
@@ -352,12 +362,11 @@ async def execute_managed(authority, ref, row, policy):
         logging.getLogger(__name__).warning('Managed worker lost: %s',
             exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__)
         if scope is None:
-            if isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped':
+            if isinstance(exc, asyncio.CancelledError) or (
+                    isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
-                authority.pending_results[row['admission_id']] = {
-                    'result': {'final_response': '', 'interrupted': True}, 'usage': {}}
-                return ''
+                return _interrupted_before_bootstrap(authority, row)
             raise
         from gateway.session_worker_reservation import lose_admission_worker
         lose_admission_worker(authority, row, scope)

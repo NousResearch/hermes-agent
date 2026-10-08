@@ -755,14 +755,19 @@ def _tick_memory_nudge(agent: Any) -> bool:
     return False
 
 
-def _emit_reaction(agent: Any, original_user_message: Any) -> None:
+def _emit_reaction(agent: Any, original_user_message: Any, display_kind: Optional[str] = None) -> None:
     """Cosmetic side-signal: detect an affection reaction so the host can play hearts.
-    Token-free, never touches the conversation, never fatal."""
+    Token-free, never touches the conversation, never fatal. Only words the user typed
+    count: a hidden prompt or an expanded skill body is app/skill text, not affection."""
     reaction_callback = getattr(agent, "reaction_callback", None)
-    if reaction_callback is None:
+    if reaction_callback is None or display_kind == "hidden":
         return
     with suppress(Exception):
         from agent.reactions import detect_reaction
+        from agent.skill_commands import describe_skill_invocation
+
+        if describe_skill_invocation(original_user_message) is not None:
+            return
 
         kind = detect_reaction(original_user_message)
         if kind:
@@ -1111,7 +1116,7 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
     should_review_memory = _tick_memory_nudge(agent)
-    _emit_reaction(agent, original_user_message)
+    _emit_reaction(agent, original_user_message, persist_user_display_kind)
 
     if not agent.quiet_mode:
         agent._safe_print(

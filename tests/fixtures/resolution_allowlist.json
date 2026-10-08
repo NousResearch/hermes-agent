@@ -143,11 +143,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/auth.py",
-    "symbol": "_external_process_spec",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/boot_bootstrap.py",
     "symbol": "_git_binary",
     "kind": "bare_which"
@@ -330,11 +325,6 @@
   {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_tui_node_bin",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/mcp_app_detection.py",
-    "symbol": "_Scan.path_candidates",
     "kind": "bare_which"
   },
   {

@@ -146,10 +146,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     sys
   } = opts
 
+  // Plugin on_session_finalize text comes back on the close result and is shown as system lines (never a
+  // model turn). `deferMessages`: the caller resets the transcript next and shows them itself afterwards.
   const closeSession = useCallback(
-    (targetSid?: null | string) =>
-      targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
-    [rpc]
+    async (targetSid?: null | string, deferMessages = false) => {
+      const closed = targetSid ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+
+      if (!deferMessages) {
+        closed?.messages?.forEach(message => sys(message))
+      }
+
+      return closed
+    },
+    [rpc, sys]
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
@@ -207,10 +216,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       const previousSid = getUiState().sid
-
-      if (!keepCurrent) {
-        await closeSession(previousSid)
-      }
+      const closed = keepCurrent ? null : await closeSession(previousSid, true)
 
       const r = await rpc<SessionCreateResponse>('session.create', {
         cols: colsRef.current,
@@ -256,6 +262,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       if (msg) {
         sys(msg)
       }
+
+      // After the reset above, so the closed session's plugin messages stay visible.
+      closed?.messages?.forEach(message => sys(message))
 
       if (requestedTitle) {
         rpc<SessionTitleResponse>('session.title', {

@@ -833,8 +833,22 @@ class SessionCompressionMixin:
             if waiter_enqueued_at is not None:
                 self.clear_session_turn_waiter(session_id, holder)
 
-    def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
-        """Extend a turn lease only while ``holder`` still owns it."""
+    def session_turn_lease_expires_at(self, session_id: str, holder: str) -> Optional[float]:
+        """Committed ``expires_at`` of ``holder``'s turn lease, or None when it does not hold it."""
+        if not session_id or not holder:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                (self._session_turn_lease_key_on_conn(conn, session_id), holder),
+            ).fetchone()
+        return float(row[0]) if row else None
+
+    def refresh_session_turn_lease(
+        self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
+        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
@@ -844,7 +858,7 @@ class SessionCompressionMixin:
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do))
+        return bool(self._execute_write(_do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""

@@ -1,12 +1,16 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: d05ad969662cbbdcf00ea1c8b3972f1f94e0e5c7
+sha: 7e77318d6d69d561a50deed07e4ae72d6498be0f
 description: 'Claude Code-style plan mode on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
   through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
   explores, asks clarifying questions and writes a plan. The agent submits the plan with plan_mode(submit) and you
   approve it through Hermes'' own approval prompt (gateway buttons, the TUI/Desktop card, the CLI panel or /approve);
   it then implements in the same turn and tracks todo_list progress. Deny keeps planning and the agent revises.
+  When yolo or approvals.mode: off would auto-approve, it asks one clarify question instead (Approve plan rev N /
+  Keep planning), and only that answer approves. By default plans are compact and decision-complete and the agent
+  does not commit unless asked (plan_style, allow_commits and plan_skill settings; plan_style: core keeps the
+  zero-context /plan craft).
   Classic CLI enforced on every supported Hermes; gateway, TUI and Desktop from Hermes v2026.9.24 (0.21.5), and
   refused on older builds. Disclosure — plan-mode does not enforce Codex app-server exec/applyPatch or TUI
   /background and btw side agents. It reads seven internal Hermes seams for session identity, workspace, profile and
@@ -21,12 +25,12 @@ tier: community
 category: tools
 requires_hermes: '>=0.21.2'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.3.3"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d05ad969662cbbdcf00ea1c8b3972f1f94e0e5c7/docs/media/banner.png
+version: "0.3.5"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d05ad969662cbbdcf00ea1c8b3972f1f94e0e5c7/docs/media/cli-approval.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d05ad969662cbbdcf00ea1c8b3972f1f94e0e5c7/docs/media/cli-deny-clarify.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d05ad969662cbbdcf00ea1c8b3972f1f94e0e5c7/docs/media/cli-approve-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approval.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-deny-clarify.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approve-implement.png
 platforms: []
 capabilities:
   provides_tools:

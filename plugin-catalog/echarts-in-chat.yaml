@@ -1,18 +1,18 @@
 name: echarts-in-chat
 repo: https://github.com/Tommy00748/hermes-plugin-echarts-in-chat
-sha: 5e0924c528c4e4bd100c87f913f79300f8de2605
+sha: 6825178e277604594cd0a9b8f2789208e40ba59b
 description: "Render a chart inline in the Hermes Desktop transcript: the model emits ::echarts{labels=... values=...} and the plugin mounts an interactive SVG chart (dataZoom slider, click-to-filter legend, resize-aware, 280-560px height clamp) in the plugin SDK's transcript-directive slot. Disclosure — no network calls, no shell commands, no stored credentials, no environment variables, no background processes, and nothing read or written outside the message it renders; the chart is drawn locally as inline SVG with no third-party libraries."
 maintainer: Tommy00748
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Tommy00748/hermes-plugin-echarts-in-chat#readme
-version: "2.0.0"
+version: "2.1.0"
 title: ECharts in Chat
 screenshots:
-  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/5e0924c528c4e4bd100c87f913f79300f8de2605/docs/echarts-in-chat-bar-line.png
-  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/5e0924c528c4e4bd100c87f913f79300f8de2605/docs/echarts-in-chat-trend.png
-  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/5e0924c528c4e4bd100c87f913f79300f8de2605/docs/echarts-in-chat-donut.png
+  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/6825178e277604594cd0a9b8f2789208e40ba59b/docs/echarts-in-chat-bar-line.png
+  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/6825178e277604594cd0a9b8f2789208e40ba59b/docs/echarts-in-chat-trend.png
+  - https://raw.githubusercontent.com/Tommy00748/hermes-plugin-echarts-in-chat/6825178e277604594cd0a9b8f2789208e40ba59b/docs/echarts-in-chat-donut.png
 platforms: []
 capabilities:
   provides_tools: []

@@ -67,6 +67,54 @@ def test_sanitize_title_is_the_contracted_normalizer(db):
     assert SessionDB.sanitize_title("   ") is None
 
 
+def test_auto_title_rejects_invalid_source(db):
+    db.create_session("s1", source="cli")
+    with pytest.raises(ValueError, match="invalid automatic title source"):
+        db.set_auto_title("s1", "Rejected", source=SessionDB.TITLE_SOURCE_USER)
+    assert db.get_session_title("s1") is None
+
+
+def test_title_length_is_checked_after_sanitizing(db):
+    db.create_session("s1", source="cli")
+    overlong = "  " + "x" * (SessionDB.MAX_TITLE_LENGTH + 1) + "\x00  "
+    with pytest.raises(ValueError, match="Title too long"):
+        db.set_auto_title("s1", overlong, source=SessionDB.TITLE_SOURCE_DERIVED)
+    assert db.get_session_title("s1") is None
+
+
+def test_auto_title_collision_with_existing_owner_raises(db):
+    db.create_session("owner", source="cli")
+    db.create_session("candidate", source="cli")
+    assert db.set_session_title("owner", "Taken")
+    with pytest.raises(ValueError, match="already in use"):
+        db.set_auto_title("candidate", "  Taken  ", source=SessionDB.TITLE_SOURCE_LLM)
+    assert db.get_session_title("owner") == "Taken"
+    assert db.get_session_title("candidate") is None
+
+
+def test_auto_title_false_preserves_higher_authority_and_missing_rows(db):
+    db.create_session("s1", source="cli")
+    assert db.set_session_title("s1", "Manual")
+    assert db.set_auto_title("s1", "Generated", source=SessionDB.TITLE_SOURCE_LLM) is False
+    assert db.get_session_title("s1") == "Manual"
+    assert db.set_auto_title("missing", "Generated", source=SessionDB.TITLE_SOURCE_DERIVED) is False
+    assert db.get_session("missing") is None
+
+
+def test_hidden_canonical_bot_chat_title_is_protected(db):
+    db.create_session("bot", source="desktop")
+    db.create_session("candidate", source="cli")
+    assert db.set_auto_title("bot", SessionDB.CANONICAL_BOT_CHAT_TITLE,
+                             source=SessionDB.TITLE_SOURCE_DERIVED)
+    assert db.set_session_hidden("bot", True)
+    assert db.set_auto_title("bot", "New name", source=SessionDB.TITLE_SOURCE_LLM) is False
+    with pytest.raises(ValueError, match="already in use"):
+        db.set_auto_title("candidate", SessionDB.CANONICAL_BOT_CHAT_TITLE,
+                          source=SessionDB.TITLE_SOURCE_LLM)
+    assert db.get_session_title("bot") == SessionDB.CANONICAL_BOT_CHAT_TITLE
+    assert db.get_session_title("candidate") is None
+
+
 # ── clear_stored_system_prompts — out-of-line layout (default schema) ───────
 
 

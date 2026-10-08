@@ -365,6 +365,24 @@ Then set in `~/.hermes/.env`:
 CAMOFOX_URL=http://localhost:9377
 ```
 
+Camofox's noVNC viewer is discovered automatically: Hermes reads the viewer
+address from the VNC plugin's `GET /vnc/status` response (added in
+camofox-browser v1.13.0) and includes the link in navigation responses. A
+`vncPort` field on `/health` is read only as a last resort, for locally patched
+servers — no released camofox-browser reports one. If the discovered host and
+port are not reachable from the device whose browser you want to watch from —
+Camofox behind a reverse proxy or inside a container, for example — set the
+viewer URL explicitly:
+
+```yaml
+browser:
+  camofox:
+    vnc_url: "https://camofox.example.ts.net/vnc.html"
+```
+
+VNC discovery is optional and never determines whether the Camofox browser
+service itself is healthy.
+
 If Camofox is running in Docker and you want it to open web apps served from the host machine, enable loopback rewriting. `CAMOFOX_URL` should still point at the host-published control API, but page URLs such as `http://127.0.0.1:3000` must be opened from inside the container as `http://host.docker.internal:3000`:
 
 ```yaml
@@ -482,7 +500,7 @@ Adoption only fires until `tab_id` is populated for the session. If the external
 
 #### VNC live view
 
-When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
+With the VNC plugin enabled (`ENABLE_VNC=1`), Camofox runs headed and the plugin serves a noVNC viewer on its configured noVNC port; `GET /vnc/status` reports those ports and the viewer path. Hermes discovers the viewer URL from that response and includes it in navigation responses, so the agent can share a link for you to watch the browser live.
 
 ### Lightpanda local engine
 

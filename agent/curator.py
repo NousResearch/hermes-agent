@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 from hermes_constants import get_hermes_home
 from agent.skill_utils import get_disabled_skill_names
 from tools import skill_usage
-from utils import atomic_json_write
+from utils import atomic_json_write, normalize_config_string
 
 logger = logging.getLogger(__name__)
 
@@ -1041,7 +1041,9 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
       3. Main ``model.{provider,default/model}`` pair ("auto" + "" = main chat model)
     Non-empty slot ``api_key``/``base_url`` are returned as explicit overrides so ``resolve_runtime_provider`` doesn't reuse the main chat credential chain."""
     def _slot(provider: str, model: str, slot: Dict[str, Any]) -> _ReviewRuntimeBinding:
-        api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
+        api_key, base_url = (
+            normalize_config_string(v) for v in (slot.get("api_key"), slot.get("base_url"))
+        )
         return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
 
     task = _subdict(cfg, "auxiliary", "curator")

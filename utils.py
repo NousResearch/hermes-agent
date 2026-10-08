@@ -32,6 +32,32 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+NULLISH_CONFIG_STRINGS = frozenset({"none", "null"})
+
+
+def normalize_config_string(value: Any) -> "str | None":
+    """A config string that treats "absent" as None instead of a literal.
+
+    YAML ``null`` reaches Python as ``None``, and the old reading idiom
+    ``str(cfg.get(field, "")).strip() or None`` turned it into the literal string
+    "None" — which then went to a provider as a model id, an api_key, or an
+    exported environment variable (#100835). Empty and whitespace-only values mean
+    unset too. Anything else is returned stripped.
+
+    The quoted tokens "none" / "null" (any case) are also treated as unset: no
+    provider key in ``PROVIDER_REGISTRY`` and no model id in the catalogs uses
+    either, while ``hermes_constants.parse_reasoning_effort`` already gives "none"
+    a sentinel meaning — so apply this ONLY to identity fields
+    (provider / model / base_url / api_key), never to fields with sentinel values.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in NULLISH_CONFIG_STRINGS:
+        return None
+    return text
+
+
 def env_var_enabled(name: str, default: str = "") -> bool:
     """Return True when an environment variable is set to a truthy value."""
     return is_truthy_value(os.getenv(name, default), default=False)

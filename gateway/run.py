@@ -1563,6 +1563,7 @@ os.environ["_HERMES_GATEWAY"] = "1"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, get_process_hermes_home
+from utils import normalize_config_string
 # The PROCESS's own home, never an import-time ContextVar: a multiplexed backend (``hermes serve``)
 # first imports this module lazily from a session's agent build, under that session's routed profile
 # override, and the import-time config bridge below would then latch the secondary's terminal.* and
@@ -2046,11 +2047,13 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
         if not isinstance(_task_cfg, dict):
             continue
         _upper = _task_key.upper()
-        _prov = str(_task_cfg.get("provider", "")).strip()
+        # YAML null must not become the literal "None" in an exported env var — these are
+        # read as a model id and an api_key by vision/browser tools (#100835).
+        _prov = normalize_config_string(_task_cfg.get("provider"))
         if _prov and _prov != "auto":
             os.environ[f"AUXILIARY_{_upper}_PROVIDER"] = _prov
         for _field, _suffix in (("model", "MODEL"), ("base_url", "BASE_URL"), ("api_key", "API_KEY")):
-            _value = str(_task_cfg.get(_field, "")).strip()
+            _value = normalize_config_string(_task_cfg.get(_field))
             if _value:
                 os.environ[f"AUXILIARY_{_upper}_{_suffix}"] = _value
 

@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from agent.i18n import t
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
+from utils import normalize_config_string
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +260,11 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
     }
     task = _background_review_task_config(task_cfg)
+    # A YAML null here resolved to the literal "None", which then routed background
+    # review to a provider named "None" (#100835).
     task_provider, task_model, task_base_url, task_api_key = (
-        str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
+        normalize_config_string(task.get(key))
+        for key in ("provider", "model", "base_url", "api_key")
     )
     if not (task_provider and task_provider != "auto" and task_model) or (
         task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent

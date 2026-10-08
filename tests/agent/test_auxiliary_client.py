@@ -242,6 +242,55 @@ class TestResolveTaskProviderModel:
         assert model is None
 
 
+
+
+
+    @pytest.mark.parametrize("field", ["provider", "model", "base_url", "api_key", "api_mode"])
+    @pytest.mark.parametrize("null_value", [None, "", "   ", "null", "None", "NULL"])
+    def test_null_config_values_are_not_stringified(self, field, null_value):
+        """YAML null (None) and null-ish strings must resolve to None, never
+        the literal "None" string (#100835).
+
+        Previous implementation: str(task_config.get(field, "")).strip() or None
+        stringified the YAML ``null`` token into "None" and forwarded it to the
+        provider as a literal model/base_url value.
+        """
+        task_config = {"provider": "auto", field: null_value}
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+                task="compression",
+            )
+
+        # The whole-point invariant: the null-ish field must NOT appear in the
+        # resolution as the literal string "None"/"null" — it either resolves
+        # to None (unset) or, for provider, falls through to auto-resolution.
+        field_outputs = {
+            "provider": resolved_provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": api_mode,
+        }
+        for name, value in field_outputs.items():
+            if name == field:
+                assert value != "None" and value != "null", (
+                    f"{field}={null_value!r} resolved to {value!r} "
+                    f"(null must not stringify)"
+                )
+            # And specifically: the null-ish field must itself be None or 'auto'
+            if name == field and field != "provider":
+                assert value is None, (
+                    f"{field}={null_value!r} resolved to {value!r} "
+                    f"(expected None — null must not be forwarded)"
+                )
+        # Provider, when null-ish, is normalized away and falls through to the
+        # auto-resolution path — the only legal outcome in this configuration
+        # is the literal "auto" sentinel (neither a user deny nor a hardline
+        # fires for a null provider).
+        if field == "provider":
+            assert resolved_provider == "auto"
+
+
 class TestMoaAggregatorSharedResolution:
     """The shared MoA→aggregator helper and the layers that consume it.
 
@@ -5667,3 +5716,104 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             )
 
         assert resolved_provider == "xai-oauth"
+
+
+class TestNullNeverStringifiedAtAnyReader:
+    """#100835: a YAML null reached four readers as the literal string "None".
+
+    The auxiliary task-config block was fixed first; these pin the three other call
+    sites that read the same ``auxiliary.<task>`` shape, so the fix cannot regress
+    into "one call site fixed, siblings left broken".
+    """
+
+    def test_gateway_bridge_exports_no_literal_none(self, monkeypatch):
+        import os
+
+        from gateway.run import _bridge_auxiliary_config_to_env
+
+        for key in list(os.environ):
+            if key.startswith("AUXILIARY_"):
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("AUXILIARY_VISION_API_KEY", raising=False)
+        _bridge_auxiliary_config_to_env({
+            "vision": {"provider": "openai", "model": None,
+                       "api_key": None, "base_url": None},
+        })
+        # A literal "None" here is read as a model id and an API key downstream.
+        for suffix in ("MODEL", "API_KEY", "BASE_URL"):
+            name = "AUXILIARY_VISION_" + suffix
+            assert os.environ.get(name) is None, "%s = %r" % (name, os.environ.get(name))
+        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openai"
+
+    def test_background_review_does_not_resolve_a_provider_named_none(self):
+        """A null provider must mean "inherit the parent runtime", not an attempt to
+        route to a provider literally named "None".
+
+        Asserting the returned dict is not enough: the unknown-provider lookup raises
+        and the surrounding handler swallows it into the same parent runtime, so the
+        output looks identical either way. The discriminating fact is that no provider
+        lookup is attempted at all — ``resolve_runtime_provider`` is imported INSIDE
+        the function, so the patch belongs on ``hermes_cli.runtime_provider``.
+        """
+        from agent import background_review as br
+
+        class _Agent:
+            provider = "openai"
+            model = "gpt-5"
+            _credential_pool = None
+            request_overrides = {}
+            max_tokens = None
+            acp_command = None
+            acp_args = []
+
+            @staticmethod
+            def _current_main_runtime():
+                return {"api_mode": "chat_completions", "base_url": None,
+                        "api_key": None, "credential_pool": None,
+                        "request_overrides": {}, "max_tokens": None,
+                        "command": None, "args": [], "routed": False}
+
+        task = {"provider": None, "model": None, "base_url": None, "api_key": None}
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as lookup:
+            br._resolve_review_runtime(_Agent(), task)
+        lookup.assert_not_called()
+
+    def test_fallback_chain_entry_does_not_route_to_a_provider_named_none(self):
+        """``auxiliary.<task>.fallback_chain[]`` is the same config shape read a fifth
+        time. A null provider passed the "skip empty entries" guard as the string
+        "None" and reached the resolver as a provider name."""
+        import agent.auxiliary_client as ac
+
+        chain = [{"provider": None, "model": "gpt-5", "base_url": None}]
+        seen = []
+        with patch.object(ac, "_get_auxiliary_task_config", return_value={"fallback_chain": chain}), \
+                patch.object(ac, "_failed_backend_skip", return_value=lambda *a, **k: False), \
+                patch.object(ac, "_custom_health_base_url") as health, \
+                patch.object(ac, "_is_provider_unhealthy", return_value=False), \
+                patch.object(ac, "_resolve_fallback_entry") as resolve:
+            # _custom_health_base_url is the first callee that receives the NORMALIZED
+            # provider, so it observes the value the route actually uses -- the config
+            # dict itself is never mutated and cannot show the coercion.
+            health.return_value = None
+            health.side_effect = lambda provider, url: seen.append(provider)
+            resolve.return_value = (None, None)
+            ac._try_configured_fallback_chain("vision", "openai", "error", failed_model="gpt-5")
+        assert "None" not in seen, "fallback chain routed to a provider named 'None': %r" % (seen,)
+
+    def test_a_real_value_still_survives_the_reader(self):
+        """The other direction: a legitimate configured provider must still route."""
+        import agent.auxiliary_client as ac
+
+        chain = [{"provider": "openai", "model": "  gpt-5  ", "base_url": None}]
+        seen = []
+        with patch.object(ac, "_get_auxiliary_task_config", return_value={"fallback_chain": chain}), \
+                patch.object(ac, "_failed_backend_skip", return_value=lambda *a, **k: False), \
+                patch.object(ac, "_custom_health_base_url") as health, \
+                patch.object(ac, "_is_provider_unhealthy", return_value=False), \
+                patch.object(ac, "_resolve_fallback_entry") as resolve:
+            health.return_value = None
+            health.side_effect = lambda provider, url: seen.append(provider)
+            resolve.return_value = (None, None)
+            ac._try_configured_fallback_chain("vision", "anthropic", "error", failed_model="claude")
+        assert resolve.call_args, "a valid fallback entry was dropped"
+        assert seen == ["openai"], seen

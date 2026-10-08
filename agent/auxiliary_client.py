@@ -128,7 +128,9 @@ from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import (base_url_host_matches, base_url_hostname, base_url_origin, env_float,
+                   is_truthy_value, model_forces_max_completion_tokens,
+                   normalize_config_string, normalize_proxy_env_vars)
 
 logger = logging.getLogger(__name__)
 
@@ -4413,10 +4415,10 @@ def _try_configured_fallback_chain(
     for i, entry in enumerate(chain):
         if not isinstance(entry, dict):
             continue
-        fb_provider = str(entry.get("provider", "")).strip()
+        fb_provider = normalize_config_string(entry.get("provider"))
         if not fb_provider:
             continue
-        fb_model_raw = str(entry.get("model", "")).strip()
+        fb_model_raw = normalize_config_string(entry.get("model")) or ""
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if skip(fb_provider, fb_model_raw, fb_base_url):
             continue
@@ -6184,17 +6186,21 @@ def _resolve_task_provider_model(
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        cfg_provider = normalize_config_string(task_config.get("provider"))
+        cfg_model = normalize_config_string(task_config.get("model"))
+        cfg_base_url = normalize_config_string(task_config.get("base_url"))
+        cfg_api_key = normalize_config_string(task_config.get("api_key"))
         if not cfg_api_key:  # key_env → env var when api_key is not set directly
-            cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
+            cfg_key_env = normalize_config_string(
+                task_config.get("key_env") or task_config.get("api_key_env")
+            ) or ""
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
-        # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
-        # branch downstream compares against the transport names only (#39750).
-        resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
+        # Normalize YAML null/empty literals to None first, then canonicalize user-facing
+        # spellings (``responses``, ``anthropic``, …) so downstream compares transport names
+        # only (#39750, #100835).
+        _raw_api_mode = normalize_config_string(task_config.get("api_mode"))
+        resolved_api_mode = _canonical_api_mode(_raw_api_mode or "").lower() or None
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.

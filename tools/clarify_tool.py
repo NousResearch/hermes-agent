@@ -16,13 +16,24 @@ _UNAVAILABLE = "Clarify tool is not available in this execution context."
 _SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
-def mark_recommended(choices: List[str]) -> List[str]:
+def mark_recommended(choices: list) -> list:
     """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
-    and a lone choice is left untouched (nothing to prefer it over)."""
-    first = str(choices[0]).strip() if choices else ""
-    if len(choices) < 2 or first != strip_recommended(first):
+    and a lone choice is left untouched (nothing to prefer it over). A structured
+    option dict gets its ``label`` key decorated in place (copy — never mutate the caller's)."""
+    if len(choices) < 2:
         return choices
-    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
+    first = choices[0]
+    if isinstance(first, dict):
+        label = str(first.get("label") or first.get("description") or "").strip()
+        if not label or label != strip_recommended(label):
+            return choices
+        decorated = dict(first)
+        decorated["label"] = f"{label} {RECOMMENDED_LABEL}"
+        return [decorated] + list(choices[1:])
+    first_str = str(first).strip()
+    if first_str != strip_recommended(first_str):
+        return choices
+    return [f"{first_str} {RECOMMENDED_LABEL}"] + list(choices[1:])
 
 
 def strip_recommended(text: str) -> str:
@@ -31,6 +42,40 @@ def strip_recommended(text: str) -> str:
     if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
         return stripped[: -len(RECOMMENDED_LABEL)].strip()
     return stripped
+
+
+def _is_rich_option(c) -> bool:
+    """True for a structured option dict ``{label, brief, pros, cons}`` (the #1 decision
+    helper) — surfaces render the full tradeoffs instead of a bare string."""
+    return isinstance(c, dict) and bool(c.get("label") or c.get("description"))
+
+
+def _canonical_option(c: dict) -> dict:
+    """Canonical rich option: keep only renderable keys so every surface reads them uniformly."""
+    return {k: c[k] for k in ("label", "brief", "pros", "cons", "description")
+            if k in c and isinstance(c[k], str) and c[k].strip()}
+
+
+def _flatten_choice(c) -> str:
+    """Reduce any choice value to plain text (used for non-rich values)."""
+    if c is None:
+        return ""
+    if isinstance(c, dict):
+        for key in ("label", "description", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(c, (list, tuple)):
+        return " ".join(_flatten_choice(x) for x in c).strip()
+    return str(c).strip()
+
+
+def _choice_label(c) -> str:
+    """Readable label for a choice (rich dicts -> their short label), never a raw dict repr."""
+    if isinstance(c, dict):
+        return _flatten_choice(c)
+    return str(c).strip()
 
 
 def _clean_answer(raw, multi: bool):
@@ -64,22 +109,35 @@ def _normalize_questions(questions) -> tuple:
             return None, f"questions[{index}].question must be non-empty text."
         choices = item.get("choices")
         if choices is not None:
-            if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
-                return None, f"questions[{index}].choices must be a list of strings."
-            for pos, choice in enumerate(choices):
-                if len(choice.strip()) > MAX_CHOICE_CHARS:
-                    return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "
+            if not isinstance(choices, list):
+                return None, f"questions[{index}].choices must be a list."
+            # Preserve structured option dicts {label, brief, pros, cons} (the
+            # #1 decision helper) so rich surfaces render the full tradeoffs;
+            # everything else normalizes to a plain string.
+            norm: list = []
+            for pos, c in enumerate(choices):
+                if _is_rich_option(c):
+                    norm.append(_canonical_option(c))
+                    continue
+                s = _flatten_choice(c)
+                if not s:
+                    continue
+                if len(s) > MAX_CHOICE_CHARS:
+                    return None, (f"questions[{index}].choices[{pos}] is {len(s)} characters; the limit is "
                                   f"{MAX_CHOICE_CHARS}. Move detail into the question text and resend.")
-            cleaned = [c.strip() for c in choices if c.strip()][:MAX_CHOICES]
-            if choices and not cleaned:
+                norm.append(s)
+            norm = norm[:MAX_CHOICES]
+            if choices and not norm:
                 # A card with no options strands the turn: say so instead of silently asking open-ended.
                 return None, (f"questions[{index}].choices has {len(choices)} entries but all are blank. "
                               "Send real labels, or omit choices to ask open-ended.")
-            choices = cleaned or None
+            choices = norm or None
         normalized.append({
             "qid": f"q{index}", "question": text,
             "choices": mark_recommended(list(choices)) if choices else None,
-            "choices_offered": list(choices) if choices else None,
+            # Report readable labels (rich dicts -> their short label) so the
+            # agent's context stays clean — never a raw dict repr.
+            "choices_offered": [_choice_label(c) for c in choices] if choices else None,
             "multi_select": bool(item.get("multi_select")) and bool(choices)})
     return normalized, None
 
@@ -175,7 +233,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
+                            "items": {"type": ["string", "object"]},  # object = rich option {label,brief,pros,cons}; no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

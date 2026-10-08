@@ -27,6 +27,14 @@ import traceback
 from collections import defaultdict
 from contextlib import nullcontext, suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
+from plugins.platforms.discord.adapter_slash import (
+    _DISCORD_APP_COMMAND_TEXT_LIMIT, _REQUIRED, _native_slash_commands, _t_discord, _truncate_discord_component_text,
+)
+
+from plugins.platforms.discord.adapter_clarify import (
+    _choice_button_text, _choice_detail_block, _choice_label_line, _choice_resolve_text, _choice_text,
+    build_rich_choices_embed, clarify_resend_mention, make_clarify_resend, resolve_exec_approval_admin_gate,
+)
 from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
@@ -94,113 +102,11 @@ _DISCORD_MAX_APP_COMMANDS = 100
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
-_REQUIRED = object()
-# Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
-# resolves them for the active language (a language change re-syncs: the fingerprint carries it).
-_NATIVE_SLASH_COMMAND_SPECS: tuple = (
-    ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
-    ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
-    ("model", "platform.discord.command.model.description",
-     (("name", str, "", "platform.discord.command.model.arg_name", None),),
-     "/model {name}", None),
-    ("reasoning", "platform.discord.command.reasoning.description",
-     (("effort", str, "", "platform.discord.command.reasoning.arg_effort",
-       # One `/reasoning <arg>` handler; Discord has no free-text subcommand, so list every value.
-       # Choice labels are (key-or-literal, value); bare level names are identifiers, not prose.
-       (("platform.discord.command.reasoning.choice_none", "none"), ("minimal", "minimal"), ("low", "low"),
-        ("medium", "medium"), ("high", "high"), ("xhigh", "xhigh"), ("max", "max"),
-        ("platform.discord.command.reasoning.choice_ultra", "ultra"), ("platform.discord.command.reasoning.choice_reset", "reset"),
-        ("platform.discord.command.reasoning.choice_show", "show"), ("platform.discord.command.reasoning.choice_hide", "hide"))),),
-     "/reasoning {effort}", None),
-    ("personality", "platform.discord.command.personality.description",
-     (("name", str, "", "platform.discord.command.personality.arg_name", None),),
-     "/personality {name}", None),
-    ("retry", "platform.discord.command.retry.description", (), "/retry", "platform.discord.command.retry.followup"),
-    ("undo", "platform.discord.command.undo.description", (), "/undo", None),
-    ("status", "platform.discord.command.status.description", (), "/status", "platform.discord.command.status.followup"),
-    ("sethome", "slash.sethome.description", (), "/sethome", None),
-    ("stop", "platform.discord.command.stop.description", (), "/stop", "platform.discord.command.stop.followup"),
-    ("steer", "platform.discord.command.steer.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.steer.arg_prompt", None),),
-     "/steer {prompt}", None),
-    ("plan", "platform.discord.command.plan.description",
-     (("task", str, "", "platform.discord.command.plan.arg_task", None),),
-     "/plan {task}", None),
-    ("compress", "platform.discord.command.compress.description", (), "/compress", None),
-    ("title", "platform.discord.command.title.description",
-     (("name", str, "", "platform.discord.command.title.arg_name", None),),
-     "/title {name}", None),
-    ("resume", "slash.resume.description",
-     (("name", str, "", "platform.discord.command.resume.arg_name", None),),
-     "/resume {name}", None),
-    ("usage", "platform.discord.command.usage.description", (), "/usage", None),
-    ("help", "platform.discord.command.help.description", (), "/help", None),
-    ("insights", "slash.insights.description",
-     (("days", int, 7, "platform.discord.command.insights.arg_days", None),),
-     "/insights {days}", None),
-    ("reload-mcp", "slash.reload_mcp.description", (), "/reload-mcp", None),
-    ("reload-skills", "platform.discord.command.reload_skills.description", (), "/reload-skills", None),
-    ("voice", "platform.discord.command.voice.description",
-     (("mode", str, "", "platform.discord.command.voice.arg_mode",
-       # `join` and `channel` both hit _handle_voice_channel_join; expose both to match docs.
-       (("platform.discord.command.voice.choice_join", "join"), ("platform.discord.command.voice.choice_channel", "channel"),
-        ("platform.discord.command.voice.choice_leave", "leave"), ("platform.discord.command.voice.choice_mode_on", "on"),
-        ("platform.discord.command.voice.choice_tts", "tts"), ("platform.discord.command.voice.choice_mode_off", "off"),
-        ("platform.discord.command.voice.choice_status", "status"))),),
-     "/voice {mode}", None),
-    ("update", "slash.update.description", (), "/update", "platform.discord.command.update.followup"),
-    ("restart", "platform.discord.command.restart.description", (), "/restart", "platform.discord.command.restart.followup"),
-    ("approve", "slash.approve.description",
-     (("scope", str, "", "platform.discord.command.approve.arg_scope", None),),
-     "/approve {scope}", None),
-    ("deny", "platform.discord.command.deny.description",
-     (("scope", str, "", "platform.discord.command.deny.arg_scope", None),),
-     "/deny {scope}", None),
-    # /thread: template None -> registered by _register_thread_slash (auth-gated defer).
-    ("thread", "platform.discord.command.thread.description", (), None, None),
-    ("queue", "platform.discord.command.queue.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.queue.arg_prompt", None),),
-     "/queue {prompt}", "platform.discord.command.queue.followup"),
-    ("bg", "slash.bg.description",
-     (("prompt", str, _REQUIRED, "platform.discord.command.bg.arg_prompt", None),),
-     "/bg {prompt}", "platform.discord.command.bg.followup"),
-    ("btw", "platform.discord.command.btw.description",
-     (("question", str, _REQUIRED, "platform.discord.command.btw.arg_question", None),),
-     "/btw {question}", "platform.discord.command.btw.followup"),
-)
-# Discord rejects the whole bulk sync (error 50035) when ONE description / parameter description /
-# Choice name exceeds 100 UTF-16 units, so every localized slot is cut at the cap.
-_DISCORD_APP_COMMAND_TEXT_LIMIT = 100
 
 
 def _default_voice_ack_phrases() -> list:
     """Spoken while the agent works (``voice_fx.ack_phrases`` in config overrides them)."""
     return [t(f"platform.discord.voice.ack_{i}") for i in range(1, 6)]
-
-
-def _t_discord(key: str, limit: int, **kwargs: Any) -> str:
-    """``t()`` cut to a Discord field cap (UTF-16 units)."""
-    return _truncate_discord_component_text(t(key, **kwargs), limit)
-
-
-def _native_slash_commands() -> tuple:
-    """``_NATIVE_SLASH_COMMAND_SPECS`` with descriptions, parameter descriptions and Choice names
-    resolved for the active language: ``(name, description, args, template, followup_key)``.
-    Follow-ups stay KEYS — ``_run_simple_slash`` resolves them when the command actually runs."""
-    def _text(key: str) -> str:
-        return _t_discord(key, _DISCORD_APP_COMMAND_TEXT_LIMIT)
-
-    def _choice_label(label: str) -> str:
-        return _text(label) if "." in label else label
-
-    out = []
-    for name, description_key, args, template, followup_key in _NATIVE_SLASH_COMMAND_SPECS:
-        localized_args = tuple(
-            (arg_name, arg_type, default, _text(desc_key),
-             tuple((_choice_label(lbl), val) for lbl, val in choices) if choices else None)
-            for arg_name, arg_type, default, desc_key, choices in args)
-        out.append((name, _text(description_key), localized_args, template, followup_key))
-    return tuple(out)
 
 
 _DISCORD_SELECT_FIELD_LIMIT = 100
@@ -353,11 +259,6 @@ async def _read_url_image_with_redirect_guard(
                 continue
             return status, await resp.read(), headers
     raise ValueError("Too many image URL redirects")
-
-
-def _truncate_discord_component_text(text: str, limit: int) -> str:
-    """Return text within Discord's UTF-16 component field budget."""
-    return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
 def _abort_discord_websocket_transport(websocket: Any) -> bool:
@@ -5757,7 +5658,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+            require_admin, admin_user_ids = resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
                 session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
@@ -5794,54 +5695,97 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         return await self._send_prompt(chat_id, metadata, _build)
 
     async def send_clarify(
-        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
-        session_key: str, metadata: Optional[Dict[str, Any]] = None,
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        content: Optional[str] = None,
     ) -> SendResult:
-        """Clarify prompt: one button per choice plus ``✏️ Other`` (text-capture); with no choices the
-        gateway's text-intercept captures the next message. Dict choices (LLMs emit
-        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``."""
-        def _flatten_choice(c):
-            if c is None:
-                return ""
-            if isinstance(c, str):
-                return c.strip()
-            if isinstance(c, dict):
-                # 'name'/'value' excluded: Discord-component-shaped fields would leak raw enum values.
-                for key in ("label", "description", "text", "title"):
-                    v = c.get(key)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                return ""
-            if isinstance(c, (list, tuple)):
-                return " ".join(_flatten_choice(x) for x in c).strip()
-            return str(c).strip()
+        """Render a clarify prompt with one numbered Discord button per rich option.
 
-        def _build(_channel):
-            # Header-only card (same rule as the exec approval prompt): the question and hint live
-            # in content only, so embed-rendering clients don't see them twice (#114693).
-            clarify_title = t("platform.discord.prompt.clarify_title")
-            embed = discord.Embed(
-                title=_truncate_discord_component_text(f"❓ {clarify_title}", _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
-            # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
-            clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
+        ``choices`` may contain bare strings OR structured option dicts
+        ``{label, brief, pros, cons}`` (the #1 decision helper); structured
+        dicts render their full brief + pros/cons in the embed body with a
+        short selector on the button (built by ``adapter_clarify``).
+        ``content`` (optional) is plain text sent above the embed, used on
+        re-posts to @mention the user (see ``clarify_resend_mention``).
+        Multi-choice adds a final "✏️ Other (type answer)" button; open-ended
+        renders the question with no buttons and the gateway text-capture
+        resolves the next message.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # On a re-post (wait-hint present), if no explicit content was
+            # passed, generate the participant @mention so the prompt resurfaces.
+            resend_content = content
+            if (
+                resend_content is None
+                and metadata is not None
+                and metadata.get("_clarify_wait_hint")
+            ):
+                try:
+                    resend_content = await clarify_resend_mention(self, channel)
+                except Exception as e:  # best-effort; mention is not fatal
+                    logger.debug("[%s] clarify resend mention failed: %s", self.name, e, exc_info=True)
+                    resend_content = None
+
+            # Embed + numbered buttons / rich option cards (see adapter_clarify).
+            embed, button_choices, clean_choices = build_rich_choices_embed(
+                question, choices or [], metadata,
+            )
+
             if clean_choices:
-                hint = t("platform.discord.prompt.clarify_hint_buttons")
                 view = ClarifyChoiceView(
-                    choices=clean_choices, clarify_id=clarify_id,
+                    choices=button_choices,
+                    clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
+                    resend=make_clarify_resend(
+                        self, chat_id, question, clean_choices, clarify_id, session_key, metadata,
+                    ),
                 )
             else:
-                hint = t("platform.discord.prompt.clarify_hint_text")
                 view = None
-            content = self._self_contained_prompt_content(
-                f"❓ **{clarify_title}**", str(question or "").strip(), tail=f"\n\n{hint}",
-            )
-            send_kwargs = {"content": content, "embed": embed}
+
+            # Mirror the question in plain content — embeds are invisible on
+            # some clients (see send_exec_approval).  A re-post carries the
+            # @mention content instead.
+            if resend_content is None:
+                clarify_tail = (
+                    "\n\nPick one below, or click ✏️ Other to type a custom answer."
+                    if clean_choices
+                    else "\n\nReply in this channel with your answer."
+                )
+                resend_content = self._self_contained_prompt_content(
+                    "❓ **Hermes needs your input**", str(question or "").strip(),
+                    tail=clarify_tail,
+                )
             if view:
-                send_kwargs["view"] = view
-            return send_kwargs, view
-        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
+                msg = await channel.send(content=resend_content, embed=embed, view=view)
+            else:
+                msg = (
+                    await channel.send(content=resend_content, embed=embed)
+                    if resend_content else await channel.send(embed=embed)
+                )
+            if view:
+                view._message = msg  # store for on_timeout expiration editing
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            logger.exception("[%s] send_clarify failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
@@ -6378,24 +6322,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 # ---------------------------------------------------------------------------
 
 
-def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> Tuple[bool, set]:
-    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
-    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
-    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
-    """
-    extra = config_extra if isinstance(config_extra, dict) else {}
-    raw_toggle = extra.get("require_admin_for_exec_approval", False)
-    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
-    if not require_admin:
-        return (False, set())
-    try:
-        from gateway.slash_access import _coerce_id_list
-        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
-    except Exception:
-        admin_ids = set()
-    return (True, admin_ids)
-
-
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
@@ -6895,17 +6821,77 @@ def _define_discord_view_classes() -> None:
                     pass
 
     class ClarifyChoiceView(_HermesView):
-        """One button per clarify choice (max 24) plus ``✏️ Other``. A numeric click resolves the
-        gateway clarify entry immediately; ``Other`` flips to text-capture (next message answers).
-        Single-use: after the first valid click all buttons disable."""
+        """One button per clarify choice (max 24) plus ``✏️ Other``.
 
-        def __init__(self, choices: List[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        Picking a numeric choice resolves the gateway clarify entry immediately;
+        picking ``Other`` flips the entry into text-capture mode so the next
+        user message in the session becomes the response (the gateway's
+        text-intercept handles the resolution).
+
+        Auth gating mirrors ``ExecApprovalView`` — only users/roles in the
+        Discord adapter's allowlist may answer. Single-use: after the first
+        valid click all buttons disable and the embed updates to show who
+        answered and what they chose.
+        """
+
+        def __init__(
+            self,
+            choices: List[str],
+            clarify_id: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+            resend: Optional[Callable] = None,
+        ):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
+            self._resend = resend
+
             for index, choice in enumerate(self.choices):
+                # Button shows a SHORT selector (number + tight label) -- the
+                # FULL option text lives in the embed body (see send_clarify's
+                # "Options" fields), so the user reads the actual answer there
+                # instead of a cut-off label. On mobile Discord only ~40 chars
+                # are visible comfortably, so aim well under that.
+                #
+                # Cut strategy (most-preferred to least-preferred):
+                #   1. Last space in the trailing half of the budget
+                #      (cleanest word boundary)
+                #   2. Last soft boundary in the trailing half of the
+                #      budget (hyphen, comma, period, paren)
+                #   3. Hard cut at the budget limit (last resort)
+                prefix = f"{index + 1}. "
+                budget = 24 - utf16_len(prefix)  # short selector label; full text in body
+                if utf16_len(choice) <= budget:
+                    label_body = choice
+                else:
+                    truncated = _prefix_within_utf16_limit(
+                        choice,
+                        max(0, budget - utf16_len(_DISCORD_ELLIPSIS)),
+                    ).rstrip()
+                    cut_at = -1
+                    # 1. Last space in the trailing half of the budget.
+                    space = truncated.rfind(" ")
+                    if space >= len(truncated) // 2:
+                        cut_at = space
+                    # 2. Soft boundary — only if no word boundary found.
+                    # Find the latest soft boundary in the trailing half
+                    # of the budget; that maximizes preserved text length.
+                    # Cut AT the soft boundary (inclusive) so the label
+                    # ends on the soft char (e.g. "-" or ",") rather than
+                    # on the alpha char that followed it.
+                    if cut_at < 0:
+                        latest_soft = max(
+                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
+                            default=-1,
+                        )
+                        if latest_soft >= len(truncated) // 2:
+                            cut_at = latest_soft + 1
+                    if cut_at > 0:
+                        truncated = truncated[:cut_at]
+                    label_body = truncated.rstrip() + _DISCORD_ELLIPSIS
                 button = discord.ui.Button(
-                    label=self._button_label(index, choice), style=discord.ButtonStyle.primary,
+                    label=f"{prefix}{label_body}", style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )
                 button.callback = self._make_choice_callback(index, choice)
@@ -6979,7 +6965,9 @@ def _define_discord_view_classes() -> None:
                 from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
                 entry = _clarify_entries.get(self.clarify_id)
                 if entry and entry.choices and 0 <= index < len(entry.choices):
-                    resolved_text = entry.choices[index]
+                    # Round-trip canonical text -- may be a bare string OR a
+                    # structured option dict (resolve to its brief/label).
+                    resolved_text = _choice_resolve_text(entry.choices[index])
             except Exception:
                 resolved_text = None
             if resolved_text is None:

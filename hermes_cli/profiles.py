@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
@@ -91,7 +92,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
-# ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
+# ``profile.yaml`` ``role`` values. A role marks a backend-created profile (setup) and grants no toolset;
 # only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
 SETUP_ROLE = "setup"
 PROFILE_ROLES = frozenset({SETUP_ROLE})
@@ -148,6 +149,72 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
+# OS credential dirs (file_safety.HOME_CREDENTIAL_DIRS) + direnv .envrc (_BLOCKED_PROJECT_ENV_BASENAMES).
+_OS_CREDENTIAL_STORES = (*HOME_CREDENTIAL_DIRS, ".envrc")
+
+# Credential stores in a profile home, as paths relative to it, plus the directories where Hermes
+# keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
+# overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
+PROFILE_CREDENTIAL_PATHS = frozenset({
+    "auth.json", ".env", "auth/google_oauth.json",
+    ".op.env",                      # 1Password service-account token (env_loader)
+    "npmrc",                        # npm registry auth (source_build)
+    ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
+    "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
+    "google_chat_user_tokens", "google_chat_user_client_secret.json", "google_chat_user_oauth_pending.json",
+    "google_chat_user_token.json", "google_chat_user_oauth_pending",  # legacy single-user layouts
+    "slack_tokens.json",
+    "honcho.json",                  # Honcho apiKey + OAuth grant (oauth.refreshToken)
+    "mem0.json",                    # Mem0 api_key (self-hosted server key) next to its settings
+    "webhook_subscriptions.json",   # per-route HMAC secrets
+    "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
+    "mcp-tokens",                   # MCP OAuth tokens
+    "vault",                        # vault.key + vault.json.enc
+    "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
+    "pairing", "platforms/pairing", "feishu_comment_pairing.json",
+    "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "cache/bws_cache.json", "cache/bws_cache.enc.json",
+    "workspace/meetings/node_token.json",  # google_meet node RPC secret
+    "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
+    ".copilot_jwt.json",            # exchanged Copilot API token
+    "runtime/photon-sidecar.json",  # Photon sidecar auth token
+    "proxy",                        # iron-proxy CA key + proxy tokens
+    "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
+    "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
+    "backups", "state-snapshots",   # pre-update zips, config copies, update snapshots of the stores
+    *_OS_CREDENTIAL_STORES,
+})
+_CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
+
+# Copies Hermes' writers leave beside a store at the profile root, matched case-folded. Any
+# ``auth.json.*`` / ``.env.bak*`` is a credential store whoever named it; for config.yaml only the
+# writers' formats match (post_update ``.bak-<stamp>[.N]``, config_backups' legacy siblings), because a
+# hand-named ``config.yaml.bak-my-note`` is the user's and ships through the export scrub instead.
+_STORE_COPY_RE = re.compile(
+    r"auth\.json\..+|\.env\.bak.*"
+    r"|config\.yaml\.(?:bak-\d{8}t\d{6}z(?:\.\d+)?|bak\.\d+|corrupt\..*|bak-pre-migrate-.*)"
+)
+
+
+def _fold(parts: Tuple[str, ...]) -> Tuple[str, ...]:
+    return tuple(part.casefold() for part in parts)
+
+
+def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
+    """True for a PROFILE_CREDENTIAL_PATHS store, anything below one, or a root copy of one.
+    Case-folded: on a case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
+    folded = _fold(parts)
+    if len(folded) == 1 and _STORE_COPY_RE.fullmatch(folded[0]):
+        return True
+    return any(folded[:len(store)] == store for store in _CREDENTIAL_PATH_PARTS)
+
+
+def profile_path_contains_private_store(parts: Tuple[str, ...]) -> bool:
+    """True for a strict ancestor of a store (``platforms`` holds ``platforms/pairing``)."""
+    folded = _fold(parts)
+    return any(len(store) > len(folded) and store[:len(folded)] == folded for store in _CREDENTIAL_PATH_PARTS)
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -162,7 +229,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "hermes-agent",         # repo checkout (multi-GB)
     ".worktrees",           # git worktrees
     "profiles",             # other profiles — never recursive-export
-    "bin",                  # installed binaries (tirith, etc.)
+    "bin",                  # installed binaries
     "node_modules",         # npm packages
     ".hermes-runtime",      # managed runtime tree (install artifact)
     "node",                 # legacy pre-split managed Node tree
@@ -294,10 +361,21 @@ def normalize_profile_name(name: str) -> str:
     case-insensitively. Dashboards/tools may pass title-cased labels — normalize before
     validation, assignment, and subprocess spawn.
 
-    Named profiles are stored lowercase under ``profiles/<id>/``. See #18498.
+    Named profiles are stored lowercase under ``profiles/<id>/``. The special
+    alias ``default`` is matched case-insensitively (``Default`` → ``default``).
+    Dashboards and tools may pass title-cased display labels; normalize before
+    validation, assignment, and subprocess spawn (see issue #18498).
+
+    Raises ``ValueError`` for non-string input: a numeric profile id (e.g. a
+    DB row id or a falsy sentinel) silently coerced via ``str()`` becomes a
+    real on-disk profile directory (``profiles/0/``, #88842). Callers that
+    hold a numeric id must resolve it to an actual profile name first.
     """
     if not isinstance(name, str):
-        name = str(name)
+        raise ValueError(
+            "profile name must be a string, got "
+            f"{type(name).__name__}: {name!r}"
+        )
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")
@@ -1250,6 +1328,45 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _clone_plugins_ignore(plugins_root: Path):
+    """copytree ignore for a cloned ``plugins/``: :func:`_non_exportable_entries` everywhere, plus
+    the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
+    root = str(plugins_root)
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        ignored = _non_exportable_entries(directory, names)
+        if directory == root:
+            # Directories only: ``.install-metadata.json`` shares the prefix and must travel.
+            ignored.update(n for n in names if n.startswith((".install-", ".update-"))
+                           and os.path.isdir(os.path.join(directory, n)))
+        return ignored
+    return _ignore
+
+
+def _clone_plugins(source_dir: Path, profile_dir: Path) -> None:
+    """Copy the source's user-installed plugins (``plugins/`` with ``.install-metadata.json``).
+
+    ``config.yaml`` already carries ``plugins.enabled`` and ``memory.provider``; without the code a
+    catalog-installed memory provider resolves nowhere in the clone, so the clone silently runs
+    without its memory (or, with lazy installs on, re-fetches the latest catalog pin instead of the
+    revision the source runs). The copy keeps each plugin's tree, revision and catalog provenance
+    (the install record). Python dependencies live in the shared venv, where the source's
+    selection of the same plugin already put them."""
+    source_plugins = source_dir / "plugins"
+    if source_plugins.is_dir():
+        _copytree_keep_junctions(source_plugins, profile_dir / "plugins",
+                                 _clone_plugins_ignore(source_plugins), dirs_exist_ok=True)
+
+
+def cloned_plugin_names(profile_dir: Path) -> List[str]:
+    """Plugins a clone now carries in ``plugins/``, for the CLI notice."""
+    try:
+        return sorted(p.name for p in (profile_dir / "plugins").iterdir()
+                      if not p.name.startswith(".") and (p.is_dir() or p.is_symlink()))
+    except OSError:
+        return []
+
+
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
@@ -1273,6 +1390,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _clone_plugins(source_dir, profile_dir)
     from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir,
                                  active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
@@ -2114,9 +2232,10 @@ def _default_export_ignore(root_dir: Path):
     """
 
     def _ignore(directory: str, contents: list) -> set:
-        # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
+        # Universal exclusions and credential names (any depth) plus npm lockfiles that can appear at root.
         ignored = _non_exportable_entries(directory, contents)
         ignored.update({"package.json", "package-lock.json"} & set(contents))
+        ignored.update(_export_credential_entries(directory, contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -2124,16 +2243,28 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports. ``bot-desktop`` is the screen's runtime state:
+# Credential names dropped at ANY depth of every profile export, on top of the root-relative
+# PROFILE_CREDENTIAL_PATHS. ``bot-desktop`` is the screen's runtime state:
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
+# The OS stores are dropped wherever they sit (a skill dir copied from a home carries its ``.ssh``).
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop", *_OS_CREDENTIAL_STORES})
+_EXPORT_CREDENTIAL_PARTS = tuple(tuple(p.split("/")) for p in _EXPORT_CREDENTIAL_FILES)
+
+
+def _export_credential_entries(directory: str, contents: list) -> set:
+    """Entries of *directory* that are an _EXPORT_CREDENTIAL_FILES store: matched on trailing path
+    components, so ``.config/gh`` drops at any depth while the rest of ``.config`` ships."""
+    parts = Path(directory).parts
+    return {entry for entry in contents for store in _EXPORT_CREDENTIAL_PARTS
+            if entry == store[-1] and parts[len(parts) + 1 - len(store):] == store[:-1]}
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
     ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx", ".css", ".html", ".xml", ".csv",
 })
-# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith.
+# ``Path(".cursorrules").suffix`` is "" — name-match; ``*.env.example`` uses endswith; a hand-named
+# config copy (``config.yaml.bak-my-note``) holds config.yaml's secrets under a suffix of its own.
 _EXPORT_REDACT_NAMES = frozenset({".cursorrules"})
 
 
@@ -2142,6 +2273,7 @@ def _should_redact_export_file(path: Path) -> bool:
     return (
         name in _EXPORT_REDACT_NAMES
         or name.lower().endswith(".env.example")
+        or name.lower().startswith("config.yaml.")
         or path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
     )
 
@@ -2185,7 +2317,9 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
-        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        ignored.update(_export_credential_entries(directory, contents))
+        rel = Path(directory).relative_to(profile_dir).parts
+        ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
         if Path(directory) == profile_dir:
             ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored

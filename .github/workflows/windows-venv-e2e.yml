@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # The stable caller dispatches on the candidate tag; github.sha is
           # the exact candidate commit there and the head SHA everywhere else.
@@ -67,7 +67,7 @@ jobs:
             tests/hermes_cli/test_venv_holder_windows_live.py \
             tests/hermes_cli/test_taskkill_identity_windows_live.py \
             tests/hermes_cli/test_git_trampoline_windows_live.py \
-            tests/hermes_cli/test_runtime_repair.py::TestWindowsRuntimeSelfLock
+            tests/pm/test_held_entry_windows_live.py
 
       - name: Run Telegram CLOSE-WAIT reconnect live E2E (#87057)
         shell: bash
@@ -80,3 +80,26 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/run_tests.sh tests/tools/test_process_registry_windows_live.py
+
+      - name: Turn Windows long paths off for later steps (#130242)
+        # The runner image turns LongPathsEnabled on; 0 is the Windows default
+        # most users have. A process reads the value when it starts, so only
+        # later steps see it. Keep this step after every lane that expects the
+        # image's setting. It does not depend on those lanes passing.
+        id: long_paths_off
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          reg add 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' /v LongPathsEnabled /t REG_DWORD /d 0 /f
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem').LongPathsEnabled
+
+      - name: Run PM long-path live E2E with long paths off (#130242)
+        # The test first asserts RtlAreLongPathsEnabled() is false in its own
+        # process, so this step cannot pass if the step above did not take.
+        # ``-m`` replaces pyproject's addopts, which deselect ``integration``.
+        if: ${{ !cancelled() && steps.long_paths_off.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/run_tests.sh tests/pm/test_long_paths_windows_live.py -- -m "platforms and integration" -v

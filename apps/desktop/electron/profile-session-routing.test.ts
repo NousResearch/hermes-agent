@@ -14,6 +14,7 @@ import {
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   remoteProfileQueryScope,
+  settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
@@ -170,6 +171,41 @@ test('reassembled sidebar slices keep each slice errors', () => {
   assert.equal(result.cron.errors, undefined)
   assert.deepEqual(result.messaging.errors, failed)
   assert.deepEqual(result.cron.sessions, [{ id: 'cron-1' }])
+})
+
+// #75712: one unavailable remote profile must not hold the whole sidebar
+// aggregate hostage — a dead URL hangs until the backend readiness deadline
+// (180s), so the per-profile fetch needs its own bounded budget and a settled
+// outcome naming the failure, never a rejection.
+test('settleRemoteProfileSessions returns healthy rows while a dead remote hits its budget', async () => {
+  const healthy = { sessions: [{ id: 'remote-1', profile: 'taro' }], total: 1, profile_totals: {} }
+
+  const result = await settleRemoteProfileSessions(
+    ['taro', 'dead'],
+    profile => (profile === 'taro' ? Promise.resolve(healthy) : new Promise(() => {})), // never settles — readiness wait
+    { budgetMs: 10 }
+  )
+
+  assert.equal(result.length, 2)
+  assert.deepEqual(result[0], { profile: 'taro', list: healthy, error: null })
+  assert.equal(result[1].list, null)
+  assert.match(result[1].error, /did not respond within 10ms/)
+})
+
+test('settleRemoteProfileSessions settles a rejecting remote as an error entry', async () => {
+  const result = await settleRemoteProfileSessions(
+    ['ok', 'refused'],
+    profile =>
+      profile === 'ok'
+        ? Promise.resolve({ sessions: [], total: 0, profile_totals: {} })
+        : Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:19119')),
+    { budgetMs: 5_000 }
+  )
+
+  assert.equal(result[0].error, null)
+  assert.deepEqual(result[0].list, { sessions: [], total: 0, profile_totals: {} })
+  assert.equal(result[1].list, null)
+  assert.equal(result[1].error, 'connect ECONNREFUSED 127.0.0.1:19119')
 })
 
 test('remote session reads split oversized sidebar windows into API-safe pages', async () => {

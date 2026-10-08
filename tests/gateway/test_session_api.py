@@ -80,6 +80,39 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_get_session_projects_delegate_provenance_without_model_config(
+    adapter, session_db
+):
+    session_db.create_session("parent", "desktop")
+    child_id = session_db.create_session(
+        "delegate-child",
+        "desktop",
+        parent_session_id="parent",
+        model_config={"_delegate_from": "parent", "api_key": "must-not-leak"},
+    )
+    branch_id = session_db.create_session(
+        "visible-branch",
+        "desktop",
+        parent_session_id="parent",
+        model_config={"_branched_from": "parent"},
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        child_resp = await cli.get(f"/api/sessions/{child_id}")
+        branch_resp = await cli.get(f"/api/sessions/{branch_id}")
+        assert child_resp.status == 200
+        assert branch_resp.status == 200
+        child = (await child_resp.json())["session"]
+        branch = (await branch_resp.json())["session"]
+
+    assert child["is_internal_child"] is True
+    assert branch["is_internal_child"] is False
+    assert "model_config" not in child
+    assert "must-not-leak" not in str(child)
+
+
+@pytest.mark.asyncio
 async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
     session_id = session_db.create_session("bounded-messages", "api_server")
     session_db.replace_messages(
@@ -695,8 +728,19 @@ def _patch_api_server_runtime(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_session_respects_browser_source_and_model_lock(adapter, session_db):
+    # The requested title is held by an ended empty visible ghost, which must yield (#81888);
+    # a live holder must still reject the create without leaving a half-made row.
+    session_db.create_session("ghost", "desktop")
+    session_db.set_session_title("ghost", "Browser lock")
+    session_db.end_session("ghost", "user_exit")
+    session_db.create_session("live", "desktop")
+    session_db.set_session_title("live", "Taken")
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
+        taken = await cli.post("/api/sessions", json={"id": "dup", "title": "Taken"})
+        assert taken.status == 400
+        assert (await taken.json())["error"]["code"] == "invalid_title"
+        assert session_db.get_session("dup") is None
         resp = await cli.post(
             "/api/sessions",
             json={
@@ -724,6 +768,8 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
     assert model_config["browser_model_lock"]["provider"] == "nous"
     assert model_config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
     assert model_config["browser_model_lock"]["confirmed"] is True
+    assert row["title"] == "Browser lock"
+    assert session_db.get_session("ghost")["title"] is None
 
 
 @pytest.mark.asyncio

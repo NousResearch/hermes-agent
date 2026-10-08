@@ -1349,6 +1349,16 @@ platform:
         description: "Poser une question annexe sur la conversation en cours"
         arg_question: "La question annexe à traiter sans interrompre"
         followup: "Question annexe envoyée~"
+      loop:
+        arg_prompt: "Ce qu'il faut lancer à chaque fois (texte ou commande slash)"
+        arg_every: "À quelle fréquence, ex. 30s, 5m, 1h30m. Vide pour laisser Hermes choisir le rythme"
+        arg_times: "Arrêter après ce nombre d'exécutions (0 = sans limite)"
+        arg_until: "Arrêter quand ceci est vrai, ex. \"la CI est verte\""
+        arg_action: "Gérer la boucle en cours au lieu d'en lancer une"
+        error_action_with_fields: "Choisis une action OU remplis une nouvelle boucle, pas les deux."
+        error_missing_prompt: "Une nouvelle boucle a besoin d'un prompt."
+        error_bad_interval: "\"{every}\" n'est pas un intervalle. Utilise une unité, ex. 30s, 5m, 2h ou 1h30m."
+        error_flag_in_text: "Le prompt et la condition d'arrêt ne peuvent pas contenir --times ou --until ; utilise les champs."
       skill:
         description: "Exécuter une skill Hermes"
         arg_name: "Quelle skill exécuter"

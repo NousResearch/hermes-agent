@@ -1147,6 +1147,16 @@ platform:
         description: "Cuir ceist thaobhach faoin gcomhrá reatha"
         arg_question: "An cheist thaobhach le freagairt gan bhriseadh isteach"
         followup: "Ceist thaobhach seolta~"
+      loop:
+        arg_prompt: "Cad atá le rith gach uair (téacs nó ordú slaise)"
+        arg_every: "Cé chomh minic, m.sh. 30s, 5m, 1h30m. Fág folamh chun ligean do Hermes an luas a shocrú"
+        arg_times: "Stad tar éis an oiread seo rití (0 = gan teorainn)"
+        arg_until: "Stad nuair atá sé seo fíor, m.sh. \"tá CI glas\""
+        arg_action: "Bainistigh an lúb reatha in ionad ceann nua a thosú"
+        error_action_with_fields: "Roghnaigh gníomh NÓ líon isteach lúb nua, ní an dá rud."
+        error_missing_prompt: "Teastaíonn leid ó lúb nua."
+        error_bad_interval: "Ní eatramh é \"{every}\". Úsáid aonad, m.sh. 30s, 5m, 2h nó 1h30m."
+        error_flag_in_text: "Ní féidir --times ná --until a bheith sa leid ná sa choinníoll stoptha; úsáid na réimsí ina n-ionad."
       skill:
         description: "Rith scil Hermes"
         arg_name: "Cén scil atá le rith"

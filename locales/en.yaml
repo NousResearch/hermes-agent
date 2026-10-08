@@ -1198,6 +1198,16 @@ platform:
         description: "Ask a side question about the current conversation"
         arg_question: "The side question to answer without interrupting"
         followup: "Side question dispatched~"
+      loop:
+        arg_prompt: "What to run each time (text or a slash command)"
+        arg_every: "How often, e.g. 30s, 5m, 1h30m. Leave empty to let Hermes pace itself"
+        arg_times: "Stop after this many runs (0 = no limit)"
+        arg_until: "Stop when this is true, e.g. \"CI is green\""
+        arg_action: "Manage the current loop instead of starting one"
+        error_action_with_fields: "Pick an action OR fill in a new loop, not both."
+        error_missing_prompt: "A new loop needs a prompt."
+        error_bad_interval: "\"{every}\" is not an interval. Use a unit, e.g. 30s, 5m, 2h or 1h30m."
+        error_flag_in_text: "Prompt and stop-condition text can't contain --times or --until; use the fields instead."
       skill:
         description: "Run a Hermes skill"
         arg_name: "Which skill to run"

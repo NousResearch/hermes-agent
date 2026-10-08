@@ -703,6 +703,24 @@ Send `/model` with no arguments in a Discord channel to open a dropdown-based mo
 
 The picker times out after 120 seconds. Only authorized users (those in `DISCORD_ALLOWED_USERS`) can interact with it. If you know the model name, type `/model <name>` directly.
 
+## `/loop` fields
+
+On Discord, `/loop` shows one field per part of the command instead of a single `args` box:
+
+| Field | Meaning | Example |
+|-------|---------|---------|
+| `prompt` | What to run each time — text or a slash command | `check the deploy status` |
+| `every` | How often (`30s`, `5m`, `2h`, `1h30m`). Leave empty for a self-paced loop | `5m` |
+| `times` | Stop after this many runs (`0` = no limit) | `30` |
+| `until` | Stop when this is true | `CI is green` |
+| `action` | Manage the current loop: `status`, `pause`, `resume`, `stop`, `help` | `pause` |
+
+The fields become the same text the CLI accepts, so `prompt=check deploy every=5m times=3` runs
+`/loop 5m check deploy --times 3`. Sending `/loop` with no fields shows the loop status. Hermes
+replies privately, and starts nothing, when the fields can't be read one way: an `action` plus
+loop fields, `every`/`times`/`until` without a `prompt`, an interval with no unit (`5`), or
+`--times`/`--until` typed inside the text fields.
+
 ## Native Slash Commands for Skills
 
 Hermes automatically registers installed skills as **native Discord Application Commands**. This means skills appear in Discord's autocomplete `/` menu alongside built-in commands.

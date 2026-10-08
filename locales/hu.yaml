@@ -1164,6 +1164,16 @@ platform:
         description: "Mellékkérdés a jelenlegi beszélgetésről"
         arg_question: "A megszakítás nélkül megválaszolandó mellékkérdés"
         followup: "Mellékkérdés elküldve~"
+      loop:
+        arg_prompt: "Mit futtasson minden alkalommal (szöveg vagy perjeles parancs)"
+        arg_every: "Milyen gyakran, pl. 30s, 5m, 1h30m. Hagyd üresen, és Hermes maga szabja meg az ütemet"
+        arg_times: "Leállás ennyi futás után (0 = nincs korlát)"
+        arg_until: "Leállás, ha ez teljesül, pl. \"a CI zöld\""
+        arg_action: "A jelenlegi ciklus kezelése új indítása helyett"
+        error_action_with_fields: "Válassz egy műveletet VAGY tölts ki egy új ciklust, ne mindkettőt."
+        error_missing_prompt: "Az új ciklushoz prompt kell."
+        error_bad_interval: "A(z) \"{every}\" nem időköz. Használj egységet, pl. 30s, 5m, 2h vagy 1h30m."
+        error_flag_in_text: "A prompt és a leállási feltétel nem tartalmazhat --times vagy --until szót; használd a mezőket."
       skill:
         description: "Hermes-skill futtatása"
         arg_name: "Melyik skill fusson"

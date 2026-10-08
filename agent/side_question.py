@@ -6,9 +6,16 @@ snapshot verbatim against the warm prefix cache (tools denied at dispatch, persi
 detached, usage attributed to the parent). Fallback (no live parent, e.g. gateway evicted
 the agent): a rendered transcript through :func:`agent.oneshot.run_oneshot`.
 ``auxiliary.side_question.provider``/``.model`` route the fork elsewhere with a compact digest.
+
+Side exchanges are remembered per session for the life of the process, so a follow-up
+(``/btw and which test covers that?``) is answered with the earlier side exchanges in view —
+appended AFTER the replayed snapshot, never spliced into it, so the warm prefix stays intact.
+``/btw clear`` forgets them.
 """
 
 import logging
+import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from agent.background_review import _msg_text
@@ -17,6 +24,79 @@ logger = logging.getLogger(__name__)
 
 # Free-form auxiliary task name (auxiliary.side_question.*), main-model-first.
 SIDE_QUESTION_TASK = "side_question"
+
+# Per-session side-conversation memory. Bounded like any process-lifetime cache: the main
+# conversation is the durable record, side exchanges are scratch.
+_MAX_SIDE_SESSIONS = 64
+_MAX_SIDE_EXCHANGES = 8
+_side_exchanges: "OrderedDict[str, List[Dict[str, str]]]" = OrderedDict()
+_side_lock = threading.Lock()
+
+# ``/btw clear`` / ``/btw reset`` drop the remembered side exchanges instead of asking a question.
+CLEAR_KEYWORDS = frozenset({"clear", "reset"})
+
+
+def _session_key(parent_agent: Any, main_runtime: Optional[Dict[str, Any]]) -> Optional[str]:
+    sid = (main_runtime or {}).get("session_id") or getattr(parent_agent, "session_id", None)
+    return str(sid) if sid else None
+
+
+def side_exchanges(session_id: Optional[str]) -> List[Dict[str, str]]:
+    """Remembered ``{"prompt", "question", "answer"}`` exchanges for ``session_id``, oldest first.
+    ``prompt`` is the exact user message the fork was sent, so a replay matches byte-for-byte."""
+    if not session_id:
+        return []
+    with _side_lock:
+        found = _side_exchanges.get(session_id)
+        if found is not None:
+            _side_exchanges.move_to_end(session_id)
+        return list(found or [])
+
+
+def record_side_exchange(session_id: Optional[str], *, prompt: str, question: str, answer: str) -> None:
+    if not session_id or not answer:
+        return
+    with _side_lock:
+        entries = _side_exchanges.setdefault(session_id, [])
+        _side_exchanges.move_to_end(session_id)
+        entries.append({"prompt": prompt, "question": question, "answer": answer})
+        del entries[:-_MAX_SIDE_EXCHANGES]
+        while len(_side_exchanges) > _MAX_SIDE_SESSIONS:
+            _side_exchanges.popitem(last=False)
+
+
+def clear_side_exchanges(session_id: Optional[str]) -> int:
+    """Forget the side conversation for ``session_id``; returns how many exchanges were dropped."""
+    if not session_id:
+        return 0
+    with _side_lock:
+        return len(_side_exchanges.pop(session_id, []))
+
+
+def _fork_user_message(question: str, prior: List[Dict[str, str]]) -> str:
+    """First side question carries the rules; follow-ups ride on the rules already in the fork
+    history (keeping the earlier side turns byte-identical for the provider cache)."""
+    if prior:
+        return f"Side question (follow-up): {question}"
+    return f"{_FORK_PROMPT}\n\nSide question: {question}"
+
+
+def _prior_as_messages(prior: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for ex in prior:
+        out.append({"role": "user", "content": ex["prompt"]})
+        out.append({"role": "assistant", "content": ex["answer"]})
+    return out
+
+
+def _prior_as_text(prior: List[Dict[str, str]]) -> str:
+    if not prior:
+        return ""
+    lines = ["Earlier side questions in this session (already answered; the new question may follow up on them):"]
+    for ex in prior:
+        lines.append(f"Q: {ex['question'][:_PER_MESSAGE_CHAR_CAP]}")
+        lines.append(f"A: {ex['answer'][:_PER_MESSAGE_CHAR_CAP]}")
+    return "\n".join(lines) + "\n\n"
 
 # Fork path: the model may waste an iteration on a (denied) tool call first.
 _FORK_MAX_ITERATIONS = 3
@@ -99,17 +179,21 @@ def _side_question_task_config() -> Dict[str, Any]:
     return task if isinstance(task, dict) else {}
 
 
-def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Dict[str, Any]]]) -> str:
+def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Dict[str, Any]]],
+                     prior: Optional[List[Dict[str, str]]] = None) -> str:
     """Answer via a cache-parity fork of ``parent_agent`` on the calling thread.
 
     An empty thread-scoped tool whitelist denies every tool call at dispatch: ``tools[]``
     stays byte-identical for cache parity, but the side question can never mutate anything.
+    Earlier side exchanges (``prior``) are appended after the snapshot as plain user/assistant
+    turns: the snapshot prefix stays verbatim and alternation holds.
     """
     from agent.background_review import (
         _digest_history, _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
     )
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
+    prior = list(prior or [])
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
                                                 max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")
     try:
@@ -117,8 +201,9 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
             "Side question (/btw) denied tool call: {tool_name}. "
             "Tools are disabled here — answer directly from the conversation context."))
         snapshot = trim_snapshot_for_fork(history)
-        result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
-                                       conversation_history=_digest_history(snapshot) if routed else snapshot)
+        replay = (_digest_history(snapshot) if routed else snapshot) + _prior_as_messages(prior)
+        result = fork.run_conversation(user_message=_fork_user_message(question, prior),
+                                       conversation_history=replay)
         answer = (result or {}).get("final_response", "") or ""
         if not answer and result and result.get("error"):
             raise RuntimeError(str(result["error"]))
@@ -134,12 +219,14 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
                 pass
 
 
-def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]], **run_kwargs: Any) -> str:
+def _answer_via_oneshot(question: str, history: Optional[List[Dict[str, Any]]],
+                        prior: Optional[List[Dict[str, str]]] = None, **run_kwargs: Any) -> str:
     """Fallback: answer from a rendered transcript digest in one aux call."""
     from agent.oneshot import run_oneshot
 
     user_input = (
         f"Conversation transcript (snapshot):\n-----\n{render_history_for_side_question(history)}\n-----\n\n"
+        f"{_prior_as_text(list(prior or []))}"
         f"Side question: {question}"
     )
     return run_oneshot(instructions=_ONESHOT_INSTRUCTIONS, user_input=user_input, task=SIDE_QUESTION_TASK, **run_kwargs)
@@ -151,19 +238,32 @@ def answer_side_question(
     timeout: float = 180.0,
 ) -> str:
     """Fork when ``parent_agent`` is live, else (or on empty answer / failure) the one-shot
-    digest. Raises on failure — callers surface the error on their own UI."""
+    digest. Raises on failure — callers surface the error on their own UI.
+
+    Earlier side exchanges of the same session are in view for follow-ups and the new one is
+    remembered on success; ``clear``/``reset`` as the whole question forgets them instead."""
     question = (question or "").strip()
     if not question:
         raise ValueError("answer_side_question requires a non-empty question")
 
+    session_id = _session_key(parent_agent, main_runtime)
+    if question.lower() in CLEAR_KEYWORDS:
+        dropped = clear_side_exchanges(session_id)
+        return f"Side conversation cleared ({dropped} earlier exchange{'s' if dropped != 1 else ''} forgotten)."
+    prior = side_exchanges(session_id)
+
+    answer = ""
     if parent_agent is not None:
         try:
-            answer = _answer_via_fork(parent_agent, question, history)
-            if answer:
-                return answer
-            logger.warning("/btw fork returned an empty answer; falling back to one-shot")
+            answer = _answer_via_fork(parent_agent, question, history, prior)
+            if not answer:
+                logger.warning("/btw fork returned an empty answer; falling back to one-shot")
         except Exception:
             logger.warning("/btw cache-parity fork failed; falling back to one-shot", exc_info=True)
 
-    return _answer_via_oneshot(question, history, main_runtime=main_runtime, max_tokens=max_tokens,
-                               temperature=temperature, timeout=timeout)
+    if not answer:
+        answer = _answer_via_oneshot(question, history, prior, main_runtime=main_runtime, max_tokens=max_tokens,
+                                     temperature=temperature, timeout=timeout)
+    record_side_exchange(session_id, prompt=_fork_user_message(question, prior), question=question,
+                         answer=(answer or "").strip())
+    return answer

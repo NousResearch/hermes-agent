@@ -116,7 +116,7 @@ gateway:
     still_running: "⏳ Background task still running"
     recent_output: "{header}\n\nRecent output:\n```\n{output}\n```"
   btw:
-    usage: "Usage: /btw <question>\nExample: /btw which file was that error in?\n\nAnswers a quick side question about this conversation without interrupting it. For an independent background task, use /bg <prompt>."
+    usage: "Usage: /btw <question>\nExample: /btw which file was that error in?\n\nAnswers a quick side question about this conversation without interrupting it. Follow-ups see your earlier /btw exchanges; /btw clear forgets them. For an independent background task, use /bg <prompt>."
     no_history: "No conversation yet — send your question as a normal message instead."
     no_provider: "❌ Cannot answer side question: no provider credentials configured."
     started: "💬 Side question: \"{preview}\"\nAnswering from a snapshot of this conversation — the current work continues."
@@ -3043,7 +3043,7 @@ cli:
       title_suffix: "(sign-in)"
       no_result: "(No result)"
     btw:
-      usage: "Usage: /btw <question>\nExample: /btw which file was that error in?\nAnswers a quick question about this conversation without interrupting it.\n(For an independent background task, use /bg <prompt>.)"
+      usage: "Usage: /btw <question>\nExample: /btw which file was that error in?\nAnswers a quick question about this conversation without interrupting it. Follow-ups see your earlier /btw exchanges; /btw clear forgets them.\n(For an independent background task, use /bg <prompt>.)"
       no_credentials: "(>_<) Cannot answer side question: no valid credentials."
       header: "💬 /btw: \"{preview}\""
       title_suffix: "(btw)"

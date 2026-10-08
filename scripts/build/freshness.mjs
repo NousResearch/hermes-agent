@@ -30,25 +30,32 @@ const tuiInputs = [
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
 ]
 
-function treeHash(root, inputs, skip, contents = () => true) {
+// manifest, when given, records every visited entry's state (missing / directory / content
+// digest) under a label so a later walk can name what changed; the aggregate hash is unchanged.
+// OS metadata is skipped before the manifest write, so it is neither hashed nor named.
+function treeHash(root, inputs, skip, contents = () => true, manifest = null, label = '') {
   const hash = createHash('sha256')
   function visit(name) {
     if (osMetadata(name) || skip(name)) return
     const file = join(root, name)
-    hash.update(name.replaceAll('\\', '/')).update('\0')
-    if (!existsSync(file)) { hash.update('missing\0'); return }
+    hash.update(name.replaceAll('\\\\', '/')).update('\\0')
+    const key = `${label}${name.replaceAll('\\\\', '/')}`
+    if (!existsSync(file)) { hash.update('missing\\0'); manifest?.set(key, 'missing'); return }
     if (statSync(file).isDirectory()) {
-      hash.update('directory\0')
+      hash.update('directory\\0')
+      manifest?.set(key, 'directory')
       for (const child of readdirSync(file).sort()) visit(`${name}/${child}`)
     } else {
-      hash.update(contents(name) ? readFileSync(file) : 'file').update('\0')
+      const body = contents(name) ? readFileSync(file) : 'file'
+      hash.update(body).update('\\0')
+      manifest?.set(key, createHash('sha256').update(body).digest('hex'))
     }
   }
   for (const input of inputs) visit(input)
   return hash.digest('hex')
 }
 
-export function sourceHash(source, product) {
+export function sourceHash(source, product, manifest = null) {
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
   return treeHash(source, product === 'tui' ? tuiInputs : [
@@ -65,7 +72,7 @@ export function sourceHash(source, product) {
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
       || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
       || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
-  })
+  }, () => true, manifest)
 }
 
 function outputHash(out) {
@@ -105,10 +112,14 @@ function stampIdentity(identity) {
 // failing: a missing input must keep reading as one distinct hash, never as a
 // throw, so a build that has not stamped yet stays "not current" instead of
 // aborting. Only a parsable stamp object can have its clock removed.
-function stampContentHash(path) {
+// The manifest records that same identity digest, under the same `stamp:.` key a
+// raw walk would use, so a clock-only rewrite is not named as a changed input.
+function stampContentHash(path, manifest = null, label = '') {
   const parsed = readStamp(path)
-  return parsed ? createHash('sha256').update(JSON.stringify(stampIdentity(parsed))).digest('hex')
-    : treeHash(resolve(path), ['.'], () => false)
+  if (!parsed) return treeHash(resolve(path), ['.'], () => false, () => true, manifest, label)
+  const digest = createHash('sha256').update(JSON.stringify(stampIdentity(parsed))).digest('hex')
+  manifest?.set(`${label}.`, digest)
+  return digest
 }
 
 function readStamp(path) {
@@ -127,17 +138,56 @@ function stampClock(prepared = {}) {
   return identity ? (identity.builtAt ?? null) : null
 }
 
+// The per-entry manifest rides on the inputs object as a non-enumerable property: the
+// receipt, JSON equality and every existing reader see exactly the shape they always did.
+const manifestKey = Symbol('manifest')
+
 export function buildInputs(source, product, prepared = {}) {
-  return {
-    sourceHash: sourceHash(source, product),
+  const manifest = new Map()
+  const inputs = {
+    sourceHash: sourceHash(source, product, manifest),
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
-      name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
+      name, path: resolve(path), hash: name === 'stamp'
+        ? stampContentHash(resolve(path), manifest, `${name}:`)
+        : treeHash(resolve(path), ['.'], () => false, () => true, manifest, `${name}:`),
     })),
   }
+  Object.defineProperty(inputs, manifestKey, { value: manifest, enumerable: false })
+  return inputs
 }
 
 function preparedPaths(inputs) {
   return Object.fromEntries(inputs.prepared.map(({ name, path }) => [name, path]))
+}
+
+const changedEntriesShown = 20
+
+/** Entries whose state differs between two manifests, ordered for a stable message. */
+export function changedInputs(before, after) {
+  const names = new Set([...before.keys(), ...after.keys()])
+  const changed = []
+  for (const name of [...names].sort()) {
+    const was = before.get(name), now = after.get(name)
+    if (was === now) continue
+    const kind = was === undefined ? 'added'
+      : now === undefined ? 'removed'
+      : describe(was) === describe(now) ? 'changed'
+      : `${describe(was)} -> ${describe(now)}`
+    changed.push(`${name} (${kind})`)
+  }
+  return changed
+}
+
+function describe(state) {
+  return state === 'missing' || state === 'directory' ? state : 'file'
+}
+
+/** The bounded, sorted list of differing entries for a refusal message. */
+export function describeChangedInputs(changed, limit = changedEntriesShown) {
+  if (!changed.length) return 'no differing entries identified'
+  const shown = changed.slice(0, limit)
+  const more = changed.length - shown.length
+  return `${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`
 }
 
 // The clock the compiler BAKED, not the clock on disk now. desktop.mjs must pass
@@ -147,8 +197,14 @@ function preparedPaths(inputs) {
 // Undefined (tui/web, which have no stamp) is dropped from the receipt, which is
 // exactly the "predates this" shape productCurrent already tolerates.
 export function recordProduct({ source, product, out, inputs, stampClock }) {
-  if (JSON.stringify(buildInputs(source, product, preparedPaths(inputs))) !== JSON.stringify(inputs)) {
-    throw new Error('Build inputs changed during compilation; retry the build')
+  const current = buildInputs(source, product, preparedPaths(inputs))
+  if (JSON.stringify(current) !== JSON.stringify(inputs)) {
+    // The inputs differ from the pre-compilation snapshot. Name the differing
+    // entries; the caller works out who wrote them.
+    const detail = inputs[manifestKey]
+      ? describeChangedInputs(changedInputs(inputs[manifestKey], current[manifestKey]))
+      : 'no per-entry manifest was captured for these inputs'
+    throw new Error(`Build inputs changed during compilation; retry the build: ${detail}`)
   }
   writeFileSync(join(out, receiptName), JSON.stringify({
     schema: 1, product, platform: process.platform, arch: process.arch, node: process.versions.node,

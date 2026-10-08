@@ -26,6 +26,8 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent import apply_patch_tool
+from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
@@ -1567,8 +1569,13 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
-    builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
-    return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    if agent.api_mode == "codex_responses":
+        return _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    # GPT-5+ models write files through a grammar-constrained apply_patch
+    # instead of one JSON-escaped write_file argument (agent/apply_patch_tool.py).
+    if apply_patch_tool.agent_enabled(agent):
+        tools_for_api, api_messages = apply_patch_tool.rewrite_request(tools_for_api, api_messages)
+    return _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
 
 
 def _model_dump_safe(obj):
@@ -2718,70 +2725,6 @@ class _BedrockStream:
         return _with_stream_emitters(self.agent, self._poll)
 
 
-class _ToolCallAccumulator:
-    """Assemble streamed tool-call deltas into complete ``tool_calls`` entries
-    (``acc``: slot index -> entry dict). Ollama-compatible endpoints reuse index 0
-    for every call in a parallel batch, distinguishing them only by id, so a new
-    id at an already-seen raw index is redirected to a fresh slot."""
-
-    def __init__(self):
-        self.acc: dict = {}
-        self._notified: set = set()
-        self._last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
-        self._active_slot_by_idx: dict = {}  # raw_index -> current slot in acc
-        # Argument deltas are collected per slot and joined once in ``materialize`` —
-        # ``+=`` per chunk rebuilds the whole string every delta (quadratic on big args).
-        self._argument_parts: dict[int, list[str]] = {}
-
-    def materialize(self) -> dict:
-        """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
-        for idx, parts in self._argument_parts.items():
-            self.acc[idx]["function"]["arguments"] = "".join(parts)
-        return self.acc
-
-    def feed(self, tc_delta) -> Optional[str]:
-        """Merge one delta; return the tool name the first time it is complete."""
-        raw_idx = getattr(tc_delta, "index", None)
-        if raw_idx is None:
-            raw_idx = 0
-        tc_id = getattr(tc_delta, "id", None)
-        delta_id = tc_id or ""
-        if isinstance(tc_id, int):  # Poolside sends integer ids
-            tc_id = str(tc_id)
-
-        self._active_slot_by_idx.setdefault(raw_idx, raw_idx)
-        if delta_id and raw_idx in self._last_id_at_idx and delta_id != self._last_id_at_idx[raw_idx]:
-            self._active_slot_by_idx[raw_idx] = max(self.acc, default=-1) + 1
-        if delta_id:
-            self._last_id_at_idx[raw_idx] = delta_id
-        idx = self._active_slot_by_idx[raw_idx]
-
-        entry = self.acc.setdefault(
-            idx, {"id": tc_id or "", "type": "function", "function": {"name": "", "arguments": ""}, "extra_content": None},
-        )
-        parts = self._argument_parts.setdefault(idx, [])
-        if tc_id:
-            entry["id"] = tc_id
-        tc_function = getattr(tc_delta, "function", None)
-        if tc_function:
-            if getattr(tc_function, "name", None):
-                # Assignment, not +=: names arrive complete and some providers (MiniMax via
-                # NVIDIA NIM) resend the full name every chunk — += gives "read_fileread_file".
-                entry["function"]["name"] = tc_function.name
-            if getattr(tc_function, "arguments", None):
-                parts.append(tc_function.arguments)
-        extra = getattr(tc_delta, "extra_content", None)
-        if extra is None and hasattr(tc_delta, "model_extra"):
-            extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
-        if extra is not None:
-            entry["extra_content"] = _dump_if_model(extra)
-        name = entry["function"]["name"]
-        if name and idx not in self._notified:
-            self._notified.add(idx)
-            return name
-        return None
-
-
 class _StreamingCall(StreamingWaitMonitor):
     """One streaming request on the chat_completions / anthropic_messages wire.
     State shared between the request worker and the poll-loop monitor (heartbeat,
@@ -3095,7 +3038,7 @@ class _StreamingCall(StreamingWaitMonitor):
         refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
-        tool_calls = _ToolCallAccumulator()
+        tool_calls = _ToolCallAccumulator(apply_patch_tool.request_offers_apply_patch(self.api_kwargs))
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
@@ -3311,7 +3254,14 @@ class _StreamingCall(StreamingWaitMonitor):
         for idx in sorted(tool_calls_acc):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
-            if arguments and arguments.strip():
+            if tc.get("apply_patch"):
+                # Raw patch text. Without its end marker the call was cut off:
+                # refuse it, like a truncated JSON argument.
+                if apply_patch_tool.is_complete(arguments):
+                    arguments = apply_patch_tool.internal_arguments(arguments)
+                else:
+                    has_truncated_tool_args = True
+            elif arguments and arguments.strip():
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:

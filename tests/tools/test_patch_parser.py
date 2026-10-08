@@ -986,3 +986,67 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
+
+
+class TestCodexSyntax:
+    """Syntax the Codex apply_patch grammar emits, which GPT models write."""
+
+    def test_should_read_an_open_ended_context_marker_as_the_hint(self):
+        patch = """\
+*** Begin Patch
+*** Update File: f.py
+@@ def greet():
+-    print("hello")
++    print("hi")
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert ops[0].hunks[0].context_hint == "def greet():"
+
+    def test_should_not_treat_the_end_of_file_marker_as_content(self):
+        patch = """\
+*** Begin Patch
+*** Update File: f.txt
+@@
+ last line
++appended
+*** End of File
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        lines = [(l.prefix, l.content) for l in ops[0].hunks[0].lines]
+        assert lines == [(" ", "last line"), ("+", "appended")]
+
+    def test_should_replace_an_existing_file_by_deleting_and_adding_it(self):
+        patch = """\
+*** Begin Patch
+*** Delete File: /tmp/draft.md
+*** Add File: /tmp/draft.md
++brand:
++  name: Example
+*** End Patch"""
+        operations, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def __init__(self):
+                self.files = {"/tmp/draft.md": "old"}
+
+            def read_file_raw(self, path):
+                if path in self.files:
+                    return SimpleNamespace(content=self.files[path], error=None)
+                return SimpleNamespace(content=None, error="not found", not_found=True)
+
+            def delete_file(self, path):
+                self.files.pop(path, None)
+                return SimpleNamespace(error=None)
+
+            def write_file(self, path, content):
+                self.files[path] = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(operations, file_ops)
+
+        assert result.success is True, result.error
+        assert file_ops.files["/tmp/draft.md"] == "brand:\n  name: Example"

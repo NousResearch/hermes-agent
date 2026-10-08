@@ -1078,3 +1078,41 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestApplyPatchAddOverwrite:
+    """``apply_patch`` (Codex semantics) lets Add File replace a file; the plain ``patch`` tool does not."""
+
+    @pytest.fixture
+    def ops(self, tmp_path: Path):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        return ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+
+    def test_should_keep_refusing_add_onto_an_existing_file_by_default(self, ops, tmp_path: Path):
+        target = tmp_path / "draft.yaml"
+        target.write_text("brand: old\n")
+
+        res = ops.patch_v4a(f"*** Begin Patch\n*** Add File: {target}\n+brand: new\n*** End Patch")
+
+        assert not res.success
+        assert "use Update File, not Add File" in res.error
+        assert target.read_text() == "brand: old\n"
+
+    def test_should_replace_an_existing_file_when_add_overwrites(self, ops, tmp_path: Path):
+        target = tmp_path / "draft.yaml"
+        target.write_text("brand: old\n")
+
+        res = ops.patch_v4a(f"*** Begin Patch\n*** Add File: {target}\n+brand: new\n*** End Patch", add_overwrites=True)
+
+        assert res.success, res.error
+        assert target.read_text() == "brand: new"
+        assert "-brand: old" in res.diff and "+brand: new" in res.diff
+
+    def test_should_still_create_a_new_file_when_add_overwrites(self, ops, tmp_path: Path):
+        target = tmp_path / "new.yaml"
+
+        res = ops.patch_v4a(f"*** Begin Patch\n*** Add File: {target}\n+brand: new\n*** End Patch", add_overwrites=True)
+
+        assert res.success, res.error
+        assert target.read_text() == "brand: new"

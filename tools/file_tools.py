@@ -959,11 +959,12 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, add_overwrites: bool = False) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile``: same semantics as ``write_file``'s flag (mirror-guard
-    bypass only; unadvertised).
+    bypass only; unadvertised). ``add_overwrites`` (unadvertised; set for apply_patch
+    calls): a V4A Add File replaces an existing file, as in Codex's apply_patch.
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
@@ -1006,7 +1007,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops),
+                    add_overwrites=add_overwrites)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1351,7 +1353,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
-        session_id=kw.get("session_id"),
+        session_id=kw.get("session_id"), add_overwrites=bool(args.get("add_overwrites", False)),
     ))
 
 

@@ -14,6 +14,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from agent import apply_patch_tool
 from agent.error_classifier import FailoverReason
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.message_metadata import append_message
@@ -93,9 +94,19 @@ def perform_api_call(
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:
-            return agent._interruptible_streaming_api_call(
+            response = agent._interruptible_streaming_api_call(
                 next_api_kwargs, on_first_delta=_stop_spinner
             )
+        else:
+            response = _perform_direct_api_call(next_api_kwargs)
+        # Streams translate apply_patch calls as they arrive; a non-streamed
+        # response (including a stream request served by the direct path) is
+        # translated here.
+        if apply_patch_tool.request_offers_apply_patch(next_api_kwargs):
+            apply_patch_tool.normalize_response(response)
+        return response
+
+    def _perform_direct_api_call(next_api_kwargs):
         from agent import relay_llm
 
         return relay_llm.execute(

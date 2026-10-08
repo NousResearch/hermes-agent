@@ -42,6 +42,8 @@ class PatchOperation:
     file_path: str
     new_path: Optional[str] = None  # MOVE only
     hunks: List[Hunk] = field(default_factory=list)
+    # ADD only: replace an existing file, as Codex's apply_patch does (set for apply_patch calls).
+    overwrite: bool = False
 
 
 # Markers must occupy the whole line at column 0 so content lines that merely
@@ -53,7 +55,8 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
     (OperationType.ADD, re.compile(r'\*\*\*\s*Add\s+File:\s*(.+)')),
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
-_HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# '@@ text @@', or Codex's open-ended '@@ text'.
+_HINT_RE = re.compile(r'@@\s*(.+?)\s*(?:@@\s*)?$')
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -101,6 +104,8 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 _flush_hunk()
                 hint_match = _HINT_RE.match(line)
                 current_hunk = Hunk(context_hint=hint_match.group(1) if hint_match else None)
+        elif line.strip() == '*** End of File':
+            pass  # Codex's end-of-file anchor; not file content
         elif current_op and line:
             if current_hunk is None:
                 current_hunk = Hunk()
@@ -252,7 +257,7 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
             # same path in this patch stays legal, and the added content enters the
             # overlay so later hunks against it validate.
-            add_taken = _occupied(op.file_path)
+            add_taken = None if op.overwrite else _occupied(op.file_path)
             if add_taken == "exists":
                 errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
             elif add_taken:
@@ -355,9 +360,13 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
     this patch, which has already applied by now), so an existing file here is a
     validate/apply race — never clobber."""
     read_back = file_ops.read_file_raw(op.file_path)
+    if not read_back.error and op.overwrite:
+        content = '\n'.join(line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
+        result = file_ops.write_file(op.file_path, content)
+        return _written(result, _unified_diff(op.file_path, read_back.content, content), op.file_path, "")
     if not read_back.error:
         return _fail(f"{op.file_path}: file already exists — use Update File, not Add File")
-    if not getattr(read_back, "not_found", False):
+    if not getattr(read_back, "not_found", False) and not op.overwrite:
         # The read FAILED; it did not report an absent path. Treating that as "the path is free"
         # writes the Add payload over whatever is actually there.
         return _fail(f"{op.file_path}: could not confirm the path is free — {read_back.error}")

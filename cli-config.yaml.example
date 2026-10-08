@@ -1164,6 +1164,15 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # File writes for GPT-5+ models. "auto" (default) offers GPT-5+ models on
+  # OpenRouter a grammar-constrained freeform apply_patch tool in place of
+  # write_file and patch, as OpenAI's Codex does: whole files streamed as one
+  # JSON-escaped write_file argument can loop until the output cap. true/false
+  # force it on or off; a list of model-name substrings also enables it for
+  # those models on top of auto (for example OpenRouter presets, whose names
+  # hide the model).
+  # apply_patch_tool: auto
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

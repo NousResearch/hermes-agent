@@ -114,8 +114,8 @@ class FileOperations(ABC):
         """Replace text in a file using fuzzy matching."""
 
     @abstractmethod
-    def patch_v4a(self, patch_content: str) -> PatchResult:
-        """Apply a V4A format patch."""
+    def patch_v4a(self, patch_content: str, add_overwrites: bool = False) -> PatchResult:
+        """Apply a V4A format patch; ``add_overwrites`` lets Add File replace an existing file."""
 
     @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
@@ -1643,13 +1643,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             lsp_diagnostics=write_result.lsp_diagnostics,
             _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])
 
-    def patch_v4a(self, patch_content: str) -> PatchResult:
+    def patch_v4a(self, patch_content: str, add_overwrites: bool = False) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /
-        ``@@ hint @@`` hunks / ``*** End Patch``)."""
-        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+        ``@@ hint @@`` hunks / ``*** End Patch``). ``add_overwrites``: Add File replaces an
+        existing file, the semantics of Codex's apply_patch."""
+        from tools.patch_parser import OperationType, parse_v4a_patch, apply_v4a_operations
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
+        for op in operations:
+            op.overwrite = add_overwrites and op.operation is OperationType.ADD
         return apply_v4a_operations(operations, self)
 
     # --- SEARCH -------------------------------------------------------------

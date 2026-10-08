@@ -1,17 +1,17 @@
 """Progressive subdirectory hint discovery: as the agent navigates into
 subdirectories via tool calls, load project context files (AGENTS.md, CLAUDE.md,
 .cursorrules) from them and append to the tool result — context arrives without
-touching the system prompt (prompt caching preserved). Complements the startup
-CWD-only loading in ``prompt_builder.py``."""
+touching the system prompt (prompt caching preserved). Complements the
+startup loading in ``prompt_builder.py``."""
 
-import hashlib
 import logging
 import os
 import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.prompt_builder import _read_context_record, _scan_context_content, _truncate_content
+from agent.context_file_state import ContextFileSnapshot, content_digest
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -32,9 +32,6 @@ _MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path s
 # different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
 _EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
 
-
-def _digest(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _resolved_hint_target(hint_path: Path, working_dir: Path) -> Optional[Path]:
@@ -157,7 +154,17 @@ class SubdirectoryHintTracker:
         self._loaded_digests: Set[str] = set()
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
-            self._loaded_digests.add(_digest(found[1]))
+            self._loaded_digests.add(content_digest(found[1]))
+        self._startup_context = ContextFileSnapshot(digests=set(self._loaded_digests))
+        self._loaded_context_file_identities: set[tuple] = set()
+
+    def register_startup_context(self, snapshot: ContextFileSnapshot) -> None:
+        """Replace startup bookkeeping with the files represented by the actual frozen prompt."""
+        self._loaded_digests.difference_update(self._startup_context.digests)
+        self._loaded_context_file_identities.difference_update(self._startup_context.identities)
+        self._startup_context = ContextFileSnapshot(set(snapshot.identities), set(snapshot.digests))
+        self._loaded_digests.update(snapshot.digests)
+        self._loaded_context_file_identities.update(snapshot.identities)
 
     def rebind_working_dir(self, working_dir: str) -> None:
         """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
@@ -175,10 +182,11 @@ class SubdirectoryHintTracker:
         # Fresh anchor, fresh bookkeeping: the new project's directories get their
         # own first-visit hints (startup never loaded context files for it).
         self._loaded_dirs = {self.working_dir}
-        self._loaded_digests = set()
+        self._loaded_digests = set(self._startup_context.digests)
+        self._loaded_context_file_identities = set(self._startup_context.identities)
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
-            self._loaded_digests.add(_digest(found[1]))
+            self._loaded_digests.add(content_digest(found[1]))
 
     def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
@@ -287,14 +295,17 @@ class SubdirectoryHintTracker:
             if (target := _resolved_hint_target(hint_path, self.working_dir)) is None:
                 continue
             try:
-                content = (_read_text_with_timeout(target) or "").strip()
+                loaded = _read_context_record(target)
+                content = loaded.content
                 if not content:
                     continue
-                digest = _digest(content)
-                if digest in self._loaded_digests:
+                digest = content_digest(content)
+                if loaded.identity in self._loaded_context_file_identities or digest in self._loaded_digests:
                     logger.debug("Skipping duplicate hint content at %s (digest %s)", hint_path, digest[:12])
                     return None
                 self._loaded_digests.add(digest)
+                if loaded.identity is not None:
+                    self._loaded_context_file_identities.add(loaded.identity)
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)

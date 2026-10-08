@@ -1,6 +1,6 @@
 """Tests for progressive subdirectory hint discovery."""
 
-import time
+import threading
 
 import pytest
 from pathlib import Path
@@ -169,27 +169,27 @@ class TestSubdirectoryHintTracker:
         from agent import subdirectory_hints as sh_mod
 
         # Patch the module object the hint tracker's helper closes over.
-        pb_mod = sys.modules[sh_mod._read_text_with_timeout.__module__]
+        pb_mod = sys.modules[sh_mod._read_context_record.__module__]
         monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
 
-        original_read_text = Path.read_text
+        from agent import context_file_io
+        original_read = context_file_io._read_once
+        release = threading.Event()
 
-        def slow_read_text(self, *args, **kwargs):
-            if self.name.lower() == "agents.md" and self.parent == backend:
-                time.sleep(0.6)
-            return original_read_text(self, *args, **kwargs)
+        def slow_read(path, **kwargs):
+            if path.name.lower() == "agents.md" and path.parent == backend:
+                release.wait(5)
+            return original_read(path, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", slow_read_text)
-
+        monkeypatch.setattr(context_file_io, "_read_once", slow_read)
         tracker = SubdirectoryHintTracker(working_dir=str(project))
-        start = time.monotonic()
-        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
-            result = tracker.check_tool_call(
-                "read_file", {"path": str(project / "backend" / "src" / "main.py")}
-            )
-        elapsed = time.monotonic() - start
+        try:
+            with caplog.at_level("WARNING"):
+                result = tracker.check_tool_call(
+                    "read_file", {"path": str(project / "backend" / "src" / "main.py")})
+        finally:
+            release.set()
 
-        assert elapsed < 0.4, f"hint load blocked for {elapsed:.2f}s"
         assert result is None
         assert "timed out" in caplog.text.lower()
 

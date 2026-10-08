@@ -1294,11 +1294,11 @@ DEFAULT_CONFIG = {
 
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
 
-    # Context engine — how the context window is managed near the token limit. "compressor" =
-    # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
-    # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    # Context engine: built-in "compressor", or an installed context-engine plugin.
     "context": {
         "engine": "compressor",
+        # Ordered shared instruction paths; relative entries use the user's home.
+        "external_files": [],
         # Return freed glibc pages at agent/TUI cleanup boundaries (no-op elsewhere).
         "memory_trim": {
             "enabled": True,

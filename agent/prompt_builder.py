@@ -20,6 +20,7 @@ from hermes_constants import (
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
+from agent.context_file_io import ContextFileRead, read_context_file
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
@@ -1694,13 +1695,25 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
 
 def _read_context_file(path: Path) -> str:
     """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
-    if not path.exists():
-        return ""
-    try:
-        return (_read_text_with_timeout(path) or "").strip()
-    except Exception as e:
-        logger.debug("Could not read %s: %s", path, e)
-        return ""
+    return _read_context_record(path).content
+
+
+def _read_context_record(path: Path) -> ContextFileRead:
+    """Bytes and identity from the same timed file read, for startup deduplication."""
+    return read_context_file(path, timeout=_get_context_file_read_timeout())
+
+
+def _claim_context_identity(record: ContextFileRead, loaded_paths: Optional[set], snapshot=None) -> bool:
+    """Claim one nonempty source after project-type selection, preserving first-source precedence."""
+    if not record.content:
+        return False
+    if loaded_paths is not None and record.identity is not None:
+        if record.identity in loaded_paths:
+            return False
+        loaded_paths.add(record.identity)
+    if snapshot is not None:
+        snapshot.include(record)
+    return True
 
 
 def _context_section(content: str, label: str, warn_name: str, path: Path, context_length: Optional[int]) -> str:
@@ -1709,13 +1722,13 @@ def _context_section(content: str, label: str, warn_name: str, path: Path, conte
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
-def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, ContextFileRead]]:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     path = _find_hermes_md(cwd_path)
     if path is None:
         return []
     label = str(path.relative_to(cwd_path)) if path.is_relative_to(cwd_path) else path.name
-    return [(label, path, _read_context_file(path))]
+    return [(label, path, _read_context_record(path))]
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
@@ -1728,45 +1741,45 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
-def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, ContextFileRead]]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
     ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
     cwd_resolved = cwd_path.resolve()
-    found: list[tuple[str, Path, str]] = []
+    found: list[tuple[str, Path, ContextFileRead]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
             candidate = directory / name
             if not _exists_or_denied(candidate):
                 continue
-            content = _read_context_file(candidate)
+            record = _read_context_record(candidate)
             label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
-            found.append((label, candidate, content))
-            if content:
+            found.append((label, candidate, record))
+            if record.content:
                 break  # first name match wins per directory
     return found
 
 
-def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, ContextFileRead]]:
     """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
-    found: list[tuple[str, Path, str]] = []
+    found: list[tuple[str, Path, ContextFileRead]] = []
     for name in ("CLAUDE.md", "claude.md"):
         candidate = cwd_path / name
         if not _exists_or_denied(candidate):
             continue
-        content = _read_context_file(candidate)
-        found.append((name, candidate, content))
-        if content:
+        record = _read_context_record(candidate)
+        found.append((name, candidate, record))
+        if record.content:
             break
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, ContextFileRead]]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if _is_dir_or_denied(cursor_rules_dir):
         candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
+    return [(label, path, _read_context_record(path)) for label, path in candidates if _exists_or_denied(path)]
 
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
@@ -1783,8 +1796,14 @@ _CONTEXT_FILE_CANDIDATES = {
 def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
     ``content == ""`` means empty or unreadable — such a file is never loaded."""
-    return [(kind, label, path, content)
-            for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
+    return [(kind, label, path, record.content)
+            for kind, label, path, record in discover_context_file_records(cwd_path)]
+
+
+def discover_context_file_records(cwd_path: Path) -> list[tuple[str, str, Path, ContextFileRead]]:
+    """Same project discovery with read outcomes and identity, shared by rendering and the manifest."""
+    return [(kind, label, path, record)
+            for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, record in finder(cwd_path)]
 
 
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
@@ -1797,15 +1816,20 @@ def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_instal
     return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
 
 
-def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_hermes_md(
+    cwd_path: Path, context_length: Optional[int] = None, loaded_paths: Optional[set] = None, snapshot=None,
+) -> Optional[str]:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
-    for label, path, content in _hermes_md_candidates(cwd_path):
-        if content:
-            return _context_section(_strip_yaml_frontmatter(content), label, ".hermes.md", path, context_length)
-    return ""
+    for label, path, record in _hermes_md_candidates(cwd_path):
+        if record.content:
+            return (_context_section(_strip_yaml_frontmatter(record.content), label, ".hermes.md", path, context_length)
+                    if _claim_context_identity(record, loaded_paths, snapshot) else "")
+    return None
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(
+    cwd_path: Path, context_length: Optional[int] = None, loaded_paths: Optional[set] = None, snapshot=None,
+) -> Optional[str]:
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
@@ -1818,30 +1842,40 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """
     sections: list[str] = []
     seen_content: set = set()
-    for label, candidate, content in _agents_md_candidates(cwd_path):
+    for label, candidate, record in _agents_md_candidates(cwd_path):
+        content = record.content
         if content and content not in seen_content:  # else: empty, or an identical copy along the chain
             seen_content.add(content)
-            sections.append(_context_section(content, label, label, candidate, context_length))
+            if _claim_context_identity(record, loaded_paths, snapshot):
+                sections.append(_context_section(content, label, label, candidate, context_length))
     if len(sections) <= 1:
-        return sections[0] if sections else ""
+        return sections[0] if sections else ("" if seen_content else None)
     # Per-file budgets applied above; also cap the merged chain so a deep monorepo can't multiply the budget.
     return _truncate_content("\n\n".join(sections), "AGENTS.md (directory chain)", context_length=context_length,
                              read_path=str(cwd_path.resolve() / "AGENTS.md"))
 
 
-def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_claude_md(
+    cwd_path: Path, context_length: Optional[int] = None, loaded_paths: Optional[set] = None, snapshot=None,
+) -> Optional[str]:
     """CLAUDE.md / claude.md — cwd only."""
-    for name, path, content in _claude_md_candidates(cwd_path):
-        if content:
-            return _context_section(content, name, "CLAUDE.md", path, context_length)
-    return ""
+    for name, path, record in _claude_md_candidates(cwd_path):
+        if record.content:
+            return (_context_section(record.content, name, "CLAUDE.md", path, context_length)
+                    if _claim_context_identity(record, loaded_paths, snapshot) else "")
+    return None
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_cursorrules(
+    cwd_path: Path, context_length: Optional[int] = None, loaded_paths: Optional[set] = None, snapshot=None,
+) -> Optional[str]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
+    candidates = _cursorrules_candidates(cwd_path)
+    if not any(record.content for _, _, record in candidates):
+        return None
     cursorrules_content = "".join(
-        f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
-        for label, _path, content in _cursorrules_candidates(cwd_path) if content
+        f"## {label}\n\n{_scan_context_content(record.content, label)}\n\n"
+        for label, _path, record in candidates if _claim_context_identity(record, loaded_paths, snapshot)
     )
     if not cursorrules_content:
         return ""
@@ -1851,24 +1885,49 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
 
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
-    allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
+    allow_install_tree_fallback: bool = False, home_override: "Path | None" = None, context_snapshot=None,
 ) -> str:
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
+    Configured external files load first in list order, independently of project discovery.
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
+    from agent.external_context import external_context_scope
+    with external_context_scope(home_override):
+        return _build_context_files_prompt(
+            cwd, skip_soul, context_length, allow_install_tree_fallback, home_override, context_snapshot)
+
+
+def _build_context_files_prompt(
+    cwd: Optional[str], skip_soul: bool, context_length: Optional[int],
+    allow_install_tree_fallback: bool, home_override: "Path | None", context_snapshot=None,
+) -> str:
+    from agent.external_context import load_external_context_files, safe_context_metadata
+
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
+    loaded_paths: set = set()
+    sections = []
+    for source in load_external_context_files(home_override=home_override):
+        if _claim_context_identity(source, loaded_paths, context_snapshot):
+            body = f"## {source.label}\n\n{_scan_context_content(source.content, source.label)}"
+            sections.append(_truncate_content(
+                body, source.label, context_length=context_length,
+                read_path=safe_context_metadata(str(source.path), source.label)))
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
         )
-        sections = []
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+        # A duplicate still selects its project type: do not fall through to lower-priority rules.
+        project_loaded_paths = loaded_paths if loaded_paths else None
+        for loader in (_load_hermes_md, _load_agents_md, _load_claude_md, _load_cursorrules):
+            project = loader(cwd_path, context_length, project_loaded_paths, context_snapshot)
+            if project is not None:
+                sections.append(project)
+                break
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

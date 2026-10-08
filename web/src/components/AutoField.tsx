@@ -3,6 +3,8 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 
+import { ContextFileListEditor } from "./ContextFileListEditor";
+
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
   const description = schema.description ? String(schema.description) : "";
@@ -164,6 +166,15 @@ export function AutoField({
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
         />
+      </div>
+    );
+  }
+
+  if (schema.type === "list" && schema.editor === "lines") {
+    return (
+      <div className="grid gap-1.5">
+        <ContextFileListEditor value={value} onChange={onChange} />
+        <FieldHint schema={schema} schemaKey={schemaKey} />
       </div>
     );
   }

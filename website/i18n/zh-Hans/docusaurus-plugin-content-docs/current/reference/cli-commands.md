@@ -257,8 +257,12 @@ hermes lsp <subcommand>
 ## `hermes setup`
 
 ```bash
-hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
+hermes setup [model|tts|terminal|context|gateway|tools|telemetry|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
 ```
+
+`hermes setup context` 会检测共享的 Codex/Claude 指令文件，供您选择加入
+`context.external_files`。自定义路径可通过 `hermes config set` 或 Dashboard 设置；
+请参阅[外部上下文文件](../user-guide/configuration.md#external-context-files)。
 
 **首次运行：** 启动首次使用向导。
 
@@ -270,6 +274,7 @@ hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--res
 |---------|-------------|
 | `model` | Provider 和模型设置。 |
 | `terminal` | 终端后端和沙箱设置。 |
+| `context` | 选择启用检测到的共享指令文件。 |
 | `gateway` | 消息平台设置。 |
 | `tools` | 按平台启用/禁用工具。 |
 | `agent` | Agent 行为设置。 |

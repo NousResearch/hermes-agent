@@ -3,7 +3,6 @@
 import logging
 import os
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -422,7 +421,7 @@ class TestBuildContextFilesPrompt:
         sub.mkdir()
         from agent.prompt_builder import _load_agents_md
 
-        assert _load_agents_md(sub) == ""
+        assert _load_agents_md(sub) is None
 
     # --- AGENTS.override.md personal override (port of pi#7681) ---
 
@@ -1021,21 +1020,23 @@ class TestContextFileReadTimeout:
         pb_mod = sys.modules[build_context_files_prompt.__module__]
         monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
 
-        original_read_text = Path.read_text
+        import threading
+        from agent import context_file_io
+        release = threading.Event()
+        original_read = context_file_io._read_once
 
-        def slow_read_text(self, *args, **kwargs):
-            if self.name == ".hermes.md":
-                time.sleep(0.6)
-            return original_read_text(self, *args, **kwargs)
+        def slow_read(path):
+            if path.name == ".hermes.md":
+                release.wait(5)
+            return original_read(path)
 
-        monkeypatch.setattr(Path, "read_text", slow_read_text)
+        monkeypatch.setattr(context_file_io, "_read_once", slow_read)
+        try:
+            with caplog.at_level(logging.WARNING):
+                result = build_context_files_prompt(cwd=str(tmp_path))
+        finally:
+            release.set()
 
-        start = time.monotonic()
-        with caplog.at_level(logging.WARNING, logger=pb_mod.__name__):
-            result = build_context_files_prompt(cwd=str(tmp_path))
-        elapsed = time.monotonic() - start
-
-        assert elapsed < 0.4, f"context load blocked for {elapsed:.2f}s"
         assert "Agent fallback rules" in result
         assert "Hermes project rules" not in result
         assert "timed out" in caplog.text.lower()

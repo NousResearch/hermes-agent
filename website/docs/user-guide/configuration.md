@@ -73,6 +73,45 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](./managed-scope.md).
 :::
 
+## External context files {#external-context-files}
+
+Use `context.external_files` to load personal or shared instruction files before
+working-directory project context. This is an ordered list of
+path strings, independent of the `context.engine` selection:
+
+```yaml
+context:
+  engine: compressor
+  external_files:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+Paths can be absolute, `~`-prefixed, or relative to your user home directory
+(not the working directory or `HERMES_HOME`). Environment references such as
+`${RULES_DIR}` use the active profile's configuration environment. Missing,
+empty, unreadable, blocked, and non-file entries are skipped. Only include
+files you trust; these instructions become part of the model's prompt.
+
+```bash
+hermes setup context
+hermes config set context.external_files '~/.codex/AGENTS.md, ~/.claude/CLAUDE.md'
+# Use a quoted YAML/JSON list when a path contains a comma:
+hermes config set context.external_files '["~/rules,team.md", "~/My Rules.md"]'
+# Clear the configured list:
+hermes config set context.external_files '[]'
+```
+
+The setup section offers existing Codex and Claude shared files and preserves
+custom paths. Full setup and first-time Quick Setup also offer this section;
+Blank Slate stays minimal unless you run `hermes setup context` yourself.
+The Dashboard uses one path per line for this field; other list settings keep
+their existing editors. Changes apply to new sessions or a context-compression
+rebuild of the system prompt. Ordinary turns and resumed
+sessions keep their saved context snapshot. See
+[Context Files](./features/context-files.md#configured-external-context-files)
+for loading order and safety behavior.
+
 ## Runtime Limits
 
 Long-running Hermes server surfaces (including the gateway and

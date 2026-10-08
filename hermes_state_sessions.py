@@ -362,7 +362,7 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
-        transport_profile: Optional[str] = None,
+        transport_profile: Optional[str] = None, context_file_identities: Optional[str] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt) — the one exception is the
@@ -397,14 +397,17 @@ class SessionSessionsMixin:
             profile_name = self._own_profile_name()
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+            from hermes_state_context import inherited_context_manifest
+            identities = inherited_context_manifest(
+                conn, parent_session_id, system_prompt_hash, system_prompt, context_file_identities)
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, created_source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, system_prompt_hash,
+                   model, model_config, system_prompt, system_prompt_hash, context_file_identities,
                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        source = CASE
                            WHEN sessions.source = 'unknown'
@@ -435,6 +438,9 @@ class SessionSessionsMixin:
                            sessions.system_prompt_hash,
                            excluded.system_prompt_hash
                        ),
+                       context_file_identities = CASE
+                           WHEN sessions.system_prompt_hash IS NULL AND excluded.system_prompt_hash IS NOT NULL
+                           THEN excluded.context_file_identities ELSE sessions.context_file_identities END,
                        system_prompt = CASE
                            WHEN sessions.system_prompt_hash IS NULL
                                 AND excluded.system_prompt_hash IS NOT NULL
@@ -444,7 +450,7 @@ class SessionSessionsMixin:
 """ + _UPSERT_KEEP_EXISTING_SQL,
                 (
                     session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
-                    json.dumps(model_config) if model_config else None, system_prompt_hash,
+                    json.dumps(model_config) if model_config else None, system_prompt_hash, identities,
                     parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
                     display_name, time.time(),
                 ),
@@ -735,12 +741,16 @@ class SessionSessionsMixin:
             (model_config_json, model, session_id),
         )
 
-    def update_system_prompt(self, session_id: str, system_prompt: Optional[str]) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(self, session_id: str, system_prompt: Optional[str],
+                             context_file_identities: Optional[str] = None) -> None:
+        """Atomically store a prompt and its identities; preserve metadata only for identical bytes."""
         def _do(conn):
+            from hermes_state_context import inherited_context_manifest
+            prompt_hash = self._store_system_prompt(conn, system_prompt)
+            identities = inherited_context_manifest(conn, session_id, prompt_hash, system_prompt, context_file_identities)
             conn.execute(
-                "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
-                (self._store_system_prompt(conn, system_prompt), session_id),
+                "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL, context_file_identities = ? WHERE id = ?",
+                (prompt_hash, identities, session_id),
             )
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
@@ -1078,7 +1088,7 @@ class SessionSessionsMixin:
 
     # compact_rows excludes only payload-heavy blobs no list consumer renders.
     _SESSION_COMPACT_EXCLUDED = frozenset(
-        {"system_prompt", "system_prompt_hash", "git_metadata_generation"}
+        {"system_prompt", "system_prompt_hash", "context_file_identities", "git_metadata_generation"}
     )
     _session_compact_cols_sql: Optional[str] = None
 

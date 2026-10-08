@@ -579,6 +579,7 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # Extracted sections, re-exported so callers and test patches keep resolving through
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
+from hermes_cli.setup_context import setup_external_context_files  # noqa: E402
 from hermes_cli.setup_tts import setup_tts  # noqa: E402
 from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
 from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
@@ -593,6 +594,7 @@ SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
+    ("context", "External Context Files", setup_external_context_files),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("telemetry", "Shared Metrics", setup_telemetry),
@@ -658,6 +660,7 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_r
     _run_setup_steps([
         _step("model", "Model & Provider", lambda: setup_model_provider(config)),
         _step("terminal", "Terminal Backend", lambda: setup_terminal_backend(config)),
+        ("External Context Files", lambda: setup_external_context_files(config)),
         ("Messaging Platforms", _gateway_step),
         _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing))])
 
@@ -727,7 +730,7 @@ def _run_setup_wizard_impl(args):
         _info("Running the full wizard — each prompt shows your current value.",
               "Press Enter to keep it, or type a new value to change it.", "",
               "Tip: jump straight to a section with 'hermes setup model|terminal|",
-              "     gateway|tools|agent', or fill only missing items with --quick.")
+              "     context|gateway|tools|agent', or fill only missing items with --quick.")
     else:
         # First-time setup (--reconfigure / --quick are meaningless here; fall through)
         print()

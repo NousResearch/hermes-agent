@@ -9,6 +9,15 @@
 # has. Hermes manages it: do not copy it into another config.
 _config_version: 50
 
+# Additional shared instructions for new sessions, loaded in this order before project rules.
+# Missing, empty, unreadable, non-file and read-denied paths are skipped. Relative paths are
+# relative to the user's home, not the project or profile directory. --ignore-rules skips them.
+context:
+  external_files: []
+  # external_files:
+  #   - ~/.codex/AGENTS.md
+  #   - ~/shared/team-rules.md
+
 # =============================================================================
 # Database Configuration
 # =============================================================================

@@ -90,7 +90,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     everything else gets defaults."""
     from hermes_cli.setup import (
         _apply_default_agent_settings, _info, print_header, print_info, _print_setup_summary, print_success,
-        print_warning, prompt_choice, save_config, setup_gateway, setup_terminal_backend
+        print_warning, prompt_choice, save_config, setup_external_context_files, setup_gateway, setup_terminal_backend
     )
     # Step 1: Nous Portal — OAuth login + model selection (provider set to "nous" by the save).
     print_header("Nous Portal", gap=True)
@@ -114,6 +114,8 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     setup_terminal_backend(config)
     _apply_default_agent_settings(config)
     save_config(config)
+
+    setup_external_context_files(config)
 
     # Step 4: Offer messaging gateway setup
     print()

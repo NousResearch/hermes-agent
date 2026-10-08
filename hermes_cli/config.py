@@ -3380,13 +3380,13 @@ _SCALAR_WORDS = {
 
 
 def _coerce_config_set_value(key: str, value: str) -> Any:
-    """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
-    String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
-    ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
-    isinstance-gated readers see real structures; the trigger is conservative.
-    Bare ``model`` is the exception: its string default is the model-id shorthand, so a structured
-    literal there is parsed for the section guard to gate instead of riding into model.default
-    as a bogus id (#131435)."""
+    """Coerce CLI values while preserving string defaults (e.g. ``approvals.mode="off"``).
+    Parse list/mapping literals for container readers. Bare ``model`` is the exception to
+    string preservation: structured values must reach the section guard, not become bogus
+    model IDs (#131435). External file paths use strict list-of-strings parsing."""
+    if key == "context.external_files":
+        from hermes_cli.config_external_context import parse_external_context_files
+        return parse_external_context_files(value)
     if isinstance(_default_value_for_key(key), str) and not (
             key == "model" and _looks_structured_value(value)):
         return value

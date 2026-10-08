@@ -1,7 +1,7 @@
 """Per-file manifest of the context/instruction files behind the ``/context`` "Rules" figure.
 
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
-``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
+``agent.prompt_builder.discover_context_file_records`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
 shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
 flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
@@ -26,6 +26,7 @@ _STATUS_DISPLAY = {
     "loaded": ("✓", ""),
     "truncated": ("◐", "truncated — over context_file_max_chars"),
     "shadowed": ("○", "not loaded — higher-priority context type wins"),
+    "duplicate": ("○", "not loaded again — already included by an earlier context source"),
     "blocked": ("✗", "not loaded — blocked by the prompt-injection scan"),
     "flagged": ("⚠", "loaded — matched prompt-injection pattern(s); review the file"),
     "empty": ("○", "not loaded — empty file"),
@@ -65,22 +66,52 @@ def list_context_file_sources(
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
-    and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / suppressed.
+    and ``status`` ∈ loaded / truncated / flagged / shadowed / duplicate / blocked / empty / unreadable / suppressed.
     """
+    from agent.external_context import external_context_scope
+    with external_context_scope(home_override):
+        return _list_context_file_sources(cwd, context_length, allow_install_tree_fallback, home_override, skip_soul)
+
+
+def _list_context_file_sources(
+    cwd: Optional[str], context_length: Optional[int], allow_install_tree_fallback: bool,
+    home_override: "Path | None", skip_soul: bool,
+) -> List[Dict[str, Any]]:
+    from agent.external_context import load_external_context_files
+
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
     sources: List[Dict[str, Any]] = []
+    loaded_paths: set = set()
+    for source in load_external_context_files(home_override=home_override):
+        if not source.content:
+            status = source.status
+        elif not _pb._claim_context_identity(source, loaded_paths):
+            status = "duplicate"
+        else:
+            status = _loaded_status(source.content, len(f"## {source.label}\n\n{source.content}"), max_chars)
+        sources.append(_entry(source.label, source.path, source.content, status))
+    project_loaded_paths = loaded_paths if loaded_paths else None
     winner: Optional[str] = None
-    for kind, label, path, content in _pb.discover_context_files(cwd_path):
+    seen_agents_content: set = set()
+    for kind, label, path, record in _pb.discover_context_file_records(cwd_path):
+        content = record.content
         if not content:
-            status = _empty_status(path)
+            status = record.status
         elif suppressed:
             status = "suppressed"
         elif winner in (None, kind):
             winner = kind
-            # The builder caps the rendered ``## label`` section, not the raw file.
-            status = _loaded_status(content, len(f"## {label}\n\n{content}"), max_chars)
+            if kind == "agents_md" and content in seen_agents_content:
+                status = "duplicate"
+            elif not _pb._claim_context_identity(record, project_loaded_paths):
+                status = "duplicate"
+            else:
+                # The builder caps the rendered ``## label`` section, not the raw file.
+                status = _loaded_status(content, len(f"## {label}\n\n{content}"), max_chars)
+            if kind == "agents_md":
+                seen_agents_content.add(content)
         else:
             status = "shadowed"
         sources.append(_entry(label, path, content, status))

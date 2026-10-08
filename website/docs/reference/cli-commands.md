@@ -393,8 +393,12 @@ the full guide, supported languages, and configuration knobs.
 ## `hermes setup`
 
 ```bash
-hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
+hermes setup [model|tts|terminal|context|gateway|tools|telemetry|agent] [--non-interactive] [--reset] [--quick] [--reconfigure] [--portal]
 ```
+
+`hermes setup context` offers detected shared Codex/Claude instruction files for
+`context.external_files`. Custom paths can be set through `hermes config set`
+or the Dashboard; see [external context files](../user-guide/configuration.md#external-context-files).
 
 **Easiest path:** `hermes setup --portal` — OAuth into Nous Portal and opt into the [Tool Gateway](../user-guide/features/tool-gateway.md) in one shot.
 
@@ -408,6 +412,7 @@ Jump into one section instead of the full wizard:
 |---------|-------------|
 | `model` | Provider and model setup. |
 | `terminal` | Terminal backend and sandbox setup. |
+| `context` | Opt into detected shared instruction files. |
 | `gateway` | Messaging platform setup. |
 | `tools` | Enable/disable tools per platform. |
 | `agent` | Agent behavior settings. |

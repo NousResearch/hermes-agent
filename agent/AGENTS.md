@@ -66,10 +66,13 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
   never smeared onto the already-persisted tool row, which append-only persistence would leave
   divergent from the live request. Cron deliveries live in their own session for this reason.
-- **Context files** (`agent/prompt_builder.py`) load from the CWD only at startup and are capped
-  (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
-  Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject
-  paths outside the working dir so `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` never mix in.
+- **Context files** (`agent/prompt_builder.py`) load explicitly configured `context.external_files`
+  first, then the selected project type (`AGENTS.override.md` / `AGENTS.md` chain: git root → CWD).
+  All are capped (`CONTEXT_FILE_MAX_CHARS` / dynamic context-window cap / `context_file_max_chars`).
+  Never use an install-tree fallback as project context (PR #64611). Progressive hints still reject
+  out-of-workspace paths; only explicit external-file configuration opts into shared paths.
+  Persist startup identities/content digests with the exact cached prompt; resume must not reread
+  current files to reconstruct them. Only a new session or compression rebuild refreshes the snapshot.
 - **`_last_resolved_tool_names` is a process-global in `model_tools.py`.** `_run_single_child()`
   in `tools/delegate_tool.py` saves/restores it around subagent execution; code reading it may see
   a temporarily stale value during child runs.

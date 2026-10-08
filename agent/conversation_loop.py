@@ -58,6 +58,7 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
+from agent.context_file_state import persist_system_prompt, restore_context_manifest
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -685,7 +686,7 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        persist_system_prompt(agent, agent._cached_system_prompt)
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
@@ -795,6 +796,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        restore_context_manifest(agent, session_row.get("context_file_identities"), stored_prompt)
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
         announced_switch = stage_surface_switch_note(agent, stored_prompt, conversation_history)

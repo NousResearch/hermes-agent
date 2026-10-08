@@ -151,48 +151,31 @@ stakes demand it, not by default.
 
 ## 上下文文件的注入方式
 
-`build_context_files_prompt()` 使用**优先级系统**——只加载一种项目上下文类型（先匹配先赢）：
+`build_context_files_prompt()` 先按当前 profile 的 `context.external_files` 列表顺序
+加载外部文件，再按下述优先级选择一种项目上下文类型。外部文件是额外的上下文；如果
+外部路径是已选中项目文件的别名，该文件只加载一次，不会因此改选优先级更低的类型。
+外部路径可以是绝对路径、以 `~` 开头的路径或相对于用户主目录的路径，不依赖 CWD
+或 `HERMES_HOME`。
 
-```python
-# From agent/prompt_builder.py (simplified)
-def build_context_files_prompt(cwd=None, skip_soul=False):
-    cwd_path = Path(cwd).resolve()
+启动发现和渐进式发现的边界不同。启动时的 `AGENTS.md` 加载链从最近的 git 根目录
+到 CWD，每个目录优先使用 `AGENTS.override.md`。没有 git 根目录时仅检查 CWD。
+渐进式提示仍拒绝工作区之外的路径；共享文件必须通过 `context.external_files` 显式
+配置。自动选中的 Hermes 安装目录回退仍不会成为项目上下文，显式选中的工作区保持
+原有行为。
 
-    # Priority: first match wins — only ONE project context loaded
-    project_context = (
-        _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
-        or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
-    )
-
-    sections = []
-    if project_context:
-        sections.append(project_context)
-
-    # SOUL.md from HERMES_HOME (independent of project context)
-    if not skip_soul:
-        soul_content = load_soul_md()
-        if soul_content:
-            sections.append(soul_content)
-
-    if not sections:
-        return ""
-
-    return (
-        "# Project Context\n\n"
-        "The following project context files have been loaded "
-        "and should be followed:\n\n"
-        + "\n".join(sections)
-    )
-```
+`ContextFileSnapshot` 记录构建器使用的文件身份和内容摘要，并与确切的系统 prompt
+一同持久化；仅当分支复制相同 prompt 时才继承这些元数据。恢复会话时，渐进式去重
+使用已保存的元数据，不读取当前外部文件配置来重新推断。旧版或无效元数据不会触发
+系统 prompt 重建。上下文压缩是允许的 prompt 重建边界，会刷新快照；普通轮次和会话
+恢复不会刷新。`/context` 诊断仍按原有方式检查当前文件；此元数据不是冻结的来源报告。
 
 ### 上下文文件发现详情
 
 | 优先级 | 文件 | 搜索范围 | 说明 |
 |--------|------|----------|------|
-| 1 | `.hermes.md`、`HERMES.md` | 从 CWD 向上至 git 根目录 | Hermes 原生项目配置 |
-| 2 | `AGENTS.md` | 仅 CWD | 常见 agent 指令文件 |
+| 额外加载 | `context.external_files` | 显式配置的路径，按列表顺序 | 在项目上下文之前加载共享指令 |
+| 1 | `.hermes.md`、`HERMES.md` | 从 CWD 向上至 git 根目录 | 最近的 Hermes 原生项目文件 |
+| 2 | `AGENTS.override.md`、`AGENTS.md`、`agents.md` | 从 git 根目录到 CWD；不在 git 中时仅 CWD | 每个目录取首个非空名称，更深目录的规则在后 |
 | 3 | `CLAUDE.md` | 仅 CWD | Claude Code 兼容性 |
 | 4 | `.cursorrules`、`.cursor/rules/*.mdc` | 仅 CWD | Cursor 兼容性 |
 
@@ -218,10 +201,10 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 ## 上下文文件
 
-`agent/prompt_builder.py` 使用**优先级系统**扫描并清理项目上下文文件——只加载一种类型（先匹配先赢）：
+`agent/prompt_builder.py` 先加载配置的外部文件，再使用**优先级系统**扫描并清理项目上下文文件——只加载一种项目类型（先匹配先赢）：
 
 1. `.hermes.md` / `HERMES.md`（向上遍历至 git 根目录）
-2. `AGENTS.md`（启动时的 CWD；子目录在会话期间通过 `agent/subdirectory_hints.py` 逐步发现）
+2. `AGENTS.override.md` / `AGENTS.md` / `agents.md`（启动时从 git 根目录到 CWD 的加载链；工作区内子目录通过 `agent/subdirectory_hints.py` 逐步发现）
 3. `CLAUDE.md`（仅 CWD）
 4. `.cursorrules` / `.cursor/rules/*.mdc`（仅 CWD）
 
@@ -241,6 +224,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 - `~/.hermes/SOUL.md` — 用自定义 agent 角色和固定行为替换内置默认身份块。
 - `~/.hermes/MEMORY.md` 和 `~/.hermes/USER.md` — 提供应在新会话中快照的持久跨会话事实和用户配置文件数据。
+- `context.external_files` — 显式启用共享指令文件，在项目上下文之前加载。
 - 项目上下文文件，如 `.hermes.md`、`HERMES.md`、`AGENTS.md`、`CLAUDE.md` 或 `.cursorrules` — 注入仓库特定的工作规则。
 - Skills — 打包可复用的工作流和参考资料，无需编辑核心 prompt 代码。
 - 可选系统 prompt 配置 / API 覆盖 — 添加部署特定的指令文本，无需 fork Hermes。

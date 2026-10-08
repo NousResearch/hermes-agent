@@ -84,6 +84,40 @@ delegation:
 
 不设置这些值将保持旧版默认值（`HERMES_API_TIMEOUT=1800`s、`HERMES_API_CALL_STALE_TIMEOUT=90`s、原生 Anthropic 900s）。隐式的非流式 stale 检测会在本地端点上自动禁用，并且会在超大上下文下自动放宽。目前不适用于 AWS Bedrock（`bedrock_converse` 和 AnthropicBedrock SDK 路径均使用 boto3 及其自身的超时配置）。请参阅 [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example) 中的注释示例。
 
+## 外部上下文文件 {#external-context-files}
+
+通过 `context.external_files`，可以在工作目录的项目上下文之前加载个人或共享指令文件。
+此设置是有序的路径字符串列表，与 `context.engine` 的选择相互独立：
+
+```yaml
+context:
+  engine: compressor
+  external_files:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+路径可以是绝对路径、以 `~` 开头的路径，或相对于用户主目录的路径
+（不是工作目录，也不是 `HERMES_HOME`）。`${RULES_DIR}` 等环境变量引用使用当前
+profile 的配置环境。不存在、为空、无法读取、被拦截或不是普通文件的条目会被跳过。
+请只添加您信任的文件；这些指令会进入模型的 prompt。
+
+```bash
+hermes setup context
+hermes config set context.external_files '~/.codex/AGENTS.md, ~/.claude/CLAUDE.md'
+# 路径含逗号时，请使用带引号的 YAML/JSON 列表：
+hermes config set context.external_files '["~/rules,team.md", "~/My Rules.md"]'
+# 清空配置的列表：
+hermes config set context.external_files '[]'
+```
+
+此设置步骤提供已存在的 Codex 和 Claude 共享文件，并保留自定义路径。完整设置和首次
+Quick Setup 都会提供该步骤；Blank Slate 仍保持最小配置，除非您手动运行
+`hermes setup context`。Dashboard 对此字段采用每行一个路径的编辑方式，其他列表设置
+仍使用原有编辑器。修改会在新会话或下一次上下文压缩重建系统 prompt 时生效。
+普通轮次和恢复的会话继续使用已保存的上下文快照。加载顺序和安全行为请参阅
+[上下文文件](./features/context-files.md#configured-external-context-files)。
+
 ## 终端后端配置
 
 Hermes 支持七种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区、Vercel Sandbox，或 Singularity/Apptainer 容器。

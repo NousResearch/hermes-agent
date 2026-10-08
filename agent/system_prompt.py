@@ -710,7 +710,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
     return parts
 
 
-def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -> List[str]:
+def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool, context_snapshot=None) -> List[str]:
     """Project context files (AGENTS.md etc.) for the context tier. TERMINAL_CWD
     when set (gateway); None lets discovery fall back to the launch dir.  The
     install-tree fallback is only legitimate for cli/tui where the launch dir
@@ -723,7 +723,8 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     cwd = resolve_context_cwd(include_session_override=not launch_artifact)
     return [_pb.build_context_files_prompt(
         cwd=cwd, skip_soul=soul_loaded, context_length=ctx_len,
-        allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
+        allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent),
+        **({"context_snapshot": context_snapshot} if context_snapshot is not None else {}))]
 
 
 def _join_tier(parts: List[Optional[str]]) -> str:
@@ -731,7 +732,7 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None, *, context_snapshot=None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
     context files, workspace snapshot and remaining workspace guidance) and
@@ -770,7 +771,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
-    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded, context_snapshot))
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
     else:
@@ -801,12 +802,16 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     """Assemble the full prompt; cached on ``agent._cached_system_prompt`` and
     only rebuilt after compression.  Tiers are ordered stable -> context ->
     volatile so implicit longest-prefix caches keep the unchanged scaffold."""
-    parts = build_system_prompt_parts(agent, system_message=system_message)
+    from agent.context_file_state import ContextFileSnapshot, bind_context_snapshot
+    snapshot = ContextFileSnapshot()
+    parts = build_system_prompt_parts(agent, system_message=system_message, context_snapshot=snapshot)
     agent._cached_system_prompt_static = parts["stable"]
     # Surface context-file truncation warnings in chat, not only in logs.
     for warning in drain_truncation_warnings():
         agent._emit_diagnostic_status(warning)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    prompt = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    bind_context_snapshot(agent, snapshot, prompt)
+    return prompt
 
 
 def invalidate_system_prompt(agent: Any) -> None:

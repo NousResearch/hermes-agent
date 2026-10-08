@@ -212,48 +212,37 @@ stakes demand it, not by default.
 
 ## How context files are injected
 
-`build_context_files_prompt()` uses a **priority system** — only one project context type is loaded (first match wins):
+`build_context_files_prompt()` first loads the active profile's ordered
+`context.external_files` list, then selects one project context type using the
+priority below. The external files are additive; an external alias of the
+selected project file is loaded once without falling through to a lower-priority
+type. Paths in the external list are absolute, `~`-prefixed, or relative to the
+user's home directory, independently of CWD and `HERMES_HOME`.
 
-```python
-# From agent/prompt_builder.py (simplified)
-def build_context_files_prompt(cwd=None, skip_soul=False):
-    cwd_path = Path(cwd).resolve()
+Startup discovery and progressive discovery have different boundaries. The
+`AGENTS.md` startup chain runs from the nearest git root down to CWD, with
+`AGENTS.override.md` preferred in each directory. Without a git root, only CWD
+is checked. Progressive hints still reject out-of-workspace paths; shared files
+outside that boundary require explicit `context.external_files` configuration.
+An automatically selected Hermes install-tree fallback remains suppressed as
+project context; explicitly selected workspaces retain their existing behavior.
 
-    # Priority: first match wins — only ONE project context loaded
-    project_context = (
-        _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
-        or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
-    )
-
-    sections = []
-    if project_context:
-        sections.append(project_context)
-
-    # SOUL.md from HERMES_HOME (independent of project context)
-    if not skip_soul:
-        soul_content = load_soul_md()
-        if soul_content:
-            sections.append(soul_content)
-
-    if not sections:
-        return ""
-
-    return (
-        "# Project Context\n\n"
-        "The following project context files have been loaded "
-        "and should be followed:\n\n"
-        + "\n".join(sections)
-    )
-```
+`ContextFileSnapshot` captures the identities and content digests of the sources
+used by the builder. These are persisted with the exact system prompt and copied
+to branches only when the prompt matches. Restore seeds progressive deduplication
+from this saved metadata, without reading today's external-file config. Legacy
+or malformed metadata leaves the cached prompt intact until a real rebuild.
+Compression is the sanctioned prompt rebuild boundary and refreshes this snapshot;
+ordinary turns and resume do not. The `/context` diagnostic retains its existing
+live file inspection behavior; this metadata is not a frozen provenance report.
 
 ### Context file discovery details
 
 | Priority | Files | Search scope | Notes |
 |----------|-------|-------------|-------|
-| 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Hermes-native project config |
-| 2 | `AGENTS.md` | CWD only | Common agent instruction file |
+| Additive | `context.external_files` | Explicit configured paths, in order | Shared instructions before project context |
+| 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Nearest Hermes-native project file |
+| 2 | `AGENTS.override.md`, `AGENTS.md`, `agents.md` | Git root down to CWD; CWD only outside git | First non-empty name per directory, deeper rules later |
 | 3 | `CLAUDE.md` | CWD only | Claude Code compatibility |
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
@@ -281,10 +270,10 @@ Local memory and user profile data are captured in the system prompt's **volatil
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
+`agent/prompt_builder.py` loads configured external files first, then scans and sanitizes project context using a **priority system** — only one project type is loaded (first match wins):
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
+2. `AGENTS.override.md` / `AGENTS.md` / `agents.md` (git-root-to-CWD chain at startup; in-workspace subdirectories discovered progressively via `agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
@@ -304,6 +293,7 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 - `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
 - `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- `context.external_files` — opt into shared instruction files before project context.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.

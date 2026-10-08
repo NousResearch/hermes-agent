@@ -1786,15 +1786,14 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     if live is None or not hasattr(live[0], "_build_system_prompt") or not hasattr(live[2], "update_system_prompt"):
         return
     agent, session_key, db = live
-    # Re-bind the session's profile runtime scope (the build's finally reset it → root profile's SOUL.md/skills,
-    # #50233) and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would
-    # persist). The full scope, not HERMES_HOME alone: the external memory provider's system_prompt_block()
-    # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
+    # Bind both profile and session cwd on the RPC thread: identity, rules and memory-provider secrets
+    # must belong to the session rather than the launch profile (#50233, #112927).
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
         with _session_profile_runtime_scope(session):
             prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
-        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+        from agent.context_file_state import persist_system_prompt
+        persist_system_prompt(agent, prompt, db=db, session_id=getattr(agent, "session_id", None) or session_key)
     except Exception:
         logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
     finally:

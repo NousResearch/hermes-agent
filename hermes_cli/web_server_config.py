@@ -142,6 +142,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),
     "context.engine": _select("Context management engine", "default", "custom"),
+    "context.external_files": {
+        "type": "list", "editor": "lines",
+        "description": "External context files, one path per line; absolute, ~ or home-relative. "
+                       "Loaded before project context at session start or a compression rebuild. Only include files you trust.",
+    },
     "human_delay.mode": _select("Simulated typing delay mode", "off", "typing", "fixed"),
     "logging.level": _select("Log level for agent.log", "DEBUG", "INFO", "WARNING", "ERROR"),
     "agent.service_tier": _select(

@@ -6,25 +6,71 @@ description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent loads configured shared files and automatically discovers project context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
 
 ## Supported Context Files
 
 | File | Purpose | Discovery |
 |------|---------|-----------| 
+| **Configured external files** | Shared instructions across projects | `context.external_files`, in declared order |
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
-| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | Git root to CWD at startup + subdirectories progressively |
+| **AGENTS.md** | Project instructions, conventions, architecture | Git root to CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Configured external files are additive and load before project context. Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 
 If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
+
+## Configured External Context Files {#configured-external-context-files}
+
+Add an ordered list of trusted instruction files to `context.external_files`:
+
+```yaml
+context:
+  engine: compressor
+  external_files:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+This reuses shared rules without copying or symlinking them into each project.
+Absolute paths, `~`, environment references such as `${RULES_DIR}`, and paths
+relative to your user home are supported. Home-relative paths are independent
+of both the session working directory and the active profile's `HERMES_HOME`;
+the list itself belongs to the active profile. Files load in the declared order
+before the project rules, without replacing the project's context-file priority
+or git-root-to-working-directory chain.
+
+Missing, empty, unreadable, non-file, blocked, and timed-out entries are skipped.
+External files use UTF-8 (including BOM), the same prompt-injection scan and
+per-file `context_file_max_chars` cap as project files, and the configured file
+read safety policy. Aliases to the same filesystem object, including hardlinks
+and overlap with startup project context, are loaded only once.
+
+```bash
+hermes setup context
+hermes config set context.external_files '~/.codex/AGENTS.md, ~/.claude/CLAUDE.md'
+# Explicit lists preserve commas inside paths:
+hermes config set context.external_files '["~/rules,team.md", "~/other.md"]'
+```
+
+The setup detector offers existing Codex and Claude shared files; it does not
+read their content or enable them without a choice. The Dashboard edits this
+list one path per line, preserving commas. `hermes --ignore-rules` skips both
+external and project context files.
+
+The loaded context snapshot stays stable across ordinary turns and session
+resume, including after a restart. Changes to these files or the configured
+list take effect in a new session or a context-compression rebuild of the
+system prompt. Older saved sessions without a file snapshot
+keep their existing system prompt until that rebuild rather than rereading
+today's files during resume.
 
 ## AGENTS.md
 
@@ -48,7 +94,7 @@ Outside a git repository, only the working directory itself is checked — paren
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+At session start, Hermes loads the `AGENTS.md` chain from the git root to your working directory into the system prompt, preferring `AGENTS.override.md` in each directory. Outside a git repository, only the working directory is checked. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/
@@ -124,6 +170,8 @@ This means your existing Cursor conventions automatically apply when using Herme
 ### At startup (system prompt)
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
+
+Configured external files are read first in declaration order. Project discovery then follows the existing priority and directory-chain rules below.
 
 1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text

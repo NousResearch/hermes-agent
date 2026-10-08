@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.context_file_state import context_manifest_kwargs, persist_system_prompt, restore_context_manifest
 from agent.conversation_compression_codex import _codex_compaction_cooldown_remaining
 from agent.conversation_compression_telemetry import _emit_aborted_attempt_telemetry, _emit_compression_attempt_telemetry
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
@@ -1656,14 +1657,12 @@ def _adopt_live_compression_child(
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
     agent._session_db_created = True
-    # The turn skips restore/rebuild while this slot is set, so it may hold only the child's own
-    # prompt, and only when that prompt matches the current runtime (otherwise None -> rebuild).
-    # Turn-start adoption runs before _restore_primary_runtime on purpose; a reject here is re-checked by the normal restore.
+    # Adoption precedes runtime restore: only the matching child prompt may skip the normal rebuild.
     from agent.conversation_loop import _stored_prompt_matches_runtime
     child_prompt = child.get("system_prompt")
-    agent._cached_system_prompt = (
-        child_prompt if child_prompt and _stored_prompt_matches_runtime(agent, child_prompt) else None
-    )
+    accepted_prompt = child_prompt and _stored_prompt_matches_runtime(agent, child_prompt)
+    agent._cached_system_prompt = child_prompt if accepted_prompt else None
+    restore_context_manifest(agent, child.get("context_file_identities"), agent._cached_system_prompt or "")
     agent._last_flushed_db_idx = len(recovered)
     agent._flushed_db_message_session_id = child_session_id
     agent._flushed_db_message_ids = {id(message) for message in recovered if isinstance(message, dict)}
@@ -3345,6 +3344,7 @@ def _publish_rotated_compaction(
         model_config=with_session_yolo(agent._session_init_model_config, old_session_id),
         system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
+        **context_manifest_kwargs(agent, new_system_prompt),
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
@@ -3766,7 +3766,7 @@ def _commit_compaction(
                 # re-baseline transcript handling.
                 compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                persist_system_prompt(agent, new_system_prompt)
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.

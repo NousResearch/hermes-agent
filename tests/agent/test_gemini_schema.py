@@ -216,6 +216,44 @@ class TestPrepareGeminiToolParameters:
             assert out["properties"]["p"] == {"$ref": "#/$defs/Loop"}
             assert out["$defs"] == defs
 
+    def test_rewrites_shapes_gemini_rejects(self):
+        """Live-verified 400s on gemini-3.5-flash-lite (anomalyco/opencode#51009): ``required``
+        naming an undeclared property, draft-04 boolean exclusive bounds, draft-07 tuple items.
+        Data under enum/default/const is never rewritten."""
+        params = {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "default": {"items": [1], "required": ["zip"]}},
+                "n": {"type": "integer", "minimum": 0, "exclusiveMinimum": True, "maximum": 9, "exclusiveMaximum": False},
+                "pair": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}], "additionalItems": {"type": "boolean"}},
+                "mode": {"type": "string", "enum": ["a", "b"]},
+            },
+            "required": ["city", "zip", 3],
+        }
+        out = prepare_gemini_tool_parameters(params)
+        assert out["required"] == ["city"]
+        assert out["properties"]["city"]["default"] == {"items": [1], "required": ["zip"]}
+        assert out["properties"]["n"] == {"type": "integer", "exclusiveMinimum": 0, "maximum": 9}
+        assert out["properties"]["pair"] == {
+            "type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}], "items": {"type": "boolean"},
+        }
+        assert out["properties"]["mode"] == {"type": "string", "enum": ["a", "b"]}
+
+    def test_ref_loop_through_required_path_is_cut_but_optional_and_items_loops_survive(self):
+        """Gemini: 'ref loops are only supported if they include optional or nullable property
+        values, or a potentially-zero-length array items' — Zod's JSON-value schema loops through
+        ``additionalProperties`` and 400d the whole request."""
+        json_value = {"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#/$defs/J"}},
+                                {"type": "object", "additionalProperties": {"$ref": "#/$defs/J"}},
+                                {"type": "object", "properties": {"kid": {"$ref": "#/$defs/J"}}, "required": ["kid"]}]}
+        params = {"type": "object", "properties": {"value": {"$ref": "#/$defs/J"}}, "$defs": {"J": json_value}}
+        out = prepare_gemini_tool_parameters(params)
+        branches = out["$defs"]["J"]["anyOf"]
+        assert branches[1] == {"type": "array", "items": {"$ref": "#/$defs/J"}}
+        assert branches[2] == {"type": "object", "additionalProperties": {}}
+        assert branches[3]["properties"]["kid"] == {}
+        assert out["properties"]["value"] == {"$ref": "#/$defs/J"}
+
 
 class TestAdapterWireShape:
     _TOOLS = [{"type": "function", "function": {"name": "t", "parameters": {

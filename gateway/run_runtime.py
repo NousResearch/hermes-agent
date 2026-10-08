@@ -150,6 +150,9 @@ def release_profile_home(runner, home):
     """Shrink the reservation by one profile (deleted, or parked because it cannot be served)."""
     from gateway.runtime_ownership import process_ownership
     home = Path(home).resolve()
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None and registry.for_home(home) is not None:
+        raise RuntimeError('Profile authority must retire before ownership is released')
     reserved = getattr(runner.config, '_runtime_profile_homes', None)
     if reserved is not None:
         runner.config._runtime_profile_homes = tuple(
@@ -164,17 +167,15 @@ def _authority_tasks(authority):
     return list(dict.fromkeys(tasks))
 
 
-# How long a Stopped turn gets to settle durably before its task is cancelled: a managed worker
+# How long a Stopped turn gets to settle durably before shutdown refuses to release ownership: a managed worker
 # acknowledges Stop within STOP_ACK_SECONDS (30) or is terminated, then closed (<=10).
 TURN_SETTLE_SECONDS = 45.0
 
 
 def managed_turn_count(runner):
-    """Managed-worker turns across every served authority: out-of-process work that
-    ``_running_agents`` never sees. A worker registers before it can be reserved, and a draining
-    owner refuses the reservation, so nothing unbootstrapped can start work behind this count."""
-    return sum(1 for authority in _authorities(runner)
-               for worker in list(getattr(authority, '_managed_workers', {}).values()) if not worker.closed.is_set())
+    """Unmapped claims, managed workers and owner mutations across the served authorities."""
+    from gateway.session_runtime_workers import uncounted_runtime_work
+    return uncounted_runtime_work(runner)
 
 
 def stop_authority_turns(authority, *, in_process=False):
@@ -186,7 +187,7 @@ def stop_authority_turns(authority, *, in_process=False):
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
     for worker in list(workers.values()):
-        if worker.closed.is_set():
+        if worker.closed.is_set() or (getattr(worker, 'stop', None) is not None and worker.stop.is_set()):
             continue
         try:
             worker.control({'type': 'stop'})
@@ -218,19 +219,6 @@ def stop_managed_turns(runner):
     return sum(stop_authority_turns(authority) for authority in _authorities(runner))
 
 
-async def _settle_tasks(tasks, timeout):
-    """Wait up to *timeout* for *tasks*; cancel the rest and give their cleanup the same bound.
-    Returns the tasks that missed the first deadline."""
-    if not tasks:
-        return set()
-    _, late = await asyncio.wait(tasks, timeout=timeout)
-    for task in late:
-        task.cancel()
-    if late:
-        await asyncio.wait(late, timeout=timeout)
-    return late
-
-
 async def _retire_profile_authority(authority):
     """Stop profile-local services and turns before its ownership is released.
 
@@ -239,28 +227,25 @@ async def _retire_profile_authority(authority):
     admission settled). False when a turn misses TURN_SETTLE_SECONDS: its thread may still call tools
     and write history, so the caller must keep the profile's reservation and store handles."""
     from gateway.session_cron import unbind_owner
-
+    from gateway.session_runtime_workers import join_authority_work
+    authority.retiring = True
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
-        await asyncio.to_thread(service.stop, timeout=5)
-    authority.retiring = True
-    stop_authority_turns(authority, in_process=True)
-    # A claim is stamped in the same synchronous step that passed _require_admission_open, so from
-    # here a session is either executing a stamped turn (join it) or idle/preclaim (nothing ran).
-    running = [live for live in authority.sessions.values() if live.task is not None]
-    turns = [live.task for live in running if live.event_stream.execution.get('execution_generation') is not None]
-    late = await _settle_tasks(turns, TURN_SETTLE_SECONDS)
+        if await asyncio.to_thread(service.stop, timeout=5) is False:
+            return False
+    try:
+        await join_authority_work(authority, TURN_SETTLE_SECONDS)
+    except TimeoutError:
+        logger.error('Profile %s workers did not stop; ownership retained', authority.profile_id)
+        return False
     # Idle drains and receipt watchers wait on admissions this profile will no longer run.
-    rest = [task for task in _authority_tasks(authority) if task not in turns]
+    rest = _authority_tasks(authority)
     for task in rest:
         task.cancel()
     if rest:
         await asyncio.gather(*rest, return_exceptions=True)
     unbind_owner(authority)
-    if late:
-        logger.error('Profile %s: %d turn(s) still running %.0fs after Stop; keeping its reservation',
-                     authority.profile_id, len(late), TURN_SETTLE_SECONDS)
-    return not late
+    return True
 
 
 async def serve_profile_runtime(runner, name, home):
@@ -285,8 +270,8 @@ async def serve_profile_runtime(runner, name, home):
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
     except BaseException:
-        registry.remove(home)
-        await _retire_profile_authority(authority)
+        if await _retire_profile_authority(authority):
+            registry.remove(home)
         raise
     _publish_served_set(runner)
     start_ready_hosted_services(runner)
@@ -299,10 +284,13 @@ async def unserve_profile_runtime(runner, home):
     including for a profile this process never served."""
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
-    authority = registry.remove(home) if home in registry else None
+    authority = registry.for_home(home)
     if authority is None:
         return True
     retired = await _retire_profile_authority(authority)
+    if not retired:
+        return False
+    registry.remove(home)
     _publish_served_set(runner)
     return retired
 
@@ -385,7 +373,6 @@ async def wait_gateway_runtime(runner):
 
 async def drain_gateway_runtime(runner):
     """Withdraw admission before any await; close sockets before DB teardown."""
-    from gateway.run_api import stop_gateway_api
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:
         return
@@ -400,12 +387,6 @@ async def drain_gateway_runtime(runner):
     for adapters in getattr(runner, '_profile_adapters', {}).values():
         for adapter in adapters.values():
             adapter.set_message_handler(None)
-    store = getattr(runner, 'session_ticket_store', None)
-    if store is not None:
-        store.revoke()
-    handle = getattr(runner, 'session_api', None)
-    if handle is not None:
-        await stop_gateway_api(handle)
 
 
 async def settle_gateway_runtime(runner):
@@ -413,14 +394,25 @@ async def settle_gateway_runtime(runner):
 
     A managed turn still running here gets its Stop first (its worker acknowledges or is
     terminated, and the admission settles interrupted or ``unknown``); a task that still misses
-    TURN_SETTLE_SECONDS is cancelled, which leaves its admission for recovery, never settled."""
+    TURN_SETTLE_SECONDS retains ownership until its writer stops."""
     authorities = _authorities(runner)
     stop_managed_turns(runner)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TURN_SETTLE_SECONDS
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
-    late = await _settle_tasks(tasks, TURN_SETTLE_SECONDS)
-    if late:
-        logger.warning('%d authority task(s) did not settle within %.0fs; cancelled', len(late), TURN_SETTLE_SECONDS)
-    # Sockets closed in drain_gateway_runtime; work settled above. ACP has no per-session destroy,
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=TURN_SETTLE_SECONDS)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        if pending:
+            raise TimeoutError('Runtime workers did not settle; ownership retained')
+    from gateway.session_runtime_workers import join_authority_work
+    for authority in authorities:
+        # An interrupted in-process thread needs a moment to unwind after its waiter returned;
+        # it shares the remaining settle budget instead of failing the stop at once.
+        await join_authority_work(authority, max(0.0, deadline - loop.time()))
+    # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
     from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
@@ -431,3 +423,10 @@ async def settle_gateway_runtime(runner):
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)
+    from gateway.run_api import stop_gateway_api
+    store = getattr(runner, 'session_ticket_store', None)
+    if store is not None:
+        store.revoke()
+    handle = getattr(runner, 'session_api', None)
+    if handle is not None:
+        await stop_gateway_api(handle)

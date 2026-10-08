@@ -237,7 +237,6 @@ async def worker_delegation_request(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
     authority = connection.authority
-    authority._require_admission_open()
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     _verify(connection, ref, params, claim)

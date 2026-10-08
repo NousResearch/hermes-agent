@@ -30,7 +30,8 @@ BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'ro
 RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partial', 'error', 'turn_exit_reason',
                  'api_calls', 'model', 'provider', 'prompt_tokens', 'completion_tokens', 'total_tokens',
                  'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
-                 'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier')
+                 'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier', 'failure_reason',
+                 'session_id', 'requested_model', 'served_model', '_turn_input_tokens', '_turn_output_tokens')
 
 
 def result_frame(result):
@@ -47,12 +48,16 @@ def accept_result(result):
                    for key, value in result.items() if key != 'final_response')):
         raise ValueError('invalid_worker_result')
     accepted = dict(result)
+    turn_in, turn_out = accepted.pop('_turn_input_tokens', None), accepted.pop('_turn_output_tokens', None)
+    if any(value is not None and (type(value) is not int or value < 0) for value in (turn_in, turn_out)):
+        raise ValueError('invalid_worker_result')
     incoming, outgoing = accepted.pop('prompt_tokens', None), accepted.pop('completion_tokens', None)
     if incoming is None and outgoing is None:
         return accepted, {}
-    usage = {'input_tokens': incoming or 0, 'output_tokens': outgoing or 0}
+    usage = {'input_tokens': incoming or 0 if turn_in is None else turn_in,
+             'output_tokens': outgoing or 0 if turn_out is None else turn_out}
     usage['total_tokens'] = usage['input_tokens'] + usage['output_tokens']
-    accepted.update(input_tokens=usage['input_tokens'], output_tokens=usage['output_tokens'])
+    accepted.update(input_tokens=incoming or 0, output_tokens=outgoing or 0)
     return accepted, usage
 
 
@@ -260,6 +265,10 @@ def tool_frame(call_id, name, args, *result):
         from agent.display import _detect_tool_failure
         frame['result'] = result[0] if isinstance(result[0], str) else str(result[0])
         frame['is_error'] = bool(_detect_tool_failure(frame['name'], result[0])[0])
+    from gateway.session_tool_events import bounded_args, bounded_result
+    frame['args'] = bounded_args(frame['args'])
+    if result:
+        frame['result'] = bounded_result(result[0], frame['is_error'])
     return json.loads(json.dumps(frame, default=str))
 
 
@@ -320,7 +329,11 @@ def execute(frame, channel):
                 if skipped:
                     raise ValueError('managed_attachment_unavailable')
                 frame = {**frame, 'text': content}
+            before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
+                      getattr(agent, 'session_completion_tokens', 0) or 0)
             result = run_worker_turns(agent, frame, history)
+            result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
+            result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)
             agent = None
             # The auto-title thread bills through this store from a daemon thread; a title landing

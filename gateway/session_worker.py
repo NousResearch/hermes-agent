@@ -70,7 +70,8 @@ async def worker_request(connection, ref, params, *, operation):
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
     authority = connection.authority
-    authority._require_admission_open()
+    if operation == 'register':
+        authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
         authority.authorize(connection.actor, ref, 'session:control')

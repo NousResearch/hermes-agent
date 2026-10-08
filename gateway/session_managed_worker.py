@@ -281,7 +281,8 @@ async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     env = await asyncio.to_thread(_worker_env, authority)
     cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
-    process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
+    from gateway.session_worker_spawn import acquire_process
+    process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
         cwd=cwd, stdin=subprocess.PIPE, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
     worker = ManagedWorker(process)

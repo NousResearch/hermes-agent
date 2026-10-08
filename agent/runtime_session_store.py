@@ -49,6 +49,7 @@ class WorkerRPC:
     def __init__(self, home):
         self.home = Path(home).resolve()
         self.lock = threading.Lock()
+        self.endpoint = None
 
     def __call__(self, method, **params):
         from hermes_cli.gateway_client import _session_ticket
@@ -64,13 +65,15 @@ class WorkerRPC:
             # A served secondary has no socket; its multiplexer's descriptor names it.
             from hermes_cli.gateway_runtime import discover_gateway_endpoint
             discovery = discover_gateway_endpoint(self.home, timeout=5)
-            if discovery.state != 'ready' or discovery.endpoint is None:
+            if discovery.state == 'ready' and discovery.endpoint is not None:
+                self.endpoint = discovery.endpoint
+            elif discovery.state != 'draining' or self.endpoint is None:
                 raise WorkerPersistenceError('owner_unavailable')
             from hermes_cli.gateway_runtime import control_home_for
-            descriptor = query_identify(control_home_for(self.home, discovery.endpoint), timeout=5)
+            endpoint = self.endpoint
+            descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
             if descriptor.get('pid') == os.getpid():
                 raise WorkerPersistenceError('synchronous_self_rpc')
-            endpoint = discovery.endpoint
             ticket = _session_ticket(self.home, endpoint,
                 purpose='interactive' if method == 'worker.register' else 'worker-adoption')
             url = endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
@@ -138,6 +141,8 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             else:
                 self.journal = {'scope': self.scope, 'next_sequence': 1, 'pending': []}
                 self._save(self.journal)
+            if self.journal['pending']:
+                self.retry_pending()
             if is_worker_process():
                 from tools.async_delegation_worker import bind_worker_delegation_store
                 bind_worker_delegation_store(self)

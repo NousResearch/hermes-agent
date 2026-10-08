@@ -31,12 +31,20 @@ def test_outbox_freezes_failed_payload_and_reopens_exclusively(tmp_path):
         return {'count': 1, 'annotations': [{'_row_id': 42}]}
     restored = RuntimeSessionStore(commit, scope, tmp_path / 'private')
     try:
-        assert restored.retry_pending()[0]['count'] == 1
+        assert restored.retry_pending() == []  # reopening already reconciled the acknowledged journal
         assert seen[0]['payload']['messages'][0]['content'] == 'frozen'
         assert json.loads(restored.path.read_text())['pending'] == []
-        assert restored.path.stat().st_mode & 0o077 == 0
     finally:
         restored.close()
+
+
+@pytest.mark.platforms('posix')
+def test_outbox_has_private_posix_mode(tmp_path):
+    store = RuntimeSessionStore(lambda *a, **k: {}, {'session_id': 's'}, tmp_path / 'private')
+    try:
+        assert store.path.stat().st_mode & 0o077 == 0
+    finally:
+        store.close()
 
 
 def test_outbox_capacity_failure_does_not_advance_or_discard(tmp_path):

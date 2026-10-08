@@ -37,18 +37,23 @@ def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     from agent.display import build_tool_preview, tool_labels_for_call
     name = str(tool_name or "tool")
     args = args if isinstance(args, dict) else {}
+    from gateway.session_tool_events import bounded_args
     payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
-               "tool_call_id": str(call_id or ""), "tool_name": name, "args": args}
+               "tool_call_id": str(call_id or ""), "tool_name": name, "args": bounded_args(args)}
     if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
         payload["labels"] = labels
     return payload
 
 
-def _tool_complete_payload(call_id, tool_name, args, result, *, is_error, verbose) -> dict:
+def _tool_complete_payload(call_id, tool_name, args, result, *, is_error=None, verbose=False) -> dict:
     """``tool.complete`` as every viewer reads it: the start contract plus the executor's verdict and
     the result (ACP renders paths/output and failure from it), and ``result_text`` under /verbose."""
+    from gateway.session_tool_events import bounded_result
+    if is_error is None:
+        from agent.display import _detect_tool_failure
+        is_error = _detect_tool_failure(tool_name, result)[0]
     payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
-               "result": result if isinstance(result, str) else str(result)}
+               "result": bounded_result(result, is_error)}
     if verbose:
         from tui_gateway.tool_progress import _tool_result_text
         payload["result_text"] = _tool_result_text(result)

@@ -145,6 +145,7 @@ async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
     task = asyncio.create_task(receipt_writer())
     authority = SimpleNamespace(sessions={}, _bot_receipt_tasks={task})
     runner = SimpleNamespace(session_authority=authority)
+    authority.runner = runner
 
     settling = asyncio.create_task(run_runtime.settle_gateway_runtime(runner))
     await asyncio.sleep(0)

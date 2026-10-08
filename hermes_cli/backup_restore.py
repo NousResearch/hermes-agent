@@ -17,7 +17,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from utils import (
@@ -26,6 +26,81 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _verified_quick_snapshot_manifest(
+    manifest_path: Path,
+    snap_dir: Path,
+    snapshot_id: str,
+    restore_root: Path,
+) -> Optional[Dict[str, Any]]:
+    """Load and verify a whole quick-snapshot manifest before restore starts."""
+    try:
+        with open(manifest_path, encoding="utf-8-sig") as f:
+            meta = json.load(f)
+        resolved_snapshot = snap_dir.resolve()
+        resolved_restore = restore_root.resolve()
+    except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.error("Snapshot manifest %s is unreadable: %s", manifest_path, exc)
+        return None
+
+    if (
+        not isinstance(meta, dict)
+        or not isinstance(meta.get("files"), dict)
+        or not meta["files"]
+    ):
+        logger.error("Snapshot manifest %s has no valid files map", manifest_path)
+        return None
+    files = meta["files"]
+    # Preserve manually built and old manifests which only carried ``files``;
+    # every summary field that is present must agree with the file map.
+    if "id" in meta and meta["id"] != snapshot_id:
+        logger.error("Snapshot manifest %s belongs to %r, not %r", manifest_path, meta["id"], snapshot_id)
+        return None
+    if "file_count" in meta and (
+        type(meta["file_count"]) is not int or meta["file_count"] != len(files)
+    ):
+        logger.error("Snapshot manifest %s has an inconsistent file count", manifest_path)
+        return None
+
+    expected_total = 0
+    for rel, expected_size in files.items():
+        if (
+            not isinstance(rel, str)
+            or not rel
+            or type(expected_size) is not int
+            or expected_size < 0
+        ):
+            logger.error("Snapshot manifest %s has an invalid file entry", manifest_path)
+            return None
+        src = snap_dir / rel
+        dst = restore_root / rel
+        try:
+            src.resolve().relative_to(resolved_snapshot)
+            dst.resolve().relative_to(resolved_restore)
+            if src.is_symlink() or not src.is_file():
+                raise OSError("snapshot member is missing or is not a regular file")
+            actual_size = src.stat().st_size
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.error("Snapshot member %s failed manifest verification: %s", rel, exc)
+            return None
+        if actual_size != expected_size:
+            logger.error(
+                "Snapshot member %s failed manifest verification: expected %d bytes, found %d",
+                rel,
+                expected_size,
+                actual_size,
+            )
+            return None
+        expected_total += expected_size
+
+    if "total_size" in meta and (
+        type(meta["total_size"]) is not int or meta["total_size"] != expected_total
+    ):
+        logger.error("Snapshot manifest %s has an inconsistent total size", manifest_path)
+        return None
+    return meta
+
 
 def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
@@ -367,6 +442,7 @@ def _extract_member_atomically(
     member: str,
     target: Path,
     new_file_mode: Optional[int] = None,
+    validator: Optional[Callable[[Path], None]] = None,
 ) -> None:
     """Restore one zip member onto *target* with no truncation window.
 
@@ -398,6 +474,10 @@ def _extract_member_atomically(
     delegate to the shared ``utils`` helpers rather than being re-derived here.
     The temp file is removed on any failure so a partial import leaves no
     residue.
+
+    When *validator* is provided, it receives the fsynced staged path before
+    publication. Any exception leaves an existing target untouched and removes
+    the staged file.
 
     The one bit of the old file *not* carried across is setuid/setgid.  The
     replacement bytes come out of the zip, so preserving those would let an
@@ -448,6 +528,8 @@ def _extract_member_atomically(
                 shutil.copyfileobj(src, dst)
             dst.flush()
             os.fsync(dst.fileno())
+        if validator is not None:
+            validator(Path(tmp_name))
         real_path = Path(atomic_replace(tmp_name, target))
         # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
         # because chown drops setuid/setgid and a mode restore that ran first
@@ -526,7 +608,23 @@ def _import_db_member(
                 f"{', '.join(str(pid) for pid in sorted(holders))}; publishing a new file would "
                 "leave them writing an invisible database. Stop those processes and re-run the import."
             )
-        _extract_member_atomically(zf, member, target, new_file_mode)
+        def _validate_staged_database(staged: Path) -> None:
+            from hermes_cli.backup import verify_sqlite_integrity
+
+            check = verify_sqlite_integrity(staged)
+            if not check["valid"]:
+                raise OSError(
+                    "the archived database failed its integrity check "
+                    f"({check['message']}); no database was published."
+                )
+
+        _extract_member_atomically(
+            zf,
+            member,
+            target,
+            new_file_mode,
+            validator=_validate_staged_database,
+        )
         return
 
     # The database keeps its own mode/ownership: the bytes come from the

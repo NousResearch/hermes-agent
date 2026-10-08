@@ -11,6 +11,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
@@ -18,6 +19,7 @@ import {
   getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
+  type MessagingPlatformUpdate,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -26,6 +28,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
+import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
@@ -43,6 +46,7 @@ import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { AllowlistField } from './allowlist-field'
 import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
@@ -62,20 +66,19 @@ const PILL_TONE: Record<StatusTone, string> = {
 const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
   state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
-function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
-  if (!enabled) {
-    return 'muted'
-  }
+// Filter order: what needs you first, then what's fine, then what's off.
+const STATUS_FILTER_ORDER: StatusTone[] = ['bad', 'warn', 'good', 'muted']
 
-  if (state === 'connected') {
-    return 'good'
-  }
+function platformMatches(platform: MessagingPlatformInfo, tone: 'all' | StatusTone, query: string): boolean {
+  const q = normalize(query)
 
-  if (state === 'fatal' || state === 'startup_failed') {
-    return 'bad'
-  }
-
-  return 'warn'
+  return (
+    (tone === 'all' || platformStatusTone(platform) === tone) &&
+    (!q ||
+      [platform.id, platform.name, platform.description, platform.state]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(q)))
+  )
 }
 
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
@@ -84,6 +87,20 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .map(([k, v]) => [k, v.trim()])
       .filter(([, v]) => v)
   )
+
+/** A saved allowlist emptied in its editor is a clear: trimEdits alone reads "" as untouched. */
+function platformChanges(platform: MessagingPlatformInfo, draft: Record<string, string>): MessagingPlatformUpdate {
+  const env = trimEdits(draft)
+
+  const clearEnv = platform.env_vars
+    .filter(field => field.is_list && field.is_set && draft[field.key]?.trim() === '')
+    .map(field => field.key)
+
+  return clearEnv.length ? { env, clear_env: clearEnv } : { env }
+}
+
+const hasChanges = (update: MessagingPlatformUpdate) =>
+  Object.keys(update.env || {}).length + (update.clear_env?.length ?? 0) > 0
 
 /** Stable row identity: a user id is only unique within its platform. */
 const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
@@ -151,6 +168,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
@@ -326,23 +344,33 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
 
-  const visiblePlatforms = useMemo(() => {
-    if (!platforms) {
-      return []
+  // Only tones some platform is actually in get a tab; a filter whose last
+  // platform changed state falls back to All instead of an empty list.
+  const presentTones = useMemo(
+    () => STATUS_FILTER_ORDER.filter(tone => platforms?.some(platform => platformStatusTone(platform) === tone)),
+    [platforms]
+  )
+
+  const activeStatusFilter = statusFilter !== 'all' && presentTones.includes(statusFilter) ? statusFilter : 'all'
+
+  const visiblePlatforms = useMemo(
+    () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
+    [activeStatusFilter, platforms, query]
+  )
+
+  // Picking a filter moves the detail pane into it. Only on that click: a
+  // platform that leaves the filter because you just enabled it stays open.
+  function handleStatusFilter(next: 'all' | StatusTone) {
+    setStatusFilter(next)
+
+    if (selected && !platformMatches(selected, next, query)) {
+      const first = platforms?.find(platform => platformMatches(platform, next, query))
+
+      if (first) {
+        setSelectedId(first.id)
+      }
     }
-
-    const q = normalize(query)
-
-    if (!q) {
-      return platforms
-    }
-
-    return platforms.filter(platform =>
-      [platform.id, platform.name, platform.description, platform.state]
-        .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(q))
-    )
-  }, [platforms, query])
+  }
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
     setSaving(`enabled:${platform.id}`)
@@ -375,18 +403,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
-    const env = trimEdits(edits[platform.id] || {})
+    const update = platformChanges(platform, edits[platform.id] || {})
 
-    if (Object.keys(env).length === 0) {
+    if (!hasChanges(update)) {
       return
     }
 
     setSaving(`env:${platform.id}`)
 
     try {
-      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
-      setEdits(current => ({ ...current, [platform.id]: {} }))
+      const result = await updateMessagingPlatform(platform.id, update, scopeProfile)
+      // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
+      setEdits(current => ({ ...current, [platform.id]: {} }))
       settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
@@ -528,6 +557,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
+      searchTrailingAction={
+        presentTones.length > 1 && (
+          <ResponsiveTabs
+            align="end"
+            onChange={id => handleStatusFilter(id as 'all' | StatusTone)}
+            tabs={(['all', ...presentTones] as const).map(id => ({ id, label: m.statusFilter[id] }))}
+            value={activeStatusFilter}
+          />
+        )
+      }
       searchValue={query}
     >
       {!platforms ? (
@@ -558,7 +597,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 actionBar={
                   selected && (
                     <PlatformActionBar
-                      hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
                       onSave={() => void handleSave(selected)}
                       onToggle={enabled => void handleToggle(selected, enabled)}
                       platform={selected}
@@ -668,7 +707,7 @@ function PlatformRow({
               {pendingCount}
             </span>
           )}
-          <StatusDot tone={stateTone(platform)} />
+          <StatusDot tone={platformStatusTone(platform)} />
         </span>
       </span>
     </button>
@@ -718,7 +757,7 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the
@@ -1006,40 +1045,58 @@ function MessagingField({
   const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
 
+  const tools = (
+    <>
+      {field.url && (
+        <Tip label={m.openDocs}>
+          <Button asChild className="size-8 shrink-0" variant="ghost">
+            <a href={field.url} rel="noreferrer" target="_blank">
+              <ExternalLink className="size-3.5" />
+            </a>
+          </Button>
+        </Tip>
+      )}
+      {/* A list clears by removing its last entry and saving; a second trash icon would read as "remove row". */}
+      {field.is_set && !field.is_list && (
+        <Tip label={m.clearField(field.key)}>
+          <Button
+            className="size-8 shrink-0"
+            disabled={saving === `clear:${field.key}`}
+            onClick={() => onClear(field.key)}
+            variant="ghost"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </Tip>
+      )}
+    </>
+  )
+
   return (
     <ListRow
       action={
-        <div className="flex w-full items-center gap-2 @2xl:w-88">
-          <Input
-            className={CREDENTIAL_CONTROL_CLASS}
-            id={fieldId}
-            onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
-            type={field.is_password ? 'password' : 'text'}
-            value={edits[field.key] || ''}
+        field.is_list ? (
+          <AllowlistField
+            field={field}
+            fieldId={fieldId}
+            label={copy.label}
+            onEdit={onEdit}
+            pending={edits[field.key]}
+            tools={tools}
           />
-          {field.url && (
-            <Tip label={m.openDocs}>
-              <Button asChild className="size-8 shrink-0" variant="ghost">
-                <a href={field.url} rel="noreferrer" target="_blank">
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            </Tip>
-          )}
-          {field.is_set && (
-            <Tip label={m.clearField(field.key)}>
-              <Button
-                className="size-8 shrink-0"
-                disabled={saving === `clear:${field.key}`}
-                onClick={() => onClear(field.key)}
-                variant="ghost"
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            </Tip>
-          )}
-        </div>
+        ) : (
+          <div className="flex w-full items-center gap-2 @2xl:w-88">
+            <Input
+              className={CREDENTIAL_CONTROL_CLASS}
+              id={fieldId}
+              onChange={event => onEdit(field.key, event.target.value)}
+              placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
+              type={field.is_password ? 'password' : 'text'}
+              value={edits[field.key] || ''}
+            />
+            {tools}
+          </div>
+        )
       }
       description={copy.help}
       title={

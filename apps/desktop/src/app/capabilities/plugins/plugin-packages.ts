@@ -49,6 +49,19 @@ export function desktopPackageName(record: PluginRecord): null | string {
 const KIND_RANK: Record<PackageKind, number> = { both: 0, agent: 1, desktop: 2 }
 const DESKTOP_KIND_RANK: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
+/** The package folder an agent row lives in: the join key Electron stamps as
+ *  `packageName` (it names the desktop half after the top-level
+ *  `plugins/<folder>/`, and a hand-copied folder need not match its manifest
+ *  name). Nested rows (`image_gen/foo`) keep their unique canonical key; the
+ *  manifest name is the fallback for backends that report no `install_dir`. */
+function agentPackageName(row: AgentPluginRow): string {
+  if (row.key?.includes('/')) {
+    return row.key
+  }
+
+  return row.install_dir?.split(/[\\/]/).filter(Boolean).pop() ?? row.name
+}
+
 export function mergePluginPackages(
   desktopRecords: readonly PluginRecord[],
   agentRows: readonly AgentPluginRow[]
@@ -56,7 +69,7 @@ export function mergePluginPackages(
   const byKey = new Map<string, PluginPackage>()
 
   for (const row of agentRows) {
-    const key = row.name
+    const key = agentPackageName(row)
     byKey.set(key, {
       key,
       name: row.name,

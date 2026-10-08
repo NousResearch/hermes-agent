@@ -12,7 +12,8 @@ context inherits it — httpx, requests/urllib3, aiohttp, AND the stdlib
 ``urllib.request`` call sites (the llama.cpp engine download among them)
 that a certifi-only or requests-only approach never reached.
 
-The only thing above the platform store is EXPLICIT PER-PROVIDER CONFIG:
+An exported ``SSL_CERT_FILE`` bundle is trusted ON TOP of the platform
+store; only EXPLICIT PER-PROVIDER CONFIG replaces that trust:
 ``ssl_ca_cert`` (a self-signed or internal endpoint's bundle) and
 ``ssl_verify: false`` (local development). Those are deliberate
 statements about one endpoint, not an ambient guess about the machine.
@@ -21,6 +22,7 @@ statements about one endpoint, not an ambient guess about the machine.
 from __future__ import annotations
 
 import logging
+import os
 import ssl
 import threading
 from pathlib import Path
@@ -69,7 +71,7 @@ def _coerce_insecure(ssl_verify: Any) -> bool:
     return False
 
 
-_CA_CONTEXTS: dict[str | None, ssl.SSLContext] = {}
+_CA_CONTEXTS: dict[tuple[str | None, bool], ssl.SSLContext] = {}
 _CA_CONTEXTS_LOCK = threading.Lock()
 
 
@@ -91,22 +93,41 @@ def _stdlib_ssl_context_class() -> type[ssl.SSLContext]:
     return _original_SSLContext
 
 
-def _shared_context(ca_path: str | None) -> ssl.SSLContext:
-    """A stable context identity lets clients reuse the existing transport pool."""
+def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:
+    """A stable context identity lets clients reuse the existing transport pool.
+
+    ``union`` adds ``ca_path`` to the platform store (the ``SSL_CERT_FILE``
+    contract) instead of replacing it (a provider ``ssl_ca_cert``).
+    """
     with _CA_CONTEXTS_LOCK:
-        ctx = _CA_CONTEXTS.get(ca_path)
+        ctx = _CA_CONTEXTS.get((ca_path, union))
         if ctx is None:
-            if ca_path is not None:
+            if ca_path is not None and not union:
                 # PROTOCOL_TLS_CLIENT sets hostname checking and CERT_REQUIRED;
                 # assigning the original class's properties after injection recurses.
                 ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_CLIENT)
-                ctx.load_verify_locations(cafile=ca_path)
             else:
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 if not _installed:
                     ctx.load_default_certs()
-            _CA_CONTEXTS[ca_path] = ctx
+            if ca_path is not None:
+                ctx.load_verify_locations(cafile=ca_path)
+            _CA_CONTEXTS[(ca_path, union)] = ctx
         return ctx
+
+
+def platform_ssl_context() -> ssl.SSLContext:
+    """The process-wide client context (cheap after the first call).
+
+    An existing ``SSL_CERT_FILE`` bundle is trusted ON TOP of the platform store,
+    as it was for httpx ``verify=True``; a missing or stale path falls back to
+    the platform store alone.
+    """
+    install_truststore()
+    ca = os.environ.get("SSL_CERT_FILE", "").strip()
+    if ca and Path(ca).is_file():
+        return _shared_context(str(Path(ca).resolve()), union=True)
+    return _shared_context(None)
 
 
 def resolve_httpx_verify(
@@ -148,8 +169,6 @@ def resolve_httpx_verify(
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
     # proxy environment handling remains enabled.
-    import os
-
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
         return _shared_context(None)
     return True

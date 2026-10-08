@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
+from agent.i18n import t
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_timed_out_notice
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,9 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
     metadata = _interim_metadata(ctx._status_thread_metadata)
     try:
         # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
+        if card_message_id and await _edit_card(
+                adapter, ctx._status_chat_id, card_message_id,
+                t("gateway.exec_approval.timed_out_card_body", notice=notice, command=command)):
             return
         await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
     except Exception:

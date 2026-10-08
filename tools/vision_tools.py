@@ -786,6 +786,22 @@ _IMAGE_ERROR_RULES = (
       "unrecognized request argument", "image input"),
      "{model} does not support vision or our request was not "
      "accepted by the server. Error: {e}"),
+    (("model_access_denied", "permission denied", "permissiondenied",
+      "no permission to access model", "403"),
+     # A 403 / model_access_denied from an OpenAI-wire surface usually
+     # means the KEY is not entitled to the surface the request landed
+     # on, not that the model name is wrong (#100897: a coding-plan
+     # key configured against an /anthropic base_url was routed to a
+     # general OpenAI-wire endpoint it had no access to, and the raw
+     # error blamed the model for two months). Point at the base_url /
+     # entitlement pairing so the next reader checks routing first.
+     "The vision provider denied access to {model} (403 / "
+     "model_access_denied). This is usually an entitlement or "
+     "routing problem, not a bad model name: check that your "
+     "auxiliary.vision base_url points at the surface your API key "
+     "is entitled to (Anthropic-wire /anthropic endpoints are "
+     "rewritten to the provider's OpenAI-wire sibling for vision), "
+     "and that the key has access to this model there. Error: {e}"),
     (("invalid_request", "image_url"),
      "The vision API rejected the image. This can happen when the "
      "image is in an unsupported format, corrupted, or still too "

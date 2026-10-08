@@ -93,6 +93,17 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     """Start ``_search_worker.py`` as a script with ``plugins`` importable. Running as a
     script puts ``plugins/web/ddgs/`` on ``sys.path[0]``, breaking ``import plugins...``,
     so the real package location is prepended to PYTHONPATH."""
+
+    # pm store PATH: the worker runs under the STORE python, whose third-party
+    # imports (ddgs/primp) arrive via the launcher-composed PYTHONPATH. The
+    # sanitizer strips Hermes-owned entries (cross-version protection); this
+    # worker is the SAME interpreter, so merge the ambient PYTHONPATH back in.
+    _ambient_pp = os.environ.get("PYTHONPATH")
+    if _ambient_pp:
+        _current = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            _ambient_pp + os.pathsep + _current if _current else _ambient_pp
+        )
     child_pythonpath = env.get("PYTHONPATH", "")
     path_entry = _plugins_path_entry()
     if path_entry and path_entry not in child_pythonpath.split(os.pathsep):
@@ -217,25 +228,3 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
             "DuckDuckGo (ddgs)", "free · no key · search only",
             "Search via the ddgs Python package — no API key (pair with any extract provider)", post_setup="ddgs",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

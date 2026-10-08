@@ -73,7 +73,67 @@ def git_repo_no_remote(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-        # Should not crash — just skip all lines
+@pytest.mark.parametrize(
+    "real_untracked,separate_git_dir",
+    [(True, False), (False, False), (False, True)],
+    ids=["untracked-file-kept", "include-symlink-only-removed", "separate-git-dir-include-symlink-removed"],
+)
+def test_exit_cleanup_preserves_dirty_worktree(git_repo, tmp_path, monkeypatch, capsys, real_untracked,
+                                               separate_git_dir):
+    """Exit cleanup must preserve local changes, but not count .worktreeinclude symlinks as changes.
+
+    A trailing-slash ignore (``node_modules/``) never matches the include step's symlink, so git
+    lists it as untracked; treating that as dirty would keep every worktree of such a repo forever.
+    With ``--separate-git-dir`` the common dir's parent is not the main checkout, so the symlink
+    check must use the real checkout root.
+    """
+    import cli
+
+    include = "node_modules\n"
+    if separate_git_dir:
+        git_repo = tmp_path / "sep-repo"
+        (tmp_path / "gd").mkdir()
+        subprocess.run(["git", "init", "--separate-git-dir", str(tmp_path / "gd" / "x.git"), str(git_repo)],
+                       capture_output=True, check=True)
+        for args in (["config", "user.email", "test@test.com"], ["config", "user.name", "Test"],
+                     ["remote", "add", "origin", "https://example.com/test-repo.git"]):
+            subprocess.run(["git", *args], cwd=git_repo, capture_output=True, check=True)
+        (git_repo / "README.md").write_text("# Test Repo\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=git_repo, capture_output=True)
+        include = "node_modules/\n"
+    (git_repo / "node_modules").mkdir()
+    (git_repo / "node_modules" / "dep.js").write_text("x\n")
+    (git_repo / ".worktreeinclude").write_text(include)
+    exclude = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+                             cwd=git_repo, capture_output=True, text=True, check=True).stdout.strip()
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "w") as fh:
+        fh.write("node_modules/\n.worktreeinclude\n.worktrees/\n")
+    worktree = TestWorktreeLockReaping._mk(cli, git_repo, "session", dirty=real_untracked)
+    worktree_ops._copy_worktree_includes(str(git_repo), worktree)
+    assert (worktree / "node_modules").is_symlink()
+    monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", printed.append)
+
+    cli._cleanup_worktree({
+        "path": str(worktree),
+        "branch": "hermes/session",
+        "repo_root": str(git_repo),
+    })
+
+    out = "".join(printed) + capsys.readouterr().out
+    if real_untracked:
+        assert worktree.exists()
+        assert (worktree / "dirty.txt").read_text() == "uncommitted"
+        assert "uncommitted changes" in out
+        assert "--force" not in out
+    else:
+        assert not worktree.exists()
+        assert "cleaned up" in out
+        assert (git_repo / "node_modules" / "dep.js").exists()
 
 
 class TestWorktreeLockReaping:
@@ -564,11 +624,17 @@ class TestShallowCloneDeepening:
     def test_deepen_connects_history_and_clears_false_unpushed(self, tmp_path):
         import cli
 
-        _, clone, wt = self._stuck_worktree(tmp_path)
+        up, clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt))
+        self._run(["git", "config", "uploadpack.allowFilter", "true"], up)
 
         assert worktree_ops._deepen_shallow_repo(str(clone)) is True
         assert not cli._repo_is_shallow(str(clone))
+        # The blobless unshallow made the clone partial; its old packs must carry the partial-clone
+        # marker, or git 2.53+ crashes every later fetch (#124272).
+        assert self._run(["git", "config", "--get", "remote.origin.promisor"], clone).stdout.strip() == "true"
+        packs = list((clone / ".git" / "objects" / "pack").glob("pack-*.pack"))
+        assert packs and all(p.with_suffix(".promisor").exists() for p in packs)
         assert not cli._worktree_has_unpushed_commits(str(wt)), (
             "after deepening, the worktree's HEAD is an ancestor of "
             "origin/main and must no longer count as unpushed"
@@ -620,6 +686,7 @@ class TestShallowCloneDeepening:
         )
 
 
+@pytest.mark.platforms("linux")
 class TestPrMergedEscapeHatch:
     """Rebase-merged PRs whose diff changed during salvage defeat ``git
     cherry`` (patch-id mismatch), so the pruner asks GitHub whether the

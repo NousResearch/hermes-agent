@@ -29,6 +29,28 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
 
+def test_missing_sdk_error_reports_why_the_lazy_install_did_not_land(monkeypatch):
+    """A completed install that needs a restart must not tell the user to install it again."""
+    import pm
+    from agent import anthropic_adapter
+    from pm.package import InstallError
+
+    restart = InstallError("venv", "anthropic installed; restart Hermes to activate the new dependency environment")
+
+    def ensure_import(extra):
+        raise restart
+
+    monkeypatch.setattr(pm, "ensure_import", ensure_import)
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_sdk", ...)
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_install_error", None)
+    monkeypatch.setitem(sys.modules, "anthropic", None)
+
+    with pytest.raises(ImportError) as excinfo:
+        build_anthropic_client("sk-ant-api03-test")
+    assert str(restart) in str(excinfo.value)
+    assert pm.install_hint("anthropic") not in str(excinfo.value)
+
+
 class TestBuildAnthropicClient:
 
 
@@ -62,7 +84,8 @@ class TestBuildAnthropicClient:
             headers = kwargs["default_headers"]
             assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
             assert headers["X-Title"] == "Hermes Agent"
-            assert headers["User-Agent"].startswith("HermesAgent/")
+            from hermes_cli.version_info import get_version_info
+            assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
             # Auth branch is unchanged: x-api-key via api_key, betas kept.
             assert kwargs["api_key"] == "sk-opencode-secret"
             assert "anthropic-beta" in headers
@@ -457,7 +480,7 @@ class TestWriteClaudeCodeCredentials:
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
     def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Refreshed Claude Code credentials must land on disk at 0o600.
 
@@ -527,7 +550,7 @@ class TestRunOauthSetupToken:
 
     def test_returns_token_from_credential_files(self, monkeypatch, tmp_path):
         """After subprocess completes, reads credentials from Claude Code files."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setattr("agent.anthropic_adapter.find_claude_code_cli", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
 
@@ -549,15 +572,15 @@ class TestRunOauthSetupToken:
 
         assert token == "from-cred-file"
         # Don't assert exact call count — the contract is "credentials flow
-        # through", not "exactly one subprocess call". xdist cross-test
-        # pollution (other tests shimming subprocess via plugins) has flaked
+        # through", not "exactly one subprocess call". Cross-test pollution
+        # (other tests shimming subprocess via plugins) has flaked
         # assert_called_once() in CI.
         assert mock_run.called
 
 
     def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
         """Returns None when subprocess completes but no credentials are found."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setattr("agent.anthropic_adapter.find_claude_code_cli", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)

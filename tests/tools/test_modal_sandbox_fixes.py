@@ -76,6 +76,7 @@ class TestCwdHandling:
         assert config["host_cwd"] is None
         assert config["docker_mount_cwd_to_workspace"] is False
 
+    @pytest.mark.platforms("linux")
     def test_users_path_maps_to_workspace_for_docker_when_enabled(self, monkeypatch):
         """Docker should map the host cwd into /workspace only when explicitly enabled."""
         monkeypatch.setenv("TERMINAL_ENV", "docker")
@@ -124,6 +125,7 @@ class TestCwdHandling:
             f"Backend {backend}: expected /root default, got {config['cwd']}"
         )
 
+    @pytest.mark.platforms("linux")
     def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
         monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
@@ -335,9 +337,6 @@ class TestDockerHostBindApproval:
         import tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
                                          has_host_access=False)
         assert res["approved"] is True
@@ -372,9 +371,6 @@ class TestDockerHostBindApproval:
         import tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda _c: {"action": "allow", "findings": [], "summary": ""})
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
                                          has_host_access=True)
         # Must NOT take the silent container fast-path.

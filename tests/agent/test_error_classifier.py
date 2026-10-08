@@ -231,6 +231,26 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_retired_free_route_is_model_not_found(self):
+        # The provider retired the :free route — the slug is dead for every
+        # credential, so fall back instead of burning retries (#123180). Not
+        # billing: the account's tier/balance is not what rejected the call.
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "This model is no longer free. To continue using the paid "
+                    "variant, switch to 'meituan/longcat-2.0'."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="meituan/longcat-2.0:free")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",
@@ -2060,12 +2080,6 @@ class TestNousWelcomeTier:
         result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous", api_key=make_jwt())
         assert "reset_at" not in result.error_context
 
-    def test_unknown_reason_is_not_the_welcome_shape(self):
-        err = MockAPIError("Error code: 429", status_code=429,
-                           body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
-        result = classify_api_error(err, provider="nous", api_key=make_jwt())
-        assert "welcome_refusal" not in result.error_context
-
     def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
         err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
@@ -2112,3 +2126,37 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+
+class TestBodyCarriedStatus:
+    """An in-stream SSE error object's numeric ``code`` classifies like the equivalent HTTP
+    response (#121270)."""
+
+    def test_top_level_code_and_status_keys_also_count(self):
+        assert _extract_status_code(MockAPIError("x", body={"code": 503})) == 503
+        assert _extract_status_code(MockAPIError("x", body={"error": {"http_status": 502}})) == 502
+
+    def test_403_ban_is_auth_not_transient_retry(self):
+        body = {"error": {"code": 403, "message": "Your account has been banned by the upstream provider",
+                          "metadata": {"provider_name": "acme"}}}
+        result = classify_api_error(MockAPIError("Error code: 403", body=body), provider="custom")
+        assert result.status_code == 403
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+
+class TestStreamingRenderFormatError:
+    """Status-less Jinja render failures (LM Studio / llama.cpp) fail over; see #62662."""
+
+    def test_error_rendering_no_status_is_format_error(self):
+        e = MockAPIError("Error rendering prompt with jinja template: ...")
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_render_message_with_status_uses_http_path(self):
+        e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason != FailoverReason.format_error

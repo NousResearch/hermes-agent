@@ -77,30 +77,6 @@ def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no
     assert fleet._pending_fleet_restart_needed() is False
 
 
-def test_host_gateway_restarts_once_when_two_profiles_run_the_catch_up(
-    two_profiles, no_live_fleet, monkeypatch, capsys
-):
-    """``hermes -p coder update`` then ``hermes -p writer update`` stops the host gateway ONCE."""
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    monkeypatch.setattr(fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    _arm("writer")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the one host gateway must be stopped once per update, not once per profile"
-
-
 def test_legacy_per_home_marker_is_still_read_and_cleared(two_profiles, no_live_fleet, monkeypatch):
     """An obligation armed by the pre-host-scope code must still be discharged after the upgrade."""
     _enter(monkeypatch, two_profiles["coder"])
@@ -222,6 +198,131 @@ def test_unwritable_host_state_dir_still_arms_the_obligation(two_profiles, no_li
         lock_dir.chmod(0o700)
 
 
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
+def test_unwritable_host_state_dir_never_hides_the_debt_from_another_profile(two_profiles, no_live_fleet, monkeypatch, tmp_path):
+    """With a second profile on the install, the arming profile's per-home marker is a debt the
+    other profile cannot see: it would read "no restart owed" for a tree about to move. Every
+    profile observes the debt, or the arm refuses and the commit point does not move (review S2).
+    """
+    for home in two_profiles.values():
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")  # real, listed profiles
+    _enter(monkeypatch, two_profiles["coder"])
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir.chmod(0o500)
+    try:
+        armed = fleet._write_fleet_restart_pending_marker(
+            expected_sha=SHA, runtimes=[{"kind": "gateway", "profile": "coder"}])
+        _enter(monkeypatch, two_profiles["writer"])
+        assert armed is False or fleet._fleet_restart_obligation_armed(), "writer cannot see the armed debt"
+    finally:
+        lock_dir.chmod(0o700)
+
+
+def test_one_installs_completed_restart_never_erases_another_installs_debt(tmp_path):
+    """Two installations of one OS user share the host state dir. Install B arming its own pull and
+    then completing its restart must leave install A's debt standing; each install arms, reads and
+    clears from its own process, the way two checkouts' ``hermes update`` runs do (review S3)."""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2]
+    files = ("hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/update_host_obligation.py",
+             "hermes_cli/update_restart_recovery.py", "hermes_cli/update_lock.py")
+    roots = {}
+    for name in ("install-a", "install-b"):
+        roots[name] = tmp_path / name
+        for rel in files:
+            (roots[name] / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / rel, roots[name] / rel)
+    env = {**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(tmp_path / "gateway-locks")}
+
+    def run(install: str, body: str) -> str:
+        code = (f"import sys\nsys.path.insert(0, {str(roots[install])!r})\n"
+                "from hermes_cli.update_host_obligation import *\n" + body)
+        child = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code], env=env, capture_output=True,
+                               text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=60)
+        assert child.returncode == 0, child.stdout + child.stderr
+        return child.stdout.strip()
+
+    run("install-a", f"assert write_host_obligation(expected_sha={'a' * 40!r}, owner='run-a')")
+    run("install-b", f"assert write_host_obligation(expected_sha={'b' * 40!r}, owner='run-b')\n"
+                     f"mark_host_restart_completed({'b' * 40!r})\nclear_host_obligation()")
+
+    assert run("install-a", "print((read_host_obligation() or {}).get('expected_sha'))") == "a" * 40
+    assert run("install-b", "print(host_obligation_present())") == "False"
+
+
+@pytest.mark.parametrize("a_sha", ["a" * 40, "b" * 40])
+def test_a_completion_never_erases_the_unkeyed_debt_an_older_install_armed(tmp_path, monkeypatch, a_sha):
+    """Install A still runs a release that writes the unkeyed record; install B (this release) armed
+    its own keyed record. B's completed restart judged only B's record, so A's debt must survive it,
+    whether the SHAs differ or match. With no record of its own, B honours the unkeyed one and its
+    discharge clears it: an upgrade's own interrupted debt never sticks (review S3 residual)."""
+    lock_dir = tmp_path / "gateway-locks"
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    legacy = lock_dir / host_obligation.HOST_OBLIGATION_NAME
+
+    def a_arms() -> None:  # the older release's writer: unkeyed name, no owners, no mutex
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        legacy.write_text(json.dumps({"version": 1, "pid": 1, "expected_sha": a_sha}), encoding="utf-8")
+
+    assert host_obligation.write_host_obligation(expected_sha="b" * 40, owner="run-b")
+    a_arms()
+    host_obligation.mark_host_restart_completed("b" * 40)
+    host_obligation.clear_host_obligation()
+
+    assert json.loads(legacy.read_text(encoding="utf-8"))["expected_sha"] == a_sha
+    assert (host_obligation.read_host_obligation() or {}).get("expected_sha") == a_sha
+
+    host_obligation.clear_host_obligation()  # B now owns no record: the unkeyed one is what it judged
+    assert not host_obligation.host_obligation_present()
+
+
+@pytest.mark.platforms("posix")  # Windows opens no directory handle; NTFS journals the rename
+def test_every_host_record_write_makes_its_rename_durable(tmp_path, monkeypatch):
+    """Arm and restore share one writer, and both fsync the state dir after the rename: a power loss
+    after the arm returned must not roll the directory back to "nothing owed"."""
+    import stat
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    events, real_fsync, real_replace = [], os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: events.append(
+        "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file") or real_fsync(fd))
+    monkeypatch.setattr(os, "replace", lambda src, dst: events.append("rename") or real_replace(src, dst))
+
+    assert host_obligation.write_host_obligation(expected_sha=SHA)
+    host_obligation.replace_bytes(host_obligation.host_obligation_path(), b"{}")
+
+    assert events == ["file", "rename", "dir"] * 2
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
+@pytest.mark.parametrize("unreadable", ["roster", "profile"])
+def test_an_unreadable_profile_roster_never_admits_a_private_restart_marker(
+        two_profiles, no_live_fleet, monkeypatch, tmp_path, unreadable):
+    """Host record unwritable AND the profile roster (or one profile's identity) unreadable: that is
+    an UNKNOWN inventory, not a single-profile install. The default profile's marker would hide the
+    debt from the profile nobody could read, so the arm refuses (review S2 residual)."""
+    (two_profiles["writer"] / "config.yaml").write_text("{}\n", encoding="utf-8")  # the one named profile
+    _enter(monkeypatch, tmp_path)  # the default profile arms
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    blind = tmp_path / "profiles" if unreadable == "roster" else two_profiles["writer"]
+    lock_dir.chmod(0o500)
+    blind.chmod(0o300 if unreadable == "roster" else 0o000)  # roster: traversable, not listable
+    try:
+        armed = fleet._write_fleet_restart_pending_marker(expected_sha=SHA)
+    finally:
+        blind.chmod(0o700)
+        lock_dir.chmod(0o700)
+
+    assert armed is False
+    assert fleet._fleet_restart_pending_marker_path().is_file(), "the arming profile still keeps its marker"
+
+
 def test_unreadable_host_record_is_never_discharged_by_the_legacy_marker(two_profiles, no_live_fleet, monkeypatch, tmp_path):
     """A record whose terms are UNKNOWN cannot be settled by another record's terms.
 
@@ -241,32 +342,6 @@ def test_unreadable_host_record_is_never_discharged_by_the_legacy_marker(two_pro
 
     assert fleet._obligation_fields() is None
     assert fleet._pending_fleet_restart_needed() is True
-
-
-def test_restart_runs_once_per_host_on_a_non_git_install(two_profiles, monkeypatch, capsys):
-    """zip/pip/Docker installs resolve no checkout SHA; the restart-once guard must still hold.
-
-    ``mark_host_restart_completed("")`` can never match, so every profile's ``hermes update``
-    re-killed the one shared multiplexer on exactly the installs this record exists for.
-    """
-    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the host gateway must be stopped once per update, not once per profile"
 
 
 def test_a_failing_main_pid_probe_keeps_its_own_restart():

@@ -9,6 +9,7 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -67,11 +68,32 @@ def _is_memory_provider_dir(path: Path) -> bool:
     try:
         if not init_file.exists():
             return False
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
+
+
+def _defines_memory_provider(path: Path) -> bool:
+    """Parse (never import) the package's top-level modules for what ``_load_provider_from_dir`` can load:
+    a ``register_memory_provider(...)`` call or a ``MemoryProvider`` subclass. Unlike the discovery
+    heuristic, a docstring or comment naming the contract does not count."""
+    for module in sorted(path.glob("*.py")):
+        try:
+            tree = ast.parse(module.read_text(errors="replace", encoding="utf-8-sig"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        bases = {"MemoryProvider"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                                      for a in n.names if a.name == "MemoryProvider" and a.asname}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and "register_memory_provider" in (
+                    getattr(node.func, "attr", None), getattr(node.func, "id", None)):
+                return True
+            if isinstance(node, ast.ClassDef) and any(
+                    (getattr(b, "attr", None) or getattr(b, "id", None)) in bases for b in node.bases):
+                return True
+    return False
 
 
 def _is_bundled(provider_dir: Path) -> bool:
@@ -212,6 +234,11 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     def _load(_dir):
         if provider_dir:
             return _load_provider_from_dir(provider_dir, register_skills=register_skills)
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"pip-installed memory provider {name!r}")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
         return _load_provider_from_entry_point(entry_point, register_skills=register_skills)
 
     return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
@@ -228,6 +255,9 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     name = name or _get_active_memory_provider()
     if not name:
         return False
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    if isolation_mode() == ISOLATION_HOST and not _is_bundled(find_provider_dir(name) or Path("/")):
+        return False  # third-party code runs in the plugin host; nothing to warm in this process
     imported = False
     try:
         if provider_dir := find_provider_dir(name):
@@ -332,6 +362,11 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
+    from hermes_cli.plugin_isolation import user_plugin_host
+    host = None if _is_bundled(provider_dir) else user_plugin_host()
+    if host is not None:
+        return _ProviderCollector(name, register_skills=register_skills).collect_in_host(
+            host, provider_dir, _module_name(provider_dir, name))
     mod = _load_package(provider_dir, name)
     if mod is None:
         return None
@@ -381,6 +416,25 @@ class _ProviderCollector:
         with manager._discovery_lock:
             manager._drop_fallback_hooks(self._hook_source)
             register(self)
+
+    def collect_in_host(self, host, provider_dir: Path, module_name: str):
+        """``collect`` for a provider whose code runs in the plugin host: the host captures the
+        provider and forwards every other registration here. The discovery lock is NOT held across
+        the host call — its registrations arrive on another thread and take the lock themselves."""
+        from hermes_cli.plugins_ledger import _hook_source_of
+
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(provider_dir / "__init__.py")))
+        manager = self._plugin_context()._manager
+
+        def drop_hooks() -> None:  # also before a reload into a restarted host: no stale hook proxies
+            with manager._discovery_lock:
+                manager._drop_fallback_hooks(self._hook_source)
+
+        drop_hooks()
+        self.provider = host.load_instance(
+            provider_dir, module_name=module_name, capture="register_memory_provider",
+            base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
+        return self.provider
 
     def register_hook(self, hook_name, callback):
         context = self._plugin_context()
@@ -463,7 +517,7 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
         return False
     names = {name, provider_dir.name}
     try:
-        import yaml
+        import hermes_yaml as yaml
         with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
             names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
     except Exception:
@@ -498,6 +552,10 @@ def discover_plugin_cli_commands() -> List[dict]:
         return []
 
     module_name = _module_name(plugin_dir, active_provider) + ".cli"
+    if not _is_bundled(plugin_dir):
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
+            return []
     try:
         cli_mod = sys.modules.get(module_name)
         if cli_mod is None:
@@ -524,7 +582,7 @@ def discover_plugin_cli_commands() -> List[dict]:
             "help": desc or f"Manage {active_provider} memory plugin",
             "description": desc or "",
             "setup_fn": register_cli,
-            "handler_fn": getattr(cli_mod, f"{active_provider}_command", None) or getattr(cli_mod, "honcho_command", None),
+            "handler_fn": getattr(cli_mod, f"{active_provider}_command", None),
             "plugin": active_provider,
         }]
     except Exception as e:

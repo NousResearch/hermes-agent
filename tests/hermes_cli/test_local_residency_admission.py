@@ -85,11 +85,8 @@ def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured
     monkeypatch.setattr(bs, "_SUPERVISOR", None)
     monkeypatch.setattr(bs, "_generate_presets", lambda mdir, preset_path: None)
     monkeypatch.setattr(bs, "_detect_gpu_vendor", lambda: None)
-    monkeypatch.setattr(binaries, "installed_tags", lambda: ["build-1"])
-    monkeypatch.setattr(binaries, "default_tag", lambda: "build-1")
-    monkeypatch.setattr(binaries, "select_backend", lambda vendor: "cpu")
-    monkeypatch.setattr(binaries, "ensure_runtime_installed",
-                        lambda tag, backend: tmp_path / "install")
+    monkeypatch.setattr(binaries, "installed_engine",
+                        lambda backend="auto", **k: binaries.Engine("cpu", "build-1", tmp_path / "install" / "llama-server"))
     monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
 
     captured: dict = {}

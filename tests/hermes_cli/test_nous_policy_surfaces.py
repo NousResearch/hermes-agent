@@ -16,19 +16,16 @@ from hermes_cli import models_pricing
 CURATED = ["vendor/allowed", "vendor/blocked"]
 ALLOWED = {"vendor/allowed"}
 
-
 @pytest.fixture
 def policy(monkeypatch):
     """An org whose policy admits only ``vendor/allowed``."""
     monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: ALLOWED)
     return ALLOWED
 
-
 @pytest.fixture
 def no_policy(monkeypatch):
     """An unrestricted org — lists must come through untouched."""
     monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: None)
-
 
 class TestLoginNous:
 
@@ -94,7 +91,6 @@ class TestLoginNous:
     ):
         assert self._run(monkeypatch, tmp_path).get("model_ids") == CURATED
 
-
 class TestModelSwitchPicker:
     """The ``/model`` picker's nous branch (``list_authenticated_providers``)."""
 
@@ -140,7 +136,6 @@ class TestModelSwitchPicker:
         assert row is not None
         assert "vendor/blocked" not in row["models"]
 
-
 class TestRecommendedDefaultEndpoint:
     """This endpoint picks a model the user never sees chosen."""
 
@@ -170,7 +165,6 @@ class TestRecommendedDefaultEndpoint:
     def test_unrestricted_org_is_unaffected(self, monkeypatch, no_policy):
         assert self._call(monkeypatch)["model"] == "vendor/blocked"
 
-
 class TestAuxiliaryFastModel:
     """``_fast_model_from_catalog`` uses the catalog's keys as a source of ids."""
 
@@ -191,7 +185,6 @@ class TestAuxiliaryFastModel:
         picked = aux._fast_model_from_catalog("nous")
         return picked, seen
 
-
     def test_hidden_model_is_not_selected(self, monkeypatch, policy):
         import agent.auxiliary_client as aux
 
@@ -205,12 +198,9 @@ class TestAuxiliaryFastModel:
         )
         assert picked == "vendor/allowed"
 
-
 class TestNousPrefetch:
     """The nous disk-cache entry is write-only, so prefetching it is a round
     trip for nothing."""
-
-
 
 class TestPolicyNoticeIsShown:
 
@@ -220,8 +210,6 @@ class TestPolicyNoticeIsShown:
         monkeypatch.setattr(account_mod, "nous_policy_present", lambda: True)
         TestLoginNous()._run(monkeypatch, tmp_path)
         assert account_mod.nous_policy_notice(removed=True) in capsys.readouterr().out
-
-
 
 class TestAuxFallbackRespectsPolicy:
     """Steps 2-4 of the aux ladder are policy-blind: `resolve_aux_model` queries
@@ -276,5 +264,3 @@ class TestAuxFallbackRespectsPolicy:
             aux._get_aux_model_for_provider("nous", prefer_fast=True)
             == "vendor/anything"
         )
-
-

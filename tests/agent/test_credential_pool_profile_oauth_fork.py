@@ -17,6 +17,8 @@ import urllib.request
 
 import pytest
 
+from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
@@ -153,6 +155,59 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     assert "xai-oauth" not in store["credential_pool"]
     assert [e["id"] for e in store["credential_pool"]["anthropic"]] == ["key"]
     assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
+
+
+def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
+    """Nous refresh tokens rotate on use: a cloned pool row or providers block is a fork (#121649).
+
+    agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
+    """
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
+    grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    root_store["providers"]["nous"] = dict(grant)
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+    pdir = _profile(fleet, "nousstrip")
+    ak_row = {"id": "ak", "source": "device_code", "auth_type": "oauth", "agent_key": "PAK"}
+    (pdir / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"nous": dict(grant)},
+        "credential_pool": {"nous": [dict(grant, id="n", source="device_code", auth_type="oauth"), ak_row]},
+    }))
+    summary = strip_cloned_single_use_oauth_grants(pdir)
+    store = json.loads((pdir / "auth.json").read_text())
+    assert (summary["pool"], summary["providers"]) == (["nous"], ["nous"])
+    assert store["credential_pool"]["nous"] == [ak_row] and "nous" not in store["providers"]
+    # Mixed shape: the surviving ak row keeps the profile "owning" nous, so the next load must
+    # not re-seed root's single-use RT from the global-root providers fallback (fork again).
+    fleet["use"](pdir)
+    load_pool("nous")
+    rows = json.loads((pdir / "auth.json").read_text())["credential_pool"]["nous"]
+    assert all(row.get("refresh_token") != "RT1" for row in rows), rows
+
+    # Heal: a fork living only in the providers block (flat nous tokens, shared RT) is dropped.
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    kid = _profile(fleet, "nousfork")
+    (kid / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("nous")["providers_block"] is True
+    assert "nous" not in json.loads((kid / "auth.json").read_text())["providers"]
+
+    # Heal: an agent_key-only profile row that copied root's id (and looks "fresher") is not a
+    # fork; heal_pool_rows must keep it rather than match it to root's refresh-bearing row.
+    rrow = dict(grant, id="r1", source="device_code", auth_type="oauth",
+                last_refresh="2026-01-01T00:00:00+00:00")
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [rrow]}}))
+    akid = _profile(fleet, "nousakid")
+    ak_copied = {"id": "r1", "source": "device_code", "auth_type": "oauth", "access_token": "",
+                 "agent_key": "PAK", "last_refresh": "2026-06-01T00:00:00+00:00"}
+    (akid / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [ak_copied]}}))
+    fleet["use"](akid)
+    heal_forked_single_use_oauth_grants("nous")
+    assert json.loads((akid / "auth.json").read_text())["credential_pool"]["nous"] == [ak_copied]
+    root_rows = json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"]["nous"]
+    assert [(r["id"], r.get("refresh_token"), r.get("agent_key")) for r in root_rows] == [("r1", "RT1", "AK")]
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
@@ -312,6 +367,110 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     ))
     assert [e["id"] for e in fleet["rows"](kid)] == ["own001"], "borrowed root row was copied into the profile"
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
+
+
+@pytest.mark.parametrize("provider", sorted(SINGLE_USE_REFRESH_POOL_PROVIDERS))
+def test_profile_fresh_add_with_no_login_anywhere_lands_in_the_profile(fleet, provider):
+    """#103694: with no rows in root or the profile, a login made inside the
+    profile is the profile's own credential. It must be readable afterwards,
+    and root must be left exactly as it was."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text())
+    store["credential_pool"].pop(provider, None)
+    root_file.write_text(json.dumps(store))
+    kid = _profile(fleet, "kid")
+    root_before = root_file.read_bytes()
+
+    fleet["use"](kid)
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="fresh1", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-fresh", refresh_token="rt-fresh",
+    ))
+
+    assert "fresh1" in [e.id for e in load_pool(provider).entries()]
+    assert "fresh1" in [r["id"] for r in json.loads((kid / "auth.json").read_text())["credential_pool"][provider]]
+    assert root_file.read_bytes() == root_before
+
+
+@pytest.mark.parametrize("root_rows", [[], [{
+    "id": "rootkey", "label": "root-key", "auth_type": "api_key", "priority": 0,
+    "source": "manual", "access_token": "root-api-key"}]], ids=["root_pool_empty", "root_api_key_row"])
+def test_anthropic_auth_add_survives_the_next_load_beside_a_root_singleton(fleet: dict, root_rows: list) -> None:
+    """``auth add anthropic`` saves a ``manual:hermes_pkce`` row, which the pool owns. When root's
+    login lives only in its ``.anthropic_oauth.json``, the next load must not take that row for a
+    copy of root's file: it stays in the profile, and root's file is left as it was."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    store["credential_pool"]["anthropic"] = root_rows
+    (root / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+    singleton = root / ".anthropic_oauth.json"
+    singleton.write_text(json.dumps({
+        "accessToken": "at-root", "refreshToken": "rt-root", "expiresAt": int((time.time() - 3600) * 1000),
+    }), encoding="utf-8")
+    singleton_before = singleton.read_bytes()
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool("anthropic").add_entry(PooledCredential(
+        provider="anthropic", id="kid001", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:hermes_pkce", access_token="at-kid", refresh_token="rt-kid",
+        expires_at_ms=int((time.time() + 8 * 3600) * 1000),
+    ))
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+
+    fleet["use"](kid)  # a later process
+    assert "kid001" in [e.id for e in load_pool("anthropic").entries()]
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+    assert singleton.read_bytes() == singleton_before
+
+
+@pytest.mark.parametrize("provider,root_login", [
+    ("nous", {"access_token": "at-root", "refresh_token": "rt-root", "agent_key": "ak-root"}),
+    ("openai-codex", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+    ("xai-oauth", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+], ids=["nous", "openai-codex", "xai-oauth"])
+def test_profile_auth_add_never_copies_roots_provider_login(fleet: dict, provider: str, root_login: dict) -> None:
+    """Root's login may live only in ``providers.<id>``, with no pool rows yet. A profile sees it
+    through the root fallback; neither the profile's first ``auth add`` nor a later load may write
+    that single-use refresh token into the profile's store."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text(encoding="utf-8"))
+    store["credential_pool"].pop(provider, None)
+    store["providers"][provider] = root_login
+    root_file.write_text(json.dumps(store), encoding="utf-8")
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="mine01", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-mine", refresh_token="rt-mine",
+    ))
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+    fleet["use"](kid)  # a later process
+    assert "mine01" in [e.id for e in load_pool(provider).entries()]
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+
+def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, monkeypatch, capsys):
+    """"Added" is printed only for a credential the store holds afterwards."""
+    from argparse import Namespace
+
+    import agent.credential_pool as credential_pool
+    from hermes_cli.auth_commands import auth_add_command
+
+    monkeypatch.setattr(credential_pool, "write_credential_pool", lambda *a, **kw: [])
+    with pytest.raises(SystemExit, match="not saved"):
+        auth_add_command(Namespace(
+            provider="openrouter", auth_type="api-key", api_key="sk-or-v1-new", label="new", priority=None,
+        ))
+    assert "Added" not in capsys.readouterr().out
 
 
 def test_classic_mode_persist_is_unchanged(fleet):
@@ -605,7 +764,21 @@ def _seed_codex_grant(root):
     (root / "auth.json").write_text(json.dumps(store))
 
 
-def _shared_profile(fleet, name, *, link):
+def _link_same_file(target, alias):
+    """Make ``alias`` the SAME store as ``target``: a symlink where the host
+    permits one, a hardlink where it does not (Windows without SeCreateSymbolicLink
+    privilege raises WinError 1314). Both flavors are one file — the heal contract
+    (``_is_same_auth_store``) is ``samefile``/resolved-path equality, not the link
+    flavor, so the test exercises the same contract on either host."""
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(target, alias)
+
+
+def _shared_profile(fleet, name, *, link=_link_same_file):
     """Profile whose auth.json IS the root store (``link`` makes the alias)."""
     pdir = _profile(fleet, name)
     pdir.mkdir(parents=True, exist_ok=True)
@@ -756,3 +929,57 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     _new_process(auth_mod)
     assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
     assert grants._oauth_heal_clean_mark_path().read_text() != marked
+
+
+
+# ── G. token generation is the authority boundary (#120815) ─────────────
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
+def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowed):
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+
+    fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
+    stale, stale_billing, peer = load_pool("anthropic"), load_pool("anthropic"), load_pool("anthropic")
+    stale_adopter = load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+    # An ordinary flush whose pair already matches disk must not re-hydrate the live object.
+    live = peer._entries[0]
+    peer._persist()
+    assert peer._entries[0] is live
+    # A stale writer's _adopt hands back the post-persist entry carrying the peer's pair.
+    adopted = stale_adopter._adopt(stale_adopter._entries[0], last_status=None)
+    assert adopted.refresh_token == "sk-ant-ort-RT1" and adopted is stale_adopter._entries[0]
+
+    stale.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row.get("last_status") != STATUS_DEAD
+    selected = stale.select()
+    assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
+
+    # Only the terminal verdict is scoped to the old pair: a later account-wide
+    # billing 402 from another still-stale writer applies to the rotated pair.
+    stale_billing.mark_exhausted_and_rotate(status_code=402, credential_id="abc123")
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row["last_status"] == STATUS_EXHAUSTED
+
+
+def test_terminal_verdict_for_current_token_generation_still_persists(fleet):
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    fleet["use"](fleet["root"])
+    pool = load_pool("anthropic")
+    pool.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT0"
+    assert row["last_status"] == STATUS_DEAD
+    assert pool.select() is None

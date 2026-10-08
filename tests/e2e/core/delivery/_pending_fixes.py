@@ -3,14 +3,13 @@
 A plain ``xfail(strict=True)`` turns main red the moment its fix merges (XPASS), and a
 non-strict one guards nothing. Instead, each gap here has a PROBE: a few lines that reproduce
 the defect's mechanism on the tree under test, in a throwaway interpreter with its own
-``HOME``/``HERMES_HOME`` (no state leaks into the suite process). ``expect_gap`` applies a
-strict xfail only while the probe still reproduces the defect; once the fix is in the tree the
-cell runs as a plain test, so it must pass. Whichever lands first, suite or fix, main stays
-green, and a probe that disagrees with the end-to-end cell still fails loudly (XPASS, or a
-real failure) instead of hiding.
+``HOME``/``HERMES_HOME`` (no state leaks into the suite process). A cell asks ``gap_open`` and
+tolerates the gap only while the probe still reproduces the defect; once the fix is in the tree
+the cell runs as a plain test, so it must pass. Whichever lands first, suite or fix, main stays
+green, and a probe that disagrees with the end-to-end cell still fails loudly instead of hiding.
 
 Probes exercise behaviour only (never read source text). When a fix has landed, delete its
-entry and every ``expect_gap`` / ``gap_open`` call naming it.
+entry and every ``gap_open`` call naming it.
 
 A gap with no fix PR yet has no probe: ``known_failure`` is a run-time xfail keyed on the gap's
 own assertion message, so the cell XFAILs only while it fails exactly that way, fails loudly on
@@ -32,6 +31,8 @@ from typing import Callable, Dict, Iterator, Optional
 
 import pytest
 
+from tests.e2e.core._pending_fixes import strict_acceptance
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
@@ -48,40 +49,6 @@ from cron import jobs
 jobs._hermes_now = lambda: datetime.fromisoformat("2026-03-07T09:00:30-05:00")
 nxt = jobs.compute_next_run({"kind": "cron", "expr": "0 9 * * *"})
 print("fixed" if nxt == "2026-03-08T09:00:00-04:00" else "open")
-'''),
-    # A failed first stream send disabled edits but left no message id, so the next tick sent a
-    # second first send: an uneditable partial preview stayed visible next to the final reply.
-    120315: ({}, r'''
-import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-
-async def main():
-    delivered, results = [], iter([SimpleNamespace(success=False, error="timeout")])
-    async def send(**kw):
-        r = next(results, None) or SimpleNamespace(success=True, message_id=f"m{len(delivered)}")
-        if r.success:
-            delivered.append(kw["content"])
-        return r
-    adapter = MagicMock()
-    adapter.send = AsyncMock(side_effect=send)
-    adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
-    adapter.MAX_MESSAGE_LENGTH = 4096
-    c = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(edit_interval=0.01,
-                                                                    buffer_threshold=5, cursor=""))
-    c.on_delta("preview never landed ")
-    task = asyncio.create_task(c.run())
-    await asyncio.sleep(0.08)
-    c.on_delta("and more streamed text ")
-    await asyncio.sleep(0.08)
-    c.on_delta("then the end.")
-    c.finish()
-    await asyncio.wait_for(task, timeout=10)
-    return delivered
-
-print("fixed" if asyncio.run(main()) == ["preview never landed and more streamed text then the end."]
-      else "open")
 '''),
 }
 
@@ -106,24 +73,18 @@ def gap_open(pr: int) -> bool:
     return verdict == ["open"]
 
 
-def expect_gap(request, pr: int, reason: str) -> None:
-    """Strict xfail for this cell while #``pr``'s defect reproduces; a plain test once it doesn't."""
-    assert f"#{pr}" in reason, f"reason for a #{pr} gap must name the PR: {reason!r}"
-    if gap_open(pr):
-        request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
-
-
 @contextlib.contextmanager
 def known_failure(pattern: str, reason: str,
                   on_xfail: Optional[Callable[[], None]] = None) -> Iterator[None]:
     """Run-time xfail for a live gap without a fix PR: an ``AssertionError`` raised inside the
     block whose message matches ``pattern`` XFAILs the cell; any other failure propagates, and a
     clean pass stays a pass. Wrap only the final assertions, after every wait has settled, so a
-    lost reply, a failed restart or a timeout can never be mistaken for the gap."""
+    lost reply, a failed restart or a timeout can never be mistaken for the gap. Strict
+    acceptance refuses owned gaps before running any xfail-only bookkeeping."""
     try:
         yield
     except AssertionError as exc:
-        if not re.search(pattern, str(exc)):
+        if not re.search(pattern, str(exc)) or strict_acceptance(reason):
             raise
         if on_xfail is not None:
             on_xfail()

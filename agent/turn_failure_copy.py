@@ -94,6 +94,9 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
+    # #55316/#54756: the loop stopped on a tool tail with no follow-up text; the
+    # finalizer synthesizes the visible close and fails the turn.
+    ("pending_tool_result", "loop_error", True, True),
     ("interpreter_shutdown", "interpreter_shutdown", False, True),
     # Advisory: a deterministic local bug is not a task failure for the kanban breaker.
     ("local_processing_error", "loop_error", False, False),
@@ -174,6 +177,11 @@ _EXHAUSTED_LEADS: Dict[str, str] = {
     FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
 }
 _EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+# One attempt: an attended free-tier session ended the cycle on a cooldown longer than it waits.
+_EXHAUSTED_FIRST_ATTEMPT_LEADS: Dict[str, str] = {
+    FailoverReason.rate_limit.value: "{label} is rate-limiting requests right now",
+    FailoverReason.upstream_rate_limit.value: "{label} is rate-limiting requests right now",
+}
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
 _NONRETRYABLE_COPY: Dict[str, str] = {
@@ -310,20 +318,29 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
         "moment and send /retry; if it keeps happening, check the server's context setting."
     ),
+    # Rides failure_reason="truncated": args were cut mid-JSON but the model never reported
+    # an output-length stop, so don't claim it hit one (#91717).
+    "truncated_unreported": (
+        "The model's action arrived cut off partway through, so Hermes didn't run it. Nothing was changed. The model didn't report hitting its output "
+        "limit, so this was most likely a dropped connection or a provider/router cutting the "
+        "reply short. Send /retry; if it keeps happening, ask for the work in smaller steps."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
         "pieces also helps."
     ),
+    # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason)
+    # mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
+    "stream_closed_tool_call": (
+        "{label} kept closing the stream before the model finished writing its action, without "
+        "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
+        "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
+    ),
     # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
     "local_processing_error": (
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "
         + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
-    ),
-    "reasoning_only": (
-        "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower "
-        "its reasoning effort with `/reasoning low`, or switch to a different model with /model. "
-        "Its last thoughts, which may contain the answer:\n\n{preview}"
     ),
     "max_iterations_no_summary": (
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
@@ -346,8 +363,11 @@ def site_copy(code: str, **fields: Any) -> str:
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
-    if reset_seconds is not None and reset_seconds >= 120:
+    first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
+    lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
+        reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
+    if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      "Send /retry after that, or switch models with /model.")

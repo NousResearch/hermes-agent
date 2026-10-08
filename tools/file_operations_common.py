@@ -7,7 +7,7 @@ the model.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -25,8 +25,14 @@ class ReadResult:
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
+    #: True only when the path is genuinely absent. An error with this False is a read that
+    #: FAILED (transport down, no byte transport installed); callers deciding whether a path
+    #: is free must not read that as "absent". See patch_parser._apply_add.
+    not_found: bool = False
     similar_files: List[str] = field(default_factory=list)
     _snapshot: Optional[tuple] = None
+    # sha256 of the exact on-disk bytes ``read_file_raw`` decoded (BOM included).
+    _content_sha256: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}
@@ -66,6 +72,10 @@ class PatchResult:
     # Success-shaped no-op: the edit was already present, nothing written; ``note`` says why.
     no_change: bool = False
     note: Optional[str] = None
+    # One ``(path, read_sha256, written_sha256)`` per file write, in order: the sha256 of the
+    # bytes the edit read ("" when it created the file, None when unknown) and of the bytes it
+    # wrote (None when unknown). patch_tool carries a task's full-file baseline across them.
+    _writes: List[Tuple[str, Optional[str], Optional[str]]] = field(default_factory=list)
 
     # Emission order is part of the output contract.
     _DICT_FIELDS: ClassVar[tuple] = (

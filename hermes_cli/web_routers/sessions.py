@@ -11,20 +11,24 @@ import json
 import re
 import sqlite3
 import time
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
-from hermes_cli.web_routers._common import CORRUPT_STORE_DETAIL, log as _log, destructive_profile, http_failure
+from hermes_cli.web_routers._common import (
+    CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
+)
 from hermes_state import is_malformed_db_error
-from hermes_state_errors import is_transient_sqlite_error
+from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
@@ -95,7 +99,8 @@ def _prune_sessions(body: SessionPrune):
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
         skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
-            rows = db.list_prune_candidates(**filters)
+            # Same whole-lineage selection prune_sessions applies, so the preview lists what it deletes.
+            rows = db.list_prune_candidates(**filters, whole_lineages=True)
             return {
                 "ok": True,
                 "removed": 0,
@@ -109,7 +114,8 @@ def _prune_sessions(body: SessionPrune):
                 "sessions": [{k: r.get(k) for k in _PRUNE_ROW_KEYS} for r in rows]}
         sessions_dir = profile_home / "sessions"
         removed = db.prune_sessions(
-            sessions_dir=sessions_dir if sessions_dir.exists() else None, **filters)
+            sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            exclude_active_write_guards=True, **filters)
         return {"ok": True, "removed": removed, "skipped_open": skipped_open}
     finally:
         db.close()
@@ -160,6 +166,10 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
                 "Sessions cannot be read until it is repaired — run "
                 "`hermes doctor` for diagnosis."),
         ) from exc
+    except StateDbReplacedError:
+        # RuntimeError family, not sqlite3: same 503 payload as the analytics reads (#110054).
+        with corrupt_store_as_status(db.db_path):
+            raise
 
 
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
@@ -194,12 +204,14 @@ def get_sessions(
             # Source scoping: the desktop splits recents (exclude=cron) from
             # the cron-jobs section (source=cron) into two independent lists.
             source_list = _csv(sources)
-            exclude_list = _csv(exclude_sources)
+            include_subagents, exclude_list = subagent_listing_scope(
+                Path(db.db_path).parent, source=source or None, sources=source_list or None,
+                exclude_sources=_csv(exclude_sources) or None)
             scope = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
                 min_message_count=min_message_count, include_archived=include_archived,
-                archived_only=archived_only)
+                archived_only=archived_only, include_subagents=include_subagents)
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
@@ -250,6 +262,10 @@ def get_sessions(
             raise HTTPException(status_code=500, detail="Internal server error") from exc
         _log.error("GET /api/sessions: state.db at %s is corrupt: %s", db_path, exc)
         raise HTTPException(status_code=503, detail=dict(CORRUPT_STORE_DETAIL)) from exc
+    except StateDbReplacedError:
+        # RuntimeError family, not sqlite3: same 503 payload as the analytics reads (#110054).
+        with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+            raise
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -319,13 +335,18 @@ async def search_sessions(
 
             tip_cache: dict = {}
 
-            def lineage_tip(root_id: str) -> str:
-                if root_id not in tip_cache:
+            def lineage_tip(session_id: str) -> str:
+                # Resolve the tip from the MATCHED id, never from the lineage
+                # root: the forward chain walk is defensively bounded, so a
+                # lineage deeper than the bound truncates to a stale mid id
+                # when started at the root. Resuming from the matched id is
+                # what the CLI does and always reaches the live tip (#125041).
+                if session_id not in tip_cache:
                     try:
-                        tip_cache[root_id] = db.get_compression_tip(root_id) or root_id
+                        tip_cache[session_id] = db.get_compression_tip(session_id) or session_id
                     except Exception:
-                        tip_cache[root_id] = root_id
-                return tip_cache[root_id]
+                        tip_cache[session_id] = session_id
+                return tip_cache[session_id]
 
             # One keyspace for id-hits and content-hits, keyed by lineage root;
             # first hit wins, and ID matches run first.
@@ -338,7 +359,7 @@ async def search_sessions(
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                sid = lineage_tip(root)
+                sid = lineage_tip(raw_sid)
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
                 payload["profile"] = row_profile
@@ -365,6 +386,7 @@ async def search_sessions(
                         "output_tokens": row.get("output_tokens") or 0,
                         "preview": row.get("preview"),
                         "parent_session_id": row.get("parent_session_id"),
+                        "profile": _serving_profile(profile),
                         "archived": bool(row.get("archived"))})
                 else:
                     payload["id"] = sid
@@ -405,6 +427,34 @@ async def search_sessions(
                 add_lineage_result(
                     m["session_id"],
                     hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
+
+            # Title matches fill any remaining slots (#66242): the FTS index
+            # only covers message content, so a term that lives solely in a
+            # manually-set sessions.title would otherwise return nothing. The
+            # DB layer already knows how to LIKE-match titles across the whole
+            # compression chain (list_sessions_rich(search_query=) — the same
+            # helper the sidebar listing uses), so reuse it rather than adding
+            # a second title query path here. Best-effort: an old/odd store
+            # that rejects the call just skips the lane.
+            if len(seen) < safe_limit:
+                try:
+                    title_rows = db.list_sessions_rich(
+                        search_query=q.strip(), include_archived=True, order_by_last_active=True,
+                        source=source_filter, sources=source_list or None,
+                        exclude_sources=exclude_list or None, limit=safe_limit)
+                except Exception:  # health: allow BLE001 -- best-effort supplement lane: an old/odd store that rejects the search_query read must not fail the id+content results already collected
+                    _log.debug("Title-match supplement skipped for %r", q[: 200])
+                    title_rows = []
+                for row in title_rows:
+                    if len(seen) >= safe_limit:
+                        break
+                    sid = row.get("id")
+                    if not sid:
+                        continue
+                    preview = (row.get("preview") or "").strip()
+                    add_lineage_result(
+                        sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
+                                         None, row.get("started_at")))
             return {"results": list(seen.values())}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
@@ -419,14 +469,22 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     Per :meth:`SessionDB.delete_sessions`: unknown ids are skipped (``deleted``
     reports what really happened), children are orphaned, active/archived rows
     ARE deleted (hand-picked), on-disk cleanup is left to the next prune.
+
+    Compression chains are deleted whole: the sessions list shows one row per
+    logical conversation carrying the chain *tip's* id, so deleting only that
+    row would leave the root to resurface as the previous chain link on the
+    next reload (#57543). ``deleted`` still counts the selected rows, not the
+    expanded chain links.
     """
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
-    deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
-    return {"ok": True, "deleted": deleted}
+    skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
+    deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
+        body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
+        include_compression_chain=True), read_only=False)
+    return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
 @manage_router.post("/api/sessions/import")
@@ -472,9 +530,10 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     Archived sessions are skipped — the user explicitly chose to keep those rows. * Children of deleted
     parents are orphaned, not cascade-deleted. See #95868.
     """
+    profile = destructive_profile(profile, "DELETE /api/sessions/empty")
     deleted = await asyncio.to_thread(
-        _with_db, destructive_profile(profile, "DELETE /api/sessions/empty"),
-        lambda db: db.delete_empty_sessions(), read_only=False)
+        _with_db, profile,
+        lambda db: db.delete_empty_sessions(sessions_dir=_session_files_dir(profile)), read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -483,9 +542,12 @@ async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
     def _stats(db):
         out = {
-            "total": db.session_count(include_archived=True),
-            "active_store": db.session_count(include_archived=False),
-            "archived": db.session_count(archived_only=True), "messages": db.message_count(),
+            # exclude_children=True: the dashboard Sessions page pairs these counts with
+            # list_sessions_rich rows, which collapse compression chains to one row carrying
+            # the tip's id — the raw row count is inflated by the hidden chain links (#54298).
+            "total": db.session_count(include_archived=True, exclude_children=True),
+            "active_store": db.session_count(include_archived=False, exclude_children=True),
+            "archived": db.session_count(archived_only=True, exclude_children=True), "messages": db.message_count(),
             "by_source": {}}
         try:
             out["by_source"] = db.session_count_by_source(
@@ -508,6 +570,13 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
+        # A cron run's liveness is scheduler ownership, not the 300s activity
+        # window (#88443): a run inside a long tool call is still owned.
+        from hermes_cli.web_routers.cron import cron_run_scheduler_owned
+
+        owned = cron_run_scheduler_owned(session, profile)
+        if owned is not None:
+            session["scheduler_owned"] = owned
         return session
 
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)
@@ -561,20 +630,78 @@ def _history_profile_home(profile):
     return get_hermes_home()
 
 
-def _project_for_display(messages: list, *, home=None) -> list:
+def _session_files_dir(profile) -> Path:
+    """Transcript dir of the profile whose store a delete targets: ``SessionDB.delete_session`` only
+    unlinks the session's on-disk artifacts when handed this, and a row-only delete leaves the
+    (secret-bearing) ``session_<id>.json`` snapshots and ``request_dump_<id>_*.json`` readable after
+    the user removed the session (#55088, #60207)."""
+    return _history_profile_home(profile) / "sessions"
+
+
+def _is_untyped_scaffold_notice(message) -> bool:
+    """A ``[System: …]`` role=user row persisted without a ``display_kind``.
+
+    ``[System:`` is a reserved gateway-notice namespace — it must never render as a user
+    bubble (the gateway's own history projection drops these rows outright) — but recovery
+    scaffolding written before typing existed carries no kind. Rows WITH a kind
+    (``model_switch``, …) are timeline entries and keep flowing.
+    """
+    if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind"):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[System:")
+
+
+def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
+    """Replace compaction summaries with their display-only projection and hide untyped
+    gateway-scaffold notices.
+
+    Recovery scaffolding (e.g. the stream-timeout nudge appended when a tool call's stream
+    is cut) persists as a ``[System: …]`` ``role=user`` row with no ``display_kind``. This
+    projection feeds the Desktop's transcript prefetch, which addresses VISIBLE user rows by
+    durable row id — and the gateway truncation resolver refuses scaffold rows fail-closed,
+    so a shipped scaffold row can never resolve as a rewind/regenerate target and dead-ends
+    every retry (``refusing truncation without fallback``). Hide them the same way the
+    Desktop collapses other display-only rows; typed notices stay for the timeline.
+    """
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
+    from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
+    from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
+
+    # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
+    # projection so a data-URI image part becomes ``[image]`` — the same branch session.resume's
+    # ``inline_images=false`` uses, kilobytes instead of re-transmitting every stored attachment.
+    coerce = None
+    if not inline_images:
+        from tui_gateway.session_history import _coerce_message_text
+
+        def coerce(message: dict) -> dict:
+            if message.get("content") is not None:
+                return {**message, "content": _coerce_message_text(message["content"], image_urls=False)}
+            return message
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        if coerce is not None:
+            message = coerce(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).
         failed_turn = not message.get("display_kind") and untyped_failed_turn_display_kind(
             message.get("role"), message.get("content"))
         if failed_turn:
             message = {**message, "display_kind": failed_turn}
+        if _is_untyped_scaffold_notice(message):
+            projected = message.copy()
+            projected["display_kind"] = "hidden"
+            projected_messages.append(projected)
+            continue
+        # Mid-turn steer: the user's own words, not the model-facing marker (same as session.resume).
+        if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
+                steer_text := _extract_steer_text_from_message(message)):
+            message = {**message, "display_content": steer_text}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue
@@ -597,7 +724,7 @@ def _project_for_display(messages: list, *, home=None) -> list:
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False)):
+    include_compacted: bool = Query(False), inline_images: bool = Query(True)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 
@@ -611,16 +738,23 @@ async def get_session_messages(
         default_page = limit is None
         latest_page = order == "latest" or (order is None and default_page)
         _limit = 500 if default_page else min(limit, 500)
+        # Include compression-ancestor messages so the REST transcript
+        # matches the gateway's session.resume (which uses
+        # include_ancestors=True). Without this, the desktop's REST
+        # prefetch only shows the child continuation's messages after a
+        # compression rotation, hiding the pre-compaction transcript
+        # (#51058).
         return sid, _limit, db.get_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted)
+            include_compacted=include_compacted, include_ancestors=True)
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
     projected_messages = await asyncio.to_thread(
-        _project_for_display, messages, home=_history_profile_home(profile))
+        _project_for_display, messages, home=_history_profile_home(profile),
+        inline_images=inline_images)
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the
@@ -702,7 +836,15 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         sid = _resolve_session_id(db, session_id)
         if not sid:
             return {"ok": True, "already_absent": True}
-        db.delete_session(sid)
+        try:
+            # Chain-aware like bulk-delete: the list row the user clicked represents the
+            # whole compression chain (and carries the tip's id), so deleting just this
+            # physical row would resurface the conversation as the previous chain link
+            # on reload (#57543).
+            db.delete_session(sid, sessions_dir=_session_files_dir(profile),
+                              exclude_active_write_guards=True, include_compression_chain=True)
+        except SessionActiveWriteGuardError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         return {"ok": True}
 
     return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
@@ -802,10 +944,11 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
         try:
             yield _compact_json(session)[:-1] + ',"messages":['
             # Keyset pagination (id > last_seen): O(n) total over the
-            # transcript, vs OFFSET's O(n²) on huge sessions.
+            # transcript, vs OFFSET's O(n²) on huge sessions. Every row with its
+            # active/compacted flags, so re-importing restores compacted history as archived.
             last_id, first = 0, True
             while True:
-                messages = db.get_messages(sid, limit=500, after_id=last_id)
+                messages = db.get_messages(sid, limit=500, after_id=last_id, include_inactive=True)
                 for message in messages:
                     yield ("" if first else ",") + _compact_json(message)
                     first = False
@@ -828,13 +971,3 @@ async def prune_sessions_endpoint(body: SessionPrune):
         body = body.model_copy(update={
             "profile": destructive_profile(body.profile, "POST /api/sessions/prune")})
     return await asyncio.to_thread(_prune_sessions, body)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import Dict  # noqa: F401,E402
-import logging  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

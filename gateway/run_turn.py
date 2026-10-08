@@ -1170,7 +1170,7 @@ class GatewayTurnMixin:
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
-        from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
+        from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered, hygiene_noop_should_cool
         _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
@@ -1187,12 +1187,20 @@ class GatewayTurnMixin:
             _hyg_aborted = True
         # Recovery decision lives in the unit-tested predicate: the "neither rotated nor in place"
         # path reuses pre-compression counts, so a numbers-only check would read a no-op as success.
-        if not _hyg_aborted and hygiene_compaction_recovered(
+        _hyg_recovered = (not _hyg_aborted) and hygiene_compaction_recovered(
             aborted=_hyg_aborted, rotated=_hyg_rotated, in_place=_hyg_in_place,
             msg_count=plan.msg_count, new_count=_new_count, approx_tokens=plan.approx_tokens,
             new_tokens=_new_tokens,
-        ):
+        )
+        if _hyg_recovered:
             await asyncio.to_thread(_reset_hygiene_failure_streak, self, session_key)
+        elif hygiene_noop_should_cool(aborted=_hyg_aborted, recovered=_hyg_recovered):
+            # No-op (#21301): compression ran but persisted nothing, so nothing shrank;
+            # record an escalating cooldown or hygiene re-runs every pass forever.
+            await self._hmwa_hygiene_record_failure_cooldown(
+                hs, session_key, session_entry.session_id,
+                "hygiene no-op: no session_db to persist compaction (#21301)",
+            )
         if _hyg_aborted:
             await self._hmwa_hygiene_record_failure_cooldown(
                 hs, session_key, session_entry.session_id,

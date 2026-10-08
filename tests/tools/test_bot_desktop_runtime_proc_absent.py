@@ -84,3 +84,25 @@ def test_launcher_pid_reads_as_not_running_when_identity_is_unmeasurable(tmp_pat
     monkeypatch.setattr(runtime, "_create_time", lambda pid: None)
 
     assert runtime._launcher_pid() is None
+
+
+def test_recorded_pid_stays_the_orphan_sweeps_handle_when_identity_is_unmeasurable(tmp_path, monkeypatch):
+    """#134452, the case @liuhao1024 asked to pin in review: with the procfs unreadable ``_create_time()``
+    degrades to ``None`` and ``start()`` records ``"<pid> 0"`` — a birth time of 0. ``_launcher_pid()`` must
+    read that as not-running (nothing can confirm the pid is ours), but ``_recorded_launcher_pid()`` — what
+    ``stop()``'s orphan sweep matches process groups against — must still yield the pid: on a launcher that
+    died under a procfs it could not read, this degraded record is the only handle left on its orphaned
+    Xvnc group, and losing it would leak the group and its display.
+
+    Credit: the case and its assertions come from @liuhao1024's review of #134452 (PR #134477)."""
+    class _Proc:
+        def create_time(self):
+            raise FileNotFoundError(2, "No such file or directory", "/proc/stat")
+
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil(_Proc()))
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    (tmp_path / "launcher.pid").write_text(f"{os.getpid()} 0", encoding="utf-8")  # what start() records then
+
+    assert runtime._create_time(os.getpid()) is None
+    assert runtime._launcher_pid() is None, "an unconfirmable identity is not running"
+    assert runtime._recorded_launcher_pid() == os.getpid(), "the sweep must keep the only handle it has"

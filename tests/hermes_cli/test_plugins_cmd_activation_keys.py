@@ -22,6 +22,17 @@ def _write_plugin(root, rel, name, extra=""):
     return d
 
 
+def _write_tool_plugin(root, name):
+    """User plugin registering one tool in its own toolset, WITHOUT ``provides_tools`` in plugin.yaml."""
+    d = _write_plugin(root, name, name)
+    (d / "__init__.py").write_text(
+        "def register(ctx):\n"
+        f"    ctx.register_tool(name='{name}_tool', toolset='{name}_ts', handler=lambda args, **kw: '{{}}',\n"
+        f"                      schema={{'name': '{name}_tool', 'description': 'probe', 'parameters': {{'type': 'object', 'properties': {{}}}}}})\n",
+        encoding="utf-8")
+    return d
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes-home"
@@ -83,6 +94,23 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
     # Same state requested again by manifest name: nothing to write, no restart to announce.
     again = plugins_cmd.dashboard_set_agent_plugin_enabled("zz-probe-manifest", enabled=True)
     assert again["unchanged"] is True and again["restart_required"] is False
+
+
+def test_dashboard_enable_on_a_fresh_config_keeps_the_core_tools(home):
+    """Desktop/TUI/dashboard enable with no saved ``platform_toolsets`` must not write one: the old
+    seed ``platform_toolsets.cli: [<plugin_ts>]`` replaced the ``hermes-cli`` composite, so the model
+    lost every built-in tool (27 -> 2, no ``terminal``). The plugin toolset is on by default anyway."""
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import registry
+
+    _write_tool_plugin(home / "plugins", "zzseed")
+    try:
+        assert plugins_cmd.dashboard_set_agent_plugin_enabled("zzseed", enabled=True)["ok"] is True
+        cfg = load_config()
+        assert not cfg.get("platform_toolsets")
+        assert {"terminal", "file", "zzseed_ts"} <= _get_platform_tools(cfg, "cli")
+    finally:
+        registry.deregister("zzseed_tool")
 
 
 def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):

@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.compaction_events import publish_micro
 from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
@@ -368,6 +369,7 @@ class MicroCompactionMixin:
                 "occupancy_pct": occupancy, "main_model": self.model or "", "aux_model": self.summary_model or "",
             }
             logger.info("micro compaction telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            publish_micro(payload)
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 

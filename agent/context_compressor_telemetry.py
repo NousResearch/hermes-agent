@@ -53,7 +53,7 @@ class CompressionTelemetryMixin:
             # Effect of a committed rewrite (filled by _record_compression_effect; defaults describe no rewrite).
             "method": "none", "items_dropped": 0, "messages_before": None, "messages_after": None,
             "tokens_before": None, "tokens_after": None, "tokens_reclaimed": None, "token_count_method": None,
-            "tool_results_pruned": None, "reasoning_items_pruned": None,
+            "tool_results_pruned": None, "reasoning_items_pruned": None, "has_focus_topic": False,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry

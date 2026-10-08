@@ -17,6 +17,7 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 """
 from __future__ import annotations
 
+import hermes_bootstrap  # noqa: F401
 import importlib.util
 import sys
 import threading
@@ -67,6 +68,8 @@ class _FakeSessionDB:
         self.scan_delay = scan_delay
         self.last_limit: Optional[int] = None
         self.last_include_children: Optional[bool] = None
+        self.last_include_inactive: Optional[bool] = None
+        self.last_include_compacted: Optional[bool] = None
         self.list_calls = 0
         self.messages_calls = 0
 
@@ -100,8 +103,15 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str, include_compacted: bool = False) -> List[Dict[str, Any]]:
+    def get_messages(
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        include_compacted: bool = False,
+    ) -> List[Dict[str, Any]]:
         self.messages_calls += 1
+        self.last_include_inactive = include_inactive
+        self.last_include_compacted = include_compacted
         return [
             {"role": "user", "content": f"ask {session_id}"},
             {
@@ -147,8 +157,32 @@ def test_scan_sessions_default_scans_all_history_not_first_200(plugin_api):
         "scan_sessions() must include subagent/compression child sessions so "
         "tool calls made in delegated agents still count toward achievements"
     )
+    assert fake_db.last_include_inactive is True, (
+        "scan_sessions() must pass include_inactive=True to get_messages() "
+        "so inactive and historical tool calls count toward achievements (#127626)"
+    )
     assert len(result["sessions"]) == 500
     assert result["scan_meta"]["sessions_total"] == 500
+
+
+def test_scan_sessions_requests_inactive_messages(plugin_api):
+    """Bug regression (#127626): ``scan_sessions()`` must pass ``include_inactive=True``
+    to ``get_messages()``.
+
+    SessionDB.get_messages() defaults to include_inactive=False, which excludes inactive
+    rows (deactivated turns, branch sessions, rewound turns, and intermediate tool calls
+    dropped by display-order grouping). Lifetime counters (total_tool_calls, memory_events)
+    severely undercounted historical activity without include_inactive=True.
+    """
+    fake_db = _FakeSessionDB(session_count=1)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    plugin_api.scan_sessions()
+
+    assert fake_db.last_include_inactive is True, (
+        "scan_sessions() must pass include_inactive=True to get_messages() "
+        f"so historical/inactive tool calls are not lost; got {fake_db.last_include_inactive}"
+    )
 
 
 def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugin_api):

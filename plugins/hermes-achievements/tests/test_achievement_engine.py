@@ -174,6 +174,49 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_analyze_messages_handles_serialized_tool_calls_json_and_dict(self):
+        # Stringified JSON tool_calls (from raw DB rows or legacy formats)
+        messages_json = [
+            {"role": "assistant", "tool_calls": '[{"function": {"name": "memory"}}]'},
+            {"role": "tool", "tool_name": "memory", "content": "ok"},
+        ]
+        stats = plugin_api.analyze_messages("s1", "Memory test", messages_json)
+        self.assertEqual(stats["tool_call_count"], 1)
+        self.assertIn("memory", stats["tool_names"])
+        self.assertEqual(stats["memory_events"], 1)
+
+        # Single-dict tool_calls
+        messages_dict = [
+            {"role": "assistant", "tool_calls": {"function": {"name": "terminal"}}},
+            {"role": "tool", "tool_name": "terminal", "content": "ok"},
+        ]
+        stats2 = plugin_api.analyze_messages("s2", "Dict test", messages_dict)
+        self.assertEqual(stats2["tool_call_count"], 1)
+        self.assertIn("terminal", stats2["tool_names"])
+
+    def test_analyze_messages_dedupes_superseded_uid_generations(self):
+        """A rewind/retry soft-archives the superseded rows and re-inserts the current generation
+        under the same message_uid. A full-history scan must count only the newest row per uid, or
+        the undone generation is counted twice."""
+        messages = [
+            {"id": 1, "role": "user", "content": "do the thing", "message_uid": "u1"},
+            {"id": 2, "role": "assistant", "message_uid": "a1",
+             "tool_calls": [{"function": {"name": "memory", "arguments": "{}"}}]},
+            {"id": 3, "role": "tool", "tool_name": "memory", "content": "ok", "message_uid": "t1"},
+            # Rewound/retried generation: same uids, newer ids, divergent tool.
+            {"id": 4, "role": "user", "content": "do the thing", "message_uid": "u1"},
+            {"id": 5, "role": "assistant", "message_uid": "a1",
+             "tool_calls": [{"function": {"name": "terminal", "arguments": "{}"}}]},
+            {"id": 6, "role": "tool", "tool_name": "terminal", "content": "ok", "message_uid": "t1"},
+        ]
+
+        stats = plugin_api.analyze_messages("s1", "Rewind", messages)
+
+        self.assertEqual(stats["message_count"], 3)
+        self.assertEqual(stats["tool_call_count"], 1)
+        self.assertEqual(stats["terminal_calls"], 1)
+        self.assertEqual(stats["memory_events"], 0)
+
     def test_dashboard_card_hover_does_not_move_click_target(self):
         style_css = (
             Path(__file__).resolve().parents[1]
@@ -219,3 +262,90 @@ class CompactionScanTests(unittest.TestCase):
 
         self.assertEqual(scan["aggregate"]["max_distinct_tools_in_session"], 20)
         self.assertEqual(scan["scan_meta"]["sessions_reused"], 0)
+
+    def test_scan_stats_include_inactive_messages_history(self):
+        """#127626: scan_sessions must include inactive rows (active=0) in SessionDB
+        so historical tool calls (e.g. memory_events) are not undercounted."""
+        import hermes_state
+        from hermes_state import SessionDB
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
+            db = SessionDB(Path(tmp) / "state.db")
+            try:
+                db.create_session("s1", "cli", model="m")
+                # Deactivated turn with memory tool
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "memory", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="memory")
+                db._write_sql("UPDATE messages SET active = 0 WHERE session_id = 's1'")
+
+                # Active turn with terminal tool
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "terminal", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="terminal")
+            finally:
+                db.close()
+
+            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
+                scan = plugin_api.scan_sessions()
+
+        self.assertEqual(scan["aggregate"]["total_tool_calls"], 2)
+        self.assertGreaterEqual(scan["aggregate"]["memory_events"], 1)
+        self.assertGreaterEqual(scan["aggregate"]["total_terminal_calls"], 1)
+
+    def test_scan_dedupes_rewound_duplicate_generations(self):
+        """#127626 follow-up: /retry soft-archives the superseded generation and re-inserts the
+        current one under the same message_uid. ``include_inactive=True`` returns both, so the
+        scan must dedupe per uid or the rewound work is counted twice."""
+        import hermes_state
+        from hermes_state import SessionDB
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
+            db = SessionDB(Path(tmp) / "state.db")
+            try:
+                db.create_session("s1", "cli", model="m")
+                db.append_message("s1", "user", content="text one")
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "memory", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="memory")
+                warm = db.get_messages("s1", include_inactive=True)
+                # Retry the turn with a divergent tool: the surface re-installs the warm dicts, so
+                # the re-inserted rows keep the original uids while the superseded rows soft-archive.
+                retry = [
+                    dict(warm[0]),
+                    {**warm[1], "content": None, "tool_calls": [{"function": {"name": "terminal", "arguments": "{}"}}]},
+                    {**warm[2], "tool_name": "terminal", "content": "ok"},
+                ]
+                db.replace_messages("s1", retry, active_only=True, archive_dropped=True)
+            finally:
+                db.close()
+
+            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
+                scan = plugin_api.scan_sessions()
+
+        self.assertEqual(scan["aggregate"]["total_tool_calls"], 1)
+        self.assertEqual(scan["aggregate"]["total_terminal_calls"], 1)
+        self.assertEqual(scan["aggregate"]["memory_events"], 0)
+
+    def test_scan_rescans_stale_schema_checkpoint_after_scan_basis_change(self):
+        """#127626 follow-up: a checkpoint written under the old display-projection basis must be
+        rescanned (cache miss), never reused, once the scan reads the full inactive history."""
+        import hermes_state
+        from hermes_state import SessionDB
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
+            db = SessionDB(Path(tmp) / "state.db")
+            try:
+                db.create_session("s1", "cli", model="m")
+                db.append_message("s1", "assistant", tool_calls=[{"function": {"name": "memory", "arguments": "{}"}}])
+                db.append_message("s1", "tool", content="ok", tool_name="memory")
+            finally:
+                db.close()
+
+            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
+                first = plugin_api.scan_sessions()
+                rolled_back = plugin_api.load_checkpoint()
+                rolled_back["schema_version"] = plugin_api._CHECKPOINT_SCHEMA_VERSION - 1
+                plugin_api._write_json(plugin_api.CHECKPOINT_FILE, rolled_back)
+                second = plugin_api.scan_sessions()
+
+        self.assertEqual(first["scan_meta"]["sessions_rescanned"], 1)
+        self.assertEqual(second["scan_meta"]["sessions_reused"], 0)
+        self.assertEqual(second["scan_meta"]["sessions_rescanned"], 1)

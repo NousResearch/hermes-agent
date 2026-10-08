@@ -12,12 +12,13 @@ import io
 import signal
 import sys
 
+import pytest
 
 from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
 from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
 
 
-def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
+def test_update_completion_message_does_not_claim_action_is_terminal(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_ACTION_ID", "a" * 32)
     # These tests pin the action-identity receipt contract, not the branch
     # display — neutralize the branch+HEAD suffix added for the 2026-08-17
@@ -26,10 +27,7 @@ def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys)
 
     _print_update_completion("✓ Update complete!")
 
-    assert capsys.readouterr().out.splitlines() == [
-        "✓ Update complete!",
-        f"=== hermes-update completed {'a' * 32} ===",
-    ]
+    assert capsys.readouterr().out == "✓ Update complete!\n"
 
 
 def test_update_completion_rejects_untrusted_action_identity(monkeypatch, capsys):
@@ -39,6 +37,26 @@ def test_update_completion_rejects_untrusted_action_identity(monkeypatch, capsys
     _print_update_completion("✓ Update complete!")
 
     assert capsys.readouterr().out == "✓ Update complete!\n"
+
+
+@pytest.mark.parametrize("terminal_success, expected", [(True, True), (False, False)])
+def test_desktop_success_marker_requires_terminal_success_receipt(
+    monkeypatch, capsys, terminal_success, expected,
+):
+    from hermes_cli import main_update
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv("HERMES_ACTION_ID", "a" * 32)
+    monkeypatch.setattr("hermes_cli.update_receipt.committed_success", lambda: terminal_success)
+    log = []
+    monkeypatch.setattr(update_cmd, "_log_only_write", log.append)
+
+    main_update._print_update_action_terminal_marker(0 if terminal_success else 1)
+
+    output = capsys.readouterr().out
+    assert (f"=== hermes-update completed {'a' * 32} ===" in output) is expected
+    assert len(log) == 1
+    assert ("exit=1" in log[0]) is (not expected)
 
 
 # -----------------------------------------------------------------------------
@@ -205,4 +223,3 @@ class TestRunLoggedSubprocess:
         assert "LOUD BUILD OUTPUT" in (result.stdout or "")
         assert terminal.getvalue() == ""  # not echoed to terminal
         assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
-

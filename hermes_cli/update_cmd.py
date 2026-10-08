@@ -1808,6 +1808,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
+    # A Desktop/serve-launched updater may share its backend's systemd cgroup. Move it to a
+    # transient scope before any source mutation so the later owning-unit restart cannot reap
+    # the updater or its fresh-checkout completion child. Refuse before backup/fetch when that
+    # custody handoff or the unit's restart permission cannot be proven.
+    _posix_pause.require_systemd_serve_update_handoff(_pre_update_plan)
+
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
     # reason, not as a failed step (see _record_pre_update_backup_outcome).

@@ -53,6 +53,7 @@ _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES = 8 * 1024
 _ACTION_LOG_TAIL_MAX_CHUNK_BYTES = 64 * 1024
 
 _UPDATE_ACTION_COMPLETED_RE = re.compile(r"^=== hermes-update completed ([0-9a-f]{32}) ===$")
+_UPDATE_ACTION_FAILED_RE = re.compile(r"^=== hermes-update failed ([0-9a-f]{32}) exit=([0-9]{1,3}) ===$")
 _UPDATE_ACTION_STARTED_RE = re.compile(r"^=== hermes-update started .* ([0-9a-f]{32}) ===$")
 
 _MANAGED_EXTERNALLY_MESSAGE = "Hermes updates are managed outside this dashboard in containerized environments."
@@ -122,20 +123,29 @@ def _tail_lines(path: Path, n: int) -> list[str]:
 
 
 def _durable_completed_update_action_id(lines: list[str]) -> Optional[str]:
-    """Latest successful update id from ``update.log`` — the durable record that survives
-    the update restarting the dashboard (losing the in-memory ``Popen``/result registries).
-    Only a completion marker after the latest start marker counts, so a stale success
-    cannot mask a newer failed attempt."""
+    """Latest successful update id from the durable terminal action result."""
+    result = _durable_update_action_result(lines)
+    return result[0] if result and result[1] == 0 else None
+
+
+def _durable_update_action_result(lines: list[str]) -> Optional[tuple[str, int]]:
+    """Latest terminal Desktop update result after its start marker, if one was written."""
     last_start = last_completed = -1
-    completed_action_id: Optional[str] = None
+    terminal: Optional[tuple[str, int]] = None
     for index, line in enumerate(lines):
         if line.startswith("=== hermes update started "):
             last_start = index
+            terminal = None
         match = _UPDATE_ACTION_COMPLETED_RE.fullmatch(line.strip())
         if match:
             last_completed = index
-            completed_action_id = match.group(1)
-    return completed_action_id if completed_action_id and last_completed > last_start else None
+            terminal = (match.group(1), 0)
+            continue
+        failed = _UPDATE_ACTION_FAILED_RE.fullmatch(line.strip())
+        if failed:
+            last_completed = index
+            terminal = (failed.group(1), int(failed.group(2)))
+    return terminal if terminal and last_completed > last_start else None
 
 
 def _latest_spawned_update_action_id(lines: list[str]) -> Optional[str]:
@@ -349,17 +359,22 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
 def _completed_exit_code(
     result: Optional[dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[dict[str, Any]],
+    durable_exit_code: Optional[int] = None,
 ) -> Optional[int]:
     """Exit code for an action with no live process: in-memory result, else durable evidence."""
     if result is not None:
         return result.get("exit_code")
+    if durable_exit_code is not None:
+        return durable_exit_code
     if durable_action_id:
         return 0
-    if receipt is not None and receipt.get("outcome") in ("success", "partial"):
-        # No in-memory result and no log marker (e.g. log rotated), but THIS
-        # action's receipt proves a completed run: report its outcome rather than
-        # a null clients time out on. ``partial`` maps to exit 1 like the CLI.
-        return 0 if receipt["outcome"] == "success" else 1
+    if receipt is not None and receipt.get("finished_at"):
+        # No in-memory result and no terminal log marker (e.g. the backend restarted
+        # mid-action): the action-correlated receipt still gives Desktop its final
+        # outcome. A running receipt is deliberately not terminal evidence.
+        return {"success": 0, "partial": 1, "failed": 1, "refused": 2, "interrupted": 130}.get(
+            receipt.get("outcome")
+        )
     return None
 
 
@@ -375,19 +390,24 @@ async def get_action_status(name: str, lines: int = 200):
     tail = _tail_lines(log_dir / log_file_name, requested_lines)
 
     durable_update_action_id = None
+    durable_exit_code = None
     update_receipt_summary = action_receipt_summary = None
     if name == "hermes-update":
         # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
         # dashboard's profile home: read it where it is written.
         from hermes_cli.logs import log_file_path
 
-        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_file_path("update"), 2000))
+        durable_update_result = _durable_update_action_result(_tail_lines(log_file_path("update"), 2000))
         spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
                              or _persisted_action_id(log_dir, name) or _ACTION_IDS.get(name))
-        if durable_update_action_id != spawned_action_id:
+        if durable_update_result and durable_update_result[0] != spawned_action_id:
             # The root log is shared by every profile: another profile's (or an older) run's
             # completion never certifies the action this dashboard started.
-            durable_update_action_id = None
+            durable_update_result = None
+        durable_update_action_id = (
+            durable_update_result[0] if durable_update_result and durable_update_result[1] == 0 else None
+        )
+        durable_exit_code = durable_update_result[1] if durable_update_result else None
         if durable_update_action_id:
             marker = f"=== hermes-update completed {durable_update_action_id} ==="
             if marker not in tail:
@@ -407,7 +427,9 @@ async def get_action_status(name: str, lines: int = 200):
         result = _ACTION_RESULTS.get(name)
         running = False
         pid = result.get("pid") if result else None
-        exit_code = _completed_exit_code(result, durable_update_action_id, action_receipt_summary)
+        exit_code = _completed_exit_code(
+            result, durable_update_action_id, action_receipt_summary, durable_exit_code,
+        )
     else:
         exit_code = proc.poll()
         running = exit_code is None

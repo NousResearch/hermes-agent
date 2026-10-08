@@ -822,6 +822,7 @@ from hermes_cli.main_dashboard import (
 from hermes_cli.main_dashboard import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _respawn_dashboard_processes,
 )
+from hermes_cli.main_update import cmd_update
 from hermes_cli.main_provider_setup import (
     _GENERIC_API_KEY_PROVIDERS,
     _aux_config_menu,
@@ -2388,91 +2389,6 @@ def _update_preflight_handled(args) -> bool:
         )
         return True
     return False
-
-
-from hermes_cli.update_receipt import update_receipt_scope
-
-
-@update_receipt_scope()
-def cmd_update(args):
-    """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
-    # Marks this frame as the CURRENT updater for
-    # _old_updater.in_historical_update(); historical on-disk updaters do not
-    # declare this local, so only they hand off through retired shims.
-    _hermes_current_updater_frame = True
-    from hermes_cli.update_owning_install import retarget_to_owning_install
-
-    retarget_to_owning_install(PROJECT_ROOT)
-    if _update_preflight_handled(args):
-        return
-    gateway_mode = getattr(args, "gateway", False)
-
-    _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
-    # Cross-process mutual exclusion: dashboard Update button, Tauri updater
-    # and this command all mutate one checkout; two at once strand it
-    # half-updated. Shares the marker the Tauri/Electron updaters already use.
-    from hermes_cli.update_lock import (
-        UPDATE_EXIT_CONCURRENT,
-        UpdateLock,
-        describe_holder,
-    )
-
-    _update_lock = UpdateLock(install_root=PROJECT_ROOT)
-    if not _update_lock.acquire():
-        print(describe_holder(_update_lock.holder))
-        _finalize_update_output(_update_io_state)
-        from hermes_cli.update_cmd_common import _record_stop
-        _record_stop("lock_held", without_receipt="refused")  # no receipt: latest.json is the holder's
-        sys.exit(UPDATE_EXIT_CONCURRENT)
-
-    from hermes_cli.update_cmd import _cmd_update_impl
-    from pm import InstallError
-
-    def _custody_refusal() -> str | None:
-        # m2: readers swallow an OSError, so a refused update child can end the run as a misleading
-        # downstream error; the refusal is what stopped it. Never on POSIX (nothing refuses there).
-        custody = sys.modules.get("hermes_cli.update_custody")
-        return custody.refusal_notice() if custody is not None else None
-
-    try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
-    except (InstallError, OSError, subprocess.SubprocessError) as exc:
-        refusal = _custody_refusal()
-        print(refusal or f"✗ Update failed: {exc}")
-        _finalize_update_receipt(1, f"{type(exc).__name__}: {exc}")
-        if gateway_mode:
-            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
-            _write_gateway_update_exit_code(False)
-
-        raise SystemExit(1) from exc
-    except SystemExit as _update_exit:
-        # Receipt boundary: the impl has many early sys.exit paths that never
-        # reach an inner finalize. Persist any still-open receipt with the real
-        # exit code (no-op if already finalized), then let the exit proceed.
-        _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
-        if _code and (refusal := _custody_refusal()):
-            print(refusal)
-        _finalize_update_receipt(_code, f"sys.exit({_code})")
-        if gateway_mode and _code:
-            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
-            _write_gateway_update_exit_code(False)
-
-        raise
-    except BaseException as _update_exc:
-        if gateway_mode:
-            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
-            _write_gateway_update_exit_code(False)
-        _finalize_update_receipt(1, f"{type(_update_exc).__name__}: {_update_exc}")
-        raise
-    else:
-        from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
-
-        _finalize_update_receipt(0, COMMAND_BOUNDARY_STOP_REASON)
-
-    finally:
-        _update_lock.release()
-        _finalize_update_output(_update_io_state)
-
 
 
 def _coalesce_session_name_args(argv: list) -> list:

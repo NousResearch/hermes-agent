@@ -17,7 +17,10 @@ Fleet-update campaign #91277 (Aug 2026). A PR that weakens a stage must answer f
 it guards. `plan → snapshot → apply → restart-per-kind → verify → report`
 
 - **Plan** (`update_inventory.py`, `hermes update --plan`): read-only inventory — install kind, all
-  profiles, every live gateway with supervisor + running code version. Deployment kinds are
+  profiles, every live gateway and serve/dashboard backend with supervisor + running code version.
+  Systemd serve/dashboard ownership requires both cgroup membership and matching `MainPID`; the
+  plan carries manager scope and exact unit so custom service names can be restarted without
+  treating an inherited cgroup as ownership. Deployment kinds are
   first-class: `git` updates in place; `docker`/`nix`/`apt` are NOT in-place-updatable and the
   updater reports the correct external command instead of fighting the deployment model.
 - **Snapshot** (`backup.py`): pre-update quick snapshot for EVERY profile (the code swap + fleet
@@ -42,7 +45,11 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   its artifacts in an earlier update is rebuilt instead of "forgotten" (#90495).
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE within the updating install (every
   `hermes-gateway*` unit / `ai.hermes.gateway*` LaunchAgent whose home is the updating root or one of its
-  `profiles/<name>`), drain-first (SIGUSR1), with per-unit/per-label failure isolation. Restarting only the
+  `profiles/<name>`), drain-first (SIGUSR1), with per-unit/per-label failure isolation. Plan-verified
+  systemd serve/dashboard targets are restarted once by their exact scope and unit; custom names are
+  eligible only while their recorded PID remains in the recorded cgroup and is still the unit `MainPID`.
+  A Desktop action launched inside such a unit must first move the updater to a manager-owned transient
+  scope and prove restart authority, or refuse before mutation. Restarting only the
   invoking profile's service leaves siblings on stale `sys.modules` until they crash — the largest dupe-PR
   cluster in the repo's history came from that bug. The fleet is bounded by HOME, not by namespace:
   `hermes_cli/update_fleet_scope.py` judges every unit/label/process by the home it actually runs on

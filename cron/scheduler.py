@@ -50,7 +50,6 @@ from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
 from agent.session_activity import AwakeIdleMeter
-from agent.turn_failure_copy import is_max_iteration_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -2043,70 +2042,8 @@ def _run_agent_with_watchdog(
     return result
 
 
-def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
-    """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
-    `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
-    be delivered as the reply with the job marked ok."""
-    # If the agent itself reported failure (e.g. all retries exhausted on API errors, model abort, mid-run
-    # interrupt), do not silently mark the job as successful. run_agent populates
-    # `failed=True`/`completed=False` on these paths and may put the error into `final_response`, which
-    # would otherwise be delivered as if it were the agent's reply and the job's `last_status` set to "ok".
-    # Raise so the except handler below builds the proper failure tuple. (issue #17855)
-    turn_exit_reason = str(result.get("turn_exit_reason") or "")
-    final_response_text = (result.get("final_response") or "").strip()
-    max_iteration_summary = is_max_iteration_handoff(result)
-    if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
-    if max_iteration_summary:
-        logger.warning(
-            "Job '%s' reached the iteration limit but produced a final fallback response; "
-            "delivering the response instead of failing the cron run",
-            job_name)
-
-    final_response = result.get("final_response", "") or ""
-    # Repair model-mangled computer_use media paths before delivery (fail-open, as in gateway).
-    if final_response:
-        from gateway.media_repair import repair_explicit_computer_use_media_paths
-
-        final_response = repair_explicit_computer_use_media_paths(
-            final_response, result.get("messages", []))
-    if final_response.strip() == "(No response generated)":
-        final_response = ""
-    # The "⚠️ No reply" turn-completion explainer would be delivered as a cron warning; detect it
-    # via the same formatter and treat as empty so cron stays silent on abnormal empty turns.
-    if final_response.strip() and turn_exit_reason:
-        # Render every persistence-cause variant or cause-refined text slips through.
-        _explainer_variants = []
-        try:
-            from hermes_state_errors import PERSISTENCE_ERROR_CAUSES as _causes
-        except Exception:
-            _causes = ("locked", "disk", "unknown")
-        # The finalizer fills the model name into the explainer; render with the same name (and
-        # the bare form) or the comparison below misses and the warning is delivered.
-        _model = str(result.get("model") or "")
-        for _cause in (None, *_causes):
-            for _kwargs in ({"model": _model}, {}):
-                try:
-                    _variant = AIAgent._format_turn_completion_explanation(turn_exit_reason, _cause, **_kwargs)
-                except TypeError:
-                    try:
-                        _variant = AIAgent._format_turn_completion_explanation(turn_exit_reason)
-                    except Exception:
-                        _variant = ""
-                except Exception:
-                    _variant = ""
-                if _variant:
-                    _explainer_variants.append(_variant.strip())
-        if final_response.strip() in _explainer_variants:
-            logger.info(
-                "Job '%s': abnormal empty turn (%s) — suppressing explainer for cron delivery",
-                job_id, turn_exit_reason)
-            final_response = ""
-    return final_response
-
-
 def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str,
-                           workdir: Optional[str] = None) -> None:
+                           workdir: Optional[str] = None, *, result: Optional[dict] = None) -> None:
     """Title, classify, end and release the cron session after the agent turn has returned."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
     _session_db = _BoundedCronSessionDB(session_db, job_id)
@@ -2164,11 +2101,11 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
     # it grows) downgrades the booking: an unknown value (newer classifier shape, test doubles) keeps the
     # historical reason, and so does a failed probe — the booking itself is FAIL-OPEN on probe errors,
     # because classification is best-effort metadata and must not mislabel a healthy run.
-    _end_reason = "cron_complete"
+    _end_reason = "cron_guardrail_halt" if is_guardrail_halt(result) else "cron_complete"
     try:
         _statuses = _session_db.session_lifecycle_statuses([_final_cron_session_id])
         _lifecycle = _statuses.get(_final_cron_session_id)
-        if _lifecycle in ("interrupted", "error", "empty"):
+        if _end_reason == "cron_complete" and _lifecycle in ("interrupted", "error", "empty"):
             _end_reason = "cron_incomplete_no_output"
             logger.warning(
                 "Job '%s': session ended without a final assistant "
@@ -2555,6 +2492,7 @@ def run_job(
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    result = None
     model = ""
     _session_db = None
     _audit: Optional[_FireAudit] = None
@@ -2625,11 +2563,12 @@ def run_job(
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
-            _audit.write({}, error_msg)
-        from cron.scheduler_diagnostics import format_run_error
+            _audit.write(result or {}, error_msg)
+        from cron.scheduler_diagnostics import format_partial_response, format_run_error
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
             + format_run_error(e)
+            + format_partial_response(result)
         )
         return False, output, "", error_msg
 
@@ -2641,7 +2580,7 @@ def run_job(
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
-                                   workdir=scope.workdir)
+                                   workdir=scope.workdir, result=result)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
@@ -4386,6 +4325,7 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
 
 
 from cron.scheduler_tick import tick  # noqa: E402
+from cron.scheduler_result import _final_response_from_result, is_guardrail_halt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

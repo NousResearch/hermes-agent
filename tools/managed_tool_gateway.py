@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -61,22 +60,6 @@ def _read_nous_provider_state() -> Optional[dict]:
         return None
 
 
-def _parse_timestamp(value: object) -> Optional[datetime]:
-    normalized = _clean(value)
-    if normalized is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized)
-    except ValueError:
-        return None
-    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
-    expires = _parse_timestamp(expires_at)
-    return expires is None or (expires - datetime.now(timezone.utc)).total_seconds() <= max(0, int(skew_seconds))
-
-
 def _read_user_token_override() -> Optional[str]:
     """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
     when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
@@ -94,7 +77,9 @@ def _read_user_token_override() -> Optional[str]:
 def peek_nous_access_token() -> Optional[str]:
     """Cheap token probe: env override or cached auth-store token, no expiry check and no network —
     availability scans must stay off the synchronous OAuth refresh path (:func:`read_nous_access_token`)."""
-    return _read_user_token_override() or _clean((_read_nous_provider_state() or {}).get("access_token"))
+    from hermes_cli.anon_auth import held_connectors_token
+
+    return _read_user_token_override() or _clean(held_connectors_token(_read_nous_provider_state()))
 
 
 def read_nous_access_token() -> Optional[str]:
@@ -110,9 +95,11 @@ def read_nous_access_token() -> Optional[str]:
     nous_provider = _read_nous_provider_state() or {}
     if not nous_provider:
         return None
+    from hermes_cli.anon_auth import held_connectors_token
+
+    if fresh_token := _clean(held_connectors_token(nous_provider, skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
+        return fresh_token
     cached_token = peek_nous_access_token()
-    if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
-        return cached_token
     try:
         from hermes_cli.auth import resolve_nous_access_token
 

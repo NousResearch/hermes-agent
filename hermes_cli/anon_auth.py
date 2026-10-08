@@ -33,7 +33,8 @@ from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
+    AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, NOUS_INFERENCE_INVOKE_SCOPE, _decode_jwt_claims,
+    httpx)
 
 logger = logging.getLogger("hermes_cli.auth")
 
@@ -351,8 +352,36 @@ def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     return payload
 
 
+# ``purpose: "connectors"`` (NAS hermes-portal#1516) mints a JWT whose only scope is
+# ``connectors:invoke``: connector routes and the tool gateway accept it, the welcome host refuses it,
+# and NAS never puts the free-inference challenge in front of it. A NAS from before #1516 ignores the
+# field and answers with an inference token (a superset), so which slot a token fills is read off its
+# ``scope`` claim, never off the purpose that asked for it.
+def is_connectors_only(token: Any) -> bool:
+    """*token* carries a scope claim and it lacks ``inference:invoke`` (a scopeless JWT reads as today's)."""
+    from hermes_cli.auth_nous import _scope_values
+    claims = _decode_jwt_claims(token)
+    scopes = _scope_values(claims.get("scope")) | _scope_values(claims.get("scp"))
+    return bool(scopes) and NOUS_INFERENCE_INVOKE_SCOPE not in scopes
+
+
+def held_connectors_token(state: Any, *, skew_seconds: Optional[int] = None) -> Optional[str]:
+    """The bearer a connectors / managed-tools call sends: the profile's token (for a guest the
+    inference one, a superset), else a guest's connectors-only token, preferring one that outlives
+    *skew_seconds*. ``None`` also accepts an expiring token (availability probes)."""
+    from hermes_cli.auth import _is_expiring
+    if not isinstance(state, dict):
+        return None
+    slots = (state, state.get("connectors_token") if is_guest_state(state) else None)
+    held = [(s["access_token"], s.get("expires_at")) for s in slots
+            if isinstance(s, dict) and isinstance(s.get("access_token"), str) and s["access_token"]]
+    live = next((token for token, exp in held if not _is_expiring(exp, skew_seconds or 0)), None)
+    return live or (held[0][0] if held and skew_seconds is None else None)
+
+
 def exchange_anon_jwt(
     client: httpx.Client, portal_base_url: str, anon_token: str, *, auth_state: Dict[str, Any],
+    purpose: str = "inference",
 ) -> Dict[str, Any]:
     """``POST /api/anonymous/token {token}`` -> ``{access_token, expires_in, inference_base_url, ...}``.
 
@@ -363,7 +392,7 @@ def exchange_anon_jwt(
     from hermes_cli import anon_challenge
     response = client.post(
         f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(),
-        json={"token": anon_token, "client": anon_challenge.client_info()})
+        json={"token": anon_token, "client": anon_challenge.client_info(), "purpose": purpose})
 
     def challenge(body: Dict[str, Any]) -> AuthError:
         return anon_challenge.challenge_error(
@@ -385,12 +414,15 @@ def exchange_anon_jwt(
     if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
         logger.info("Nous free tier token exchange returned no token")
         raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
-    anon_challenge.note_optional_challenges(payload, portal_base_url)
+    # A connectors-only grant must neither clear nor announce an inference challenge.
+    if not is_connectors_only(payload["access_token"]):
+        anon_challenge.note_optional_challenges(payload, portal_base_url)
     return payload
 
 
 def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) -> None:
-    """Write a fresh exchange result into a guest state in place (token, expiry, routing)."""
+    """Write a fresh exchange result into a guest state in place: an inference token (token, expiry,
+    routing) into the state itself, a connectors-only one into ``connectors_token`` beside it."""
     from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
@@ -400,6 +432,9 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
         expires_at = datetime.fromtimestamp(float(exp), tz=timezone.utc)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
+    if is_connectors_only(access_token):
+        state["connectors_token"] = {"access_token": access_token, "expires_at": expires_at.isoformat()}
+        return
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
     # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
     # host: the gateway cross-refuses an anonymous JWT there.
@@ -630,8 +665,9 @@ def ensure_portal_identity(
     return state
 
 
-def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
-    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place.
+def refresh_guest_state(state: Dict[str, Any], client: httpx.Client, *, purpose: str = "inference") -> str:
+    """Token-acquisition seam for a guest: re-exchange the ``anon_`` credential in place and return
+    the minted token (``purpose="connectors"`` asks for a connectors-only one).
 
     The portal URL is the resolver's canonical one (env override, else the validated stored URL,
     else the default), never a raw stored value on its own.
@@ -642,8 +678,10 @@ def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
-    apply_exchange_to_state(state, exchange_anon_jwt(
-        client, _nous_portal_base_url(state), anon_token, auth_state=state))
+    exchanged = exchange_anon_jwt(
+        client, _nous_portal_base_url(state), anon_token, auth_state=state, purpose=purpose)
+    apply_exchange_to_state(state, exchanged)
+    return exchanged["access_token"]
 
 
 def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:

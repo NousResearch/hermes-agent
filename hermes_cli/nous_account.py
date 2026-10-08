@@ -310,7 +310,10 @@ def get_nous_portal_account_info(*, force_fresh: bool = False, min_jwt_ttl_secon
     except Exception as exc:
         return _error_info(error=exc, logged_in=False)
 
-    access_token = state.get("access_token")
+    # A guest that has only used connectors holds just a connectors-only token (same claims).
+    from hermes_cli.anon_auth import held_connectors_token
+
+    access_token = held_connectors_token(state) or ""
     portal_base_url = _portal_base_url(state)
     if not _nonblank(access_token):
         return (

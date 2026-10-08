@@ -1812,10 +1812,9 @@ def resolve_nous_access_token(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways.
-
-    A free-tier exchange may be answered with a browser challenge (``anon_challenge``); it is worked
-    here, after the exchange's locks have unwound, and the exchange is then run once more."""
+    """Refresh-aware Nous Portal token for managed tool gateways, connectors and account reads, never
+    the free model: a guest gets a live held token, else a connectors-only mint NAS never challenges.
+    Only a NAS from before hermes-portal#1516 challenges that mint; it is worked here as before."""
     from hermes_cli.anon_challenge import run_with_challenge
     return run_with_challenge(lambda: _resolve_nous_access_token(
         timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
@@ -1854,20 +1853,17 @@ def _resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
-            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            from hermes_cli.anon_auth import held_connectors_token, is_guest_state, refresh_guest_state
             if is_guest_state(state):
-                # Guest seam: the anon_ credential is the identity; a first use has no access token
-                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
-                access_token = state.get("access_token")
-                if isinstance(access_token, str) and access_token and not _is_expiring(
-                        state.get("expires_at"), refresh_skew_seconds):
+                # A live held token serves (an inference one is a superset); else mint connectors-only.
+                if access_token := held_connectors_token(state, skew_seconds=refresh_skew_seconds):
                     return _memo(access_token)
                 with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
                                   headers={"Accept": "application/json"}, verify=verify) as client:
-                    refresh_guest_state(state, client)
+                    minted = refresh_guest_state(state, client, purpose="connectors")
                 persist()
                 _write_shared_nous_state(state)
-                return _memo(state["access_token"])
+                return _memo(minted)
 
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")

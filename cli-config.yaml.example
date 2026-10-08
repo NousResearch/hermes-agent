@@ -1460,6 +1460,12 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#   qqbot:
+#     extra:
+#       # Required to respond to @bot messages delivered in QQ full-message mode.
+#       # Use the bot's group OpenID from its <@OpenID> token, not its numeric app ID.
+#       # Unset: GROUP_MESSAGE_CREATE does not invoke the model.
+#       bot_member_openid: ""
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

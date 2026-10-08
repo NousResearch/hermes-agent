@@ -126,3 +126,37 @@ This usually means:
 - Ensure `aiohttp` and `httpx` are installed: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`
 - Check network connectivity to `api.sgroup.qq.com` and the WebSocket gateway
 - Review gateway logs for detailed error messages and reconnect behavior
+
+### Mentioned group members are missing
+
+QQ's official group events may provide mentioned members in a separate `mentions`
+user list. Hermes adds that list to the model's input with nicknames and member IDs.
+When `content` includes `<@OpenID>` tokens, Hermes resolves them at their original
+positions using the list. If only the list is supplied, Hermes
+does not guess text positions. A quoted element's own mention list stays inside its
+quoted context.
+
+When QQ omits both the mention text and the list, Hermes cannot recover
+the target from that event; write the nickname as ordinary text as a workaround.
+See the [official event schema](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_at_message_create.html).
+
+To use full-message delivery when member mentions are missing in @-only mode:
+
+1. In the QQ developer console, open the bot's group-message settings. Under
+   **“修改允许机器人可获取的群聊消息范围”** (change the group-message scope
+   available to the bot), select **“获取群内全部消息”** (receive all group messages).
+2. Configure `platforms.qqbot.extra.bot_member_openid` with this bot's group OpenID:
+   the ID in its actual `<@OpenID>` mention token from a full-mode event. This is
+   different from the numeric bot ID returned by `/users/@me`.
+
+The QQ setting enables delivery of `GROUP_MESSAGE_CREATE` events. A live comparison
+found member mentions available in this mode when they were absent from @-only
+events; this is an observation, not a guarantee of platform behavior. The setting
+is needed for full-message delivery, not for parsing a `mentions` list that QQ
+already supplies in an @-only event.
+
+Receiving all group messages does not make Hermes reply to every message. Full-mode
+messages invoke Hermes only when they mention the configured bot identity and pass
+the existing group access policy. Without `bot_member_openid`, full-mode events do
+not invoke the model. Messages that do not mention this bot are ignored and are not
+accumulated as conversation context by this adapter.

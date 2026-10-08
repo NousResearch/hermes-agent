@@ -175,7 +175,7 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
 
 def _aux_task_takes_reasoning(task: str) -> bool:
     """Whether the task's config block honours ``reasoning_effort``. MoA slots and
-    ``memory_query_rewrite`` omit the key by design (``config_defaults._aux``); ``review``
+    ``memory_query_rewrite`` omit the key by design (``config_defaults_aux._aux``); ``review``
     routes through delegation which reads ``delegation.reasoning_effort``, not its own block."""
     if task == _DELEGATION_TASK_KEY:
         return True

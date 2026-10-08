@@ -34,6 +34,7 @@ import {
   scanAndRecordRepos,
   setProjectParent,
   startWorkInRepo,
+  syncProfileWorkspaceCwd,
   updateProject
 } from './projects'
 import {
@@ -254,12 +255,17 @@ describe('resolveNewSessionCwd', () => {
     // $focusedSessionState needs a runtime — leave it empty via no session states.
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     applyConfiguredDefaultProjectDir(null)
     $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
     $currentCwd.set('')
     $selectedStoredSessionId.set(null)
     $sessions.set([])
+    // The profile-workspace cache is module state that outlives a test: clear it
+    // so the next one starts from the detached default.
+    getHermesConfig.mockResolvedValue({} as never)
+    await syncProfileWorkspaceCwd('default')
   })
 
   it('starts a chat detached inside Home, ignoring the configured default dir', () => {
@@ -323,6 +329,40 @@ describe('resolveNewSessionCwd', () => {
     // Focused session has no workspace → fall through to configured default,
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('anchors a bare chat to the project owning the profile workspace', async () => {
+    // A detached chat lands in the sidebar's Home bucket every time, so the project that owns the
+    // profile's own working directory — where the session will actually work — beats an unset default.
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: NO_PROJECT_ID, label: 'Home', path: null, repos: [], sessionCount: 0, sessionIds: [] },
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/work/pasei')
+  })
+
+  it('keeps the configured default when no project covers the profile workspace', async () => {
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/elsewhere' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+
+  it('stays detached inside Home even when a project owns the profile workspace', async () => {
+    getHermesConfig.mockResolvedValue({ terminal: { cwd: '/work/pasei' } } as never)
+    await syncProfileWorkspaceCwd('default')
+    $projectTree.set([
+      { id: 'p_pasei', label: 'pasei', path: '/work/pasei', repos: [], sessionCount: 0, sessionIds: [] }
+    ] as never)
+    enterProject(NO_PROJECT_ID)
+
+    expect(resolveNewSessionCwd()).toBe('')
   })
 })
 

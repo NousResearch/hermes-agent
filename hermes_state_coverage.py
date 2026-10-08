@@ -19,6 +19,7 @@ class SessionCoverageMixin:
 
     def _resolve_carried_row_ids(
         self, conn, session_id: str, carried_messages: List[Dict[str, Any]],
+        *, topic_id: Optional[int] = None,
     ) -> List[int]:
         """Resolve byte-identical carried-forward live dicts to their ACTIVE durable originals.
 
@@ -45,10 +46,11 @@ class SessionCoverageMixin:
             by_id: Dict[int, Tuple[Any, ...]] = {}
             by_key: Dict[Tuple[Any, ...], List[int]] = {}
             narrow = f" AND id IN ({_placeholders(ids)})" if ids else ""
+            topic_clause = " AND topic_id = ?" if topic_id is not None else ""
             for row in conn.execute(
                 "SELECT id, role, content, tool_call_id, tool_calls, timestamp FROM messages "
-                f"WHERE session_id = ? AND active = 1{narrow} ORDER BY id",
-                (session_id, *(ids or ())),
+                f"WHERE session_id = ? AND active = 1{topic_clause}{narrow} ORDER BY id",
+                (session_id, *((int(topic_id),) if topic_id is not None else ()), *(ids or ())),
             ).fetchall():
                 rid = int(row["id"])
                 by_id[rid] = self._row_identity(
@@ -79,18 +81,24 @@ class SessionCoverageMixin:
                 resolved.append(matches[0])
         return list(dict.fromkeys(resolved))
 
-    def _matching_active_ids(self, conn, session_id: str, message: Dict[str, Any]) -> List[int]:
+    def _matching_active_ids(
+        self, conn, session_id: str, message: Dict[str, Any], *, topic_id: Optional[int] = None,
+    ) -> List[int]:
         """Active row ids whose stored role and content equal *message*. Empty when it was never persisted."""
         content = message.get("content")
         if not isinstance(content, str):
             return []
         stored = self._encode_content(self._loaded_view_content(message.get("role", "unknown"), content))
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
         return [int(row["id"]) for row in conn.execute(
-            "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
-            (session_id, message.get("role"), stored)).fetchall()]
+            "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?"
+            f"{topic_clause}",
+            (session_id, message.get("role"), stored,
+             *((int(topic_id),) if topic_id is not None else ()))).fetchall()]
 
     def _matching_retired_ids(
         self, conn, session_id: str, retired: Dict[str, Any], watermark: Optional[int] = None,
+        *, topic_id: Optional[int] = None,
     ) -> List[int]:
         """Active rows equal to a row the alternation repair retired without an id.
 
@@ -100,10 +108,12 @@ class SessionCoverageMixin:
         """
         role = str(retired.get("role") or "")
         bound = watermark is not None
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
         rows = conn.execute(
             "SELECT id, content, tool_call_id, tool_calls FROM messages WHERE session_id = ? AND active = 1 "
-            f"AND role = ?{' AND id <= ?' if bound else ''} ORDER BY id",
-            (session_id, role, *((int(watermark),) if bound else ()))).fetchall()
+            f"AND role = ?{' AND id <= ?' if bound else ''}{topic_clause} ORDER BY id",
+            (session_id, role, *((int(watermark),) if bound else ()),
+             *((int(topic_id),) if topic_id is not None else ()))).fetchall()
         want_calls = list(retired.get("tool_call_ids") or ())
         matches = []
         for row in rows:
@@ -121,6 +131,7 @@ class SessionCoverageMixin:
 
     def _merged_user_run(
         self, conn, session_id: str, message: Dict[str, Any], watermark: Optional[int] = None,
+        *, topic_id: Optional[int] = None,
     ) -> Optional[List[int]]:
         """Active rows an alternation repair merged into *message*: ``[]`` for none, None when ambiguous.
 
@@ -141,19 +152,21 @@ class SessionCoverageMixin:
 
         content, _ = strip_leading_message_timestamps(content)
         bound = watermark is not None
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
         rows = [
             (int(row["id"]), row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
             for row in conn.execute(
                 f"SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1"
-                f"{' AND id <= ?' if bound else ''} ORDER BY id",
-                (session_id, *((int(watermark),) if bound else ()))).fetchall()]
+                f"{' AND id <= ?' if bound else ''}{topic_clause} ORDER BY id",
+                (session_id, *((int(watermark),) if bound else ()),
+                 *((int(topic_id),) if topic_id is not None else ()))).fetchall()]
         # Dropping an orphan can make user rows adjacent only in the repaired view.
         # Skip only uniquely proved retired originals, never arbitrary intervening rows.
         retired_ids = set()
         for retired in message.get(RETIRED_DURABLE_ROWS) or ():
             if retired.get(OWN_ROW):
                 continue
-            matches = self._matching_retired_ids(conn, session_id, retired, watermark)
+            matches = self._matching_retired_ids(conn, session_id, retired, watermark, topic_id=topic_id)
             if len(matches) != 1:
                 return None
             retired_ids.update(matches)
@@ -179,6 +192,7 @@ class SessionCoverageMixin:
     def _proved_coverage(
         self, conn, session_id: str, covered_ids: Optional[List[int]],
         unresolved_held: Optional[List[Dict[str, Any]]], watermark: Optional[int] = None,
+        *, topic_id: Optional[int] = None,
     ) -> Optional[Tuple[List[int], Set[int]]]:
         """``(ids safe to archive as summarized, ids merged into another held dict)``, or None when
         a durable held row cannot be named.
@@ -206,7 +220,7 @@ class SessionCoverageMixin:
             if message.get(RETIRED_ROW):
                 # A row the repair dropped behind another held dict: that dict stands for it in the tail.
                 # The dict's own row, recorded before a fold rewrote its text, is its own tail slot.
-                matches = self._matching_retired_ids(conn, session_id, message, watermark)
+                matches = self._matching_retired_ids(conn, session_id, message, watermark, topic_id=topic_id)
                 if len(matches) != 1:
                     return None
                 proved.extend(matches)
@@ -220,10 +234,10 @@ class SessionCoverageMixin:
             # The stamp is provenance and text is not: a surface may have re-rendered the dict since the
             # repair (gateway timestamps), and a later row can equal the merged text. So the run is
             # resolved first, and a stamped dict that names none is still durable, never an unpersisted turn.
-            run = self._merged_user_run(conn, session_id, message, watermark)
+            run = self._merged_user_run(conn, session_id, message, watermark, topic_id=topic_id)
             if message.get(MERGED_DURABLE_ROWS) and not run:
                 return None
-            matches = [] if run else self._matching_active_ids(conn, session_id, message)
+            matches = [] if run else self._matching_active_ids(conn, session_id, message, topic_id=topic_id)
             if len(matches) > 1 or (
                     message.get(_DB_PERSISTED_MARKER) and len(matches) != 1 and not run):
                 return None

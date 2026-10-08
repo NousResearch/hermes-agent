@@ -15,6 +15,7 @@ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_
 # outgoing copy and the token estimator ignores them: one set, so an estimate
 # never prices bytes the provider never receives (an edit's inline_diff in
 # display_metadata is ~9KB and would trigger premature compaction).
+
 # Transcript-repair bookkeeping riding on batch rows / live dicts (agent/transcript_repair.py): the
 # stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
 DB_ROW_SNAPSHOT = "_db_row_snapshot"
@@ -43,7 +44,7 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # Membership is the real contract, NOT the leading underscore: the chat-completions transport happens
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
-    {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
+    {"timestamp", "display_kind", "display_metadata", "_row_id", "_topic_id", "_submit_row_session_id",
      MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
      MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
@@ -237,6 +238,7 @@ def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: di
         # The nearest assistant naming this id owns the result: its uid, or none if it has no map (legacy).
         return resolve_tool_call_uid(index, tool_call_id)
     return None
+
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
 

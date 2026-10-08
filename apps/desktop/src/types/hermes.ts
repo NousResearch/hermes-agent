@@ -493,6 +493,7 @@ export interface HermesConfig {
     tool_progress?: boolean | string
   }
   desktop?: {
+    artifacts?: { ignore?: string[] }
     font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]

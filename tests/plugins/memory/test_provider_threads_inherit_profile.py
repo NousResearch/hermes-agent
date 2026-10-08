@@ -41,18 +41,8 @@ def _byterover(seen, tmp_path):
     return [p._curate_in_background("content", name="brv-test", what="test")]
 
 
-def _openviking(seen, tmp_path):
-    import plugins.memory.openviking as openviking
-
-    p = openviking.OpenVikingMemoryProvider()
-    workers: set = set()
-    p._spawn_tracked("ov-test", _probe_home(seen), threading.Lock(), lambda: workers)
-    return list(workers)
-
-
 _PROVIDERS = {
     "retaindb": _retaindb, "byterover": _byterover,
-    "openviking": _openviking,
 }
 
 

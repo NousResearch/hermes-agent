@@ -73,6 +73,7 @@ from hermes_state_wal import (
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
+from hermes_state_tool_retries import SessionToolRetriesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -461,7 +462,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -1589,7 +1590,7 @@ class SessionDB(
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
-        "billing_mode", "source",
+        "billing_mode", "source", "task",
     )
 
     MAX_TITLE_LENGTH = 100

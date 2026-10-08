@@ -2,6 +2,15 @@ import { expect, it } from 'vitest'
 
 import { canonicalRequest, canonicalResult, localCreationOptions, sharedControlParams } from '../canonicalGateway.js'
 
+it.each(['HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'])('carries %s on the launching session policy', flag => {
+  const field = flag === 'HERMES_SAFE_MODE' ? 'safe_mode' : 'ignore_user_config'
+  const options = localCreationOptions({ [flag]: '1' } as NodeJS.ProcessEnv)
+  expect(options[field]).toBe(true)
+  expect(localCreationOptions({ [flag]: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty(field)
+  const contract = { sources: ['tui'], parameters: ['source', 'request_id', field] }
+  expect(canonicalRequest('session.create', { ...options, request_id: 'owned' }, contract).params[field]).toBe(true)
+})
+
 it('retains prepared identity and rejects unsupported TUI launch policy instead of impersonating CLI', () => {
   const contract = { sources: ['tui'], parameters: ['request_id', 'source', 'model', 'cwd', 'toolsets'] }
   expect(canonicalRequest('session.create', { request_id: 'fresh', model: 'local-model', cwd: '/tmp/project' }, contract)).toEqual({ method: 'session.create', params: { request_id: 'fresh', source: 'tui', model: 'local-model', cwd: '/tmp/project' } })

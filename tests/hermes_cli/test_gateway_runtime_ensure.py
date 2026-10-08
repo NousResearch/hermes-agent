@@ -9,6 +9,28 @@ import time
 
 import pytest
 
+def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_start as start
+    from hermes_cli import gateway_windows
+
+    flags = ('HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG')
+    for key in flags:
+        monkeypatch.setenv(key, '1')
+    monkeypatch.setenv('RUNTIME_TEST_SENTINEL', 'retained')
+    monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
+                        lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
+    captured = {}
+    child = SimpleNamespace(pid=123)
+    def spawn(command, **kwargs):
+        captured.update(kwargs)
+        return child
+    monkeypatch.setattr(start.subprocess, 'Popen', spawn)
+    assert start.spawn_unmanaged_gateway(tmp_path, deadline=time.monotonic() + 5) is child
+    assert all(key not in captured['env'] for key in flags)
+    assert captured['env']['RUNTIME_TEST_SENTINEL'] == 'retained'
+    assert all(os.environ[key] == '1' for key in flags)
+
 
 @pytest.mark.platforms("linux")
 def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(tmp_path):
@@ -385,4 +407,3 @@ def test_cold_start_target_follows_boot_multiplex_policy(tmp_path, monkeypatch, 
     runtime.ensure_gateway_runtime(home, timeout=0.3)
 
     assert spawned == [{"root": root, "home": home}[owner].resolve()]
-

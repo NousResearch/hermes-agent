@@ -99,9 +99,12 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // session prompts anyway / still loads rules, SOUL, memory and skills.auto_load.
   const truthy = (value?: string) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
 
-  if (truthy(env.HERMES_YOLO_MODE)) { options.yolo = true }
-
-  if (truthy(env.HERMES_IGNORE_RULES)) { options.ignore_rules = true }
+  for (const [field, value] of [
+    ['yolo', env.HERMES_YOLO_MODE], ['ignore_rules', env.HERMES_IGNORE_RULES],
+    ['safe_mode', env.HERMES_SAFE_MODE], ['ignore_user_config', env.HERMES_IGNORE_USER_CONFIG]
+  ] as const) {
+    if (truthy(value)) { options[field] = true }
+  }
 
   return options
 }

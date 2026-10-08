@@ -2884,7 +2884,7 @@ def _is_tui_chat_launch(args) -> bool:
 def _bypass_chat_launch(args) -> bool:
     """--safe-mode / --ignore-user-config chat: the gateway owner freezes code defaults and runs
     the turn out of process, so the profile's display.interface must not pick a surface and the
-    client performs no discovery. Explicit --tui is refused later by the TUI's own option gate."""
+    client performs no discovery. Explicit --tui forwards the flags in its session.create policy."""
     return bool(getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False)) \
         and not getattr(args, "tui", False)
 

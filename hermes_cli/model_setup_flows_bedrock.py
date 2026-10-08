@@ -45,12 +45,12 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
 
 
 def _model_flow_bedrock_api_key(config, region, current_model=""):
-    """Bedrock API Key mode on the OpenAI-compatible bedrock-mantle endpoint — for developers
-    without an AWS account who received a Bedrock API Key from their AWS admin."""
+    """Bedrock API Key mode: Claude Messages, other models OpenAI-compatible."""
     from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
     from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
+    mantle_anthropic_base_url = f"https://bedrock-mantle.{region}.api.aws/anthropic"
 
     # Check env var and credential pool (keys added via `hermes auth`)
     bedrock_pconfig = ProviderConfig(id="bedrock", name="Bedrock", auth_type="api_key", api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",))
@@ -72,12 +72,28 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
-    print(f"  Showing {len(model_list)} curated models")
+    # Mantle has its own catalog IDs, distinct from native Converse profiles.
+    model_list = fetch_api_models(existing_key, mantle_base_url)
+    if not model_list:
+        model_list = _PROVIDER_MODELS.get("bedrock", [])
+        print(f"  Showing {len(model_list)} curated models")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
         confirm_base_url=mantle_base_url, confirm_api_key=existing_key)
+    is_mantle_claude = bool(selected and selected.lower().startswith("anthropic.claude-"))
+
+    if is_mantle_claude:
+        def _finish_claude(cfg, model):
+            model["key_env"] = "AWS_BEARER_TOKEN_BEDROCK"
+            _ensure_dict_section(cfg, "bedrock")["region"] = region
+
+        _finish_model(
+            selected, "anthropic",
+            f"  Default model set to: {selected} (via Bedrock API Key, {region})",
+            base_url=mantle_anthropic_base_url, api_mode="anthropic_messages", finish=_finish_claude,
+        )
+        print(f"  Endpoint: {mantle_anthropic_base_url}")
+        return
 
     def _finish(cfg, _model):
         # The bearer token rides on a named provider entry: a bare ``provider: custom``

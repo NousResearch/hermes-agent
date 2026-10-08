@@ -31,6 +31,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_model import _normalize_resolved_model
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
@@ -4760,17 +4761,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     return AsyncOpenAI(**async_kwargs), model
 
 
-def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
-    """Normalize a resolved model for the provider that will receive it."""
-    if not model_name:
-        return model_name
-    try:
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        return normalize_model_for_provider(model_name, provider)
-    except Exception:
-        return model_name
-
-
 def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_base: str) -> Any:
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
@@ -4987,7 +4977,9 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
     if client is None:
         logger.warning(unavailable_msg, *args)
         return None, None
-    return _route_client(req, client, _normalize_resolved_model(req.model or default, req.provider))
+    return _route_client(req, client, _normalize_resolved_model(
+        req.model or default, req.provider, str(getattr(client, "base_url", "") or ""),
+    ))
 
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:

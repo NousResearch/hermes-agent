@@ -350,6 +350,9 @@ def _anthropic_base_url_override_ok(base_url: str) -> bool:
     ``https://api.anthropic.com`` so a stale non-Anthropic URL cannot hijack native Anthropic."""
     candidate = (base_url or "").strip()
     hostname = (base_url_hostname(candidate) or "").lower() if candidate else ""
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if _is_bedrock_mantle_endpoint(candidate):
+        return True
     return bool(hostname) and (hostname == "api.anthropic.com" or hostname.endswith((".anthropic.com", ".claude.com", ".azure.com"))
                                or _detect_api_mode_for_url(candidate) == "anthropic_messages")
 
@@ -583,6 +586,9 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
                                                   _pool_entry_base_url(entry).rstrip("/"))
     base_url = _finalize_base_url(provider, api_mode, base_url)
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if provider == "anthropic" and _is_bedrock_mantle_endpoint(base_url):
+        return _mantle_anthropic_runtime(base_url, requested_provider)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
@@ -931,6 +937,16 @@ def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
     return _runtime("vertex", "chat_completions", base_url.rstrip("/"), token, source="vertex-oauth", requested_provider=requested_provider)
 
 
+def _mantle_anthropic_runtime(base_url: str, requested_provider: str) -> Dict[str, Any]:
+    """Mantle bypasses native Anthropic credential pools, including explicit keys."""
+    from agent.anthropic_credentials import resolve_anthropic_token
+    token = resolve_anthropic_token(base_url)
+    if not token:
+        raise AuthError("No Bedrock API key found. Set AWS_BEARER_TOKEN_BEDROCK.")
+    return _runtime("anthropic", "anthropic_messages", base_url, token,
+                    source="AWS_BEARER_TOKEN_BEDROCK", requested_provider=requested_provider)
+
+
 def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[Dict[str, Any]]:
     """Providers decided on the REQUESTED name alone, before custom / pool / generic paths."""
     if requested_provider == "moa":
@@ -939,6 +955,13 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     # Azure Anthropic short-circuit: an explicit Azure endpoint with provider="anthropic" must
     # bypass _resolve_named_custom_runtime (which would yield custom/chat_completions/no key).
     eff_base = (explicit_base_url or "").strip()
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    model_cfg = _get_model_config()
+    mantle_base = eff_base or _anthropic_cfg_base_url(model_cfg)
+    if (requested_provider == "anthropic" or
+            requested_provider == "auto" and _cfg_provider(model_cfg) == "anthropic"):
+        if _is_bedrock_mantle_endpoint(mantle_base):
+            return _mantle_anthropic_runtime(mantle_base, requested_provider)
     if requested_provider == "anthropic" and base_url_host_matches(eff_base, "azure.com"):
         return _runtime("anthropic", "anthropic_messages", eff_base.rstrip("/"),
                         (explicit_api_key or "").strip() or _azure_anthropic_env_key({}), source="azure-explicit",

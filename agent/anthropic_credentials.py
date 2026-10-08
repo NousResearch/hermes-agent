@@ -688,11 +688,15 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
     return token
 
 
-def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
+def resolve_anthropic_token(base_url: Optional[str] = None, *, model: Optional[str] = None) -> Optional[str]:
     """Resolve an Anthropic token from all sources in priority order (see module docstring).
 
     With *model*, a token the credential pool has benched for that model resolves to ``None``
     instead of being handed straight back to the caller that just saw it rate-limited."""
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if _is_bedrock_mantle_endpoint(base_url):
+        # A separate credential boundary: never inspect native OAuth, pools or Keychain.
+        return _first_env("AWS_BEARER_TOKEN_BEDROCK") or None
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:

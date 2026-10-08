@@ -470,6 +470,25 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
+def _resolve_bedrock_mantle_workspace_id(base_url: Optional[str]) -> str:
+    """Optional Mantle project; ``anthropic-workspace`` is not an equivalent header."""
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if not _is_bedrock_mantle_endpoint(base_url):
+        return ""
+    from agent.secret_scope import get_secret
+    workspace_id = (get_secret("BEDROCK_MANTLE_WORKSPACE_ID", "") or "").strip()
+    if not workspace_id:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+        bedrock = config.get("bedrock") or {}
+        workspace_id = str(bedrock.get("mantle_workspace_id") or "").strip()
+    if workspace_id and not re.fullmatch(r"proj_[A-Za-z0-9]+", workspace_id):
+        raise ValueError(
+            "Invalid Bedrock Mantle workspace ID. Expected a project ID beginning with 'proj_'."
+        )
+    return workspace_id
+
+
 def build_anthropic_client(api_key, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
@@ -478,6 +497,12 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
     rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
     sdk = _require_sdk("the Anthropic provider")
+    from agent.anthropic_endpoints import _is_bedrock_mantle_endpoint
+    if _is_bedrock_mantle_endpoint(base_url):
+        from agent.anthropic_credentials import resolve_anthropic_token
+        api_key = resolve_anthropic_token(base_url)
+        if not api_key:
+            raise ValueError("No Bedrock API key found. Set AWS_BEARER_TOKEN_BEDROCK.")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
@@ -500,6 +525,9 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
+    workspace_id = _resolve_bedrock_mantle_workspace_id(base_url)
+    if workspace_id:
+        headers["anthropic-workspace-id"] = workspace_id
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 

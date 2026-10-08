@@ -47,9 +47,15 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
 # (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
+# tier did not exist. Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
+# Preview cohort for the free tier's connector set, sent once on account creation so the account
+# service can record it on the account. "1" / "true" send true and "0" / "false" send false ("1" is
+# GUEST_ONBOARDING_ENV's spelling, so one bundle command reads the same for both); anything else (unset
+# included) omits the field and the service applies its default. Self-reported and
+# baked into desktop bundles in plain text: the service must treat it as a preference, never proof.
+PREVIEW_FULL_CONNECTORS_ENV = "HERMES_PREVIEW_FULL_CONNECTORS"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
 # Copy shared by every surface that names the free tier (R-USR-1): never guest / anonymous / account.
 FREE_TIER_LABEL = "Nous · free tier"
@@ -149,7 +155,7 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
 
 def guest_enabled() -> bool:
     """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off. The only place either is read."""
+    True) has not switched it off."""
     if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
         return False
     try:
@@ -326,9 +332,17 @@ def _raise_for_anon_status(
               retryable=code not in ANON_TERMINAL_CODES)
 
 
+def mint_request_body() -> Dict[str, Any]:
+    """The ``/api/anonymous/create`` body: ``{"preview_full_connectors": bool}`` when the env var is
+    ``1`` / ``true`` or ``0`` / ``false``, else ``{}``."""
+    raw = (os.environ.get(PREVIEW_FULL_CONNECTORS_ENV) or "").strip()
+    return {"preview_full_connectors": raw in ("1", "true")} if raw in ("1", "true", "0", "false") else {}
+
+
 def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
     """``POST /api/anonymous/create`` -> ``{user_id, org_id, token, idle_ttl_days}``. Token shown once."""
-    response = client.post(f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json={})
+    response = client.post(
+        f"{portal_base_url.rstrip('/')}/api/anonymous/create", headers=_anon_headers(), json=mint_request_body())
     payload = _raise_for_anon_status(response, action="sign-up")
     token = payload.get("token")
     if not isinstance(token, str) or not token.startswith("anon_"):
@@ -580,7 +594,8 @@ def ensure_portal_identity(
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
 
     ``explicit`` is required and must be True: the only callers are the boot bootstrap
-    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, and the
+    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the setup
+    chat's apps card (``setup_choose_tool._connectors_closed``, one attempt), and the
     dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
     ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
     of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).

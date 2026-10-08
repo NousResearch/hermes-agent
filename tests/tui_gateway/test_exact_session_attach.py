@@ -319,6 +319,23 @@ def test_fenced_prompt_cannot_stop_voice_chat(store, monkeypatch):
     stop.assert_not_called()
 
 
+def test_fenced_attachment_cannot_retry_stored_start_chat(store, monkeypatch):
+    sid = attach()["result"]["session_id"]
+    retry_read = Mock(side_effect=AssertionError("fenced attachment read tool retries"))
+    monkeypatch.setattr(server, "_session_db", retry_read)
+
+    refused = rpc(
+        "session.start_chat",
+        session_id=sid,
+        tool_call_id="old-start-chat",
+        args={"message": "retry prior handoff"},
+    )
+    assert refused["error"]["code"] == 4091
+    assert refused["error"]["data"]["reason"] == "attachment_execution_fenced"
+    retry_read.assert_not_called()
+    assert len(server._sessions) == 1
+
+
 def test_fenced_prompt_cannot_mark_speech_interrupted(store, monkeypatch):
     from tools import tts_streaming
 

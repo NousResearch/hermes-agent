@@ -187,8 +187,8 @@ For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
 `{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, and `HERMES_GUEST_ONBOARDING`
-are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
+`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and
+`HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
 defaults: an existing artifact is never overwritten with different bytes.
@@ -280,11 +280,15 @@ relaunch waiter is registered before the install request. Unknown checks,
 cancellation and request failures do not count as successful updates. Native
 acceptance requires a Store-acquired package or flight, not a sideloaded MSIX.
 
-On Windows bundles, PM copies the verified pinned base Python to its writable
-store for uv builds. The app and execution aliases retain their signed bundled
-launchers and bundled Python, which load the selected dependency generation.
-The new venv's generated console scripts must not replace those launchers:
-out-of-package Python cannot launch the packaged tools.
+On Windows bundles, every dependency generation is built on the bundled Python
+and nothing runs a venv's own executables. A venv's `Scripts\python.exe` is a
+redirector outside the package that starts the packaged interpreter, which
+Windows refuses (WinError 5) to a process without package identity. The app and
+execution aliases keep their signed bundled launchers, and children that need a
+generation's packages start through `pm.environments.venv_command`: the bundled
+Python with `-S` plus `pm/_venv_entry.py`, which attaches the generation's
+site-packages. The new venv's generated console scripts must not replace the
+launchers, and are kept off `PATH`.
 
 Sideload stable versions are `X.Y.Z.0`. Canary revisions derive from elapsed
 minutes after the stable baseline. The release script rejects ambiguous or

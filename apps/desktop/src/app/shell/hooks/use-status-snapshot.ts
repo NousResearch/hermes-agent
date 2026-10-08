@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { getStatus } from '@/hermes'
 import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -13,6 +13,10 @@ import type { StatusResponse } from '@/types/hermes'
 // within seconds. 60s + an actively-viewed check keeps traffic low; focus and
 // visibility listeners refresh immediately on return.
 const REFRESH_MS = 60_000
+
+// The scope the cached free-tier verdict was read under. Module-level because
+// $freeTierStatus is one app-wide atom, not per hook instance.
+let freeTierScope: string | undefined
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -47,6 +51,14 @@ export function useStatusSnapshot(
     // snapshot and start a fresh scoped request explicitly.
     setStatusSnapshot(null)
     publishInferenceStatus(null)
+
+    // The free-tier verdict belongs to one profile too. Drop it on a real switch
+    // only: a flap on the same scope keeps the last answer (refreshFreeTierStatus).
+    if (freeTierScope !== undefined && freeTierScope !== gatewayScope) {
+      $freeTierStatus.set(null)
+    }
+
+    freeTierScope = gatewayScope
 
     // A closed/connecting gateway cannot have an authoritative live-runtime
     // result. Clear readiness before starting the REST status leg so a hung
@@ -84,10 +96,13 @@ export function useStatusSnapshot(
 
       // The free-tier verdict is a local, zero-network read that writes
       // straight to its own store and swallows its failures — nothing here
-      // waits on it or reads the result.
+      // waits on it or reads the result. Unlike the readiness publish below,
+      // its write happens inside the store, so hand it this run's liveness: a
+      // reply that lands after a source/profile switch must not repaint the
+      // shared atom the new run already answered.
       const [inferenceResult] = await Promise.allSettled([
         evaluateRuntimeReadiness(requestGateway),
-        refreshFreeTierStatus(requestGateway)
+        refreshFreeTierStatus(requestGateway, () => !cancelled)
       ])
 
       if (cancelled || inferenceResult.status !== 'fulfilled') {

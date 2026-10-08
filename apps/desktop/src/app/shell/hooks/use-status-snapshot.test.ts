@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
+import { $freeTierStatus } from '@/store/free-tier'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { clearNotifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -111,6 +112,27 @@ describe('useStatusSnapshot', () => {
       expect(screen.queryByText(warning)).toBeNull()
     }
   )
+
+  it('drops the free-tier verdict on a profile or source switch, not on a gateway flap', async () => {
+    const requestGateway = vi.fn().mockRejectedValue(new Error('offline')) as unknown as GatewayRequester
+    const signedOut = { available: true, enabled: true, has_guest: true, label: '', model: '', notice_pending: false }
+
+    const { rerender } = renderHook(
+      ({ gatewayState, scope }) => useStatusSnapshot(gatewayState, requestGateway, scope),
+      { initialProps: { gatewayState: 'open', scope: 'local\0work' } }
+    )
+
+    await flushAsync()
+    $freeTierStatus.set(signedOut)
+    rerender({ gatewayState: 'connecting', scope: 'local\0work' })
+    rerender({ gatewayState: 'open', scope: 'local\0work' })
+    await flushAsync()
+    expect($freeTierStatus.get()).toEqual(signedOut)
+
+    rerender({ gatewayState: 'open', scope: 'local\0home' })
+    await flushAsync()
+    expect($freeTierStatus.get()).toBeNull()
+  })
 
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)

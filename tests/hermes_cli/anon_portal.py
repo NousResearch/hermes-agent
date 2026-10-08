@@ -52,6 +52,7 @@ class FakePortal:
         self.challenge_url = f"{PORTAL}/challenge?code=ticket"
         self.optional_challenge = False
         self.token_requests: list[dict] = []
+        self.create_requests: list[dict] = []
 
     def creates(self) -> int:
         return [p for _, p in self.calls].count("/api/anonymous/create")
@@ -66,6 +67,7 @@ class FakePortal:
         if self.gate_closed:
             return httpx.Response(401, json={"error": "invalid_shared_secret"})
         if path == "/api/anonymous/create":
+            self.create_requests.append(json.loads(request.content or b"{}"))
             if self.create_response is not None:
                 return self.create_response
             self.minted += 1

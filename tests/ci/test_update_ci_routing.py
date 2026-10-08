@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
 
@@ -49,7 +50,19 @@ _spec.loader.exec_module(cc)
 # bash is Git Bash: the replay, its dispatch chain and the ineffective-step controls carry this
 # marker so a green Windows job has run them on that layout (review F81-R). Not "any": macOS
 # bash 3.2 is not a host the replay has been run on.
-_NATIVE_WINDOWS_TOO = pytest.mark.platforms("linux", "windows")
+_NATIVE_WINDOWS_PLATFORMS = pytest.mark.platforms("linux", "windows")
+# Not Windows on arm64: Git for Windows ships an x86-64 MSYS bash.exe there, run under emulation,
+# and with the os-tests lane's 16 workers it dies with 0xC000026F (STATUS_WX86_INTERNAL_ERROR) or
+# 0xC0000005 before running a line, on replays of unchanged workflows: one copy of this file red
+# in ~3 when 16 run at once, against 0/64 on x64 Windows under the same load. The emulator's
+# crash is not the replay's to assert on; the x64 Windows row runs the same layout natively.
+_EMULATED_BASH = pytest.mark.skipif(
+    sys.platform == "win32" and native_arch() == "arm64",
+    reason="Git Bash is x86-64 under emulation on Windows arm64 and crashes under parallel load")
+
+
+def _NATIVE_WINDOWS_TOO(test):
+    return _NATIVE_WINDOWS_PLATFORMS(_EMULATED_BASH(test))
 _lister_spec = importlib.util.spec_from_file_location("list_os_marked", _REPO / "scripts/ci/list_os_marked_tests.py")
 assert _lister_spec is not None and _lister_spec.loader is not None
 lister = importlib.util.module_from_spec(_lister_spec)
@@ -650,6 +663,8 @@ def _imports(path: Path) -> frozenset[str]:
                 base = ".".join([*parts, base] if base else parts)
             names.add(base)
             names.update(f"{base}.{a.name}" for a in node.names)
+    # Importing a.b.c runs a/__init__.py and a/b/__init__.py first.
+    names |= {".".join(n.split(".")[:i]) for n in names for i in range(1, n.count(".") + 1)}
     found = set()
     for name in names:
         target = _module_file(name)

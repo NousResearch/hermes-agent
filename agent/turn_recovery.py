@@ -640,6 +640,27 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
     return False
 
 
+def _clamp_to_affordable_budget(agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState) -> bool:
+    """A credit-limited 402 (OpenRouter: "...requested up to 65536 tokens, but can only afford
+    56272") means the account has credit and the output cap was too large: retry ONCE with the
+    cap lowered to the affordable budget instead of abandoning the provider as billing (#49769).
+    Same budget parse as the auxiliary client's retry. The 402 itself says the request's cap
+    exceeded the budget (which may be a boosted continuation cap above ``agent.max_tokens``),
+    so a second credit-limited 402 on this call is genuine exhaustion."""
+    if classified.reason != FailoverReason.billing or _retry.affordable_402_clamp_attempted:
+        return False
+    from agent.auxiliary_client import _affordable_max_tokens_from_error
+
+    affordable = _affordable_max_tokens_from_error(api_error)
+    if affordable is None:
+        return False
+    _retry.affordable_402_clamp_attempted = True
+    agent._ephemeral_max_output_tokens = affordable
+    _vlines(agent, f"💳 Credit balance covers fewer output tokens — retrying with max_tokens={affordable:,}...")
+    logger.info("%sCredit-limited 402: retrying once with max_tokens=%d", agent.log_prefix, affordable)
+    return True
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
@@ -647,14 +668,18 @@ def recover_after_classification(
 ) -> Tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
-    Nous paid-entitlement refresh → Codex stale-reasoning strip on 401 ``token_expired`` →
-    credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    welcome-tier repair → credit-limited 402 output-cap clamp → Nous paid-entitlement refresh →
+    Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
     strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
     format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
-    if _recover_welcome_tier(agent, classified, _retry):
+    # The credit-limited 402 clamp runs before pool rotation, which would bench a credential
+    # that still has credit.
+    if _recover_welcome_tier(agent, classified, _retry) or _clamp_to_affordable_budget(
+        agent, api_error, classified, _retry
+    ):
         return True, False
 
     # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a

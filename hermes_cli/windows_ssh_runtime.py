@@ -276,12 +276,20 @@ def read_lock(ownership_id: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _lock_record(ownership_id: str, payload: dict[str, Any]) -> bytes:
+    # The backend's owner watchdog only trusts a lock whose logPath ends in /<ownershipId>/<nonce>.log
+    # (dashboard_procs._valid_lockfile_payload); without it a superseded Windows backend never retires.
+    record = {**payload, "logPath": _log_path(ownership_id, str(payload.get("spawnNonce"))).as_posix()}
+    data = json.dumps(record, separators=(",", ":")).encode()
+    if len(data) > _MAX_JSON:
+        raise ValueError("lock payload is too large")
+    return data
+
+
 def write_lock(ownership_id: str, payload: dict[str, Any]) -> None:
     win32file = _win32().win32file
     directory = _ensure_scope(ownership_id)
-    data = json.dumps(payload, separators=(",", ":")).encode()
-    if len(data) > _MAX_JSON:
-        raise ValueError("lock payload is too large")
+    data = _lock_record(ownership_id, payload)
     temporary = directory / f".{os.urandom(8).hex()}.lock.tmp"
     _write_new(temporary, data)
     win32file.MoveFileEx(str(temporary), str(_lock_path(ownership_id)),

@@ -147,6 +147,19 @@ def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect
         cookie_payload={"hermes_session_pkce": f"state={state};verifier={code_verifier}"})
 
 
+# OAuth token-rejection codes: the IDP's verdict on the credential itself. A 401/403
+# carrying anything else (WAF page, proxy envelope) stays transient — never force a
+# re-login on an ambiguous signal.
+#
+# Derived from the repo's canonical set, not restated: a local copy drifted once by omitting
+# ``refresh_token_reused``, which Portal returns when a rotated RT is replayed — a dead grant
+# answered 503 "try later" invites exactly the retry storm this removes (#98338).
+# ``expired_token`` (RFC 8628 device flow) is added on top.
+from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+
+_PERMANENT_TOKEN_ERRORS = _OAUTH_GRANT_DEAD_CODES | {"expired_token"}
+
+
 def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
     """JSON object body, or ``{}`` for non-JSON content-type / parse error / non-dict."""
     if not response.headers.get("content-type", "").startswith("application/json"):
@@ -165,9 +178,15 @@ def exchange_token(
 
     A 400 (OAuth-shaped error envelope) raises ``bad_request_exc`` — ``InvalidCodeError``
     for the auth-code path, ``RefreshExpiredError`` for refresh — so the middleware's
-    distinct handling is preserved. Any other non-200, transport failure, missing
-    ``token_key`` or non-bearer ``token_type`` raises ``ProviderError``. Redirects are
-    deliberately NOT followed: the body carries an auth code / refresh token.
+    distinct handling is preserved. A 401/403 carrying a known OAuth token-rejection
+    code (``invalid_grant`` / ``invalid_token`` / ``expired_token``) is also a
+    credential verdict (dead/foreign token) and raises ``bad_request_exc`` —
+    reporting it as ``ProviderError`` (503, "transient") invites unbounded client
+    retries against a token that can never succeed (#98338). Any other 401/403
+    stays ``ProviderError``: it may be a WAF/proxy block, never a signal to force
+    re-login. Any other non-200, transport failure, missing ``token_key`` or
+    non-bearer ``token_type`` raises ``ProviderError``. Redirects are deliberately
+    NOT followed: the body carries an auth code / refresh token.
     """
     try:
         response = httpx.post(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
@@ -176,6 +195,10 @@ def exchange_token(
     if response.status_code == 400:
         error_code = parse_json_body(response).get("error", "invalid_request")
         raise bad_request_exc(f"{idp} rejected token request: {error_code}")
+    if response.status_code in (401, 403):
+        error_code = parse_json_body(response).get("error")
+        if isinstance(error_code, str) and error_code.lower() in _PERMANENT_TOKEN_ERRORS:
+            raise bad_request_exc(f"{idp} rejected token request: {error_code}")
     if response.status_code != 200:
         raise ProviderError(f"{endpoint} returned {response.status_code}: {response.text[:200]!r}")
     payload = parse_json_body(response)

@@ -40,12 +40,21 @@ class Provider(StubAuthProvider):
 
 @pytest.fixture(autouse=True)
 def isolated_registry():
+    # The native refresh endpoint keeps a per-credential sliding-window budget in routes.py.
+    # These cases replay one fixed token ("opaque-old-token") ~6 times each across 8
+    # parametrizations, so without a reset the table carries one credential's spend into the
+    # next case and a legitimate replay is answered 429 instead of reaching the provider.
+    # Same isolation contract as the singleflight tables above.
+    from hermes_cli.dashboard_auth import routes as routes_mod
+
     clear_providers()
+    routes_mod._reset_native_refresh_rate_limit()
     with replay._guard:
         replay._cache.clear()
         replay._flights.clear()
     yield
     clear_providers()
+    routes_mod._reset_native_refresh_rate_limit()
     with replay._guard:
         assert not replay._flights
         replay._cache.clear()

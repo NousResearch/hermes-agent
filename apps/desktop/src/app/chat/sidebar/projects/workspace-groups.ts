@@ -61,6 +61,9 @@ export interface SidebarProjectTree {
   // A git repo root promoted automatically (not a user-created projects.db row).
   // Deletable = dismissable.
   isAuto?: boolean
+  // ...and, of those, one the disk scan found (`desktop.repo_scan_*`). It is a repo the user's
+  // workspace actually holds, so it shows before it owns any session; see `project-filter.ts`.
+  discovered?: boolean
   // The synthetic bucket (labeled "Home") holding every session no project
   // claimed. It has no folder, so no repo/worktree structure — its one lane
   // exists only to carry the rows.

@@ -274,6 +274,15 @@ def gate_manifest(
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:
+        if enabled and names & enabled:
+            # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
+            # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.
+            return _placeholder(
+                "listed in both plugins.enabled and plugins.disabled — disabled wins",
+                logging.WARNING,
+                "Plugin '%s' is listed in both plugins.enabled and plugins.disabled; the disable "
+                "wins and it will not load — remove it from one of the two lists",
+            )
         return _placeholder("disabled via config", logging.DEBUG, "Skipping disabled plugin '%s'")
     # Exclusive plugins (memory providers) have their own activation path; record only.
     if manifest.kind == "exclusive":

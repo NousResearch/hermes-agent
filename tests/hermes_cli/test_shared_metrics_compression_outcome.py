@@ -36,6 +36,7 @@ def _finish(monkeypatch, commit_status, failure_class):
         ("summary_generation_failed", ("success", "summary_generation_failed")),
         ("feasibility_skip", ("success", "feasibility_skip")),
         ("stall_deterministic_fallback", ("success", "stall_deterministic_fallback")),
+        ("summary_overload_degraded", ("success", "summary_overload_degraded")),
         ("aux_model_fallback", ("success", "aux_model_fallback")),
         # A benched summary model is a pre-LLM skip to the deterministic summary.
         ("summary_model_benched", ("success", "feasibility_skip")),

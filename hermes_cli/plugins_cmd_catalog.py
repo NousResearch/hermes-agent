@@ -774,7 +774,7 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
     if install_deps:
         import pm
         from pm import paths
-        from pm.environments import activation_environment, project_python
+        from pm.environments import activation_environment, project_python, selected_venv, venv_command
         from pm.plugin_inputs import Candidates
         try:
             pm.sync_venv(plugins=Candidates([Path(path)]))
@@ -782,7 +782,7 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
             # so the probe must import the plugin from that environment's interpreter.
             root = paths.repo_root()
             if project_python(root).is_file():  # a developer venv has no committed environment
-                probe = (project_python(root), activation_environment(root))
+                probe = (venv_command(root, selected_venv(root)), activation_environment(root))
         except Exception as exc:  # validation still runs; the probe reports what is missing
             print(f"dependency preparation failed: {exc}", file=sys.stderr)
     report = validate_plugin_dir(Path(path), probe)

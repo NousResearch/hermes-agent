@@ -1,21 +1,26 @@
 import { useStore } from '@nanostores/react'
 
-import { $chatOnboardingSolo, skipChatOnboarding } from '@/components/onboarding-chat/assembly'
+import { Tip } from '@/components/ui/tooltip'
+import { $introView } from '@/store/onboarding-intro'
+
+import { skipIntro } from './intro'
 
 export function OnboardingSkip() {
-  const solo = useStore($chatOnboardingSolo)
+  const intro = useStore($introView) === 'intro'
 
-  if (!solo) {
+  if (!intro) {
     return null
   }
 
   return (
-    <button
-      className="ml-auto text-[11px] text-(--ui-text-quaternary) transition-colors hover:text-(--ui-text-secondary)"
-      onClick={skipChatOnboarding}
-      type="button"
-    >
-      Skip setup
-    </button>
+    <Tip label="Switching you over to your default profile">
+      <button
+        className="ml-auto text-[11px] text-(--ui-text-quaternary) transition-colors hover:text-(--ui-text-secondary)"
+        onClick={skipIntro}
+        type="button"
+      >
+        Skip setup
+      </button>
+    </Tip>
   )
 }

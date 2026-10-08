@@ -562,6 +562,7 @@ class GatewayBusySessionMixin:
                     # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
                     # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
                     event.text = f"/{_verb} {_normalized_args}".rstrip()
+                    event._gateway_accepted = True
                     _reply = await _approval_handler(event)
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",
@@ -629,6 +630,8 @@ class GatewayBusySessionMixin:
             redirected = self._redirect_active_turn(
                 running_agent, (event.text or "").strip(), session_key, event
             )
+        if steered or redirected:
+            event._gateway_accepted = True
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,

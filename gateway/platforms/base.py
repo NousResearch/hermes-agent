@@ -3600,21 +3600,8 @@ class BasePlatformAdapter(ABC):
         return response.text, int(ttl or 0)
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
-        """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
-        thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        from gateway.platforms.base_inline import dispatch_inline_reply
+        await dispatch_inline_reply(self, event, log_cmd=log_cmd)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -3861,6 +3848,7 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+                    event._gateway_accepted = True
                 return
         now = time.monotonic()
         if state is None:
@@ -3880,6 +3868,7 @@ class BasePlatformAdapter(ABC):
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
+        event._gateway_accepted = True
 
     async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
         """Timer task that flushes the debounced text buffer."""

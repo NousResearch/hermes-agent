@@ -1,6 +1,5 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
-import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -8,22 +7,8 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
-
-
-def _make_adapter(monkeypatch, **extra):
-    monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-    monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-    from gateway.platforms.bluebubbles import BlueBubblesAdapter
-
-    cfg = PlatformConfig(
-        enabled=True,
-        extra={
-            "server_url": "http://localhost:1234",
-            "password": "secret",
-            **extra,
-        },
-    )
-    return BlueBubblesAdapter(cfg)
+from gateway.platforms.event import MessageType
+from tests.gateway.bluebubbles_test_support import _make_adapter, _FakeBlueBubblesRequest
 
 
 class TestBlueBubblesConfigLoading:
@@ -70,16 +55,6 @@ class TestBlueBubblesHelpers:
         assert adapter.server_url == "http://localhost:1234"
 
 
-class _FakeBlueBubblesRequest:
-    def __init__(self, payload, password="secret"):
-        self.query = {"password": password}
-        self.headers = {}
-        self._body = json.dumps(payload).encode("utf-8")
-
-    async def read(self):
-        return self._body
-
-
 class TestBlueBubblesMentionGating:
     @pytest.mark.asyncio
     async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):
@@ -91,6 +66,7 @@ class TestBlueBubblesMentionGating:
         handled = []
 
         async def fake_handle_message(event):
+            event._gateway_accepted = True
             handled.append(event)
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
@@ -400,17 +376,28 @@ class TestBlueBubblesWebhookRegistration:
     # -- _register_webhook --
 
     def test_register_fresh(self, monkeypatch):
-        """No existing webhook → POST creates one."""
+        """No existing webhook → POST creates and verifies one."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []},
-            post_response={"status": 200, "data": {"id": 42}},
-        )
+        adapter.client = AsyncMock()
+        url = adapter._webhook_register_url
+        state = []
+
+        async def find(_url):
+            return list(state)
+
+        async def post(_path, payload):
+            created = {"id": 42, "url": url, "events": payload["events"]}
+            state.append(created)
+            return {"status": 200, "data": created}
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", find)
+        monkeypatch.setattr(adapter, "_api_post", post)
         ok = asyncio.get_event_loop().run_until_complete(
             adapter._register_webhook()
         )
         assert ok is True
+        assert state == [{"id": 42, "url": url, "events": ["new-message", "updated-message"]}]
 
 
     def test_register_reuses_existing(self, monkeypatch):
@@ -420,7 +407,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 
@@ -545,8 +532,6 @@ class TestBlueBubblesTimeoutErrorNormalization:
         assert "500 Internal Server Error" in (result.error or "")
 
 
-
-
 class TestBlueBubblesGateBeforeDownload:
     """The require_mention gate must run BEFORE attachments are downloaded (review follow-up)."""
 
@@ -561,6 +546,7 @@ class TestBlueBubblesGateBeforeDownload:
         handled = []
 
         async def fake_handle_message(event):
+            event._gateway_accepted = True
             handled.append(event)
 
         download = AsyncMock(return_value="/tmp/cached.jpg")

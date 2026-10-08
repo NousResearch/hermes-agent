@@ -456,6 +456,39 @@ class TestManualBackendRespawn:
         assert "when you're ready" not in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_failed_respawn_discharges_the_pending_restart_marker(self, tmp_path, monkeypatch):
+        """A respawn booked failed clears its durable reminder instead of leaving it to the
+        liveness probe, which can stay blind past a recycled pid (#134995)."""
+        live = self._live()
+        argv = ["hermes", "serve", "--host", "10.0.0.4", "--port", "9119"]
+        pending = tmp_path / "serve_restart_pending"
+        pending.mkdir()
+        owed = pending / "6001-0x1.f4p+9.json"
+        owed.write_text(json.dumps({"kind": "serve", "profile": "work", "pid": 6001, "create_time": 1000.0}), encoding="utf-8")
+        unrelated = pending / "6002-0x1.f4p+9.json"
+        unrelated.write_text(json.dumps({"kind": "serve", "profile": "work", "pid": 6002, "create_time": 1000.0}), encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.update_serve_obligations.get_hermes_home", lambda: tmp_path)
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6001]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[argv]), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["unrecovered"] == [6001]
+        assert not owed.exists()
+        assert unrelated.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_port_zero_serves_killed_without_respawn(self, capsys):
         """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
         live = self._live()

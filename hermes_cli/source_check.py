@@ -147,7 +147,9 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
     if repository:
         from hermes_cli.github_api import describe_github_failure, github_token
         try:
-            sha = _request(f"https://api.github.com/repos/{repository}/commits/{quote(branch, safe='')}",
+            # An unqualified ref may resolve a same-named tag or commit SHA.
+            # This discovery path follows branches, never release tags.
+            sha = _request(f"https://api.github.com/repos/{repository}/commits/{quote('heads/' + branch, safe='')}",
                            "application/vnd.github.sha")
         except Exception as exc:
             sha = None
@@ -156,8 +158,9 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
             return sha, False, None
         if failure is None:
             failure = "api.github.com returned no commit for the branch."
-        if branch == "main" and remote == "origin":
-            return None, False, failure
+    # The API can be unavailable while Git still advertises the branch. This
+    # read-only fallback also serves main; it never fetches objects or changes
+    # the already-resolved release channel.
     result = _git_run(["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
                       cwd=root, git=git, timeout=10)
     if result is None:
@@ -289,13 +292,13 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout):
     return source_target
 
 
-def _branch_remote(co: _Checkout, selected_branch: str) -> str:
+def _branch_remote(co: _Checkout) -> str:
     official_ssh = (co.repository and co.repository.lower() == OFFICIAL_REPOSITORY.lower()
                     and co.origin.lower().startswith(("git@", "ssh://")))
     # The public official repo does not require the user's SSH credentials.
     # Forks must keep their own origin, including its authentication.
     return (f"https://github.com/{OFFICIAL_REPOSITORY}.git"
-            if co.embedded or (official_ssh and selected_branch != "main") else "origin")
+            if co.embedded or official_ssh else "origin")
 
 
 def _heal_deleted_branch(branch_config_path: Path, desktop_config: dict) -> None:
@@ -346,7 +349,7 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
                   heal: Optional[tuple[Path, dict]]) -> None:
     """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted."""
     result["branch"] = selected_branch
-    remote = _branch_remote(co, selected_branch)
+    remote = _branch_remote(co)
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
@@ -359,7 +362,7 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
         result["branch"] = "main"
         if heal:
             _heal_deleted_branch(*heal)
-        target, _, failure = _branch_tip(co.repository, "main", co.root, co.git, remote if co.embedded else "origin")
+        target, _, failure = _branch_tip(co.repository, "main", co.root, co.git, remote)
     if target is None:
         result.update(error="fetch-failed",
                       message=f"Could not resolve the remote branch tip: {failure}" if failure
@@ -407,7 +410,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 2}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)

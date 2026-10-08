@@ -103,10 +103,23 @@ const WITHDRAW_RETRY_MS = 250
  * for non-main (bare `hermes update` would silently switch the install
  * off-branch).
  */
-export function buildManualUpdateCommand(currentBranch: string | null | undefined): string {
-  return currentBranch && currentBranch !== 'HEAD' && currentBranch !== 'main'
-    ? `hermes update --branch ${currentBranch}`
-    : 'hermes update'
+export function buildManualUpdateCommand(
+  currentBranch: string | null | undefined,
+  isWindows: boolean = process.platform === 'win32'
+): string {
+  if (!currentBranch || currentBranch === 'HEAD' || currentBranch === 'main') {
+    return 'hermes update'
+  }
+
+  const branch = /^[\w./-]+$/.test(currentBranch)
+    ? currentBranch
+    : quoteUpdateArgument(currentBranch, isWindows)
+
+  return `hermes update --branch ${branch}`
+}
+
+function quoteUpdateArgument(value: string, isWindows: boolean): string {
+  return isWindows ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, "'\\''")}'`
 }
 
 /**
@@ -414,7 +427,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
     const manualCommand: string = status.channel
       ? `hermes update --channel ${status.channel}`
-      : buildManualUpdateCommand(branch)
+      : buildManualUpdateCommand(branch, deps.isWindows)
 
     const updater: string | null = deps.resolveUpdaterBinary()
     const root: string = deps.resolveUpdateRoot()
@@ -428,8 +441,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
         return { ok: false, error: 'installation-launcher-missing' }
       }
 
-      const quote = (value: string): string =>
-        deps.isWindows ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, "'\\''")}'`
+      const quote = (value: string): string => quoteUpdateArgument(value, deps.isWindows)
 
       const command: string = `${deps.isWindows ? '& ' : ''}${quote(launcher)} update ${targetArgs.map(quote).join(' ')}`
 

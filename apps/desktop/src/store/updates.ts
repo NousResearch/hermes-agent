@@ -527,16 +527,19 @@ export interface UpdateCheckOptions {
   force?: boolean
 }
 
-// Key of the connection that wants the next check once the in-flight one
-// (if any) clears — set when a check is requested while another is already
-// running for a different target, so that target isn't silently dropped.
-let backendCheckPendingKey: string | undefined
+interface UpdateCheckFlight {
+  force: boolean
+  promise: Promise<DesktopUpdateStatus | null>
+}
 
-export async function checkBackendUpdates({
+let backendCheckInFlight: (UpdateCheckFlight & { key: string }) | null = null
+let clientCheckInFlight: UpdateCheckFlight | null = null
+
+export function checkBackendUpdates({
   force = false
 }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   if (!isRemoteMode()) {
-    return $backendUpdateStatus.get()
+    return Promise.resolve($backendUpdateStatus.get())
   }
 
   // Bind this request to the connection active when it started. Switching
@@ -544,12 +547,31 @@ export async function checkBackendUpdates({
   // (for the connection we've since left) overwrite the newer one.
   const requestKey = connectionKey($connection.get())
 
-  if ($backendUpdateChecking.get()) {
-    backendCheckPendingKey = requestKey
+  const current = backendCheckInFlight
 
-    return $backendUpdateStatus.get()
+  if (current) {
+    if (current.key === requestKey && (!force || current.force)) {
+      return current.promise
+    }
+
+    // A manual refresh must actually bypass the cache, even when it arrives
+    // during a passive check. Wait for that owner, then coalesce queued callers
+    // onto one fresh check for the still-active target.
+    return current.promise.then(() =>
+      connectionKey($connection.get()) === requestKey ? checkBackendUpdates({ force }) : null
+    )
   }
 
+  const promise = runBackendCheck(force, requestKey).finally(() => {
+    backendCheckInFlight = null
+  })
+
+  backendCheckInFlight = { force, key: requestKey, promise }
+
+  return promise
+}
+
+async function runBackendCheck(force: boolean, requestKey: string): Promise<DesktopUpdateStatus | null> {
   $backendUpdateChecking.set(true)
 
   try {
@@ -560,7 +582,7 @@ export async function checkBackendUpdates({
       maybeNotifyUpdateAvailable(status, 'backend')
     }
 
-    return status
+    return connectionKey($connection.get()) === requestKey ? status : null
   } catch (error) {
     const fallback: DesktopUpdateStatus = {
       supported: $backendUpdateStatus.get()?.supported ?? true,
@@ -573,30 +595,38 @@ export async function checkBackendUpdates({
       $backendUpdateStatus.set(fallback)
     }
 
-    return fallback
+    return connectionKey($connection.get()) === requestKey ? fallback : null
   } finally {
     $backendUpdateChecking.set(false)
-
-    const pendingKey = backendCheckPendingKey
-
-    backendCheckPendingKey = undefined
-
-    // Someone asked for a check for a different (still-active) target while
-    // this one was in flight — run it now instead of leaving that target
-    // showing whatever this request happened to return.
-    if (pendingKey && pendingKey !== requestKey && pendingKey === connectionKey($connection.get())) {
-      void checkBackendUpdates()
-    }
   }
 }
 
-export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
+export function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
-  if (!bridge || $updateChecking.get()) {
-    return $updateStatus.get()
+  if (!bridge) {
+    return Promise.resolve($updateStatus.get())
   }
 
+  const current = clientCheckInFlight
+
+  if (current) {
+    return force && !current.force ? current.promise.then(() => checkUpdates({ force })) : current.promise
+  }
+
+  const promise = runClientCheck(bridge, force).finally(() => {
+    clientCheckInFlight = null
+  })
+
+  clientCheckInFlight = { force, promise }
+
+  return promise
+}
+
+async function runClientCheck(
+  bridge: NonNullable<Window['hermesDesktop']>['updates'],
+  force: boolean
+): Promise<DesktopUpdateStatus | null> {
   $updateChecking.set(true)
 
   try {

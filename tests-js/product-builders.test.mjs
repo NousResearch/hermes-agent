@@ -253,7 +253,7 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   expect(productCurrent({ source, product: 'web', out })).toBe(false)
   await buildWeb({ source, icons, out })
   expect(readFileSync(path.join(out, 'favicon.ico'), 'utf8')).toBe('changed prepared icon')
-  for (const input of ['apps/shared/src/client.ts', 'scripts/build/web.mjs', 'assets/icon.svg', 'package-lock.json']) {
+  for (const input of ['apps/shared/src/client.ts', 'scripts/build/web.mjs', 'web/public/retained.txt', 'package-lock.json']) {
     put(source, input, 'changed input')
     expect(productCurrent({ source, product: 'web', out }), input).toBe(false)
     await buildWeb({ source, icons, out })
@@ -263,6 +263,38 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   rmSync(path.join(out, 'favicon.ico'))
   expect(productCurrent({ source, product: 'web', out })).toBe(false)
 }, 30_000)
+
+test('built web stays current after unrelated recipes and Python metadata change', async () => {
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const base = fixture()
+  const source = path.join(base, 'source')
+  const icons = path.join(base, 'icons')
+  const out = path.join(base, 'web')
+  webSource(source)
+  dependency(source, '', 'typescript')
+  dependency(source, '', 'vite')
+  put(icons, 'web/public/favicon.ico', 'prepared icon')
+  await buildWeb({ source, icons, out })
+  const before = readFileSync(path.join(out, 'index.html'))
+  for (const name of [
+    'scripts/build/tui.mjs', 'scripts/build/desktop.mjs',
+    'scripts/build/node-deps.mjs', 'scripts/generate-icons.mjs', 'scripts/generate_icons.py',
+    'assets/icon.svg', 'pyproject.toml', 'uv.lock',
+  ]) {
+    put(source, name, 'not a dashboard compiler input')
+    expect(productCurrent({ source, product: 'web', out }), name).toBe(true)
+  }
+  expect(readFileSync(path.join(out, 'index.html'))).toEqual(before)
+  // Vite env files and Tailwind's workspace-wide text scan are build inputs too.
+  for (const name of ['web/.env.production', 'web/README.md']) {
+    put(source, name, 'changed dashboard input')
+    expect(productCurrent({ source, product: 'web', out }), name).toBe(false)
+    rmSync(path.join(source, name))
+    expect(productCurrent({ source, product: 'web', out })).toBe(true)
+  }
+  put(source, 'apps/shared/src/client.ts', 'export const version = 2')
+  expect(productCurrent({ source, product: 'web', out })).toBe(false)
+})
 
 test('built TUI stays current after documentation, test and unrelated recipe changes', async () => {
   const { productCurrent } = await import('../scripts/build/freshness.mjs')

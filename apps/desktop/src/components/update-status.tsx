@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactElement, type ReactNode, useState } from 'react'
+import { type ReactElement, type ReactNode } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -70,7 +70,7 @@ interface UpdateStatusInput {
 export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   const { apply, status, target, u } = input
 
-  if (target === 'client' && status?.retirement) {
+  if (target === 'client' && status?.retirement && !input.checking && !apply.applying && apply.stage !== 'restart') {
     return retirementStatus(
       status.retirement,
       apply.applying || apply.stage === 'restart',
@@ -90,6 +90,14 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
+  if (applying) {
+    return { applying, line: u.installing, supported, tone: 'available', updateAvailable }
+  }
+
+  if (checking) {
+    return { applying, line: u.checking, supported, tone: 'idle', updateAvailable: false }
+  }
+
   if (!supported) {
     return { applying, line: status?.message ?? u.unsupportedMessage, supported, tone: 'unsupported', updateAvailable }
   }
@@ -103,10 +111,6 @@ function ordinaryUpdateStatus({ apply, checking, status, target, u }: UpdateStat
       tone: 'error',
       updateAvailable
     }
-  }
-
-  if (applying) {
-    return { applying, line: u.installing, supported, tone: 'available', updateAvailable }
   }
 
   if (updateAvailable) {
@@ -276,14 +280,10 @@ export function UpdateStatusCard({
   const status = useStore(isBackend ? $backendUpdateStatus : $updateStatus)
   const checking = useStore(isBackend ? $backendUpdateChecking : $updateChecking)
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
-  const [justChecked, setJustChecked] = useState<boolean>(false)
-
   const view = deriveUpdateStatus({ apply, checking, status, target, u })
 
   const handleCheck = async (): Promise<void> => {
-    setJustChecked(false)
-    const next = await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
-    setJustChecked(Boolean(next))
+    await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
   }
 
   return (
@@ -296,7 +296,9 @@ export function UpdateStatusCard({
       )}
     >
       <div className="flex items-start gap-2">
-        {view.tone === 'available' ? (
+        {checking && !view.applying ? (
+          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+        ) : view.tone === 'available' ? (
           <Codicon className="mt-0.5 size-4 shrink-0 text-primary" name="cloud-download" size="1rem" />
         ) : view.tone === 'error' || view.tone === 'unsupported' ? null : (
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
@@ -307,7 +309,6 @@ export function UpdateStatusCard({
           {view.tone !== 'unsupported' && (
             <p className="mt-1 text-xs text-muted-foreground">
               {u.lastChecked(relativeTime(status?.fetchedAt, u))}
-              {justChecked && !checking ? u.justNowSuffix : ''}
             </p>
           )}
         </div>

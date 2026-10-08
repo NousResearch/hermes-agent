@@ -12,9 +12,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+import pytest
+
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginManager
+from hermes_cli.plugins_discovery import _FOREIGN_HARNESS_MANIFEST_DIRS
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -117,15 +120,40 @@ class TestCategoryNamespaceRecursion:
 
 
 class TestForeignHarnessManifestDirs:
-    def test_foreign_harness_dirs_skipped_without_warnings(
-        self, tmp_path, monkeypatch, caplog
+    # Not derived from _FOREIGN_HARNESS_MANIFEST_DIRS: deriving it would let the
+    # test move with the bug, since dropping an entry drops its own test case.
+    KNOWN_FOREIGN_HARNESS_MANIFEST_DIRS = (
+        ".claude-plugin",
+        ".codex-plugin",
+        ".cursor-plugin",
+        ".devin-plugin",
+        ".kimi-plugin",
+        ".muse-plugin",
+    )
+
+    def test_foreign_harness_constant_matches_known_harnesses(self):
+        """Both directions, so neither list can drift unnoticed."""
+        assert _FOREIGN_HARNESS_MANIFEST_DIRS == frozenset(
+            self.KNOWN_FOREIGN_HARNESS_MANIFEST_DIRS
+        ), (
+            "_FOREIGN_HARNESS_MANIFEST_DIRS drifted from the harnesses this test "
+            "knows about. If upstream added a convention dir, add it to BOTH the "
+            "constant and KNOWN_FOREIGN_HARNESS_MANIFEST_DIRS."
+        )
+
+    @pytest.mark.parametrize(
+        "harness",
+        KNOWN_FOREIGN_HARNESS_MANIFEST_DIRS,
+    )
+    def test_foreign_harness_dir_skipped_without_warnings(
+        self, harness, tmp_path, monkeypatch, caplog
     ):
         """Multi-harness plugin repos (e.g. obra/superpowers) ship one
         ``plugin.json`` per OTHER agent harness inside ``.claude-plugin/``,
         ``.codex-plugin/`` etc. Those manifests can never satisfy the Agent
         Plugins v1 schema, so scanning them warned on every discovery pass.
-        They must be skipped silently; the plugin's real Hermes manifest
-        (``.hermes-plugin/plugin.yaml``) is still discovered."""
+        One dir per case so an omission names itself in the failing param id
+        instead of every dir tripping the same schema branch."""
         import os
         hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
         sp = hermes_home / "plugins" / "superpowers"
@@ -139,28 +167,24 @@ class TestForeignHarnessManifestDirs:
                 }
             )
         )
-        for harness in (
-            ".claude-plugin",
-            ".codex-plugin",
-            ".cursor-plugin",
-            ".devin-plugin",
-            ".kimi-plugin",
-        ):
-            harness_dir = sp / harness
-            harness_dir.mkdir(parents=True)
-            (harness_dir / "plugin.json").write_text(
-                json.dumps({"name": "superpowers", "version": "6.3.0"})
-            )
+        harness_dir = sp / harness
+        harness_dir.mkdir(parents=True)
+        (harness_dir / "plugin.json").write_text(
+            json.dumps({"name": "superpowers", "version": "6.3.0"})
+        )
 
         with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
 
         assert "superpowers/.hermes-plugin" in mgr._plugins
+        assert f"superpowers/{harness}" not in mgr._plugins
         parse_warnings = [
             r for r in caplog.records if "Failed to parse" in r.getMessage()
         ]
-        assert parse_warnings == []
+        assert parse_warnings == [], (
+            f"{harness} was not skipped: parse warnings emitted"
+        )
 
     def test_broken_portable_plugin_still_warns(self, tmp_path, monkeypatch, caplog):
         """A genuinely broken portable plugin.json (not a foreign-harness

@@ -885,7 +885,9 @@ preview = true # required for PLW1514 (unspecified-encoding) — preview rule
 # ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
 # but ~180 legacy sites deep; they graduate to this list once the backlog
 # is burned down (see per-file-ignores below for the frozen baseline).
-select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
+#   W605: invalid escape sequence in a non-raw string/docstring. Static, so it
+# never belongs in per-file-ignores.
+select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251", "W605"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."

@@ -192,13 +192,15 @@ def _skip_bundle_file(rel_path: str) -> bool:
 
 
 def _tree_members(entries: List[dict], prefix: str):
-    """``(rel_path, item_path, is_regular_blob)`` for every git-tree entry under ``prefix``. Symlinks
-    (mode 120000) and non-blobs report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked
-    symlink instead of silently following it."""
+    """``(rel_path, item_path, is_regular_blob)`` for every git-tree blob under ``prefix``. Symlinks
+    (mode 120000) report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked symlink
+    instead of silently following it. Directory (and submodule) entries are not yielded: a directory's
+    blobs are listed on their own, and a SKILL.md that links a support directory (``references/clues/``)
+    is pointing at prose, not escaping the bundle."""
     for item in entries:
         item_path = item.get("path", "")
-        if item_path.startswith(prefix):
-            yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
+        if item.get("type") == "blob" and item_path.startswith(prefix):
+            yield item_path[len(prefix):], item_path, item.get("mode") != "120000"
 
 
 class GitHubSource(SkillSource):
@@ -370,7 +372,7 @@ class GitHubSource(SkillSource):
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return None
-            if rel_path not in files:
+            if rel_path not in files and not any(f.startswith(rel_path + "/") for f in files):
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return complete

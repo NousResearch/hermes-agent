@@ -2184,3 +2184,29 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["references/guide.md"] == b"# guide"
         # …and the missing one is warned about and skipped, not fatal.
         assert "references/missing.md" not in bundle.files
+
+    def test_fetch_keeps_a_skill_that_links_a_support_directory(self):
+        """A SKILL.md pointing at ``references/clues/`` (a directory) is prose, not a symlink
+        escape: the bundle installs with the directory's blobs, and only a linked SYMLINK
+        still rejects the whole bundle."""
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "Land-cover rules live in `references/clues/` and `references/clues/global.md`.\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/references/clues", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/references/clues/global.md", "type": "blob", "mode": "100644"},
+        ]
+        source = self._source()
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", return_value=b"# clues"):
+            bundle = source.fetch("owner/repo/skills/demo")
+        assert bundle is not None
+        assert bundle.files["references/clues/global.md"] == b"# clues"
+
+        tree_entries[0] = {"path": "skills/demo/references/clues", "type": "blob", "mode": "120000"}
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", return_value=b"# clues"):
+            assert source.fetch("owner/repo/skills/demo") is None

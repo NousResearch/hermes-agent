@@ -658,8 +658,10 @@ stage_repository() {
             # checkout and history walk (#129712).
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
+            # A pinned install checks out only the pin: materializing the branch tip
+            # first fetches and writes every file twice.
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=blob:none --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                --filter=blob:none ${INSTALL_COMMIT:+--no-checkout} --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi

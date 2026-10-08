@@ -155,6 +155,11 @@ export const zhHantChat = {
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
+    localSetup: {
+      title: '這可以在你的電腦上執行',
+      text: (model: string) => `${model} 適合這台電腦。免費，對話留在你的電腦上。`,
+      action: '帶我看看'
+    },
     queueEdit: '編輯',
     queueExpand: '展開',
     queueCollapse: '收起',
@@ -414,8 +419,6 @@ export const zhHantChat = {
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
-    staleSessionTitle: '對話已過期',
-    staleSessionBody: '此視窗落後於同一對話的其他視窗。已載入最新訊息。若仍要傳送請再試一次。',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     slashCommandIgnoredTitle: '指令未傳送',
@@ -544,11 +547,6 @@ export const zhHantChat = {
         title: '本機引擎有可用更新',
         text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
         action: '立即更新'
-      },
-      'local-setup': {
-        title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
-        action: '立即設定'
       },
       'right-pane': {
         title: '工作面板',

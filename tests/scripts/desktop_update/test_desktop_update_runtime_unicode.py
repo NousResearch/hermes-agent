@@ -10,10 +10,12 @@ decodes captured native stdout with the console OEM code page, mojibaking the
 path (``á`` → ``├í``, ``ł`` → ``┼é``) so the returned command cannot run and the
 legacy identity check never matches.
 
-Both call sites now scope ``[Console]::OutputEncoding`` to UTF-8 around the
-capture and restore it. These tests drive the REAL script against a REAL
-published launcher under non-ASCII paths, across three console code pages, and
-assert the caller's encoding is restored. They never read the script's text.
+Both captures go through ``Invoke-HermesProbe``, which decodes the child's
+stdout as UTF-8 via ``ProcessStartInfo.StandardOutputEncoding`` and never
+touches ``[Console]::OutputEncoding``. These tests drive the REAL script against
+a REAL published launcher under non-ASCII paths, across three console code
+pages, and assert the caller's console encoding is left unchanged. They never
+read the script's text.
 """
 
 from __future__ import annotations
@@ -79,8 +81,8 @@ def test_runtime_command_survives_a_non_ascii_profile_path(tmp_path: Path, code_
     The launcher JSON is ASCII-escaped today, so this is the round-trip
     contract for the boundary every other consumer (hermes_cli.windows_ssh_
     runtime, the Electron updater, the Rust bootstrap) already decodes as
-    UTF-8: the scoped capture must return the path byte-exact and restore
-    the caller's console encoding, whatever code page the console carries.
+    UTF-8: the capture must return the path byte-exact and leave the caller's
+    console encoding unchanged, whatever code page the console carries.
     """
     profile = tmp_path / PROFILE
     install = profile / 'hermes-agent'
@@ -104,7 +106,7 @@ def test_runtime_command_survives_a_non_ascii_profile_path(tmp_path: Path, code_
     lines = _run_helper(script, home, {'HERMES_RUNTIME_DIR': str(store)}, tmp_path / 'answer.txt')
     assert lines[0] == str(python), (
         f"interpreter path was mojibaked under code page {code_page}: {lines[0]!r}")
-    assert int(lines[1]) == code_page, 'the capture must restore the caller console encoding'
+    assert int(lines[1]) == code_page, 'the capture must leave the caller console encoding unchanged'
 
 
 @pytest.mark.platforms('windows')

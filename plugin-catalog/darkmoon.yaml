@@ -1,0 +1,16 @@
+name: darkmoon
+repo: https://github.com/ASCIT31/darkmoon-hermes-plugin
+sha: '4a24b4eb77f01bf8ba56c11f37803d623fc14f14'
+description: "Triage the findings file of a Darkmoon autonomous pentest scan (JSON or SARIF): filter by severity and proof status, get a severity-sorted summary and a pass/fail gate for a release. Read-only and offline: no network, no subprocess, no credentials, standard library only. Darkmoon is open source (GPL-3.0); its web dashboard and remediation agent are Pro and are not used here. Disclosure — reads a local .json or .sarif file at a model-supplied path (10 MB cap) and returns its findings; no network, subprocess or writes"
+maintainer: ASCIT31
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/ASCIT31/Dark-Moon
+platforms: []
+capabilities:
+  provides_tools:
+  - darkmoon_findings
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

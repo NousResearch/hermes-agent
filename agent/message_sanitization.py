@@ -12,8 +12,9 @@ import json
 import logging
 import re
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
@@ -288,14 +289,26 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     """Append a synthetic assistant turn when an interrupted tail is a tool result: a transcript
     ending on a raw ``tool`` message makes the next user message land as ``tool → user``, an
     alternation violation strict providers (Gemini, Claude) answer by hallucinating a
-    continuation. Mutates in place; True if a closing turn was appended."""
+    continuation. Mutates in place; True if a closing turn was appended.
+
+    Only the placeholder closes silently: with no real text (or just the bare interrupt
+    placeholder) the row is hidden from the user — ``api_content`` carries the LLM-visible
+    text (substituted at API-build time by ``substitute_api_content``), ``content=""`` +
+    ``display_kind="hidden"`` keep it out of rendered transcripts, matching the
+    ``_INTERRUPTED_PLACEHOLDER`` shape in ``turn_api_call.py``. A caller-supplied banner
+    (truncation notices, partial-delivery text) stays visible: it is the turn's only
+    user-facing explanation."""
     last = messages[-1] if messages else None
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
 
-    append_message(messages, {"role": "assistant", "content": text.strip() or "Operation interrupted."})
+    stripped = text.strip()
+    if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
+        append_message(messages, hidden_interrupt_placeholder_row())
+    else:
+        append_message(messages, {"role": "assistant", "content": stripped})
     return True
 
 
@@ -446,19 +459,15 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "close_interrupted_tool_sequence",
-    "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
-    "coerce_tool_name",
-    "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
-    "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
-    "strip_images_for_rejecting_model",
-    # call_id policy owners
-    "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids", "normalize_provider_tool_call_ids",
-    # reasoning_content policy owners
-    "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
+    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
+    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
+    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
+    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 
 
@@ -528,16 +537,19 @@ def coalesce_tool_call_id(tc: Any) -> str:
     return ""
 
 
-def uniquify_tool_call_ids(tool_calls: list) -> list:
-    """Ensure every tool call in one assistant turn has a distinct id.
+def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
+    """Ensure every tool call in one assistant turn has an id no other call in the session has.
 
-    Some providers reuse one id across a batch; the pre-API sanitizer then keeps only the
-    first call/result pair per id and strict providers reject duplicates. Later collisions
-    get a deterministic ``<id>_d<n>`` suffix (never uuid4 — cache-prefix stability). Mutates
-    entries (SDK models / SimpleNamespace / dicts) in place. Blank ids are left for the
-    deterministic fallback in ``build_assistant_message``.
+    Some providers reuse one id across a batch, and some name every call ``call_0`` turn after
+    turn; the pre-API sanitizer then keeps only the first call/result pair per id, strict
+    providers reject duplicates, and the desktop binds a tool card to the wrong call. ``taken``
+    is the ids already in this session's history: they are never rewritten (prompt cache), so
+    the incoming call is renamed instead. Collisions get a deterministic ``<id>_d<n>`` suffix
+    (never uuid4 — cache-prefix stability). Mutates entries (SDK models / SimpleNamespace /
+    dicts) in place. Blank ids are left for the deterministic fallback in
+    ``build_assistant_message``.
     """
-    seen: set = set()
+    seen: set = set(taken)
     for tc in tool_calls or []:
         # Same coalescing rule as coalesce_tool_call_id, tolerant of non-string ids.
         raw = _tc_field(tc, "call_id") or _tc_field(tc, "id") or ""
@@ -564,8 +576,8 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
             continue
         _fn_name = _tc_field(_tc_field(tc, "function"), "name") or "?"
         logger.warning(
-            "Model reused tool call id %s within one turn; renamed the duplicate to %s (tool=%s) to keep "
-            "call/result pairing lossless.", cid, new_id, _fn_name,
+            "Model reused tool call id %s; renamed the duplicate to %s (tool=%s) to keep call/result "
+            "pairing lossless.", cid, new_id, _fn_name,
         )
     return tool_calls
 

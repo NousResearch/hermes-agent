@@ -722,7 +722,7 @@ async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monke
     """A fence held elsewhere past the deadline aborts the refresh: no POST, tokens kept."""
     import functools
 
-    import tools.mcp_oauth as mcp_oauth
+    from tools import mcp_oauth
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     endpoint = "https://idp.example.com/oauth/token"
@@ -831,14 +831,14 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
     """A lock syscall failing for a reason other than contention must not spin to the deadline."""
     import errno
 
-    import tools.mcp_oauth as mcp_oauth
+    from tools import mcp_oauth
 
     if mcp_oauth.fcntl is None:
         pytest.skip("flock-based fence only")
 
     def broken_flock(fd, op):
         if op & mcp_oauth.fcntl.LOCK_UN:
-            return None
+            return
         raise OSError(errno.ENOLCK, "No locks available")
 
     monkeypatch.setattr(mcp_oauth.fcntl, "flock", broken_flock)

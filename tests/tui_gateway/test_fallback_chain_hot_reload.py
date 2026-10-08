@@ -10,11 +10,11 @@ successor so the wiring — not just the helper — is pinned.
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 
 import pytest
 
+from hermes_time import deadline_clock
 from tui_gateway import server
 
 FALLBACK = [{"provider": "xai-oauth", "model": "grok-4.6"}]
@@ -78,6 +78,6 @@ def test_torn_config_keeps_the_last_known_good_chain_but_removal_still_applies(m
 
     # While a cooldown holds the agent on an activated fallback, the sync leaves the chain alone.
     agent._fallback_chain, agent._fallback_activated = list(FALLBACK), True
-    agent._rate_limited_until = time.monotonic() + 600
+    agent._rate_limited_until = deadline_clock() + 600
     _admit_turn(monkeypatch, tmp_path, session, "model:\n  provider: openai\n")
     assert agent._fallback_chain == FALLBACK

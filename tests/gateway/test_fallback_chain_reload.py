@@ -11,8 +11,9 @@ full Feishu session path.
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
+
+from hermes_time import deadline_clock
 
 
 def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
@@ -58,7 +59,7 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
         _fallback_model=live[0],
         _fallback_index=1,
         _fallback_activated=True,
-        _rate_limited_until=time.monotonic() + 30,
+        _rate_limited_until=deadline_clock() + 30,
     )
     GatewayRunner._apply_fallback_chain_to_agent(
         agent,

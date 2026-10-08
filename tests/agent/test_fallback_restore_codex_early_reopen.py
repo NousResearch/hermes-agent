@@ -9,6 +9,7 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
+from hermes_time import deadline_clock
 from run_agent import AIAgent
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex"
@@ -61,7 +62,7 @@ def _pin_to_fallback(agent):
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, None)):
         assert agent._try_activate_fallback() is True
     # The weekly reset the provider declared, armed by _arm_rate_limit_cooldown.
-    agent._rate_limited_until = time.monotonic() + 3 * 86400
+    agent._rate_limited_until = deadline_clock() + 3 * 86400
 
 
 def _restore(agent, quota_restored):

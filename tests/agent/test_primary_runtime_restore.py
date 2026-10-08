@@ -10,6 +10,7 @@ Verifies that:
 """
 
 import time
+from hermes_time import deadline_clock
 from unittest.mock import MagicMock, patch
 
 
@@ -622,7 +623,7 @@ class TestRateLimitCooldown:
         assert agent._fallback_activated is True
 
         # Manually set cooldown well into the future
-        agent._rate_limited_until = time.monotonic() + 60
+        agent._rate_limited_until = deadline_clock() + 60
 
         result = agent._restore_primary_runtime()
         assert result is False

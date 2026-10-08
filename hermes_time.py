@@ -9,7 +9,9 @@ import locale
 import logging
 import os
 import re
+import sys
 import threading
+import time
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -30,6 +32,24 @@ _tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 # ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
 _ESCAPED_BYTES_RE = re.compile(r"[\x00-\x7f\udc80-\udcff]*")
+
+
+# Linux CLOCK_MONOTONIC excludes suspend; Darwin's includes it, unlike Python's
+# mach_absolute_time-based monotonic(). Windows QueryPerformanceCounter includes
+# suspend already. Select once, so an armed deadline never changes clock domains.
+_CLOCK_ID = (time.CLOCK_MONOTONIC if sys.platform == "darwin"
+             else getattr(time, "CLOCK_BOOTTIME", None))
+
+
+def deadline_clock() -> float:
+    """Process-local expiry clock, including suspend on Linux, macOS and Windows.
+
+    The epoch is unspecified: never persist it or compare it with time.monotonic().
+    Other platforms fall back to Python's monotonic clock.
+    """
+    if _CLOCK_ID is not None:
+        return time.clock_gettime(_CLOCK_ID)
+    return time.monotonic()
 
 
 def _repair_surrogates(text: str, encoding: Optional[str] = None) -> str:

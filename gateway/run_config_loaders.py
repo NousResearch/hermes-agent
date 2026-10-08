@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+import hermes_time
 
 from gateway.config import Platform
 from gateway.restart import (
@@ -560,7 +561,7 @@ class GatewayConfigLoadersMixin:
             return
         new_chain = list(chain or [])
         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
-        if getattr(agent, "_fallback_activated", False) and rate_limited_until > time.monotonic():
+        if getattr(agent, "_fallback_activated", False) and rate_limited_until > hermes_time.deadline_clock():
             return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
         agent._fallback_chain = new_chain

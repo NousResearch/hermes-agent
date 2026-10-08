@@ -3,12 +3,30 @@ fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runti
 import logging
 import math
 import time
+import hermes_time
 
 from agent.error_classifier import FailoverReason
 
 logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
+
+# Fallback chain exhausted on a non-rate-limit failure (#24996): arm a short
+# cooldown so the NEXT turn's restore_primary_runtime stays gated instead of
+# resetting _fallback_index=0 and re-marshaling the whole context across every
+# provider again (memory/swap exhaustion on constrained hosts). Rate-limit /
+# billing reasons keep their own longer cooldown.
+_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+
+def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
+    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
+    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
+    context across every provider again."""
+    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
+        agent._rate_limited_until = max(
+            getattr(agent, "_rate_limited_until", 0) or 0, hermes_time.deadline_clock() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+    return False
 
 
 def _provider_reset_delay(reset_at) -> float | None:
@@ -47,8 +65,8 @@ def _arm_rate_limit_cooldown(
 ) -> int | None:
     """Arm the primary cooldown until the provider reset, or use exponential backoff.
 
-    ``reset_at`` is an absolute wall-clock timestamp while ``_rate_limited_until`` is monotonic;
-    convert through a duration so wall-clock epoch values never enter the monotonic comparison.
+    ``reset_at`` is an absolute wall-clock timestamp while ``_rate_limited_until`` uses the suspend-inclusive deadline clock;
+    convert through a duration so wall-clock epoch values never enter the deadline comparison.
     Missing, invalid, or expired provider resets retain the 60s → 2m → ... → 4h fallback.
     Only arm when leaving the primary: chain-switching from an active fallback means the primary
     was not the failing source. Return the armed cooldown in seconds, or None when not armed.
@@ -68,7 +86,7 @@ def _arm_rate_limit_cooldown(
     else:
         backoff_seconds = min(60 * (2 ** backoff_count), 14400)
         source = "exponential fallback"
-    agent._rate_limited_until = time.monotonic() + backoff_seconds
+    agent._rate_limited_until = hermes_time.deadline_clock() + backoff_seconds
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
         backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,

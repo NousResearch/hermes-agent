@@ -16,6 +16,7 @@ import logging
 import subprocess
 import threading
 import time
+import hermes_time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -128,11 +129,11 @@ class CommandTokenSource:
 
     def __call__(self) -> str:
         with self._lock:
-            if self._token and time.monotonic() < self._expires_at:
+            if self._token and hermes_time.deadline_clock() < self._expires_at:
                 return self._token
             token, ttl = _mint(self._command, self._label)
             self._token = token
-            self._expires_at = time.monotonic() + (
+            self._expires_at = hermes_time.deadline_clock() + (
                 max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS
             )
             logger.debug(

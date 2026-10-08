@@ -282,7 +282,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            project = document.setdefault("project", {})
+            project["name"] = f"hermes-plugin-{key}"
+            # uv rejects a [project] table with no version, and the copy above
+            # may have acquired [project] from a tooling-only pyproject. Never
+            # override a version the plugin declares, including a dynamic one.
+            dynamic = project.get("dynamic")
+            dynamic = dynamic if isinstance(dynamic, list) else []
+            if "version" not in project and "version" not in dynamic:
+                project["version"] = "0.0.0"
         if virtual or changed:
             import tomli_w
 

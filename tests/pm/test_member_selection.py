@@ -87,3 +87,42 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_pyproject_without_a_project_table_yields_a_lockable_member(tmp_path):
+    """A tooling-only pyproject (no [project]) must still yield a member uv accepts."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "lcm-x"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '# lint configuration only\n[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    assert document["project"]["version"] == "0.0.0"
+    assert document["tool"]["ruff"]["target-version"] == "py311"
+
+
+def test_member_version_is_declared_or_dynamic_but_never_both(tmp_path):
+    """A declared or dynamic version stands; only a silent plugin gets a default."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    cases = {
+        "declared": ('[project]\nname = "plugin"\nversion = "1.2.3"\n', "1.2.3", None),
+        "dynamic": ('[project]\nname = "plugin"\ndynamic = ["version"]\n', None, ["version"]),
+        "absent": ('[project]\nname = "plugin"\ndescription = "no version"\n', "0.0.0", None),
+    }
+    for label, (body, expected_version, expected_dynamic) in cases.items():
+        plugin = tmp_path / label / "plugins" / "plugin"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(body, encoding="utf-8")
+        root = tmp_path / f"gen-{label}"
+        root.mkdir()
+        member = _workspace_member(plugin, root, identity=plugin)
+        document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8-sig"))
+        assert document["project"].get("version") == expected_version, label
+        assert document["project"].get("dynamic") == expected_dynamic, label

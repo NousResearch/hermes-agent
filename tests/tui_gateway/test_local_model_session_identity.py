@@ -7,6 +7,9 @@ from hermes_cli import runtime_provider as rp
 from hermes_cli.local_runtime import endpoint
 from tui_gateway import server
 
+# The config model the local pick diverged from (``local_route``'s config default).
+_CONFIG_MARKER = {"model": "claude-test", "provider": "anthropic"}
+
 
 @pytest.fixture
 def local_route(tmp_path, monkeypatch):
@@ -43,9 +46,11 @@ def test_live_local_identity_survives_new_chat_and_resume(local_route):
     persisted = server._runtime_model_config(agent)
     assert persisted["provider"] == "llamacpp"
     assert "api_key" not in persisted
-    # Legacy rows kept the local endpoint but lost the provider slug.
+    # Legacy rows kept the local endpoint but lost the provider slug. The local model was an explicit pick
+    # made under the cloud config default (the marker), so resume restores it.
     for provider in ("custom", "llamacpp"):
-        row = {"model": model, "model_config": {**persisted, "provider": provider}}
+        row = {"model": model, "model_config": {**persisted, "provider": provider,
+                                                "composer_override_profile": _CONFIG_MARKER}}
         overrides = server._stored_session_runtime_overrides(row)
         restored_model, restored = server._resolve_agent_model_runtime(
             overrides["model_override"], overrides.get("provider_override"))
@@ -65,7 +70,7 @@ def test_resume_follows_live_managed_port_not_snapshot(local_route):
     stale = "http://127.0.0.1:51489/v1"
     row = {"model": model, "model_config": {
         "model": model, "provider": "llamacpp", "base_url": stale,
-        "api_mode": "chat_completions"}}
+        "api_mode": "chat_completions", "composer_override_profile": _CONFIG_MARKER}}
     overrides = server._stored_session_runtime_overrides(row)
     restored_model, restored = server._resolve_agent_model_runtime(
         overrides["model_override"], overrides.get("provider_override"))

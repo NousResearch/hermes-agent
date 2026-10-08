@@ -31,11 +31,14 @@ def _write_home(home, config_text: str) -> None:
     (home / ".env").write_text("")
 
 
-def _store(home, provider: str) -> None:
+def _store(home, provider: str, marker: dict) -> None:
     db = SessionDB(db_path=home / "state.db")
     try:
+        # ``marker`` = the owning profile's config model at pick time: an explicit pick, so resume restores it
+        # only when the compare runs under the SESSION profile's scope.
         db.create_session(_STORED, "desktop", model="local-code",
-                          model_config={"model": "local-code", "provider": provider, "base_url": _BASE_URL})
+                          model_config={"model": "local-code", "provider": provider, "base_url": _BASE_URL,
+                                        "composer_override_profile": marker})
         db.append_message(_STORED, "user", "hi")
         db.append_message(_STORED, "assistant", "hello")
     finally:
@@ -77,7 +80,7 @@ def _resume(**params):
 
 @pytest.mark.parametrize("path", [{"defer_history": True, "omit_messages": True}, {}], ids=["deferred", "cold"])
 def test_secondary_profile_overrides_resolve_against_its_own_config(homes, path):
-    _store(homes["b"], "custom:local-vllm")
+    _store(homes["b"], "custom:local-vllm", {"model": "local-code", "provider": "custom:local-vllm"})
 
     overrides = _resume(profile="b", **path)
 
@@ -86,7 +89,7 @@ def test_secondary_profile_overrides_resolve_against_its_own_config(homes, path)
 
 
 def test_launch_profile_overrides_still_resolve_against_launch_config(homes):
-    _store(homes["a"], "custom:local-code")
+    _store(homes["a"], "custom:local-code", {"model": "gpt-4o", "provider": "openai"})
 
     overrides = _resume(defer_history=True, omit_messages=True)
 

@@ -60,9 +60,9 @@ def _(rid, params: dict) -> dict:
             except Exception as exc:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; surfaced verbatim to the client, never swallowed
                 return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-        session, err = _sess(params, rid)
-        if err:
-            return err
+        # No agent wait: a turn parked on the deferred build already honors _turn_cancel_requested. Waiting here
+        # failed Stop with 5032 once the build failed or outlived 30s (and started a build for a lazy session), so
+        # the Desktop, which interrupts before session.close, could not delete such a session (#133262).
         _interrupt_session_turn(sid, session)
         # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
         # and session.resume auto-continues the turn the user just stopped (the extra key covers compression

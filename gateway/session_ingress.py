@@ -127,7 +127,7 @@ async def execute_admission(authority, ref, row):
                 event.allow_gateway_control = False
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
             response = await authority.runner._handle_message(event)
-            result = captured.get('result')
+            result = captured.get('terminal_result', captured.get('result'))
             if result is None:
                 # No TurnRunner result means the handler answered without executing the turn.
                 # A turn that never ran because it failed (agent initialization raised, history

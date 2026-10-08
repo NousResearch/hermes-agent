@@ -1589,6 +1589,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Synthetic failed run dict for an inactivity timeout, with the activity-tracker diagnostic;
         interrupts the agent if it is still running so the thread pool worker is freed."""
         from gateway.run import _INTERRUPT_REASON_TIMEOUT, _INTERRUPT_TOOL_REASON_TIMEOUT, request_hard_interrupt
+        from gateway.session_results import record_terminal_failure
         session_key, result_holder, tools_holder = turn_ctx.session_key, turn_ctx.result_holder, turn_ctx.tools_holder
         _timed_out_agent = turn_ctx.agent_holder[0]
         _activity = self._agent_activity_summary(_timed_out_agent)
@@ -1618,14 +1619,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 "gateway.progress.timeout_last_activity",
                 activity=_last_desc, seconds=f"{_secs_ago:.0f}", progress=_iter_progress))
         _diag_lines.append(t("gateway.progress.timeout_hint"))
-        return {
+        return record_terminal_failure({
             "final_response": "\n".join(_diag_lines),
             "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
             "api_calls": _iter_n,
             "tools": tools_holder[0] or [],
             "history_offset": 0,
             "failed": True,
-        }
+        })
 
     async def _run_agent_await_turn_worker(
         self, worker: "GatewayRunner._RunAgentWorker", turn_ctx: TurnContext,

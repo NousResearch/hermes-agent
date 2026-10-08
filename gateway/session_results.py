@@ -19,6 +19,14 @@ def record_unexecuted_failure(reply):
     return reply
 
 
+def record_terminal_failure(result):
+    """Retain an owner-side failure even if an abandoned executor returns while delivery unwinds."""
+    captured = execution_result.get()
+    if captured is not None:
+        captured['terminal_result'] = result
+    return result
+
+
 def _redacted(value):
     """The stored result is a state.db copy of the model's answer and history: redacted at this
     storage boundary like every transcript row (``security.redact_secrets``). The live viewer

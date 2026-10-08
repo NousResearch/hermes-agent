@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry
+    from gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
@@ -229,10 +229,65 @@ class SessionPersistenceMixin:
         except Exception:
             return str(self.sessions_dir)
 
-    def _routing_db_method(self, name: str):
-        """Bound ``_routing_db.<name>`` if the handle exists and has it, else None."""
-        method = getattr(self._routing_db or None, name, None)
+    def _routing_db_method(self, name: str, *, open_db: bool = True):
+        """Bound ``_routing_db.<name>`` if the handle exists and has it, else None. ``open_db=False``
+        never opens the database (None unless it is already open): an open waits out a sibling's
+        write lock with the routine 20 s patience."""
+        db = self._routing_db if open_db else self._open_routing_db()
+        method = getattr(db or None, name, None)
         return method if callable(method) else None
+
+    def _open_routing_db(self):
+        """``_routing_db`` if its handle is already open, else None; never opens one."""
+        pinned = self._pinned_db()
+        if pinned is not _DB_UNPINNED:
+            return pinned
+        cache, home = getattr(self, "_db_handle_cache", None), getattr(self, "_routing_home", None)
+        if cache is None:
+            return None
+        from hermes_state import _default_db_path
+
+        return cache.peek(Path(home / "state.db" if home is not None else _default_db_path()))
+
+    @staticmethod
+    def _chat_labels_meta_key(platform, scope_id, chat_id) -> str:
+        return f"gateway_chat_labels:{getattr(platform, 'value', platform)}:{scope_id or ''}:{chat_id}"
+
+    def record_chat_labels(self, source: SessionSource) -> bool:
+        """Persist *source*'s ``chat_name`` / ``chat_topic`` as the chat's current labels, at the
+        moment they are observed; True once written. A session origin cannot answer "what is this
+        chat called now": it is written when its session is created, which can be after a newer
+        observation (a delayed first turn), and a reset inherits it under a fresh ``created_at``.
+
+        False when there is no open database handle right now (open failed, backoff, JSONL fallback):
+        nothing was written, so the caller must not treat these labels as recorded."""
+        setter = self._routing_db_method("set_meta", open_db=False)
+        if setter is None:
+            return False
+        from hermes_state import SessionDB
+
+        # An observation, not a transcript write: the relay reader waits on it before the next frame,
+        # so it never opens the database and takes the short activity budget; a busy database raises
+        # and the next message retries. A write a cancelled reader left running may still be here when
+        # shutdown closes the database: it fails rather than reopen state.db behind that close.
+        setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
+               json.dumps([source.chat_name, source.chat_topic]),
+               patience_s=SessionDB._ACTIVITY_WRITE_PATIENCE_S, reopen_after_close=False)
+        return True
+
+    def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
+        """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
+        when the store cannot be read, including when there is no open database handle right now
+        (the relay reader waits on this read, so it never opens one): "unreadable now" is not
+        "never labelled"."""
+        getter = self._routing_db_method("get_meta", open_db=False)
+        if getter is None:
+            raise LookupError("session database unavailable")
+        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))
+        if not raw:
+            return None
+        chat_name, chat_topic = json.loads(raw)
+        return chat_name, chat_topic
 
     def _load_routing_rows_locked(self) -> bool:
         """Load state.db routing entries into ``_entries``; False when there is no loader or the

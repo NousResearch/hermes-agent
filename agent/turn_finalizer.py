@@ -527,15 +527,41 @@ def finalize_turn(
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
-
-    final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
-        agent, final_response=final_response, api_call_count=api_call_count,
-        interrupted=interrupted, failed=failed, messages=messages,
-        _turn_exit_reason=_turn_exit_reason,
-        _pending_verification_response=_pending_verification_response,
-        _pending_verification_response_previewed=_pending_verification_response_previewed,
-        logger=logger,
+    from agent.turn_final_output import (
+        FINAL_OUTPUT_REFUSAL_COPY, TERMINAL_VERDICTS, disposition_from_exit_reason,
+        final_output_disposition, gate_final_output,
     )
+
+    # Terminal disposition recorded at the commit point (DROP) or by the outer error
+    # owner (fail-closed refusal), with the exit reason as its fallback carrier. Every
+    # producer below honors it: no new final candidate may be minted, and no dropped or
+    # refused candidate may be re-created as an assistant row, returned to the caller,
+    # or made eligible for next-turn replay.
+    _final_output = (
+        final_output_disposition(agent, turn_id) or disposition_from_exit_reason(_turn_exit_reason)
+    )
+    _final_output_terminal = _final_output in TERMINAL_VERDICTS
+    preserved_verification_fallback = False
+    if _final_output_terminal:
+        final_response = None
+    else:
+        final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
+            agent, final_response=final_response, api_call_count=api_call_count,
+            interrupted=interrupted, failed=failed, messages=messages,
+            _turn_exit_reason=_turn_exit_reason,
+            _pending_verification_response=_pending_verification_response,
+            _pending_verification_response_previewed=_pending_verification_response_previewed,
+            logger=logger,
+        )
+        # The budget fallback has its own commit point: the production summary is gated
+        # BEFORE its first assistant-row append, so a DROP/refusal recorded there is
+        # already terminal. Adopt it now — before _persist_step runs stream recovery,
+        # the tail close and persistence over a candidate that no longer exists.
+        _after_fallback = final_output_disposition(agent, turn_id)
+        if _after_fallback in TERMINAL_VERDICTS:
+            _final_output = _after_fallback
+            _final_output_terminal = True
+            final_response = None
 
     # A non-interrupted turn that fell out of the loop after a tool result, with no
     # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
@@ -546,8 +572,11 @@ def finalize_turn(
     # exit reason, fail the turn, and synthesize the visible close so the tail close in
     # ``_persist_step`` persists an assistant row. A turn that already streamed text is
     # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).
+    # A terminal disposition owns this turn: no substitute close text may stand in for a
+    # candidate the gate dropped or refused (and no ``failed`` flip either).
     if (
-        not final_response
+        not _final_output_terminal
+        and not final_response
         and not interrupted
         and messages
         and isinstance(messages[-1], dict)
@@ -617,21 +646,84 @@ def finalize_turn(
     def _persist_step():
         nonlocal final_response
         _drop_transcript_scaffolding(agent, messages)
-        final_response, _recovered_from_stream = _recover_final_from_stream(
-            agent, final_response, interrupted, failed
-        )
+        if _final_output_terminal:
+            # Terminal DROP/refusal: stream recovery must not mint a replacement
+            # candidate from the bytes the gate just refused.
+            _recovered_from_stream = False
+        else:
+            final_response, _recovered_from_stream = _recover_final_from_stream(
+                agent, final_response, interrupted, failed
+            )
         # Recovery paths (stream-recovered / prior-turn text) reach here with a response no
         # earlier seam transformed; the normal text turn already did this before its flush and
         # gets the recorded outcome back. Either way the tail close below writes the text the
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+            # Final candidates minted INSIDE the finalizer (budget-fallback summary,
+            # stream recovery) never pass through finish_text_response, so this is
+            # their first and last commit point. gate_final_output is a no-op for a
+            # candidate the commit point already allowed, and returns the recorded
+            # verdict without re-running the chain once the turn is terminal.
+            from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+            try:
+                _gate_verdict = gate_final_output(
+                    agent,
+                    candidate={
+                        "content": final_response,
+                        "role": "assistant",
+                        "tool_calls": [],
+                        "finish_reason": "stop",
+                    },
+                    context={
+                        "session_id": getattr(agent, "session_id", ""),
+                        "turn_id": turn_id,
+                        "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                        "provider": getattr(agent, "provider", ""),
+                        "model": getattr(agent, "model", ""),
+                    },
+                    turn_id=turn_id,
+                )
+            except LLMStreamMiddlewareRefusal as _refusal:
+                # Recorded as terminal before the raise; this owner is already past
+                # the loop's error handler, so it settles the attempt here instead of
+                # letting _guarded_cleanup swallow the refusal into cleanup_errors.
+                logger.warning(
+                    "llm_final_output_commit gate refused the finalizer-owned candidate "
+                    "(turn_id=%s): %s",
+                    turn_id, _refusal,
+                )
+                _gate_verdict = "refused"
+            if _gate_verdict != "allow":
+                logger.warning(
+                    "llm_final_output_commit gate %s the finalizer-owned candidate "
+                    "(turn_id=%s, content_length=%d) — no assistant row, no delivery",
+                    "refused" if _gate_verdict == "refused" else "dropped",
+                    turn_id,
+                    len(final_response) if isinstance(final_response, str) else 0,
+                )
+                final_response = None
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+
+    # The persist step may have gated a finalizer-owned candidate (budget-fallback
+    # summary / stream recovery): re-read the disposition so the result below settles
+    # the attempt accordingly — refusal is a failed turn, DROP stays an advisory
+    # policy outcome — and so no dropped/refused text survives into the exit copy.
+    _final_output = final_output_disposition(agent, turn_id) or _final_output
+    _final_output_terminal = _final_output in TERMINAL_VERDICTS
+    if _final_output_terminal:
+        final_response = None
+        # ``completed`` was computed from the candidate this turn held before the
+        # finalizer's own commit point ran; a dropped/refused candidate was never
+        # delivered, so the turn cannot report as completed.
+        completed = False
+        if _final_output == "refused" and not interrupted:
+            failed = True
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
@@ -643,7 +735,10 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if not interrupted and not _final_output_terminal:
+        # The explainer substitutes copy for an EMPTY reply; a terminal disposition
+        # must return nothing at all (no substitute text can stand in for the
+        # candidate the gate refused to commit).
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
@@ -736,6 +831,16 @@ def finalize_turn(
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    if _final_output in TERMINAL_VERDICTS:
+        # Carried on the result so every later owner — the core failed-turn closer
+        # below and the gateway's own — honors the disposition instead of
+        # re-deriving a candidate. A refusal is a failed, non-retryable turn with
+        # copy for the surface; a DROP is an intentional policy outcome, stays
+        # advisory (``failed`` unchanged) and returns no text at all.
+        result["final_output_disposition"] = _final_output
+        if _final_output == "refused":
+            result["error"] = FINAL_OUTPUT_REFUSAL_COPY
+            stamp_failure(result, "llm_stream_middleware_refusal", False)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

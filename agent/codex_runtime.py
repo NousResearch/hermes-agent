@@ -13,9 +13,10 @@ import threading
 import time
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.turn_final_output import FINAL_OUTPUT_REFUSAL_COPY
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
 from agent.stream_diag import buffer_connect_exhausted_notice
@@ -54,7 +55,12 @@ def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tup
         return
     try:
         fn(*args, **(kwargs or {}))
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+        if isinstance(exc, LLMStreamMiddlewareRefusal):
+            # A fail-closed live-output refusal is part of the execution contract,
+            # not a best-effort display callback failure.
+            raise
         logger.debug(fail_msg, *fail_args, exc_info=True)
 
 
@@ -422,7 +428,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
         if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
-                     args=({"role": "assistant", "content": text},))
+                     args=({"role": "assistant", "content": text},), kwargs={"live": True})
         # Each agentMessage item is its own delivered message: the completed item was just compared
         # against ITS deltas, so drop them before the next item's deltas arrive. Otherwise the buffer
         # holds "commentary + final", the final agentMessage no longer prefix-matches, and it is
@@ -694,8 +700,11 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
+                       should_review_memory: bool, final_text: Optional[str]) -> dict[str, Any]:
+    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
+
+    ``final_text`` is the GATED candidate (``None`` when the final-output gate dropped or
+    refused it): the downstream consumers must never see text that was not committed."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
@@ -708,14 +717,53 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            original_user_message=original_user_message, final_response=final_text, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
+    if final_text and not turn.interrupted and (should_review_memory or should_review_skills):
         _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
             messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
         ))
     return usage_result
+
+
+def _gate_codex_final_output(agent, final_text: str, turn) -> str:
+    """``llm_final_output_commit`` for the Codex app-server's final candidate.
+
+    The Codex fast path returns before ``finish_text_response`` and before
+    ``finalize_turn``, so this is the candidate's only commit point: evaluated here, the
+    verdict precedes projected-message persistence, the external-memory / background-review
+    consumers and the result return.
+
+    Returns ``"allow"``, ``"drop"`` or ``"refused"``. A fail-closed refusal is recorded as
+    terminal by :func:`gate_final_output` and settled here rather than raised: nothing on
+    this path owns a retry, and a raise would escape ``_run_conversation_turn`` entirely.
+    """
+    from agent.turn_final_output import gate_final_output
+    from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+
+    turn_id = getattr(agent, "_current_turn_id", "") or ""
+    try:
+        return gate_final_output(
+            agent,
+            candidate={
+                "content": final_text,
+                "role": "assistant",
+                "tool_calls": [],
+                "finish_reason": "stop",
+            },
+            context={
+                "session_id": getattr(agent, "session_id", ""),
+                "turn_id": turn_id,
+                "api_request_id": str(getattr(turn, "turn_id", "") or ""),
+                "provider": getattr(agent, "provider", ""),
+                "model": getattr(agent, "model", ""),
+            },
+            turn_id=turn_id,
+        )
+    except LLMStreamMiddlewareRefusal as refusal:
+        logger.warning("llm_final_output_commit refused the codex final candidate: %s", refusal)
+        return "refused"
 
 
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
@@ -749,17 +797,66 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
+
+    # llm_final_output_commit for the Codex fast path: this dispatcher returns the result
+    # BEFORE either generic gate owner (finish_text_response / finalize_turn), so the
+    # decision has to be taken HERE — before the projected assistant rows are persisted,
+    # before the external-memory and background-review consumers see the text, and before
+    # the result is returned (PR 120170 re-review at 0e25ab97f7, P1 #2).
+    final_text = turn.final_text
+    final_output = None
+    if final_text and turn.error is None:
+        final_output = _gate_codex_final_output(agent, final_text, turn)
+        if final_output != "allow":
+            logger.warning(
+                "llm_final_output_commit %s the codex app-server final candidate "
+                "(turn_id=%s, content_length=%d) — no projected row, no consumers, no delivery",
+                "refused" if final_output == "refused" else "dropped",
+                turn.turn_id, len(final_text),
+            )
+            # Remove exactly the row that carries the rejected candidate; the turn's other
+            # projected rows (tool calls, tool results) stay durable.
+            turn.projected_messages = [
+                row for row in turn.projected_messages
+                if not (
+                    isinstance(row, dict)
+                    and row.get("role") == "assistant"
+                    and row.get("content") == final_text
+                    and not row.get("tool_calls")
+                )
+            ]
+            final_text = None
+
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        final_text=final_text,
     )
+    terminal = final_output in ("drop", "refused")
+    # A refusal carries its own error text (same copy as the generic path); a DROP is an
+    # advisory policy outcome and keeps turn.error as it was.
+    error = FINAL_OUTPUT_REFUSAL_COPY if final_output == "refused" else turn.error
+    result_extra: Dict[str, Any] = {}
+    if terminal:
+        # Carried on the result so the failed-turn closers (and the gateway's own) honor
+        # the disposition instead of re-deriving a candidate. A refusal keeps the generic
+        # path's shape: failed, non-retryable, with copy for the surface.
+        result_extra["final_output_disposition"] = final_output
+        if final_output == "refused":
+            result_extra.update({
+                "failed": True,
+                "failure_reason": "llm_stream_middleware_refusal",
+                "failure_retryable": False,
+            })
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=1,
+        completed=not turn.interrupted and turn.error is None and not terminal, error=error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        final_response=final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        **result_extra,
         **usage_result,
     )
 
@@ -1070,7 +1167,10 @@ def _consume_codex_event_stream(
                 on_event(event)
             except (TimeoutError, InterruptedError):
                 raise  # watchdog / cancellation control flow must propagate
-            except Exception:
+            except Exception as exc:
+                from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+                if isinstance(exc, LLMStreamMiddlewareRefusal):
+                    raise
                 logger.debug("Codex stream on_event hook raised", exc_info=True)
         if (interrupt_check is not None and interrupt_check()) or assembler.feed(event):
             break

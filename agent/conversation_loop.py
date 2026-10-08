@@ -46,6 +46,7 @@ from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
+from agent.turn_final_output import reset_final_output_disposition
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
@@ -1631,6 +1632,9 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Final-output gate verdicts are per-turn and agents are reused across turns: a
+    # stale DROP/refusal from the previous turn must never terminate this one.
+    reset_final_output_disposition(agent)
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1834,6 +1838,12 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
             result.get("compression_exhausted") or result.get("compression_deferred")
             or result.get("failure_reason") == "context_overflow"
         ):
+            return
+        # A terminal policy DROP owns the transcript tail: no Hermes-authored assistant
+        # row may follow it — the dropped candidate must never be re-created, and a
+        # notice row would read as an answered turn. The user tail is merged by
+        # repair_message_sequence on the next prompt, like any other user-tailed turn.
+        if result.get("final_output_disposition") == "drop":
             return
         messages = result.get("messages")
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)

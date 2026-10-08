@@ -2293,8 +2293,46 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
-    """Request a summary when max iterations are reached. Returns the final response text."""
+def _gate_iteration_summary(agent, text: str, summary_api_request_id: str) -> str:
+    """``llm_final_output_commit`` for the iteration-budget summary, evaluated BEFORE its
+    first assistant-row append.
+
+    Returns ``"allow"``, ``"drop"`` or ``"refused"``. A fail-closed refusal is recorded as
+    terminal by :func:`gate_final_output` and then handled here rather than re-raised:
+    this producer runs inside ``finalize_turn``'s budget fallback, past every loop error
+    owner, so settling in place (no append, no candidate) is the terminal outcome.
+    """
+    from agent.turn_final_output import gate_final_output
+    from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+
+    turn_id = getattr(agent, "_current_turn_id", "") or ""
+    try:
+        return gate_final_output(
+            agent,
+            candidate={
+                "content": text,
+                "role": "assistant",
+                "tool_calls": [],
+                "finish_reason": "stop",
+            },
+            context={
+                "session_id": getattr(agent, "session_id", ""),
+                "turn_id": turn_id,
+                "api_request_id": summary_api_request_id,
+                "provider": getattr(agent, "provider", ""),
+                "model": getattr(agent, "model", ""),
+            },
+            turn_id=turn_id,
+        )
+    except LLMStreamMiddlewareRefusal as refusal:
+        logger.warning("llm_final_output_commit refused the iteration summary: %s", refusal)
+        return "refused"
+
+
+def handle_max_iterations(agent, messages: list, api_call_count: int) -> Optional[str]:
+    """Request a summary when max iterations are reached. Returns the final response text,
+    or ``None`` when the final-output gate dropped or refused the summary (nothing is
+    appended in that case)."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
@@ -2328,8 +2366,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
             if text:
                 summary_call_outcome = "success"
-                append_message(messages, {"role": "assistant", "content": text})
-                final_response = text
+                # llm_final_output_commit: the decision must land BEFORE this first
+                # assistant-row append. Once appended, _drop_transcript_scaffolding()
+                # keeps the row and _persist_session() writes it as durable, replayable
+                # state even when a later gate DROP clears final_response — so gate here,
+                # and append only on allow (PR 120170 re-review at 0e25ab97f7, P1 #1).
+                if _gate_iteration_summary(agent, text, summary_api_request_id) == "allow":
+                    append_message(messages, {"role": "assistant", "content": text})
+                    final_response = text
+                else:
+                    # Terminal (DROP or fail-closed refusal): nothing was appended and no
+                    # candidate is returned; pop the unanswered summary nudge so the
+                    # transcript is exactly what it was before this attempt.
+                    final_response = None
+                    if messages and messages[-1] is nudge:
+                        messages.pop()
             break
 
     except InterruptedError:
@@ -2924,12 +2975,22 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._fire_tool_gen_started(name)
 
     def _route_suppressed_text(self, text: str) -> None:
-        """Tool-call turns suppress content streaming (no chatty preamble), but
-        reasoning tags inside it must still reach the display: route through
-        the delta callback for tag extraction (the CLI drops non-reasoning text
-        once the stream box is closed)."""
-        if self.agent.stream_delta_callback:
-            self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
+        """Tool-call turns suppress ordinary content, but any bytes that still reach the
+        display/recording edge must pass the synchronous live-text policy first.
+
+        The transform runs outside the best-effort callback wrapper: a fail-closed
+        refusal is a security decision, not a display error. The transformed chunk
+        still goes directly to the callback so split think-tag extraction and the
+        existing tool-turn suppression semantics are preserved.
+        """
+        text = self.agent._transform_live_text(text, kind="text")
+        if text and self.agent.stream_delta_callback:
+            self._quiet(
+                lambda: (
+                    self.agent.stream_delta_callback(text),
+                    self.agent._record_streamed_assistant_text(text),
+                )
+            )
 
     def _new_diag(self) -> dict:
         diag = self.agent._stream_diag_init()
@@ -3622,6 +3683,12 @@ class _StreamingCall(StreamingWaitMonitor):
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
+        from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+        if isinstance(e, LLMStreamMiddlewareRefusal):
+            # A fail-closed policy refusal is not a transport failure. Never retry
+            # it, construct a continuation, or relabel it as a reconnect opportunity.
+            self.result["error"] = e
+            return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
         # ECONNRESET) — the retry loop owns recovery.
@@ -3657,7 +3724,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 logger.warning(
                     "Stream died after deltas but before any visible text was delivered (0 chars, "
                     "no tool call in flight); treating as an undelivered stream failure: %s", e)
-                self._quiet(self.agent._reset_stream_delivery_tracking)
+                try:
+                    self.agent._reset_stream_delivery_tracking()
+                except LLMStreamMiddlewareRefusal as _ref:
+                    self.result["error"] = _ref
+                    return False
+                except Exception:
+                    pass  # best-effort display cleanup
                 self.deltas_were_sent["yes"] = False
                 self.first_delta_fired["done"] = False
         if self.deltas_were_sent["yes"]:
@@ -3672,8 +3745,20 @@ class _StreamingCall(StreamingWaitMonitor):
             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
             if self.agent._warning_presentation_enabled():
-                self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
-            self._quiet(self.agent._reset_stream_delivery_tracking)
+                try:
+                    self.agent._fire_stream_delta("\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
+                except LLMStreamMiddlewareRefusal as _ref:
+                    self.result["error"] = _ref
+                    return False
+                except Exception:
+                    pass
+            try:
+                self.agent._reset_stream_delivery_tracking()
+            except LLMStreamMiddlewareRefusal as _ref:
+                self.result["error"] = _ref
+                return False
+            except Exception:
+                pass
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
@@ -3956,7 +4041,13 @@ class _StreamingCall(StreamingWaitMonitor):
                      f"Ask me to retry if you want to continue.")
             _partial_text = (_partial_text or "") + _warn  # model/result bookkeeping, never gated
             if self.agent._warning_presentation_enabled():
-                self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
+                from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+                try:
+                    self.agent._fire_stream_delta(_warn)
+                except LLMStreamMiddlewareRefusal:
+                    raise  # policy refusal must not be swallowed by partial-stub construction
+                except Exception:
+                    pass  # best-effort display
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
@@ -4023,6 +4114,11 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
         if self.result["error"] is not None:
+            from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+            if isinstance(self.result["error"], LLMStreamMiddlewareRefusal):
+                # Refusal wins even after earlier accepted deltas. A partial stub
+                # would convert a fail-closed decision into continuation/recovery.
+                raise self.result["error"]
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
             raise self.result["error"]

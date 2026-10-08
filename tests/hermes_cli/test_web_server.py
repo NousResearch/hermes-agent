@@ -2883,6 +2883,14 @@ class TestBuildSchemaFromConfig:
         assert fields["memory.provider"]["type"] == "select"
         assert _web_server_config.CONFIG_SCHEMA["memory.provider"] is not fields["memory.provider"]
 
+    def test_file_browser_hover_reveal_toggle_in_schema(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["display"]["hover_reveal_file_browser"] is True
+        entry = _web_server_config.CONFIG_SCHEMA["display.hover_reveal_file_browser"]
+        assert entry["type"] == "boolean"
+        assert entry["category"] == "display"
+
 
 # ---------------------------------------------------------------------------
 # Config round-trip tests

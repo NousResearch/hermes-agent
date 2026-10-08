@@ -54,6 +54,20 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+
+def test_deny_projection_variant_order_precedes_glob_order(deny_config):
+    deny_config(["reboot*", "*/sbin/reboot*"])
+    assert (
+        approval_floors._match_user_deny_rule("/sbin/reboot")
+        == "*/sbin/reboot*"
+    )
+
+
+def test_deny_glob_order_is_preserved_within_variant(deny_config):
+    deny_config(["*reboot*", "*/sbin/*"])
+    assert approval_floors._match_user_deny_rule("/sbin/reboot") == "*reboot*"
+
+
 def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
     """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
     commands = [

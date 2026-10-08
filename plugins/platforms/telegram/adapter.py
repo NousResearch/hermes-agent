@@ -6714,7 +6714,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 return await self._dispatch_with_text(
                     event, f"The document is too large or its size could not be verified. Maximum: {self._max_doc_bytes // (1024 * 1024)} MB.")
             # Screenshots/photos sent as documents take the image cache + batching path.
-            if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
+            if (ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/")) and doc_mime != "image/svg+xml":
                 file_obj = await doc.get_file()
                 image_bytes = await file_obj.download_as_bytearray()
                 image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")

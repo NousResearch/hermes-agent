@@ -390,17 +390,43 @@ _LINKED_FILE_SPECS = (
     ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False))
 
 
+def _has_dot_dir_component(rel_path: str) -> bool:
+    """Check if a relative POSIX path has any component starting with '.'."""
+    return any(part.startswith(".") for part in rel_path.split("/"))
+
+
 def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
-    """references/templates/assets/scripts of a directory skill (empty groups dropped)."""
+    """references/templates/assets/scripts + auto-discovered custom subdirectories
+    of a directory skill (empty groups dropped). Excludes files under any
+    dot-directory at any depth."""
+    from tools.skill_manager_tool import _discover_skill_subdirs
+
     files: dict = {}
-    for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
-        base = skill_dir / sub
-        found = [
-            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
-            for f in (base.rglob(g) if recursive else base.glob(g))
-            if not files_only or f.is_file()]
-        if found:
-            files[sub] = found
+    # Standard subdirectories (hardcoded specs)
+    if skill_dir:
+        for sub, globs, recursive, files_only in _LINKED_FILE_SPECS:
+            base = skill_dir / sub
+            found = [
+                f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
+                for f in (base.rglob(g) if recursive else base.glob(g))
+                if not files_only or f.is_file()]
+            # Filter out files under any dot-directory component
+            found = [p for p in found if not _has_dot_dir_component(p)]
+            if found:
+                files[sub] = found
+
+        # Auto-discover custom subdirectories (not in the standard 4)
+        custom = _discover_skill_subdirs(skill_dir) - set(k for k, *_ in _LINKED_FILE_SPECS)
+        for sub in sorted(custom):
+            base = skill_dir / sub
+            entries = []
+            for f in base.rglob("*"):
+                if f.is_file():
+                    rel = f.relative_to(skill_dir).as_posix()
+                    if not _has_dot_dir_component(rel):
+                        entries.append(rel)
+            if entries:
+                files[sub] = entries
     return files
 
 

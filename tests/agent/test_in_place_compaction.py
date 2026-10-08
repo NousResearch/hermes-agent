@@ -12,7 +12,9 @@ exactly as before.
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 
@@ -55,6 +57,84 @@ def _seed(db, sid, title, n=8):
             role="user" if i % 2 == 0 else "assistant",
             content=f"msg {i}",
         )
+
+
+def _record_lifecycle_calls(agent):
+    from agent.context_compressor import ContextCompressor
+
+    class RecordingPluginContextEngine(ContextCompressor):
+        def on_session_start(self, session_id, **kwargs):
+            self.lifecycle_calls.append(("start", session_id, kwargs))
+
+        def on_session_end(self, session_id, messages):
+            self.lifecycle_calls.append(("end", session_id, messages))
+
+        def on_session_reset(self):
+            self.lifecycle_calls.append(("reset",))
+
+    memory_manager = MagicMock()
+    memory_manager.build_system_prompt.return_value = ""
+    compressor = RecordingPluginContextEngine.__new__(RecordingPluginContextEngine)
+    compressor.__dict__.update(agent.context_compressor.__dict__)
+    compressor.lifecycle_calls = []
+    agent.context_compressor = compressor
+    agent._memory_manager = memory_manager
+    compressor.on_session_start(agent.session_id)
+    return memory_manager, compressor
+
+
+class TestContextEngineLifecycleAcrossCompaction:
+    @pytest.mark.parametrize("in_place", [True, False])
+    def test_compaction_ends_engine_session_only_on_rotation(self, tmp_path, in_place):
+        from agent.conversation_compression import compress_context
+        from hermes_state import SessionDB
+
+        with SessionDB(db_path=tmp_path / "t.db") as db:
+            sid = "compaction_lifecycle"
+            _seed(db, sid, "lifecycle")
+            agent = _make_agent(db, sid, in_place=in_place)
+            memory_manager, engine = _record_lifecycle_calls(agent)
+            messages = [{"role": "user", "content": f"m{i}" * 100} for i in range(8)]
+
+            compressed, _ = compress_context(agent, messages, approx_tokens=100_000, system_message="sys")
+
+            assert len(compressed) == 2
+            assert (agent.session_id == sid) is in_place
+            memory_manager.on_session_end.assert_called_once_with(messages)
+            memory_manager.on_session_switch.assert_called_once_with(
+                agent.session_id, parent_session_id=sid, reset=False, reason="compression",
+            )
+            expected = [("start", sid, {})]
+            if not in_place:
+                expected.append(("end", sid, messages))
+            expected.append(("start", agent.session_id, {
+                "boundary_reason": "compression", "old_session_id": sid,
+                "platform": "cli", "conversation_id": None,
+            }))
+            assert engine.lifecycle_calls == expected
+
+    def test_in_place_compaction_keeps_builtin_summary(self, tmp_path):
+        from agent.conversation_compression import compress_context
+        from hermes_state import SessionDB
+
+        with SessionDB(db_path=tmp_path / "t.db") as db:
+            sid = "builtin_compaction_lifecycle"
+            _seed(db, sid, "lifecycle")
+            agent = _make_agent(db, sid, in_place=True)
+            original_compress = agent.context_compressor.compress
+
+            def _fake_compress(*args, **kwargs):
+                agent.context_compressor._previous_summary = "S-new"
+                return original_compress(*args, **kwargs)
+
+            agent.context_compressor.compress = _fake_compress
+            messages = [{"role": "user", "content": f"m{i}" * 100} for i in range(8)]
+
+            compressed, _ = compress_context(agent, messages, approx_tokens=100_000, system_message="sys")
+
+            assert len(compressed) == 2
+            assert agent.session_id == sid
+            assert agent.context_compressor._previous_summary == "S-new"
 
 
 class TestInPlaceCompaction:

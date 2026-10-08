@@ -7,7 +7,6 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 """
 
 import asyncio
-import concurrent.futures
 import errno
 import hashlib
 import hmac
@@ -155,6 +154,8 @@ from gateway.browser_control_broker import (
     BROWSER_CONTROL_ARTIFACT_CAPABILITIES, BROWSER_CONTROL_CAPABILITIES, BROWSER_CONTROL_DEVELOPER_CAPABILITIES,
     ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
+from gateway.platforms.api_server_browser_control import (  # noqa: F401 - sender re-exported for tests
+    _browser_controller_ws_sender, bind_browser_turn_target, run_controller_keepalive)
 
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -163,39 +164,6 @@ from hermes_state_errors import SessionActiveWriteGuardError
 
 
 logger = logging.getLogger(__name__)
-
-
-def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
-    """Return a loop-aware broker sender for one aiohttp controller socket.
-
-    A wait timeout means the coroutine is still in flight, not that the frame was rejected:
-    keep the broker command pending (its own deadline decides); a real send error propagates.
-    """
-
-    def send(frame: dict) -> None:
-        if ws.closed:
-            raise ConnectionError("browser-control websocket is closed")
-        try:
-            on_loop = asyncio.get_running_loop() is loop
-        except RuntimeError:
-            on_loop = False
-        if on_loop:
-            loop.create_task(ws.send_json(frame))
-            return
-        future = asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
-        try:
-            future.result(timeout=wait_timeout)
-        except concurrent.futures.TimeoutError:
-            if future.done():
-                raise
-
-            def observe_late_send(completed):
-                try:
-                    completed.result()
-                except Exception:
-                    logger.exception("browser-controller websocket send failed after wait timeout")
-            future.add_done_callback(observe_late_send)
-    return send
 
 
 async def _call_verifier(verifier, *args, **kwargs):
@@ -2667,6 +2635,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # attach/disconnect take the controller send_lock, which a worker-thread dispatch may
         # hold while blocking on THIS loop: offload so the race parks a worker, not the loop.
         await asyncio.to_thread(self._browser_control_broker.attach, scope, _send, owner=ws)
+        keepalive_task = asyncio.create_task(run_controller_keepalive(ws))
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -2682,6 +2651,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         finally:
+            keepalive_task.cancel()
             await asyncio.to_thread(self._browser_control_broker.disconnect, scope, owner=ws)
         return ws
 
@@ -4213,6 +4183,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         as THIS turn's user message instead of being appended a second time
         (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         loop = asyncio.get_running_loop()
+        if self._browser_control_enabled():
+            bind_browser_turn_target(self._browser_control_broker, session_id, user_message)
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
         request_browser_control_principal = _api_request_browser_control_principal.get()

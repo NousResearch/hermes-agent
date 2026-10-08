@@ -61,3 +61,35 @@ arbitrary lifetime cap disables an otherwise healthy room. Expiry alone, legacy
 revocation without retirement permission, and never-observed historical scopes
 do not justify forgetting non-replay evidence. SQLite reuses the freed pages;
 compaction does not promise that the physical database file shrinks immediately.
+
+
+## Completing retirement after an expired grant
+
+A successful End can remove execution routes while target cleanup still needs
+new authorization. Its `retirements` result lists any remaining obligations.
+`groups.peer.retirements` reads the same durable list after restart, even after
+the ended room's history has been pruned. Omit `room_id` to discover all of your
+pending room retirements, or supply it to select one room. Each entry
+contains the exact target, authority coordinates and a `retirement_id`; it never
+exposes the old grant. `needs_reauthorization` is distinct from confirmed retirement.
+
+The recovery uses existing authenticated gateway connections:
+
+1. On the **target owner's** connection, call `groups.peer.invite` with the retained
+   `room_id`, `home_install_id`, `authority_gateway_id`, `authority_epoch` and
+   `member_id`, the recorded target profile, and `retirement_only: true`.
+   The equivalent owner-authenticated HTTP operation is
+   `POST /v1/room-members/invitations` with those coordinates and the flag.
+2. On the **room owner's home** connection, call `groups.peer.retire` with
+   `room_id`, `retirement_id`, and the returned `grant`. The home probes the target
+   and requires every retained authority/target coordinate to match before
+   persisting or using this replacement. Canonical controls still require the
+   original room owner and control capability.
+3. An empty `retirements` list means no home retirement obligation remains. If a
+   response was lost, repeat `groups.peer.retire` without `grant` to retry the
+   durably retained bearer. If it expired, repeat the target-owner authorization.
+
+This path never registers a member route, recreates a room, permits Send, or
+turns retired history into proof that a particular attempt never ran. Ordinary
+revocation replies without `authority_retired: true`, and expired/revoked bearer
+refusals, keep the separate obligation instead of silently forgetting cleanup.

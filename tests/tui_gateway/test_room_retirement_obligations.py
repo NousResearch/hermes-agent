@@ -70,7 +70,7 @@ async def test_expired_end_retains_recoverable_retirement_after_restart_and_hist
         hosted_rooms.prune_disbanded_rooms(home.db_path, now=future)
         home.stop(timeout=5)
         home = HostedRoomService(_server_module(), db_path=tmp_path / "home-state.db")
-        observed = await _rpc("groups.peer.retirements", room_id="room-1")
+        observed = await _rpc("groups.peer.retirements")
         assert observed["result"]["retirements"] == [pending]
         store.close()
         store = target._run_idempotency_store = RunIdempotencyStore(str(tmp_path / "target-runs.db"))
@@ -81,16 +81,21 @@ async def test_expired_end_retains_recoverable_retirement_after_restart_and_hist
             grant_id="fresh-retirement-only")
         permissions = decode_room_grant(target._room_grant_secret(), fresh["grant"], permission="retire")["permissions"]
         assert set(permissions) == {"status", "retire"}
+        refused_route = await _rpc("groups.peer.register", room_id="room-1", member_id="member-peer",
+            target_url=client.base_url, target_profile="default", grant=fresh["grant"], catalog=fresh["catalog"])
+        assert "error" in refused_route and home.peer_routes == {}
         settled = await _rpc("groups.peer.retire", room_id="room-1", retirement_id=pending["retirement_id"], grant=fresh["grant"])
         assert settled == {"jsonrpc": "2.0", "id": 1, "result": {"retirements": []}}, settled
         assert store._conn.execute("SELECT COUNT(*) FROM run_idempotency").fetchone()[0] == 0
         assert home.peer_routes == {} and home.bindings() == ()
         assert "error" in await _rpc("groups.send", room_id="room-1", event_id="late", payload={"text": "must remain ended"})
-        for token in (route.grant, fresh["grant"]):
-            with pytest.raises(PeerRunsHTTPError) as refused:
-                await asyncio.to_thread(client._request, "/v1/runs", method="POST", body=body,
-                    headers={"Idempotency-Key": "room:never-sent-63:1"}, room_grant=token)
-            assert refused.value.status_code in {401, 403, 409}
+        for token, indices in ((route.grant, range(64)), (fresh["grant"], [63])):
+            for index in indices:
+                body["hosted_room_dispatch"]["task_id"] = f"never-sent-{index}"
+                with pytest.raises(PeerRunsHTTPError) as refused:
+                    await asyncio.to_thread(client._request, "/v1/runs", method="POST", body=body,
+                        headers={"Idempotency-Key": f"room:never-sent-{index}:1"}, room_grant=token)
+                assert refused.value.status_code in {401, 403, 409}
     finally:
         home.stop(timeout=5)
         await server.close()

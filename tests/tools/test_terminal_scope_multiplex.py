@@ -191,6 +191,30 @@ def test_mismatched_kanban_pin_does_not_override_scoped_profile_cwd(tmp_path, mo
     assert scope["TERMINAL_CWD"] == str(configured)
 
 
+def test_kanban_process_cwd_restores_pin_after_terminal_env_clobber(tmp_path, monkeypatch):
+    """Profile scope may bind after dotenv replaced TERMINAL_CWD; the exact
+    dispatcher process cwd still proves the isolated worktree grant."""
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    workspace = tmp_path / "task-worktree"
+    workspace.mkdir()
+    home = _profile(
+        tmp_path,
+        "builder",
+        f"terminal:\n  backend: docker\n  cwd: {configured}\n",
+    )
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(configured))
+
+    scope = build_profile_terminal_scope(home)
+
+    assert scope["TERMINAL_CWD"] == str(workspace.resolve())
+
+
 def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
     """Persistent Docker is profile-scoped: a routed profile's session-less (cron) work must key the
     SAME container as its session-bound work, and never another profile's."""

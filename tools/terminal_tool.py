@@ -607,7 +607,10 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     # Accept that exact match without reopening the stale process-global cwd
     # path that per-session isolation intentionally rejects.
     configured_host_cwd = config.get("host_cwd")
-    kanban_workspace = _dispatcher_pinned_kanban_workspace(configured_host_cwd)
+    kanban_workspace = (
+        _dispatcher_pinned_kanban_workspace(configured_host_cwd)
+        or _dispatcher_pinned_kanban_workspace(_safe_getcwd())
+    )
     if kanban_workspace:
         return kanban_workspace
     overrides = resolve_task_overrides(task_id)

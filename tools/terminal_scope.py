@@ -174,7 +174,13 @@ def build_profile_terminal_scope(
     # the isolated worktree even though the process environment is correct.
     from hermes_cli.cli_config_load import _dispatcher_pinned_kanban_cwd
 
-    kanban_workspace = _dispatcher_pinned_kanban_cwd()
+    # A finite worker is also launched with cwd=workspace. That process cwd is
+    # the stable companion signal after dotenv/config bridging has replaced
+    # TERMINAL_CWD, and survives tool-executor thread/context boundaries.
+    kanban_workspace = (
+        _dispatcher_pinned_kanban_cwd()
+        or _dispatcher_pinned_kanban_cwd(os.getcwd())
+    )
     if kanban_workspace is not None:
         scope["TERMINAL_CWD"] = kanban_workspace
     return scope

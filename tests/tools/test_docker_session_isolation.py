@@ -243,6 +243,23 @@ class TestSessionScopedMountResolution:
         cfg = self._config(host_cwd=str(tmp_path))
         assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") is None
 
+    def test_isolation_accepts_dispatcher_process_cwd_after_config_clobber(
+        self, monkeypatch, tmp_path
+    ):
+        """The spawned worker cwd remains a trusted exact companion pin when
+        a later profile scope has replaced the config-derived host cwd."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "task"
+        workspace.mkdir()
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        monkeypatch.chdir(workspace)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        cfg = self._config(host_cwd=str(configured))
+
+        assert terminal_tool._resolve_task_host_cwd(cfg, "kanban-session") == str(workspace)
+
     def test_isolation_rejects_nonexistent_session_dir(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
         terminal_tool.register_task_env_overrides(

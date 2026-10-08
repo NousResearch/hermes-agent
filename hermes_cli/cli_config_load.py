@@ -118,7 +118,7 @@ _AUXILIARY_TASK_ENV = {
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 
 
-def _dispatcher_pinned_kanban_cwd() -> str | None:
+def _dispatcher_pinned_kanban_cwd(expected_cwd: str | None = None) -> str | None:
     """Return the trusted Kanban workspace pin that startup must preserve.
 
     The dispatcher launches each worker with all three values equal to the
@@ -130,11 +130,13 @@ def _dispatcher_pinned_kanban_cwd() -> str | None:
     """
     task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
-    terminal_cwd = os.environ.get("TERMINAL_CWD", "").strip()
-    if not task_id or not workspace or not terminal_cwd:
+    companion_cwd = expected_cwd
+    if companion_cwd is None:
+        companion_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not task_id or not workspace or not isinstance(companion_cwd, str) or not companion_cwd.strip():
         return None
     candidate = os.path.abspath(os.path.expanduser(workspace))
-    pinned = os.path.abspath(os.path.expanduser(terminal_cwd))
+    pinned = os.path.abspath(os.path.expanduser(companion_cwd))
     if (
         candidate != pinned
         or not os.path.isdir(candidate)

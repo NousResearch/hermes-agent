@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import { customWindowControlsEnabled, performWindowControl, registerWindowControlIpc } from './window-controls'
+import {
+  customWindowControlsEnabled,
+  performWindowControl,
+  registerWindowControlIpc,
+  rendererWindowControlsForced
+} from './window-controls'
 
 class FakeWindow {
   closed = false
@@ -93,6 +98,35 @@ test('custom window controls read WSL env vars without touching the filesystem',
   assert.equal(customWindowControlsEnabled({ env: { WSL_INTEROP: '/run/WSL/1_interop' }, platform: 'linux' }), true)
   assert.equal(customWindowControlsEnabled({ env: {}, platform: 'linux' }), false)
   assert.equal(customWindowControlsEnabled({ env: { WSL_DISTRO_NAME: 'Ubuntu' }, platform: 'darwin' }), false)
+})
+
+test('HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS forces renderer controls on plain Linux', () => {
+  assert.equal(
+    customWindowControlsEnabled({ env: { HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: '1' }, platform: 'linux' }),
+    true
+  )
+  assert.equal(
+    customWindowControlsEnabled({
+      env: { HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: 'TRUE' },
+      kernelRelease: null,
+      platform: 'linux'
+    }),
+    true
+  )
+})
+
+test('the renderer-controls escape hatch is Linux-only and strictly opt-in', () => {
+  assert.equal(
+    customWindowControlsEnabled({ env: { HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: '1' }, platform: 'darwin' }),
+    false
+  )
+  assert.equal(
+    customWindowControlsEnabled({ env: { HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: '0' }, platform: 'linux' }),
+    false
+  )
+  assert.equal(rendererWindowControlsForced({}), false)
+  assert.equal(rendererWindowControlsForced({ HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: 'true' }), true)
+  assert.equal(rendererWindowControlsForced({ HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS: 'no' }), false)
 })
 
 describe('registerWindowControlIpc', () => {

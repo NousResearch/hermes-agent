@@ -672,7 +672,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { registerWindowControlIpc, windowControlState } from './window-controls'
+import { registerWindowControlIpc, rendererWindowControlsForced, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { isAppSized, registerWindowSizing } from './window-growth'
 import { windowMenuTemplate } from './window-menu'
@@ -1683,6 +1683,17 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // paints its own min/max/close (wslg-window-controls.tsx) over the
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
 function getTitleBarOverlayOptions(win?) {
+  // Plain-Linux escape hatch (#133423): the overlay min/max/close are
+  // views::Buttons whose compositor-animation observer can latch "active"
+  // forever on some Chromium/Electron builds, pinning cores with idle
+  // compositing. HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS=1 drops the native
+  // overlay so the renderer paints its own controls (same as WSLg) and no
+  // views Button exists to stick; getWindowState mirrors the same env so the
+  // renderer-side buttons mount in step.
+  if (!IS_MAC && !IS_WINDOWS && !IS_WSL && rendererWindowControlsForced(process.env)) {
+    return false
+  }
+
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
@@ -6457,6 +6468,12 @@ function getNativeOverlayWidth() {
 }
 
 function getWindowState(win = mainWindow) {
+  // HERMES_DESKTOP_RENDERER_WINDOW_CONTROLS=1 on plain Linux opts into
+  // renderer-owned controls (#133423); mirrors getTitleBarOverlayOptions so
+  // the native overlay and the renderer buttons never double up or both vanish.
+  const rendererControls =
+    (!IS_WINDOWS && IS_WSL) || (!IS_WINDOWS && !IS_MAC && rendererWindowControlsForced(process.env))
+
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
     isMinimized: Boolean(win?.isMinimized?.()),
@@ -6464,7 +6481,7 @@ function getWindowState(win = mainWindow) {
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition(win),
     darwinMajor: IS_MAC ? DARWIN_MAJOR : 0,
-    ...windowControlState(win, !IS_WINDOWS && IS_WSL)
+    ...windowControlState(win, rendererControls)
   }
 }
 

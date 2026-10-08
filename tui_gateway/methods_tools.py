@@ -404,6 +404,7 @@ def _(rid, params: dict) -> dict:
                     _mcp_discovery.discover_mcp_tools(force_refresh=True)
             except Exception as _exc:
                 logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
+                raise RuntimeError("MCP live metadata refresh failed for a served profile") from _exc
         _refresh_session_agent()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1

@@ -80,13 +80,22 @@ def test_reload_rediscovers_under_each_live_profile_scope(reload_env):
     assert hermes_constants.hermes_home_key(reload_env.profile_b) in reload_env.discovered_homes
 
 
-def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload_env):
+def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload_env, monkeypatch):
     """The launch profile's servers resolve connect-time credentials through ``get_secret`` too:
     rediscovered unscoped, they park with UnscopedSecretError once the process multiplexes while
     the RPC still answers "reloaded" (#113746). Every rediscovery, launch home included, is scoped."""
     srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
 
     assert sorted(set(reload_env.scoped_homes)) == sorted(set(reload_env.discovered_homes))
+    def unavailable_secondary(*, force_refresh=False):
+        assert force_refresh is True
+        if hermes_constants.hermes_home_key() == hermes_constants.hermes_home_key(reload_env.profile_b):
+            raise RuntimeError("synthetic unavailable tools/list")
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", unavailable_secondary)
+    failure = srv._methods["reload.mcp"](2, {"session_id": "A", "confirm": True})
+    assert "error" in failure, failure
+    assert "refresh failed for a served profile" in str(failure["error"])
+    assert failure.get("result", {}).get("status") != "reloaded"
     assert hermes_constants.hermes_home_key() in reload_env.scoped_homes
 
 

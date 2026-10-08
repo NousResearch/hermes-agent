@@ -551,8 +551,57 @@ def register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = Fals
         _lifecycle._reregister_orphaned_adopters()
 
 
+def _refresh_visible_servers(servers: Dict[str, dict]) -> None:
+    """Confirm metadata on identity-validated current-scope connections without owner teardown."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    scope = _core._mcp_registry_scope()
+    for name, config in servers.items():
+        if not mcp_server_enabled(config):
+            continue
+        with _core._lock:
+            key = _resolve_server_key(name, scope, current=False)
+            lazy = key in _core._lazy_server_configs
+            server = _core._servers.get(key)
+        if lazy:
+            # A config edit may have changed endpoint/auth/filters since lazy startup.
+            # Connect with this reload's current owning configuration, never the saved one.
+            with _core._lock:
+                _core._lazy_server_configs[key] = dict(config)
+            # Reuse the canonical first-use path: live discovery plus phantom-name removal.
+            if not _ensure_lazy_server_connected(name):
+                raise RuntimeError(f"MCP live metadata refresh failed for '{name}'")
+            continue
+        if server is None:
+            continue  # a new connection is acquired by the normal discovery pass below
+        if server.session is None:
+            raise RuntimeError(f"MCP live metadata refresh unavailable for '{name}'")
+
+        async def refresh_owned(server=server, key=key):
+            # Registration/cache write-through belongs to the connection owner. No credential
+            # resolution or resource call occurs here; the shared identity was validated above.
+            owner = _core._server_registry_scope(key)
+            token = set_hermes_home_override(Path(owner) if owner is not None else None)
+            try:
+                await server._refresh_tools()
+                if server.session is None:
+                    raise RuntimeError("connection disappeared during metadata refresh")
+            finally:
+                reset_hermes_home_override(token)
+        try:
+            _loop._run_on_mcp_loop(refresh_owned, timeout=float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)) + 30.0)
+        except Exception as exc:
+            raise RuntimeError(f"MCP live metadata refresh failed for '{name}'") from exc
+        if scope is not None and _key_scope(key) != scope:
+            # Owner refresh updates its own registry. Rebuild only the adopter's allowed overlay
+            # from the confirmed manifest, even when the same tool name changed schema.
+            _registration._remove_server_scope(key, scope)
+    _registration.register_connected_into_current_scope(servers)
+
+
 def _register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = False) -> List[str]:
     scoped_healed = _registration.register_connected_into_current_scope(servers)
+    if force_refresh:
+        _refresh_visible_servers(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return _registration._existing_tool_names() if _core._mcp_registry_scope() is not None else []
@@ -569,6 +618,12 @@ def _register_mcp_servers(servers: Dict[str, dict], *, force_refresh: bool = Fal
         return _registration._existing_tool_names()
     _loop._ensure_mcp_loop()
     _run_discovery_pass(new_servers)
+    if force_refresh:
+        with _core._lock:
+            failed = [name for name in new_servers
+                      if getattr(_core._servers.get(_resolve_server_key(name)), "session", None) is None]
+        if failed:
+            raise RuntimeError("MCP live metadata refresh failed for: " + ", ".join(sorted(failed)))
     _log_summary("MCP: registered", new_servers, lazy_tools=lazy_registered, lazy_servers=lazy_server_count)
     return _registration._existing_tool_names()
 
@@ -600,8 +655,8 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None, *, force_r
     """Entry point: load config, connect servers, register tools. [] without the ``mcp``
     package; idempotent (only servers missing from a previous call are retried).
 
-    ``force_refresh``: bypass persistent lazy schema entries for newly connecting servers.
-    Explicit reload callers disconnect first; normal discovery remains lazy and idempotent.
+    ``force_refresh``: confirm visible live sessions and bypass persistent lazy schema entries.
+    Shared owners remain connected; normal discovery remains lazy and idempotent.
     A failed live connect leaves the last-good disk cache unchanged, not reported as refreshed.
 
     ``allowed_mcp_names``: spawn only the MCP servers named in it (built-in toolset names in the

@@ -775,6 +775,7 @@ class _ChildRun:
     ) -> Dict[str, Any]:
         """Shared tail of every failure path: emit ``subagent.complete`` (``status`` defaults to the entry's), note
         the steer text that won the race with the failure, report the worktree."""
+        self.record_terminal(status or entry["status"])
         _safe_progress(
             self.child_progress_cb, "subagent.complete", preview=preview, status=status or entry["status"],
             duration_seconds=entry["duration_seconds"], summary=summary,
@@ -1007,9 +1008,18 @@ class _ChildRun:
                     {"session_id": s.id, "command": s.command[:200], "exit_code": s.exit_code,
                      "output_tail": _output_tail(s, 600)} for s in unread]
 
+    def record_terminal(self, status: str) -> None:
+        from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+        from tools.worker_roster import finish
+        with _active_subagents_lock:
+            record = _active_subagents.get(self.subagent_id or "")
+            if record is not None and record.get("agent") is self.child:
+                finish(record, status)
+
     def emit_complete(self, result: Dict[str, Any], entry: Dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,
         tool-output tail); every field is optional and degrades gracefully on the client."""
+        self.record_terminal(entry["status"])
         if not self.child_progress_cb:
             return
         child = self.child

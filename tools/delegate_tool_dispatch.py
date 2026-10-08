@@ -60,7 +60,19 @@ class _Batch:
 
     def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
         from tools.delegate_tool import _run_single_child
-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        from tools import worker_roster
+        record = getattr(child, "_worker_record", None)
+        try:
+            if not worker_roster.claim(child):
+                return _fabricated_entry(i, "interrupted", "Cancelled before start", child)
+            result = _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+            if isinstance(record, dict):
+                worker_roster.finish(record, result.get("status", "ended"))
+            return result
+        except BaseException:
+            if isinstance(record, dict):
+                worker_roster.finish(record, "failed")
+            raise
 
 
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
@@ -153,6 +165,9 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
+                from tools.worker_roster import cancel_queued
+                for f in pending:
+                    cancel_queued(_child_by_index.get(futures[f]))
                 results.extend(_entry_of(f, futures[f]) for f in pending)
                 interrupted = True
                 break
@@ -235,7 +250,9 @@ _SYNC_FALLBACK_NOTES = {
 
 def _run_sync_with_note(batch: _Batch, reason: str) -> str:
     """Inline fallback: run the batch now and explain why it was not detached."""
-    result = _execute_and_aggregate(batch)
+    from tools.worker_roster import waiting_for_children
+    with waiting_for_children(batch.parent_agent):
+        result = _execute_and_aggregate(batch)
     if isinstance(result, dict):
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
@@ -392,6 +409,8 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     def _interrupt():
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
+            from tools.worker_roster import cancel_queued
+            cancel_queued(c)
 
     return dispatch_async_delegation_batch(
         # Call-wide goals: completion formatting indexes them by task_index.
@@ -460,7 +479,9 @@ def _dispatch_background(batch: _Batch) -> str:
         # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
         # the unit inline so no task is silently dropped.
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit)["results"])
+        from tools.worker_roster import waiting_for_children
+        with waiting_for_children(unit.parent_agent):
+            inline_results.extend(_execute_and_aggregate(unit)["results"])
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results
@@ -474,4 +495,6 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     )
     if background:
         return _dispatch_background(batch)
-    return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    from tools.worker_roster import waiting_for_children
+    with waiting_for_children(batch.parent_agent):
+        return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

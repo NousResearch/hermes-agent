@@ -4075,6 +4075,24 @@
       }
     },
     {
+      "name": "subagent.snapshot",
+      "summary": "Profile and compression-lineage scoped durable delegate observations. Partial coverage never proves zero workers.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkerSnapshotResult"
+        }
+      }
+    },
+    {
       "name": "subagent.steer",
       "summary": "Queue steering text into a live delegated child owned by this session.",
       "params": [
@@ -14486,6 +14504,11 @@
         "properties": {
           "per_session_exclusive_submit": {
             "title": "Per Session Exclusive Submit",
+            "type": "boolean"
+          },
+          "worker_snapshot_v1": {
+            "default": false,
+            "title": "Worker Snapshot V1",
             "type": "boolean"
           }
         },
@@ -39977,6 +40000,165 @@
           "disabled_persisted"
         ],
         "title": "WakeStopResult",
+        "type": "object"
+      },
+      "WorkerObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "owner_id": {
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelled",
+              "ended",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Goal"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Id"
+          },
+          "delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delegation Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parent Run Id"
+          }
+        },
+        "required": [
+          "run_id",
+          "owner_id",
+          "subagent_id",
+          "status",
+          "version"
+        ],
+        "title": "WorkerObservation",
+        "type": "object"
+      },
+      "WorkerSnapshotResult": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "snapshot_epoch": {
+            "title": "Snapshot Epoch",
+            "type": "string"
+          },
+          "snapshot_seq": {
+            "title": "Snapshot Seq",
+            "type": "integer"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "scope": {
+            "const": "native_delegate_task",
+            "title": "Scope",
+            "type": "string"
+          },
+          "coverage": {
+            "const": "admitted_since_upgrade",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "owner_available": {
+            "title": "Owner Available",
+            "type": "boolean"
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerObservation"
+            },
+            "title": "Workers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "snapshot_epoch",
+          "snapshot_seq",
+          "session_key",
+          "scope",
+          "coverage",
+          "owner_available",
+          "workers"
+        ],
+        "title": "WorkerSnapshotResult",
         "type": "object"
       },
       "_SessionScoped": {

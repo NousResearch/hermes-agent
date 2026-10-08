@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 import hermes_state_wal
-from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
+from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, _running_under_gvisor, apply_wal_with_fallback
 
 
 def _mountinfo(tmp_path, lines):
@@ -26,6 +26,19 @@ BIND_VIRTIOFS = "612 25 0:53 / /data rw,relatime shared:300 - fuse.virtiofs moun
 BIND_9P = "613 25 0:54 / /mnt/host rw,relatime - 9p host0 rw,trans=virtio"
 NESTED_EXT4 = "614 612 8:2 / /data/native rw,relatime - ext4 /dev/sdb1 rw"
 SPACE_VIRTIOFS = "615 25 0:55 / /mnt/my\\040share rw,relatime - virtiofs share rw"
+# gVisor (runsc): the sentry names every host-backed mount 9p, rootfs included. Rows copied from a live sandbox.
+GVISOR_ROOT_9P = ("16 15 0:18 / / rw - 9p none rw,trans=fd,rfdno=3,wfdno=3,aname=/,dfltuid=4294967294,"
+                  "dfltgid=4294967294,dcache=1000,cache=fscache,disable_fifo_open,overlayfs_stale_read,directfs")
+GVISOR_HOME_9P = ("24 16 0:25 / /home/node rw - 9p none rw,trans=fd,rfdno=7,wfdno=7,aname=/,dfltuid=4294967294,"
+                  "dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs")
+GVISOR_PROC_VERSION = "Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016\n"
+LINUX_PROC_VERSION = "Linux version 6.8.0-45-generic (buildd@lcy02-amd64-115) (x86_64-linux-gnu-gcc-13) #45-Ubuntu\n"
+
+
+def _proc_version(tmp_path, text):
+    p = tmp_path / "proc_version"
+    p.write_text(text)
+    return str(p)
 
 
 class TestDetectCrossVmFs:
@@ -52,6 +65,29 @@ class TestDetectCrossVmFs:
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
 
+    def test_gvisor_9p_mounts_are_not_cross_vm(self, tmp_path):
+        # runsc reports its gofer mounts as 9p, but the sandbox is one kernel: every opener maps the same host
+        # file and shares one lock table, so WAL is safe and the refusal would put every sandboxed DB on DELETE.
+        mi = _mountinfo(tmp_path, [GVISOR_ROOT_9P, GVISOR_HOME_9P])
+        gvisor = _proc_version(tmp_path, GVISOR_PROC_VERSION)
+        assert _detect_cross_vm_fs("/home/node/.hermes", mountinfo_path=mi, proc_version_path=gvisor) is False
+        assert _detect_cross_vm_fs("/opt/state", mountinfo_path=mi, proc_version_path=gvisor) is False
+
+    def test_same_9p_rows_still_flagged_on_a_real_linux_kernel(self, tmp_path):
+        # Sabotage guard for the exemption: only the kernel banner differs, and the refusal must stay.
+        mi = _mountinfo(tmp_path, [GVISOR_ROOT_9P, GVISOR_HOME_9P])
+        linux = _proc_version(tmp_path, LINUX_PROC_VERSION)
+        assert _detect_cross_vm_fs("/home/node/.hermes", mountinfo_path=mi, proc_version_path=linux) is True
+
+    def test_unreadable_proc_version_keeps_the_refusal(self, tmp_path):
+        mi = _mountinfo(tmp_path, [BIND_9P])
+        assert _detect_cross_vm_fs("/mnt/host/db", mountinfo_path=mi, proc_version_path=str(tmp_path / "nope")) is True
+
+    def test_running_under_gvisor_reads_the_kernel_banner(self, tmp_path):
+        assert _running_under_gvisor(_proc_version(tmp_path, GVISOR_PROC_VERSION)) is True
+        assert _running_under_gvisor(_proc_version(tmp_path, LINUX_PROC_VERSION)) is False
+        assert _running_under_gvisor(str(tmp_path / "nope")) is False
+
 
 class TestWalRefusalOnCrossVmFs:
     @pytest.fixture(autouse=True)
@@ -75,6 +111,27 @@ class TestWalRefusalOnCrossVmFs:
         conn.close()
         if mode != "wal":
             pytest.skip("environment refuses WAL for unrelated reasons")
+
+    def test_fresh_db_on_gvisor_9p_gets_wal_through_the_real_detector(self, tmp_path, monkeypatch):
+        # End to end minus the kernel: real mountinfo/proc rows from a runsc sandbox, real detector, real sqlite.
+        mi = _mountinfo(tmp_path, [GVISOR_ROOT_9P, GVISOR_HOME_9P])
+        gvisor = _proc_version(tmp_path, GVISOR_PROC_VERSION)
+        monkeypatch.setattr(hermes_state_wal, "_path_on_cross_vm_fs",
+                            lambda p: hermes_state_wal._detect_cross_vm_fs("/home/node/.hermes", mountinfo_path=mi,
+                                                                           proc_version_path=gvisor))
+        conn = sqlite3.connect(str(tmp_path / "gvisor.db"))
+        mode = apply_wal_with_fallback(conn, db_label="gvisor.db")
+        conn.close()
+        if mode != "wal":
+            pytest.skip("environment refuses WAL for unrelated reasons")
+        # Same rows under a real Linux kernel: the refusal is what lands DELETE, not the environment.
+        linux = _proc_version(tmp_path, LINUX_PROC_VERSION)
+        monkeypatch.setattr(hermes_state_wal, "_path_on_cross_vm_fs",
+                            lambda p: hermes_state_wal._detect_cross_vm_fs("/home/node/.hermes", mountinfo_path=mi,
+                                                                           proc_version_path=linux))
+        conn = sqlite3.connect(str(tmp_path / "linux.db"))
+        assert apply_wal_with_fallback(conn, db_label="linux.db") == "delete"
+        conn.close()
 
     def test_require_wal_raises_on_cross_vm_fs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hermes_state_wal, "_path_on_cross_vm_fs", lambda p: True)

@@ -103,27 +103,29 @@ def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
 
 
 def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
-    """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors before exit 1."""
+    """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors; the restart stays owed."""
     import hermes_cli.update_cmd_fleet as fleet_mod
+    import hermes_cli.update_cmd_fleet_verify as fleet_verify
     import hermes_cli.update_cmd_stale_survivors as surv
     import hermes_cli.update_cmd as update_cmd
     from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
 
     stale_fleet = [{"profile": "default", "pid": 4242, "state": "stale", "code_sha": "a" * 40}]
     seen = {}
-    monkeypatch.setattr(fleet_mod, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
-    monkeypatch.setattr(fleet_mod, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
     monkeypatch.setattr(surv, "signal_stale_fleet_survivors",
                         lambda fleet, restart, budget: seen.setdefault("fleet", fleet) and [])
     restart = _GatewayRestartOutcome(
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[4242], restarted_services=[],
         failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
     )
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
-        fleet_mod._verify_fleet_after_update(
+    with contextlib.redirect_stdout(io.StringIO()):
+        fleet_verify._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
-    assert exc.value.code == 1
+    # Contract C3: was SystemExit(1); now flagged incomplete (owed restart, marker kept).
+    assert restart.incomplete
     assert seen["fleet"] == stale_fleet

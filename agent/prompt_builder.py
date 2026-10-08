@@ -22,9 +22,9 @@ from hermes_constants import (
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
+    EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
+    iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -1227,24 +1227,12 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """File-signature manifest of every SKILL.md and DESCRIPTION.md; only the ACTIVE org mirror participates, and
-    the ``.active_org`` marker is included so switching/leaving an org invalidates the snapshot by itself."""
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md."""
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
-    active_org = read_active_org_id(skills_dir)
-    org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
-    try:
-        st = os.stat(os.path.join(org_root, ORG_ACTIVE_MARKER))
-        manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = list(file_signature(st))
-    except OSError:
-        pass
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
-        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
-            dirs.remove(ORG_MIRROR_DIR_NAME)
-        elif root == org_root:
-            dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             path = os.path.join(root, filename)
@@ -1278,10 +1266,6 @@ def _requires_apps_list(frontmatter: dict) -> list[str]:
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
     """Serialisable metadata dict for one skill."""
     parts = skill_file.relative_to(skills_dir).parts
-    # Org mirror: category/name derive from the path WITHIN `_org/<org_id>/`; org_id drives labeling + collisions.
-    org_id: str | None = None
-    if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME:
-        org_id, parts = parts[1], parts[2:]
     skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
     category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
     platforms = frontmatter.get("platforms") or []
@@ -1293,21 +1277,6 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
     }
-    if org_id:
-        entry["org_id"] = org_id
-        # Author from the pull-time provenance sidecar (token-verified at
-        # push by the plane's author_mismatch guard). Best-effort.
-        try:
-            import json as _json
-
-            prov_path = (
-                skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE
-            )
-            prov = _json.loads(prov_path.read_text(encoding="utf-8-sig"))
-            device = str(prov.get("author_device") or "")
-            entry["org_author"] = device or str(prov.get("author_user_id") or "")
-        except Exception:
-            entry["org_author"] = ""
     return entry
 
 
@@ -1344,6 +1313,38 @@ def _skill_should_show(
         or any(ts not in ats for ts in conditions.get("requires_toolsets", []))
         or any(t not in at for t in conditions.get("requires_tools", []))
     )
+
+
+def _plugin_skill_prompt_rows(
+    disabled: "set[str]", available_tools: "set[str] | None", available_toolsets: "set[str] | None",
+    session_platform: "str | None",
+) -> "list[tuple[str, str]]":
+    """``(qualified_name, description)`` for every skill registered by an ENABLED plugin
+    (``ctx.register_skill``), filtered through the same offer-time gates as on-disk skills.
+    Plugin skills live in the plugin-manager registry — never under the profile skills tree —
+    so the disk scans above cannot see them; this is their one path into ``<available_skills>``.
+    The qualified ``plugin:skill`` name is exactly what ``skill_view`` resolves, and disabling
+    or unloading a plugin removes its registry entries, so enablement gating is inherent."""
+    rows: "list[tuple[str, str]]" = []
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
+        for meta in get_plugin_manager().list_plugin_skill_metadata():
+            name = str(meta.get("name") or "")
+            if not name or name in disabled:
+                continue
+            frontmatter = meta.get("frontmatter") or {}
+            if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
+                    and skill_matches_apps(frontmatter)):
+                continue
+            if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
+                                      available_toolsets, session_platform):
+                continue
+            desc = str(meta.get("description") or "").strip() or extract_skill_description(frontmatter)
+            rows.append((name, desc))
+    except Exception:
+        logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
+    return rows
 
 
 def _current_session_platform_hint() -> str:
@@ -1440,22 +1441,13 @@ def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[t
 
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
-    """Index rows under each entry's ``load_name`` (what skill_view accepts); org labeling + FAIL-LOUD
-    collisions: a personal/org name clash flags every loadable side with the exact path to load."""
+    """Index rows under each entry's ``load_name`` (what skill_view accepts)."""
     from agent.skill_utils import TIER_PROJECT
-    name_owners: dict[str, set[str]] = {}
-    for entry in visible_entries:
-        name_owners.setdefault(entry["name"], set()).add("org" if entry.get("org_id") else "personal")
     for entry in (e for e in visible_entries if e["load_name"]):
-        desc, org_id = entry.get("description", ""), entry.get("org_id")
-        if org_id:
-            author = entry.get("org_author") or ""
-            desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
-        elif entry["tier"] == TIER_PROJECT:
+        desc = entry.get("description", "")
+        if entry["tier"] == TIER_PROJECT:
             desc = f"[project] {desc}".strip()
-        category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
-        if len(name_owners[entry["name"]]) > 1:
-            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load by this exact path] {desc}".strip()
+        category = entry.get("category") or "general"
         skills_by_category.setdefault(category, []).append((entry["load_name"], desc))
 
 
@@ -1540,6 +1532,9 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
+    # root — the snapshot manifest can't see them change, so they participate in the cache key.
+    plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
     cache_key = (
         str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
@@ -1551,6 +1546,7 @@ def _build_skills_system_prompt_inner(
         ("__ALL__",) if compact_categories is ALL_SKILL_CATEGORIES
         else tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
+        tuple(plugin_rows),
     )
     snapshot = _load_skills_snapshot(skills_dir)
     app_gated = snapshot is not None and any(
@@ -1601,6 +1597,14 @@ def _build_skills_system_prompt_inner(
     visible_entries = [e for e in resolved
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
     _label_visible_entries(visible_entries, skills_by_category)
+    if plugin_rows:
+        # Same category label skills_list gives registry skills; qualified names are already
+        # namespaced (plugin:skill) so they cannot collide with on-disk load_names.
+        listed = {name for entries in skills_by_category.values() for name, _ in entries}
+        for name, desc in plugin_rows:
+            if name not in listed:
+                listed.add(name)
+                skills_by_category.setdefault("plugin", []).append((name, desc))
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
@@ -1645,12 +1649,30 @@ def _truncate_content(
         warnings.append(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
+    omitted = _omitted_headings(content, head_chars, len(content) - tail_chars)
+    sections = f" Omitted sections: {'; '.join(omitted)}." if omitted else ""
     marker = (
         f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. The middle is "
-        f"omitted — if you need the full instructions, read the complete file with the read_file tool: "
-        f"{read_path or filename}]\n\n"
+        f"omitted.{sections} If you need the full instructions, read the complete file with the read_file "
+        f"tool: {read_path or filename}]\n\n"
     )
     return content[:head_chars] + marker + content[-tail_chars:]
+
+
+def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> list:
+    """Markdown headings whose line starts inside ``content[start:end]``, so a truncation marker tells
+    the agent what it lost; ``#`` lines inside fenced code blocks are comments, not headings."""
+    import re
+
+    headings, offset, fenced = [], 0, False
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and start <= offset < end and re.match(r"#{1,6} \S", stripped):
+            headings.append(stripped.lstrip("#").strip())
+        offset += len(line)
+    return headings[:limit] + (["..."] if len(headings) > limit else [])
 
 
 def load_soul_md(context_length: Optional[int] = None, home_override: "Path | None" = None) -> Optional[str]:

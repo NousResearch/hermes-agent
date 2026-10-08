@@ -779,8 +779,6 @@ gateway:
   plan:
     ack_task: "Plane: {task}"
     ack_conversation: "Plane anhand des Kontexts dieser Konversation…"
-  initiate_setup:
-    ack: "Einrichtung wird gestartet…"
   init:
     start_failed: "/init konnte nicht gestartet werden — bitte versuchen Sie es erneut."
     ack_update: "Aktualisiere AGENTS.md anhand eines Projekt-Scans…"
@@ -1558,8 +1556,6 @@ slash:
     description: "Einen Prompt in dieser Sitzung in einem wiederkehrenden Intervall erneut ausführen"
   plan:
     description: "Einen Markdown-Umsetzungsplan nach .hermes/plans/ schreiben, ohne etwas auszuführen"
-  initiate-setup:
-    description: "Ersteinrichtung starten: dich kennenlernen und Hermes auf dich einstellen"
   moa:
     description: "Einen Prompt durch das Standard-Mixture-of-Agents-Preset laufen lassen und dann Ihr Modell wiederherstellen"
   subgoal:
@@ -2918,8 +2914,6 @@ cli:
     plan:
       planning: "📋 Planung: {task}"
       from_conversation: "📋 Planung aus dem Kontext dieser Konversation..."
-    initiate_setup:
-      starting: "🧭 Einrichtung wird gestartet..."
     init:
       updating: "⚡ Aktualisiere AGENTS.md anhand eines Projekt-Scans..."
       generating: "⚡ Erzeuge AGENTS.md anhand eines Projekt-Scans..."

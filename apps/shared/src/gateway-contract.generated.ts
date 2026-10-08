@@ -2171,51 +2171,15 @@ export interface ProfilesGetAssetResult {
   size?: number | null
   data?: string | null
 }
-/** ``created`` is false when an existing setup profile was found (and returned untouched). */
-export interface OnboardingEnsureSetupProfileResult {
-  name: string
-  path: string
-  created: boolean
-}
-export interface OnboardingEnsureSetupSessionParams {
-  messages?: Record<string, unknown>[] | null
-}
-export interface OnboardingEnsureSetupSessionResult {
-  profile: string
-  session_id: string
-  empty: boolean
-}
-export interface OnboardingStateResult {
-  eligible: boolean
-  intro: OnboardingIntro
-  failed_starts: number
-  completed_at?: string | null
-  profile?: string | null
-}
-export type OnboardingIntro = 'unseen' | 'seen'
-/** The agentic guide's state plus ``run``; the guide's fields stay until its renderer is deleted. */
-export interface OnboardingStateRunResult {
-  eligible: boolean
-  intro: OnboardingIntro
-  failed_starts: number
-  completed_at?: string | null
-  profile?: string | null
-  run: boolean
-}
-/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
-export interface OnboardingSetRunParams {
-  run: boolean
-  mark_profile_offered?: boolean
-}
 /** ``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). */
 export interface OnboardingRunStateResult {
   run: boolean
   eligible: boolean
 }
-export interface OnboardingResetSetupProfileResult {
-  name: string
-  path: string
-  reset?: boolean
+/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
+export interface OnboardingSetRunParams {
+  run: boolean
+  mark_profile_offered?: boolean
 }
 export interface VaultListResult {
   items?: VaultItem[]
@@ -3645,30 +3609,6 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
-/** ``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only). */
-export interface SessionStartChatParams {
-  session_id: string
-  profile?: string | null
-  tool_call_id: string
-  args: StartChatArgs
-}
-/** The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``). */
-export interface StartChatArgs {
-  message: string
-  title?: string | null
-  profile?: string | null
-}
-/** ``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same arguments may succeed on another try (``retryable``). A call already retried returns that retry's result. */
-export interface SessionStartChatResult {
-  status: StartChatStatus
-  session_id?: string | null
-  profile?: string | null
-  title?: string | null
-  message?: string | null
-  reason?: string | null
-  retryable?: boolean | null
-}
-export type StartChatStatus = 'started' | 'rejected'
 export interface SystemBatteryParams {
   profile?: string | null
 }
@@ -4492,25 +4432,6 @@ export interface ClarifyQuestion {
 export interface ClarifyResult {
   answers?: Record<string, string | null> | null
 }
-export interface SetupChooseRequestParams {
-  session_id: string
-  kind: SetupChooseKind
-  question: string
-  options?: SetupChooseOption[] | null
-  multi_select?: boolean
-  preselected?: string[] | null
-}
-export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'fork' | 'machine_use'
-export interface SetupChooseOption {
-  id: string
-  label: string
-  detail?: string | null
-}
-export interface SetupChooseResult {
-  picked?: string | string[] | null
-  label?: string | string[] | null
-  said?: string | null
-}
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
@@ -5272,17 +5193,10 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
-  /** Create-or-read the backend-owned setup profile; the backend picks the name. */
-  'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
-  'onboarding.ensure_setup_session': { params: OnboardingEnsureSetupSessionParams; result: OnboardingEnsureSetupSessionResult }
-  'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
-  'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
-  /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
-  'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
   /** Write onboarding.run in the root profile's config.yaml; answers the new state. */
   'onboarding.set_run': { params: OnboardingSetRunParams; result: OnboardingRunStateResult }
   /** Whether the desktop first-run questionnaire is due; reads the root profile's config. */
-  'onboarding.state': { params: Params; result: OnboardingStateRunResult }
+  'onboarding.state': { params: Params; result: OnboardingRunStateResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -5447,8 +5361,6 @@ export interface RpcMethods {
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
-  /** Run a start_chat request again from the session that made it (the handoff card's Retry). */
-  'session.start_chat': { params: SessionStartChatParams; result: SessionStartChatResult }
   /** Rendered /status text for the session. */
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
@@ -5679,11 +5591,6 @@ export const RPC_METHODS = [
   'model.disconnect',
   'model.options',
   'model.save_key',
-  'onboarding.ensure_setup_profile',
-  'onboarding.ensure_setup_session',
-  'onboarding.mark_seen',
-  'onboarding.record_failed_start',
-  'onboarding.reset_setup_profile',
   'onboarding.set_run',
   'onboarding.state',
   'paste.collapse',
@@ -5768,7 +5675,6 @@ export const RPC_METHODS = [
   'session.resume',
   'session.save',
   'session.set_hidden',
-  'session.start_chat',
   'session.status',
   'session.steer',
   'session.title',
@@ -5843,7 +5749,6 @@ export interface ServerRequestMap {
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
-  setup_choose: { params: SetupChooseRequestParams; result: SetupChooseResult }
   /** Masked sudo password for the terminal tool. */
   sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
@@ -5867,7 +5772,6 @@ export const SERVER_REQUEST_METHODS = [
   'preview.act',
   'preview.read',
   'secret',
-  'setup_choose',
   'sudo',
   'terminal.read',
   'tour',

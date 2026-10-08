@@ -9174,9 +9174,9 @@ async function saveRegistryConnection(input: any = {}) {
   return sanitizeRegistryConnection(entry)
 }
 
-// Last-used profile and explicit app-wide default share the existing desktop
-// preference file, but only the explicit action changes the default route.
+// Last-used profile and app-wide default share one preference file; only an explicit action changes the default.
 const desktopProfilePreferences = createDesktopProfilePreferences(DESKTOP_PROFILE_CONFIG_PATH, {
+  profileExists: name => fs.existsSync(path.join(HERMES_HOME, 'profiles', name)),
   validateRoute: validateDesktopProfileRoute,
   onDefaultChanged: route => {
     for (const win of BrowserWindow.getAllWindows()) {

@@ -209,8 +209,9 @@ export function decideMigration(
   return { profile: best, _migrated: true }
 }
 
-// hermes_cli/profiles.py::SETUP_PROFILE_MARKER: the backend-made first-run setup profile. Its state.db is the
-// freshest on the machine right after setup, so the recency heuristic would boot every later launch into it.
+// The setup profile canary/RC builds made. The backend releases it at boot (hermes_cli/onboarding_migrations.py),
+// but only from a backend launched elsewhere, and this pick runs before that backend exists: picking it here
+// would boot into it every launch and it would never be released. Once released it carries no marker.
 const SETUP_PROFILE_MARKER = '.setup-profile.json'
 
 /**

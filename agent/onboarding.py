@@ -112,14 +112,15 @@ def _onboarding_section(config: Mapping[str, Any]) -> Mapping[str, Any]:
 def profile_build_mode(config: Mapping[str, Any]) -> str:
     """``config.onboarding.profile_build``: ``"off"`` never offers; anything else -> ``"ask"``.
 
-    Only governs whether the offer is made.
+    Only governs whether the offer is made; lookups inside the flow are
+    consented to separately in conversation.
     """
     mode = _onboarding_section(config).get("profile_build")
     return "off" if isinstance(mode, str) and mode.strip().lower() == "off" else "ask"
 
 
 # Shared by both first-contact notes so a real first-message task is never
-# replaced by the intro.
+# replaced by the intro (plain or profile-build offer).
 TASK_FIRST_CLAUSE = (
     "If this message is itself a real request or task, DO THE TASK FIRST -- call "
     "whatever tools it needs -- and only then, in the closing sentences of that same "
@@ -134,22 +135,6 @@ PLAIN_INTRO_NOTE = (
     "available commands, in one or two sentences.]"
 )
 
-SETUP_OFFER_NOTE = (
-    "[System note: This is the user's very first message ever. "
-    + TASK_FIRST_CLAUSE
-    + "What this note asks: briefly introduce yourself, mention that /help shows available "
-    "commands, and end with this one line: \"I can run a quick setup so I can help you better. "
-    "Send {command} when you want it.\"]"
-)
-
-
-# Telegram commands take no hyphens, and Slack reaches /initiate-setup through /hermes (50-slash cap).
-_SETUP_COMMAND_BY_PLATFORM = {"telegram": "/initiate_setup", "slack": "/hermes initiate-setup"}
-
-
-def setup_command(platform: str) -> str:
-    """How a platform's user types /initiate-setup."""
-    return _SETUP_COMMAND_BY_PLATFORM.get(platform, "/initiate-setup")
 
 def first_contact_turn_note(
     config: Mapping[str, Any],
@@ -157,29 +142,16 @@ def first_contact_turn_note(
     *,
     session_history_empty: bool,
     install_has_prior_sessions: bool,
-    message: str,
-    command: str = "/initiate-setup",
-    setup_handoff: bool = False,
 ) -> Optional[str]:
     """Return a one-shot sidecar note for the install's first-ever message.
 
     Matches the gateway first-contact path: when ``profile_build`` is ``ask``
-    and the offer has not been latched yet, return the opt-in
+    and the offer has not been latched yet, return the opt-in profile-build
     directive and persist ``onboarding.seen.profile_build_offered``. Otherwise
     return the plain intro note. Returns ``None`` when this is not the first
-    contact (non-empty session history or prior sessions exist on the install). ``setup_handoff``
-    marks the task chat setup started (``start_chat``), told by the caller, never read from the text.
+    contact (non-empty session history or prior sessions exist on the install).
     """
-    from agent.initiate_setup_prompt import HEADER
-    from hermes_cli.profiles import SETUP_PROFILE_MARKER
-
-    if not session_history_empty or install_has_prior_sessions or message.startswith(HEADER):
-        return None
-    # The task chat setup hands off to is the user's first chat in their own profile; setup already ran.
-    if setup_handoff:
-        return None
-    # The setup chat opens with its own welcome, whatever its first message says.
-    if (config_path.parent / SETUP_PROFILE_MARKER).is_file():
+    if not session_history_empty or install_has_prior_sessions:
         return None
     try:
         if (
@@ -187,10 +159,7 @@ def first_contact_turn_note(
             and not is_seen(config, PROFILE_BUILD_FLAG)
         ):
             mark_seen(config_path, PROFILE_BUILD_FLAG)
-            from hermes_cli.anon_auth import guest_enabled
-
-            # /initiate-setup is the offer only where the setup flow ships; elsewhere keep the memory profile offer.
-            return SETUP_OFFER_NOTE.format(command=command) if guest_enabled() else profile_build_directive().strip()
+            return profile_build_directive().strip()
         return PLAIN_INTRO_NOTE
     except Exception as e:
         logger.debug("first_contact_turn_note failed, using plain intro: %s", e)
@@ -254,7 +223,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 __all__ = [
     "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
-    "PLAIN_INTRO_NOTE", "SETUP_OFFER_NOTE", "first_contact_turn_note", "setup_command",
+    "PLAIN_INTRO_NOTE", "first_contact_turn_note",
     "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
     "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",

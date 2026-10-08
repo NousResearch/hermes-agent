@@ -89,6 +89,7 @@ export function createDesktopProfilePreferences(
   configPath: string,
   options: {
     onDefaultChanged?: (route: DesktopProfileRoute | null) => void
+    profileExists?: (profile: string) => boolean
     validateRoute?: (route: DesktopProfileRoute) => void
   } = {}
 ) {
@@ -121,11 +122,24 @@ export function createDesktopProfilePreferences(
     }
   }
 
-  function readActive(): null | string {
+  function readStored(): null | string {
     const value = read().profile
     const profile = typeof value === 'string' ? value.trim() : ''
 
     return DESKTOP_PROFILE_NAME_RE.test(profile) ? profile : null
+  }
+
+  function readActive(): null | string {
+    const profile = readStored()
+
+    // A stored profile whose home is gone boots default, explicitly: `--profile <missing>` would fail the
+    // backend, and `null` (no preference) would let the CLI's own active profile pick a different home
+    // than the one the connection is labelled with.
+    if (profile && profile !== 'default' && options.profileExists?.(profile) === false) {
+      return 'default'
+    }
+
+    return profile
   }
 
   function remember(name: unknown): null | string {
@@ -155,7 +169,8 @@ export function createDesktopProfilePreferences(
   }
 
   function profileChanged(connectionId: null | string, oldName: string, newName: null | string, backendMode: string) {
-    if (backendMode === 'local' && readActive() === oldName) {
+    // A finished rename or delete has already removed oldName's home, so match the saved name, not readActive.
+    if (backendMode === 'local' && readStored() === oldName) {
       remember(newName || 'default')
     }
 

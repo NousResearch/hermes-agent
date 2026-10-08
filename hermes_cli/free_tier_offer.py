@@ -1,10 +1,9 @@
 """When the free tier's "sign in for more" offer is due: after finished tasks, backing off.
 
-The first offer comes ``OFFER_DELAY_S`` after the first finished task (normally the task setup hands off
-to). Each later offer needs another finished task after the previous offer, comes ``OFFER_DELAY_S``
-after that task, and never sooner than ``REOFFER_AFTER_S[n]`` after the previous offer, so a user who
-keeps saying "Not now" hears it less often. "Finished task" is ``tui_gateway.free_tier_task_done``'s
-call. The record is install-wide (the setup and primary profiles have different homes), at
+The first offer comes ``OFFER_DELAY_S`` after the first finished task. Each later offer needs another
+finished task after the previous offer, comes ``OFFER_DELAY_S`` after that task, and never sooner than
+``REOFFER_AFTER_S[n]`` after the previous offer, so a user who keeps saying "Not now" hears it less
+often. "Finished task" is ``tui_gateway.free_tier_task_done``'s call. The record is install-wide, at
 ``<default root>/free_tier/sign_in_offer.json``. Signing in ends the free tier, and with it every offer.
 """
 

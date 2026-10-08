@@ -3058,7 +3058,7 @@ network:
 
 ## Onboarding
 
-First-touch onboarding hints and the first-message offer:
+First-touch onboarding hints and the structured profile-build offer:
 
 ```yaml
 onboarding:
@@ -3066,8 +3066,8 @@ onboarding:
   seen: {}               # internal latch — leave empty
 ```
 
-- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. In the Microsoft Store desktop app the offer is instead one closing line that points at `/initiate-setup` (`/initiate_setup` on Telegram, `/hermes initiate-setup` on Slack). The offer is skipped when the first message is `/initiate-setup` itself, and always in the desktop app's setup profile. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile. `/initiate-setup` sends a short block of facts about the computer; see [What the setup chat knows about your computer](./desktop.md#what-the-setup-chat-knows-about-your-computer).
-- `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
+- `profile_build` — controls the profile-build path offered on a profile's first direct message through the gateway (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup and never reads connected accounts silently. `"off"` shows a plain intro only. The offer fires at most once per profile.
+- `seen` — internal state. Hermes latches each shown hint here so it never fires again; the profile-build offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 
 ## Dashboard
 

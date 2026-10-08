@@ -143,10 +143,6 @@ TOOLSETS = {
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
          "gui_tour", "show_tip"],
     ),
-    "setup": _ts("Onboarding-only surface for the setup profile: question and picker cards", ["setup_choose"],
-                 platforms=frozenset({"desktop"})),
-    "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"],
-                      platforms=frozenset({"desktop"})),
     # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
     "catalog": _ts(
         "Desktop catalog plugin/skill install requests through the approval card (GUI sessions only)",
@@ -257,6 +253,10 @@ TOOLSET_SESSION_PLATFORMS = {name: spec["platforms"] for name, spec in TOOLSETS.
 # these names, so a plugin, MCP server or custom toolset name never leaves the machine.
 BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
 BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
+# What the desktop's agentic onboarding shipped and then lost. Metrics rows saved before the upgrade
+# still name them, so the metrics vocabulary keeps accepting them; the live registry does not.
+RETIRED_TOOL_NAMES = frozenset({"setup_choose", "start_chat"})
+RETIRED_TOOLSET_NAMES = frozenset({"setup", "start_chat"})
 
 
 def _registry():
@@ -479,7 +479,8 @@ def agent_tool_drops(agent: Any) -> frozenset:
 
 
 def validate_toolset(name: str) -> bool:
-    return (name in {"all", "*"} or name in TOOLSETS
+    # Old configs still list the retired toolsets; they resolve to no tools, so accept them quietly.
+    return (name in {"all", "*"} or name in TOOLSETS or name in RETIRED_TOOLSET_NAMES
             or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 

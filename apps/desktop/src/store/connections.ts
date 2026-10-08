@@ -24,6 +24,7 @@ import {
   $freshSessionRequest,
   $newChatProfile,
   $newChatRoute,
+  $profilesByConnection,
   $showAllProfiles,
   captureNewChatSource,
   currentNewChatIntent,
@@ -78,6 +79,9 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
+// Counts every pick, including ones that never start a switch, so a pick that waited on its source's backend
+// can tell a later pick happened while it waited.
+let selectRevision = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -124,12 +128,46 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
   $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [connectionId]: profile })
 })
 
+const listsProfile = (profiles: readonly { name: string }[], key: string) =>
+  profiles.some(profile => normalizeProfileKey(profile.name) === key)
+
+// The profile last used on a source; default only once that source's backend no longer lists it (deleted
+// elsewhere). The cached list can predate the profile (a failed refresh after create), so it only triggers the check.
+function rememberedProfile(connectionId: string): Promise<string> | string {
+  const key = normalizeProfileKey($lastProfileByConnection.get()[connectionId])
+  const cached = $profilesByConnection.get().get(connectionId)
+
+  if (!cached || listsProfile(cached, key)) {
+    return key
+  }
+
+  return getProfiles({ connectionId, profile: 'default' }).then(
+    ({ profiles }) => (listsProfile(profiles, key) ? key : 'default'),
+    () => key
+  )
+}
+
+// The profile a pick lands on: the one asked for, else the one last used there. Only a remembered profile
+// the cache lacks waits on the backend (every other pick stays synchronous); null when a later pick
+// arrived during that wait.
+function pickedProfile(connectionId: string, explicit: null | string | undefined): Promise<null | string> | string {
+  const remembered = String(explicit ?? '').trim() || rememberedProfile(connectionId)
+  const pick = ++selectRevision
+
+  if (typeof remembered === 'string') {
+    return normalizeProfileKey(remembered)
+  }
+
+  return remembered.then(profile => (pick === selectRevision ? normalizeProfileKey(profile) : null))
+}
+
 /** @internal Reset module-owned preferences and switch coordination for tests. */
 export function _resetConnectionsForTests(): void {
   $lastProfileByConnection.set({})
   pendingTarget = null
   restoreAttempted = false
   switchRevision = 0
+  selectRevision = 0
   $pendingConnectionId.set(null)
 }
 
@@ -374,13 +412,15 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // browse-mode preference alone so it survives restart (#93197).
   const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
 
+  const picked = pickedProfile(connectionId, options.profile)
+  const targetProfile = typeof picked === 'string' ? picked : await picked
+
+  if (targetProfile === null) {
+    return
+  }
+
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
-  const explicitProfile = String(options.profile ?? '').trim()
-
-  const targetProfile = normalizeProfileKey(
-    explicitProfile || ($lastProfileByConnection.get()[connectionId] ?? 'default')
-  )
 
   const targetKey = `${connectionId}::${targetProfile}`
 

@@ -2352,7 +2352,7 @@ _CALLBACK_PARAMS = (
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
-    "setup_choose_callback", "step_callback", "stream_delta_callback", "interim_assistant_callback",
+    "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
 )
@@ -2375,7 +2375,7 @@ def init_agent(
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
     read_window_below_callback: callable = None, connection_callback: callable = None,
-    tour_callback: callable = None, setup_choose_callback: callable = None, step_callback: callable = None,
+    tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,
     notice_callback: callable = None, notice_clear_callback: callable = None,

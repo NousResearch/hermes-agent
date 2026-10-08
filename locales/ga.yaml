@@ -779,8 +779,6 @@ gateway:
   plan:
     ack_task: "Ag pleanáil: {task}"
     ack_conversation: "Ag pleanáil ó chomhthéacs an chomhrá seo…"
-  initiate_setup:
-    ack: "Ag tosú an tsocraithe…"
   init:
     start_failed: "Níorbh fhéidir /init a thosú — bain triail eile as le do thoil."
     ack_update: "Ag nuashonrú AGENTS.md ó scanadh tionscadail…"
@@ -1558,8 +1556,6 @@ slash:
     description: "Athrith leid ar eatramh athfhillteach sa seisiún seo"
   plan:
     description: "Scríobh plean cur i bhfeidhm markdown go .hermes/plans/ gan aon rud a rith"
-  initiate-setup:
-    description: "Rith an chéad socrú: foghlaim fút agus socraigh Hermes timpeall ort"
   moa:
     description: "Rith leid amháin tríd an réamhshocrú Mixture of Agents, ansin aischuir do shamhail"
   subgoal:
@@ -2918,8 +2914,6 @@ cli:
     plan:
       planning: "📋 Ag pleanáil: {task}"
       from_conversation: "📋 Ag pleanáil ó chomhthéacs an chomhrá seo..."
-    initiate_setup:
-      starting: "🧭 Ag tosú an tsocraithe..."
     init:
       updating: "⚡ Ag nuashonrú AGENTS.md ó scanadh tionscadail..."
       generating: "⚡ Ag giniúint AGENTS.md ó scanadh tionscadail..."

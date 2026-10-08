@@ -779,8 +779,6 @@ gateway:
   plan:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning uit hierdie gesprek se konteks…"
-  initiate_setup:
-    ack: "Begin opstelling…"
   init:
     start_failed: "Kon nie /init begin nie — probeer asseblief weer."
     ack_update: "AGENTS.md word vanaf 'n projekskandering opgedateer…"
@@ -1558,8 +1556,6 @@ slash:
     description: "Voer 'n prompt herhaaldelik met 'n vaste interval in hierdie sessie uit"
   plan:
     description: "Skryf 'n markdown-implementeringsplan na .hermes/plans/ sonder om enigiets uit te voer"
-  initiate-setup:
-    description: "Begin die eerste opstelling: leer jou ken en rig Hermes rondom jou in"
   moa:
     description: "Voer een prompt deur die verstek Mixture of Agents-voorafinstelling en herstel dan jou model"
   subgoal:
@@ -2918,8 +2914,6 @@ cli:
     plan:
       planning: "📋 Beplan: {task}"
       from_conversation: "📋 Beplan uit hierdie gesprek se konteks..."
-    initiate_setup:
-      starting: "🧭 Begin opstelling..."
     init:
       updating: "⚡ Werk AGENTS.md by vanaf 'n projekskandering..."
       generating: "⚡ Genereer AGENTS.md vanaf 'n projekskandering..."

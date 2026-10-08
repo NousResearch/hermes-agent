@@ -1,5 +1,5 @@
 """Guided tour (highlight + narrate UI elements) in the Hermes desktop GUI: ``start`` with no
-steps runs the app's own built-in tour (``preset`` quick or full); for a custom one the agent
+steps runs the app's own built-in tour; for a custom one the agent
 discovers targets (``action="targets"``), then highlights one step at a time (``show``) or hands
 over a step list the user pages (``start`` + ``steps``). Round-trips through the gateway
 blocking-prompt bridge (``tour.request``/``tour.respond``) so the agent learns whether the
@@ -12,20 +12,16 @@ from typing import Callable, Optional
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
-from tools.tour_presets import TourPreset
 
 ACTIONS = ("targets", "show", "start", "next", "prev", "stop")
 SURFACES = ("app", "preview")
 SIDES = ("top", "right", "bottom", "left")
 
 
-PRESETS = tuple(TourPreset)
-
-
 def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optional[str] = None,
               title: Optional[str] = None, text: Optional[str] = None, side: Optional[str] = None,
               steps: Optional[list] = None, step_index: Optional[int] = None,
-              preset: Optional[str] = None, callback: Optional[Callable] = None) -> str:
+              callback: Optional[Callable] = None) -> str:
     """Dispatch one tour action to the desktop renderer and return its outcome."""
     if callback is None:
         return tool_error("tour is only available in the Hermes desktop app.")
@@ -37,10 +33,6 @@ def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optiona
         return tool_error(f"surface must be one of: {', '.join(SURFACES)}.")
     if side is not None and side not in SIDES:
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
-    if preset is not None and preset not in PRESETS:
-        return tool_error(f"preset must be one of: {', '.join(PRESETS)}.")
-    if preset is not None and steps is not None:
-        return tool_error("preset picks a built-in tour; pass steps or preset, not both.")
     # Every highlighted moment needs something to point at or something to say.
     if verb == "show" and not (selector or title or text):
         return tool_error("show needs a selector (and/or title/text for the popover).")
@@ -56,7 +48,7 @@ def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optiona
             if not (step.get("selector") or step.get("title") or step.get("text")):
                 return tool_error(f"steps[{i}] needs a selector and/or title/text.")
     fields = {"action": verb, "surface": where, "selector": selector, "title": title,
-              "text": text, "side": side, "steps": steps, "step_index": step_index, "preset": preset}
+              "text": text, "side": side, "steps": steps, "step_index": step_index}
     try:
         raw = callback({key: val for key, val in fields.items() if val is not None})
     except Exception as exc:
@@ -98,7 +90,7 @@ TOUR_SCHEMA = {
         "element, attach a titled popover. Surfaces: 'app' (Hermes itself) "
         "or 'preview' (the page in the preview pane). A general look around "
         "the app is ONE call: action='start' with no steps runs the app's "
-        "built-in tour (preset 'quick' or 'full', default full). For a "
+        "built-in tour. For a "
         "custom tour, call action='targets' first — prefer targets marked "
         "stable:true (their selectors survive re-renders); re-scan if one "
         "stops matching. Then narrate with action='show' (one highlight per "
@@ -136,11 +128,6 @@ TOUR_SCHEMA = {
                 "items": _STEP_SCHEMA,
                 "description": "start: ordered steps; omit for the built-in tour.",
             },
-            "preset": {
-                "type": "string",
-                "enum": list(PRESETS),
-                "description": "start without steps: 'quick' (four essentials) or 'full'.",
-            },
             "step_index": {
                 "type": "integer",
                 "description": "start: 0-indexed first step.",
@@ -161,5 +148,5 @@ registry.register(
     handler=lambda args, **kw: tour_tool(
         action=args.get("action", ""), callback=kw.get("callback"),
         **{k: args.get(k) for k in ("surface", "selector", "title", "text", "side", "steps",
-                                    "step_index", "preset")}),
+                                    "step_index")}),
     emoji="🧭")

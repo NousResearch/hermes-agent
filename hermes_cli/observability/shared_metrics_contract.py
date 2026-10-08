@@ -13,7 +13,7 @@ from agent.relay_runtime import (
     RUNTIME_SCHEMA_VERSION,
 )
 from hermes_cli.platforms import PLATFORMS
-from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
+from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES, RETIRED_TOOL_NAMES, RETIRED_TOOLSET_NAMES
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -153,7 +153,11 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 # Surfaces that are not messaging platforms keep their own execution_surface value.
 # ``relay``: a connector inbound whose platform neither the inbound nor a single-platform connector names.
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
-TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
+# Names a saved row may carry: today's tools plus retired ones, so rows recorded before an upgrade
+# still package. Recording maps through the live set (tool_metric_name).
+ACCEPTED_TOOL_NAMES = BUILTIN_TOOL_NAMES | RETIRED_TOOL_NAMES
+TOOL_NAMES = ACCEPTED_TOOL_NAMES | {"mcp", "plugin", "unknown"}
+_LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
 TOOL_ERROR_CLASSES = frozenset({
     "blocked", "contract_violation", "exception", "interrupted", "invalid_arguments", "none",
     "timeout", "tool_error", "unknown",
@@ -616,7 +620,7 @@ TOOL_SCHEMA_TOKEN_BUCKETS = frozenset({
     "0", "lt_2k", "2k_to_5k", "5k_to_10k", "10k_to_20k", "20k_to_40k", "gte_40k",
 })
 # Toolsets Hermes ships; MCP servers and plugin toolsets collapse to custom.
-TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | {"custom"}
+TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | RETIRED_TOOLSET_NAMES | {"custom"}
 # compression is the expected cause; the rest are Hermes invalidating a warm prefix (bugs or
 # user-driven), or the provider reporting a cold read Hermes did not cause.
 CACHE_BREAK_CAUSES = frozenset({
@@ -1007,7 +1011,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- end v5 desktop ----
     # ---- v5 signals ----
-    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES},
+    TOOL_UNAVAILABLE_METRIC: {"tool_name": ACCEPTED_TOOL_NAMES},
     PROVIDER_SETUP_METRIC: {
         "event": PROVIDER_SETUP_EVENTS, "failure_class": PROVIDER_SETUP_FAILURE_CLASSES,
         "surface": PROVIDER_SETUP_SURFACES,
@@ -1748,7 +1752,7 @@ def tool_terminal_fields(
         "outcome": outcome,
         "retry_count_bucket": tool_retry_bucket(kwargs.get("retry_count")),
         "tool_category": category if category in TOOL_CATEGORIES else tool_category(kwargs),
-        "tool_name": tool_name if tool_name is not None and tool_name in TOOL_NAMES
+        "tool_name": tool_name if tool_name is not None and tool_name in _LIVE_TOOL_NAMES
         else tool_metric_name(kwargs),
     }
 

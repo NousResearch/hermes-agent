@@ -1,4 +1,4 @@
-"""The built-in tour presets ``gui_tour`` start-without-steps accepts.
+"""The desktop's built-in tours (the ``tour`` server request's ``preset``; the app starts the quick one itself).
 
 A leaf module with no ``registry.register``: the wire contract
 (``tui_gateway/contracts/server_requests.py``) imports this enum, and importing

@@ -242,3 +242,16 @@ class TestResolveToolsetMemo:
         assert get_toolset_calls["n"] == 2, (
             "generation bump must invalidate the memo and re-resolve"
         )
+
+
+def test_retired_onboarding_toolsets_in_a_saved_config_drop_quietly(capsys):
+    """Old setup-profile configs list ``setup``/``start_chat``: no warning, no tools, the rest still resolves."""
+    from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
+    from model_tools import _select_tool_names
+
+    config = {"platform_toolsets": {"cli": ["setup", "start_chat", "terminal"]}}
+    assert validate_platform_toolsets(config["platform_toolsets"], saved_toolset_resolver(config)) == []
+
+    tools = _select_tool_names(["setup", "start_chat", "terminal"], None, quiet_mode=False)
+    assert "Unknown toolset" not in capsys.readouterr().out
+    assert tools == set(resolve_toolset("terminal"))

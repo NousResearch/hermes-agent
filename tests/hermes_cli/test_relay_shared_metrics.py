@@ -1258,6 +1258,36 @@ def test_package_builder_rejects_tampered_dimensions(tmp_path):
     assert list(outbox_directory.glob("*.json")) == []
 
 
+_RETIRED_SETUP_ROWS = [
+    ("hermes.tool_unavailable.count", {"model": "unknown", "provider": "unknown", "tool_name": "setup_choose"}),
+    ("hermes.tool_unavailable.count", {"model": "unknown", "provider": "unknown", "tool_name": "start_chat"}),
+    ("hermes.tool.usage.count", {"error_class": "none", "outcome": "success", "tool_name": "setup_choose"}),
+    ("hermes.tool_enabled_unused.count", {"toolset": "setup", "used": "no"}),
+    ("hermes.tool_enabled_unused.count", {"toolset": "start_chat", "used": "yes"}),
+]
+
+
+@pytest.mark.parametrize(("metric_name", "dimensions"), _RETIRED_SETUP_ROWS)
+def test_a_pending_row_naming_a_retired_setup_tool_still_packages(tmp_path, metric_name, dimensions):
+    # Saved before the setup tools were deleted; the upgraded reader must still ship it.
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET metric_name = ?, dimensions_json = ?",
+            (metric_name, json.dumps(dimensions, sort_keys=True, separators=(",", ":"))),
+        )
+
+    [path] = store.create_and_export_package()
+
+    package = json.loads(path.read_text(encoding="utf-8"))
+    [metric] = package["metrics"]
+    assert (metric["name"], metric["dimensions"]) == (metric_name, dimensions)
+    _schema_validator().validate(package)
+
+
 def test_package_builder_rejects_tampered_client_resources(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"

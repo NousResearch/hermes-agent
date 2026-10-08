@@ -100,10 +100,7 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   delegate_task: DelegateToolPart,
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
-  manage_connections: ConnectionsToolPart,
-  // Rows left in old setup chats render as plain tool rows (plan D18).
-  setup_choose: ToolFallback,
-  start_chat: ToolFallback
+  manage_connections: ConnectionsToolPart
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the

@@ -50,12 +50,9 @@ def test_root_with_a_session_does_not_run(root):
     assert onboarding_run.should_run() is False
 
 
-def test_a_user_profile_is_history_but_a_setup_profile_is_not(root):
-    setup = profiles.create_profile("hermes-setup", no_alias=True)
-    (setup / ".setup-profile.json").write_text("{}")
-    assert onboarding_run.should_run() is True
-
+def test_a_named_profile_is_history(root):
     profiles.create_profile("work", no_alias=True)
+
     assert onboarding_run.should_run() is False
 
 
@@ -103,13 +100,3 @@ def test_named_profile_launch_uses_the_root_file(root, monkeypatch):
     onboarding_run.set_run(False)
     assert onboarding_run.should_run() is False
 
-
-def test_named_profile_launch_reads_the_root_state_db(root, monkeypatch):
-    # Launched under the setup profile, the one named profile that is not history.
-    setup = _launch_under(monkeypatch, root, "hermes-setup")
-    (setup / ".setup-profile.json").write_text("{}")
-    _add_session(setup)
-    assert onboarding_run.should_run() is True
-
-    _add_session(root)
-    assert onboarding_run.should_run() is False

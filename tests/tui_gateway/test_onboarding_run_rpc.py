@@ -35,28 +35,10 @@ def _onboarding(home: Path) -> dict:
 
 def test_state_answers_run_and_eligible(launched_under_work, monkeypatch):
     # The user's own "work" profile is install history, so an unset flag is not due.
-    result = _call("onboarding.state")["result"]
-    assert (result["run"], result["eligible"]) == (False, True)
-    assert result["intro"] == "seen"  # the agentic guide's returning-user latch still settles
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": True}
 
     monkeypatch.delenv("HERMES_GUEST_ONBOARDING")
     assert _call("onboarding.state")["result"]["eligible"] is False
-
-
-def test_state_keeps_the_agentic_guide_fields(tmp_path, monkeypatch):
-    # The desktop's agentic first run opens on intro == "unseen"; this answer must still carry it.
-    root = tmp_path / ".hermes"
-    root.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-
-    result = _call("onboarding.state")["result"]
-
-    assert result["intro"] == "unseen"
-    assert result["failed_starts"] == 0
-    assert result["profile"] is None
-    assert (result["run"], result["eligible"]) == (True, True)
 
 
 def test_set_run_writes_the_root_config(launched_under_work):

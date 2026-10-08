@@ -138,11 +138,6 @@ def _emit_reasoning_delta(sid: str, text: str) -> None:
     _emit("reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})})
 
 
-def _setup_choose_request(sid: str, payload: dict) -> dict | None:
-    from tui_gateway import server_requests
-    return server_requests.send("setup_choose", sid, dict(payload), timeout=_clarify_timeout_seconds())
-
-
 def _agent_cbs(sid: str) -> dict:
     def _read_block(method: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
@@ -180,8 +175,7 @@ def _agent_cbs(sid: str) -> dict:
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
-        "tour_callback": lambda payload: _tour_request(sid, payload),
-        "setup_choose_callback": lambda payload: _setup_choose_request(sid, payload)}
+        "tour_callback": lambda payload: _tour_request(sid, payload)}
 
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.

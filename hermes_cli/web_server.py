@@ -295,6 +295,15 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Canary/RC desktop builds left a setup profile behind: release it before any RPC is served and
+    # before the free-tier bootstrap reconciles the shared Nous identity. A failure must not stop serve.
+    try:
+        from hermes_cli.onboarding_migrations import release_setup_profiles
+
+        release_setup_profiles()
+    except Exception:  # health: allow BLE001 -- a boot migration must not stop serve; logged with traceback
+        _log.exception("setup profile release failed; it is retried on the next boot")
+
     # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
     # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
     # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's

@@ -725,12 +725,12 @@ class _SummaryFailureKind:
     overloaded: bool
 
     def fallback_reason(self) -> str:
-        """Reason string for the one-shot main-model retry log line, most specific first."""
+        """Reason string, most specific first. ``timeout`` ranks ABOVE ``streaming_closed``: an APITimeoutError also satisfies _is_connection_error, so both hold for a deadline exhaustion and the more specific class must win."""
         reasons = (
             (self.json_decode, "returned invalid JSON"), (self.truncated, "returned a truncated summary (output token cap)"),
             (self.empty_content, "returned empty content"), (self.overloaded, "was overloaded"),
             (self.model_not_found, "unavailable"),
-            (self.streaming_closed, "closed stream prematurely"), (self.timeout, "timed out"),
+            (self.timeout, "timed out"), (self.streaming_closed, "closed stream prematurely"),
         )
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
@@ -4332,7 +4332,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         elif kind.truncated:
             _transient_cooldown = _next_timeout_cooldown(self, "_consecutive_truncation_failures")
         else:
-            _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content) else 60
+            _transient_cooldown = 30 if (kind.json_decode or (kind.streaming_closed and not kind.timeout) or kind.empty_content) else 60
         err_text = _short_error_text(e)
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text

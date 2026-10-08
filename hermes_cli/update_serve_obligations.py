@@ -98,11 +98,18 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
     for path in sorted(directory.glob("*.json")):
         try:
             row = json.loads(path.read_text(encoding="utf-8-sig"))
-            if _pid_alive_matches(row["pid"], row["create_time"]) is False:
+            alive = _pid_alive_matches(row["pid"], row["create_time"])
+            if alive is False:
                 path.unlink(missing_ok=True)
                 continue
             print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
-            print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)
+            if alive is None:
+                # A blind probe never clears the reminder on its own; name the manual way out (#134995).
+                print(f"    This account cannot probe pid {row['pid']}; if a manual check confirms it is gone, "
+                      f"delete the reminder file ({directory.name}/{path.name}) to clear this warning.", file=stream)
+            else:
+                print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend); "
+                      "`hermes serve --stop` also settles a serve reminder.", file=stream)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.debug("Could not reconcile manual serve obligation %s: %s", path, exc)
             print(f"  ⚠ Manual serve restart reminder could not be verified: {path.name}", file=stream)

@@ -290,6 +290,49 @@ describe('the projects list policy', () => {
     return tops
   }
 
+  /** One animation frame, so the paint the drag re-derives each frame has run. */
+  const nextFrame = () => new Promise<void>(done => requestAnimationFrame(() => done()))
+
+  it('repaints the pending outcome every frame, not just when the pointer moves', async () => {
+    const tops = mountRows()
+    const pane = document.createElement('div')
+
+    pane.setAttribute('data-project-pane', '')
+    document.body.append(pane)
+
+    const { resolve } = policy()
+
+    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
+    // Over `other` (84–122), so the frame outlines its region — which runs on to `tail`, the next
+    // project outside it.
+    resolve({ activeId: 'tail', overId: null, phase: 'move', pointer: { dx: 0, x: 40, y: 100 } })
+
+    const outline = () => document.querySelector<HTMLElement>('[data-project-nest-zone]')
+
+    expect(outline()?.style.top).toBe('84px')
+
+    // The list moves under a pointer that has not: every row is 20px higher (a scroll, or the reflow
+    // the drag itself just caused).
+    for (const rect of tops.values()) {
+      rect.bottom -= 20
+      rect.top -= 20
+    }
+
+    await nextFrame()
+
+    // Repainted from the geometry of THIS frame, not from the one the last pointer move saw — which
+    // is what left the frame (and the chip) pointing at where a row used to be.
+    expect(outline()?.style.top).toBe('64px')
+
+    resolve({ activeId: 'tail', overId: null, phase: 'cancel', pointer: null })
+
+    // The loop goes with the drag, paint and all.
+    expect(outline()).toBe(null)
+
+    document.body.replaceChildren()
+    vi.restoreAllMocks()
+  })
+
   it('reads the dragged row and its place from the live list', () => {
     mountRows()
 

@@ -604,7 +604,7 @@ def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
 
 
 def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
-    """A missing/failed smi must not re-spawn per poll either."""
+    """A rejected query gets one hidden narrow retry; the miss must not re-spawn per poll."""
     from hermes_cli.local_runtime import hardware
 
     captured = []
@@ -615,8 +615,12 @@ def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
 
     monkeypatch.setattr(hardware, "_gpu_query_cache", None)
     monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: r"C:\Windows\System32\nvidia-smi.exe")
+    _patch_hide_flags(monkeypatch)
     monkeypatch.setattr(hardware.subprocess, "run", fake_run)
 
     assert hardware._nvidia_vram() is None
-    assert hardware._cached_nvidia_gpu_query() is None  # TTL hit, no second spawn
-    assert len(captured) == 1, captured
+    assert hardware._cached_nvidia_gpu_query() is None  # TTL hit, no further spawn
+    spawns = _spawns(captured, "nvidia-smi")
+    assert len(spawns) == 2, captured
+    for cmd, kwargs in spawns:
+        assert kwargs["creationflags"] == _CREATE_NO_WINDOW, cmd

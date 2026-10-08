@@ -10,6 +10,7 @@ back to its in-process syntax checker.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -48,6 +49,9 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # tsserver must be importable from the same node_modules tree or
     # initialize() fails with "Could not find a valid TypeScript installation".
     "typescript-language-server": _npm("typescript-language-server", "typescript-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
+    # Native TS7 has its own LSP. Keep its package apart from the JS SDK used by Vue/tsserver.
+    "typescript-native": _npm("typescript@7", "tsc", install_subdir="typescript-native",
+                               package_name="typescript", package_major=7),
     # 3.x forwards every TypeScript request to a client-hosted tsserver
     # (``tsserver/request`` tunnel) that a generic LSP client does not run, so
     # it never publishes diagnostics; 2.x self-hosts TypeScript from
@@ -141,6 +145,24 @@ def _existing_binary(name: str, *, is_windows: Optional[bool] = None) -> Optiona
     return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
 
+def existing_recipe_binary(pkg: str) -> Optional[str]:
+    """Probe a recipe's own prefix; isolated tools must never resolve an unrelated PATH binary."""
+    recipe = INSTALL_RECIPES.get(pkg, {})
+    if subdir := recipe.get("install_subdir"):
+        modules = hermes_lsp_bin_dir().parent / subdir / "node_modules"
+        # A stale/manual prefix containing TS6's tsc is not an installed native language server.
+        if major := recipe.get("package_major"):
+            try:
+                metadata = json.loads((modules / recipe["package_name"] / "package.json").read_text(encoding="utf-8"))
+                if int(metadata["version"].split(".")[0]) != major:
+                    return None
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                return None
+        found = _first_existing(modules / ".bin" / recipe["bin"])
+        return str(found) if found is not None and os.access(found, os.X_OK) else None
+    return _existing_binary(recipe.get("bin", pkg))
+
+
 def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
     """Try to install ``pkg``; return the binary path or ``None``.
 
@@ -148,7 +170,7 @@ def try_install(pkg: str, strategy: str = "auto") -> Optional[str]:
     binary.  Results are cached per package and concurrent calls are serialized.
     """
     if strategy != "auto":
-        return _existing_binary(INSTALL_RECIPES.get(pkg, {}).get("bin", pkg))
+        return existing_recipe_binary(pkg)
     if pkg in _install_results:
         return _install_results[pkg]
     with _install_lock_meta:
@@ -165,7 +187,7 @@ def _do_install(pkg: str) -> Optional[str]:
         return shutil.which(pkg)  # not in our registry — best-effort: just probe PATH
     strategy = recipe.get("strategy", "manual")
     bin_name = recipe.get("bin", pkg)
-    if existing := _existing_binary(bin_name):
+    if existing := existing_recipe_binary(pkg):
         return existing
     if strategy == "manual":
         logger.debug("[install] %s requires manual install (recipe=%s)", pkg, recipe)
@@ -236,9 +258,10 @@ def _node_package_manager() -> Optional[str]:
     return pm
 
 
-def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> Optional[str]:
-    """Install with the configured Node package manager into ``<staging>`` and link
-    ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
+def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None,
+                 install_subdir: Optional[str] = None) -> Optional[str]:
+    """Install with the configured Node package manager; isolated prefixes keep their own launcher,
+    other packages link ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
     pm = _node_package_manager()
     if pm is None:
         return None
@@ -259,6 +282,9 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
                        "(install it, or set lsp.package_manager: npm)", pkg, pm, pm)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
+    if install_subdir:
+        staging = staging / install_subdir
+        staging.mkdir(parents=True, exist_ok=True)
     install_targets = [pkg] + list(extra_pkgs or [])
     cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]
     logger.info("[install] %s %s", pm, " ".join(cmd[1:]))
@@ -268,6 +294,8 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:
+        if install_subdir:
+            return str(found)  # keep this package's compiler out of the shared bin/ and SDK tree
         # npm's Windows wrappers resolve their payload via ``%~dp0\..\<pkg>``, so a copy or symlink
         # in ``lsp/bin/`` points at nothing; use them where npm put them (``_existing_binary`` probes there).
         return str(found) if _is_windows() and found.suffix.lower() in (".cmd", ".bat") else _link_into_bin(found)
@@ -307,7 +335,8 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
 
 # strategy → installer(recipe, bin_name).  ``manual`` is handled before dispatch.
 _INSTALLERS: Dict[str, Callable[[Dict[str, Any], str], Optional[str]]] = {
-    "npm": lambda r, b: _install_npm(r["pkg"], b, extra_pkgs=r.get("extra_pkgs") or []),
+    "npm": lambda r, b: _install_npm(r["pkg"], b, extra_pkgs=r.get("extra_pkgs") or [],
+                                    install_subdir=r.get("install_subdir")),
     "go": lambda r, b: _install_go(r["pkg"], b),
     "pip": lambda r, b: _install_pip(r["pkg"], b),
 }
@@ -316,9 +345,9 @@ _INSTALLERS: Dict[str, Callable[[Dict[str, Any], str], Optional[str]]] = {
 def detect_status(pkg: str) -> str:
     """Return ``installed``, ``missing``, or ``manual-only`` (for ``hermes lsp status``; spawns nothing)."""
     recipe = INSTALL_RECIPES.get(pkg)
-    if _existing_binary(recipe.get("bin", pkg) if recipe else pkg):
+    if existing_recipe_binary(pkg):
         return "installed"
     return "manual-only" if recipe and recipe.get("strategy") == "manual" else "missing"
 
 
-__all__ = ["INSTALL_RECIPES", "try_install", "detect_status", "hermes_lsp_bin_dir"]
+__all__ = ["INSTALL_RECIPES", "try_install", "detect_status", "existing_recipe_binary", "hermes_lsp_bin_dir"]

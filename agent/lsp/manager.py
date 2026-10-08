@@ -149,8 +149,12 @@ class LSPService:
         warmup_timeout: float = 0.0,
         exclude_roots: Any = None,
         trusted_workspaces: Any = None,
+        typescript_backend: str = "legacy",
     ) -> None:
         self._enabled = enabled
+        self._typescript_backend = "native" if typescript_backend == "native" else "legacy"
+        if typescript_backend not in ("native", "legacy"):
+            logger.warning("Unknown lsp.typescript_backend=%r; using legacy", typescript_backend)
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
         self._wait_timeout = wait_timeout
         self._install_strategy = install_strategy
@@ -227,12 +231,18 @@ class LSPService:
             warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
             exclude_roots=lsp_cfg.get("exclude_roots"),
             trusted_workspaces=lsp_cfg.get("trusted_workspaces"),
+            typescript_backend=lsp_cfg.get("typescript_backend", "legacy"),
         )
 
     def _server_for(self, file_path: str) -> Optional[ServerDef]:
         """Config-declared servers first (they may claim an extension ahead of a built-in), then the registry."""
         extra = find_server_for_file(file_path, self._extra_servers) if self._extra_servers else None
-        return extra or find_server_for_file(file_path)
+        if extra is not None:
+            return extra
+        builtin = find_server_for_file(file_path)
+        if builtin is not None and builtin.server_id == "typescript" and self._typescript_backend == "native":
+            return next(s for s in SERVERS if s.server_id == "typescript-native")
+        return builtin
 
     def handles_extension(self, ext: str) -> bool:
         """True iff a config-declared or built-in server claims ``ext`` (pre-write capture decision)."""
@@ -478,6 +488,7 @@ class LSPService:
         return {
             "enabled": self._enabled, "wait_mode": self._wait_mode, "wait_timeout": self._wait_timeout,
             "install_strategy": self._install_strategy, "clients": clients, "broken": broken,
+            "typescript_backend": self._typescript_backend,
             "disabled_servers": sorted(self._disabled_servers),
             "broken_retry_seconds": self._broken_retry, "warmup_timeout": self._warmup_timeout,
             "exclude_roots": list(self._exclude_roots) if self._exclude_roots is not None else "INVALID",

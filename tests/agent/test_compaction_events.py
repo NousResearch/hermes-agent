@@ -249,28 +249,59 @@ def test_micro_compaction_pass_publishes_one_record(published, outcome, name, ex
     assert payload["tokens_reclaimed"] == 300
 
 
-def test_committed_proactive_prune_publishes_one_record(published):
+def _prune_after_tool_results(persist_disabled):
+    """Drive the post-tool caller with the attempt budget spent, so it takes the proactive prune branch."""
+    from agent.turn_preflight import compress_after_tool_results
+
     compressor = _compressor(
         proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, protect_first_n=2, protect_last_n=4,
     )
-    compressor._session_id = "prune-session"
+    compressor.last_prompt_tokens = 120_000
+    agent = SimpleNamespace(
+        context_compressor=compressor, compression_enabled=True, session_id="prune-session", tools=[],
+        _persist_disabled=persist_disabled, _usage_anchor=None, _compression_feasibility_checked=True,
+        _warn_context_overflow_blocked=lambda *_args: None,
+    )
     msgs = [{"role": "system", "content": "sys"}]
     for i in range(8):
         msgs.append({"role": "assistant", "content": "", "tool_calls": [
             {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
         ]})
         msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": (chr(65 + i) + SECRET) * 600 if i < 3 else "ok"})
+    verdict = compress_after_tool_results(
+        agent, messages=msgs, system_message="sys", user_message="ask", active_system_prompt="sys",
+        conversation_history=None, compression_attempts=3, max_compression_attempts=3, effective_task_id="task",
+        final_response=None, turn_exit_reason=None, current_turn_user_idx=0,
+    )
+    return msgs, verdict.messages
 
-    _result, pruned = compressor.prune_tool_results_only(msgs, current_tokens=120_000)
 
+def test_committed_proactive_prune_publishes_one_record(published):
+    msgs, pruned = _prune_after_tool_results(persist_disabled=False)
+
+    assert pruned is not msgs
     [(session_id, name, payload)] = published
     assert (session_id, name) == ("prune-session", "compaction")
     assert (payload["kind"], payload["method"], payload["trigger"]) == (
         "prune_tool_results", "deterministic_prune", "proactive_prune",
     )
-    assert payload["tool_results_pruned"] == pruned and payload["tokens_reclaimed"] > 0
+    assert payload["tool_results_pruned"] > 0 and payload["tokens_reclaimed"] > 0
+    assert payload["token_count_method"] == "estimate_rough"
     assert payload["messages_before"] == payload["messages_after"] == len(msgs)
     assert SECRET not in json.dumps(payload)
+
+
+def test_a_persistence_detached_fork_publishes_nothing(published):
+    """A background-review fork shares the live session id but rewrites only its own transcript."""
+    agent = _Agent(_compressor())
+    agent._persist_disabled = True
+
+    with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+    msgs, pruned = _prune_after_tool_results(persist_disabled=True)
+
+    assert len(compressed) < len(_messages()) and pruned is not msgs
+    assert published == []
 
 
 def test_rotation_publishes_after_the_split_with_the_attempts_own_session(published):

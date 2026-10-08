@@ -1,9 +1,10 @@
 """Emit ``hermes.compaction`` records as NeMo Relay marks on the owning session's scope stack.
 
 The mark goes under the live turn of the same session when there is one, else under that session's
-scope (gateway hygiene and other out-of-turn compactions). The session's own stack matters: Relay resets
-LLM-history freshness only for the agent scope that owns a ``compaction`` mark, so the next LLM start
-after a committed rewrite records the full history again. No live Relay host or session scope means
+scope (gateway hygiene and other out-of-turn compactions), and never from a turn Relay does not
+instrument. The session's own stack matters: Relay resets LLM-history freshness only for the agent scope
+that owns a ``compaction`` mark, so the next LLM start after a committed rewrite records the full history
+again. No live Relay host or session scope means
 there is nothing to record. Relay exporters are configured by the user, so the mark adds no outbound
 path of its own.
 """
@@ -21,7 +22,12 @@ COMPACTION_DATA_SCHEMA = {"name": "hermes.compaction", "version": "1"}
 
 
 def _resolve_target(session_id: str) -> tuple[relay_runtime.RelayRuntime, relay_runtime.RelaySession, Any] | None:
-    """``(host, session, parent handle)`` for ``session_id``: its live turn first, then its session scope."""
+    """``(host, session, parent handle)`` for ``session_id``: its live turn first, then its session scope.
+
+    A turn Relay does not instrument (a second concurrent turn on the session, such as a background-review
+    fork) gets nothing: its compaction rewrote its own transcript, not the live session's."""
+    if not relay_runtime.relay_instrumentation_enabled():
+        return None
     turn = relay_runtime.active_turn(session_id)
     host = turn.lease.live_runtime() if turn is not None else None
     if host is not None:

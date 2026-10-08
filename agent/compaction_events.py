@@ -2,7 +2,8 @@
 
 One record per ``compress_context`` attempt (built from the attempt telemetry seam), per
 micro-compaction pass, per committed proactive tool-result prune, and per Codex-native thread
-compaction Hermes observes. The payload is flat because OpenTelemetry exporters flatten only top-level
+compaction Hermes observes. A persistence-detached fork (background review) shares the live session id
+but rewrites only its own throwaway transcript, so it publishes nothing. The payload is flat because OpenTelemetry exporters flatten only top-level
 keys; every categorical field comes from a closed set with an ``other`` fallback; no field carries
 message, summary, focus-topic, error or path text. Publishing never raises into compaction.
 """
@@ -14,6 +15,8 @@ import logging
 import threading
 import uuid
 from typing import Any
+
+from agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
 
@@ -230,28 +233,39 @@ def _publish(build: Any, *args: Any, **kwargs: Any) -> None:
         logger.log(logging.WARNING if first else logging.DEBUG, "compaction event publish failed", exc_info=True)
 
 
+def _publishes_for(agent: Any) -> bool:
+    """A persistence-detached fork (background review) rewrites only its own throwaway transcript."""
+    return not getattr(agent, "_persist_disabled", False)
+
+
 def publish_attempt(agent: Any, record: dict[str, Any]) -> None:
     """Publish one ``compress_context`` attempt record (the attempt telemetry seam calls this)."""
-    _publish(lambda: attempt_payload(
-        record, compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
-    ))
+    if _publishes_for(agent):
+        _publish(lambda: attempt_payload(
+            record, compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
+        ))
 
 
 def publish_micro(record: dict[str, Any]) -> None:
-    """Publish one micro-compaction pass record."""
+    """Publish one micro-compaction pass record. The finalizer never runs micro-compaction for a fork."""
     _publish(micro_payload, record)
 
 
-def publish_prune(
-    *, session_id: str, tokens_before: int, tokens_after: int, messages: int, tool_results_pruned: int,
-) -> None:
-    """Publish one committed proactive tool-result prune."""
-    _publish(
-        prune_payload, session_id=session_id, tokens_before=tokens_before, tokens_after=tokens_after,
-        messages=messages, tool_results_pruned=tool_results_pruned,
-    )
+def publish_prune(agent: Any, messages: list, pruned: list, tool_results_pruned: int) -> None:
+    """Publish one committed proactive tool-result prune, measured like the attempt record (rough estimate of
+    the message list the model sees next)."""
+    if _publishes_for(agent):
+        _publish(lambda: prune_payload(
+            session_id=getattr(agent, "session_id", None) or "", tokens_before=estimate_messages_tokens_rough(messages),
+            tokens_after=estimate_messages_tokens_rough(pruned), messages=len(pruned),
+            tool_results_pruned=tool_results_pruned,
+        ))
 
 
-def publish_provider_native(*, session_id: str, compression_count: Any = None) -> None:
+def publish_provider_native(agent: Any) -> None:
     """Publish one provider-native compaction Hermes observed but did not run."""
-    _publish(provider_native_payload, session_id=session_id, compression_count=compression_count)
+    if _publishes_for(agent):
+        _publish(
+            provider_native_payload, session_id=getattr(agent, "session_id", None) or "",
+            compression_count=getattr(getattr(agent, "context_compressor", None), "compression_count", None),
+        )

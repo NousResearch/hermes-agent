@@ -10037,8 +10037,9 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
 }
 
 // The ssh client every desktop spawn uses (#103288): `desktop.ssh_path`, then
-// the in-box System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
-// Bare `ssh` on every other platform.
+// the in-box System32 OpenSSH, then an installed-native Win32-OpenSSH client,
+// then Git for Windows' MSYS ssh.exe (last resort — its CRT may rewrite quoted
+// remote commands, #134949), then PATH. Bare `ssh` on every other platform.
 function desktopSshBinary(): string {
   return resolveSshBinary({
     platform: process.platform,

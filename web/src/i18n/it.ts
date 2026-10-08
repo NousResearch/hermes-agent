@@ -205,6 +205,12 @@ export const it: Translations = {
     perDayAvg: "/giorno medio",
     acrossModels: "su {count} modelli",
     inOut: "{input} in / {output} out",
+    inputPerDay: "Token di input / giorno",
+    outputPerDay: "Token di output / giorno",
+    ioRatio: "Rapporto input / output",
+    ratioAverage: "{ratio} media del periodo",
+    tokensByModel: "Token per modello / giorno",
+    otherModels: "Altri modelli",
   },
 
   models: {

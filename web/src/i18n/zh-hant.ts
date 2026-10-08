@@ -205,6 +205,12 @@ export const zhHant: Translations = {
     perDayAvg: "/日 平均",
     acrossModels: "共 {count} 個模型",
     inOut: "輸入 {input} / 輸出 {output}",
+    inputPerDay: "輸入 token / 日",
+    outputPerDay: "輸出 token / 日",
+    ioRatio: "輸入 / 輸出 比例",
+    ratioAverage: "期間平均 {ratio}",
+    tokensByModel: "各模型 token / 日",
+    otherModels: "其他模型",
   },
 
   models: {

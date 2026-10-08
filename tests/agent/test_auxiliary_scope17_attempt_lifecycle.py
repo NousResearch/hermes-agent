@@ -202,3 +202,92 @@ def test_consumed_completion_cannot_escape_watchdog_timeout(monkeypatch):
     )
     with pytest.raises(TimeoutError):
         aux._CodexCompletionsAdapter(leaf, "m").create(messages=[], timeout=30)
+
+
+@pytest.mark.parametrize("phase", ["acquire", "consume"])
+@pytest.mark.parametrize("frozen", [False, True])
+def test_owner_first_expiry_preserves_explicit_cancellation(monkeypatch, phase, frozen):
+    cancelled = threading.Event()
+    guards = []
+    original = aux._CodexStreamGuard
+
+    def make_guard(*args, **kwargs):
+        guard = original(*args, **kwargs)
+        if frozen:
+            guard._protected_cancel_check = aux._AuxiliaryCancellationDecision(cancelled.is_set)
+        guards.append(guard)
+        return guard
+
+    original_cleanup = original._close_client_on_timeout
+
+    def cleanup(guard):
+        original_cleanup(guard)
+        if frozen:
+            cancelled.clear()  # The attempt decision must survive a reset host event.
+
+    monkeypatch.setattr(original, "_close_client_on_timeout", cleanup)
+
+    def expire():
+        cancelled.set()
+        guards[0]._progress_deadline = 0
+        return _response()
+
+    monkeypatch.setattr(aux, "_CodexStreamGuard", make_guard)
+    monkeypatch.setattr(original, "_arm_timer", lambda *args: None)
+    monkeypatch.setattr("agent.codex_runtime._consume_codex_event_stream", lambda *a, **kw: expire())
+    closed = []
+    leaf = SimpleNamespace(
+        base_url="https://chatgpt.com/backend-api/codex",
+        responses=SimpleNamespace(create=lambda **kw: expire() if phase == "acquire" else iter(())),
+        close=lambda: closed.append(True),
+    )
+    with aux.aux_interrupt_protection(cancel_event=cancelled):
+        with pytest.raises(aux.AuxiliaryExplicitCancellation):
+            aux._CodexCompletionsAdapter(leaf, "m").create(messages=[], timeout=30)
+    assert closed == []
+
+
+def test_cancelled_async_wrapper_keeps_transport_until_worker_finishes(monkeypatch):
+    import asyncio
+    import gc
+
+    started, release, closed = threading.Event(), threading.Event(), threading.Event()
+    close_events = []
+
+    class Leaf:
+        api_key = "test"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+        def __init__(self):
+            self.responses = SimpleNamespace(create=self.create)
+
+        def create(self, **kwargs):
+            started.set()
+            assert release.wait(5)
+            return _response()
+
+        def close(self):
+            close_events.append((threading.get_ident(), release.is_set()))
+            closed.set()
+
+    monkeypatch.setattr(aux, "resolve_provider_client", lambda *a, **kw:
+                        (aux.AsyncCodexAuxiliaryClient(aux.CodexAuxiliaryClient(Leaf(), "m")), "m"))
+
+    async def run():
+        client, _ = aux._get_cached_client("openai-codex", "m", async_mode=True)
+        task = asyncio.create_task(client.chat.completions.create(messages=[], timeout=30))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            del client, task
+            gc.collect()
+            assert not closed.is_set()
+        finally:
+            release.set()
+        assert await asyncio.to_thread(closed.wait, 5)
+        assert close_events[0][0] != threading.get_ident()
+        assert close_events[0][1]
+
+    asyncio.run(run())

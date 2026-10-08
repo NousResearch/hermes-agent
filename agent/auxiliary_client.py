@@ -1275,9 +1275,6 @@ class _CodexStreamGuard:
         # FD-safe — ``close()`` releases the raw TLS fd while the owner's OpenSSL BIO still
         # caches it, the kernel recycles it (e.g. into a SQLite handle), and the owner's TLS
         # flush corrupts that file. The owner does the real close in its ``finally``.
-        # This callback has two callers — ``_check_cancelled`` on the owning thread, and the daemon watchdog
-        # ``threading.Timer``, which is a stranger thread. The owning thread performs the real close in the
-        # ``finally`` below, which is where the FD release belongs. See #70773.
         self.timeout_release_pending.set()
         if threading.get_ident() == self._owner_tid:
             _close_quietly(self._client, "client close during timeout failed")
@@ -1295,12 +1292,8 @@ class _CodexStreamGuard:
             # attempt-owned stream too — from this thread that is a shutdown of its socket,
             # never a close (see close_attempt_stream).
             self.close_attempt_stream("attempt stream close during stranger-thread timeout failed")
-        # The aux client cache wraps this same client; drop the entry so the next aux call
-        # doesn't reuse the dead transport and fail fast.
+        # Evict timeout-poisoned cache entries so later calls rebuild (#23432).
         try:
-            # After we close the httpx transport above, the cache must drop that entry — otherwise the next
-            # auxiliary call (compression retry, memory flush, etc.) reuses the dead client and fails fast
-            # with a connection error. See issue #23432.
             _evict_cached_client_instance(self._client)
         except Exception:
             logger.debug("Codex auxiliary: cache eviction on timeout failed", exc_info=True)
@@ -1313,6 +1306,8 @@ class _CodexStreamGuard:
         if self.total_timeout is not None and time.monotonic() >= self.effective_deadline():
             if not self.timed_out.is_set():
                 self._close_client_on_timeout()
+            if self.cancel_requested():
+                raise AuxiliaryExplicitCancellation()
             raise TimeoutError(self.timeout_message())
         try:
             from tools.interrupt import is_interrupted
@@ -6068,7 +6063,9 @@ def _get_cached_client(
         return client, model or default_model
     # Watchdog shutdown must not sever another call sharing this transport.
     if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
-        weakref.finalize(client, _close_quietly, client._real_client,
+        adapter = client.chat.completions
+        owner = adapter._sync if isinstance(client, AsyncCodexAuxiliaryClient) else adapter
+        weakref.finalize(owner, _close_quietly, client._real_client,
                          "uncached Codex client close failed")
         return client, _compat_model(client, model, default_model)
     if client is not None:

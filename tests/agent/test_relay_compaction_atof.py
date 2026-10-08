@@ -2,7 +2,7 @@
 
 Relay records an LLM start projected to the current user turn while its agent scope is not fresh. A
 ``compaction`` mark on the session's own stack makes the agent fresh again, so the next LLM start
-records the full compacted history. An aborted attempt is only a ``compaction.attempt`` mark and must
+records the full compacted history. A failed attempt is only a ``compaction.attempt`` mark and must
 not reset anything.
 """
 
@@ -193,7 +193,7 @@ def test_committed_compaction_mark_resets_freshness_for_the_next_llm_start(tmp_p
     assert after == last_request_len  # fresh again after the compaction mark: full history
 
 
-def test_aborted_attempt_is_an_attempt_mark_and_leaves_freshness_alone(tmp_path, monkeypatch):
+def test_failed_attempt_is_an_attempt_mark_and_leaves_freshness_alone(tmp_path, monkeypatch):
     events, last_request_len = _run_turn_with_compaction(tmp_path, monkeypatch, ABORT)
 
     [mark] = _compaction_marks(events)

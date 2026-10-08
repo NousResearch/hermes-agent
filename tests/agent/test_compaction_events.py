@@ -135,7 +135,7 @@ def test_deterministic_fallback_is_a_committed_compaction_with_its_method(publis
     assert payload["trigger"] == "unknown"  # an unlabelled automatic caller
 
 
-def test_aborted_summary_failure_is_an_attempt_mark_not_a_compaction(published):
+def test_failed_summary_is_an_attempt_mark_not_a_compaction(published):
     agent = _Agent(_compressor())
     agent.context_compressor.abort_on_summary_failure = True
 

@@ -974,6 +974,13 @@ _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "restate intent — issue the actual tool call now to continue the task."
 )
 
+# Re-prompt for finish_reason="stop" whose content ends inside an unclosed text tool call: the
+# server could not parse the markup, so it came back as content and nothing ran.
+_UNCLOSED_TOOLCALL_NUDGE_CONTENT = (
+    "Your last tool call was incomplete and could not be parsed, so it was not run. "
+    "Re-issue it as a complete tool call."
+)
+
 # Re-prompt for an empty response after tool calls (#9400); the metadata flag does not
 # survive SessionDB projection, so it is matched by content.
 _EMPTY_TOOL_RESPONSE_NUDGE = (

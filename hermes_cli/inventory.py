@@ -165,6 +165,17 @@ def build_models_payload(
 
     drop_unofferable_model_ids(rows)
 
+    # Presets are selectable session modes, not upstream model IDs. Add after catalog
+    # validation so no remote /models probe or model capability lookup sees the keyword.
+    from hermes_cli.opusplan import picker_model_ids
+    for row in rows:
+        original = row.get("models") or []
+        models = picker_model_ids(original, _slug(row),
+                                  base_url=str(row.get("api_url") or ""), user_providers=ctx.user_providers)
+        if models != original:
+            row["models"] = models
+            row["total_models"] = int(row.get("total_models") or len(original)) + len(models) - len(original)
+
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 

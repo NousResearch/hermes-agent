@@ -18,6 +18,7 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
+            "opusplan": bool(getattr(agent, "opusplan_active", False)),
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
@@ -26,6 +27,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
+    agent.opusplan_active = bool(snapshot.get("opusplan", False))
     # `/model X --reasoning high --once`: the effort leaves with the model. Set before the
     # runtime restore paths below (primary_runtime may predate a session /reasoning change).
     if "reasoning_config" in snapshot:
@@ -368,6 +370,7 @@ def _apply_model_switch(
     if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
+            "opusplan": bool(getattr(result, "opusplan", False)),
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
@@ -382,7 +385,8 @@ def _apply_model_switch(
             to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
             session_id=getattr(agent, "session_id", None))
     return {
-        "value": result.new_model, "warning": result.warning_message or "",
+        "value": "opusplan" if getattr(result, "opusplan", False) else result.new_model,
+        "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
 

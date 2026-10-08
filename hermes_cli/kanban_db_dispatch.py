@@ -2758,10 +2758,9 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     for sk in task.skills or ():
         if sk:
             cmd.extend(["--skills", sk])
-    # Pin the provider with the model (model X with provider Y is the classic board-stall); an opusplan
-    # profile's worker with no task override runs the provider's exec model.
-    cmd.extend(["-m", task.model_override, *(["--provider", task.provider_override] if task.provider_override else [])]
-               if task.model_override else _opusplan.worker_exec_args(hermes_home))
+    # Detached tasks retain their profile route unless the task explicitly pins a model.
+    if task.model_override:
+        cmd.extend(["-m", task.model_override, *(["--provider", task.provider_override] if task.provider_override else [])])
     # Independent of the model override — a task can run the profile's own
     # model at a different depth.
     if task.reasoning_effort:
@@ -3034,4 +3033,3 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
-from hermes_cli import opusplan as _opusplan

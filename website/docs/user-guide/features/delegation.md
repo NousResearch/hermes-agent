@@ -309,7 +309,7 @@ providers:
       exec: Qwen3.8FlashNext        # every delegate_task child
 ```
 
-Precedence for a child's model: an explicit `delegation.model` id, then (under opusplan) the exec model, then the parent's model. `delegation.model: opusplan` selects the exec model explicitly, and `delegation.provider` picks which provider's pair is used. Cron jobs and kanban workers follow the same rule. See [Configuring models](../configuring-models.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one) for the full resolution order.
+Precedence for a child's model: an explicit `delegation.model` id, then (under opusplan) the exec model, then the parent's model. `delegation.model: opusplan` selects the exec model explicitly, and `delegation.provider` picks which provider's pair is used. Independent cron jobs and kanban tasks are not delegated children and keep their own route. This is an orchestration preset, not an automatic Claude Code Plan-mode transition; a local pair is not Claude Opus/Sonnet. See [Configuring models](../configuring-models.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one) for the full resolution order.
 
 ## The `/review` Command
 

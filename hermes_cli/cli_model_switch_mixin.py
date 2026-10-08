@@ -25,7 +25,7 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_opusplan_active")
 
 
 def _runtime_fields(cli) -> dict:
@@ -441,7 +441,8 @@ class CLIModelSwitchMixin:
             "api_mode": result.api_mode or None}
         try:
             db.update_session_model(sid, result.new_model)
-            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+            db.patch_session_model_config(sid, {"gateway_runtime": route, **route,
+                                               "opusplan": bool(getattr(result, "opusplan", False))})
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 
@@ -456,6 +457,9 @@ class CLIModelSwitchMixin:
         from cli import logger
         if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
+        from hermes_cli.opusplan import apply_session_override, stored_mode
+        self._opusplan_active = stored_mode(session_meta.get("model_config"))
+        apply_session_override(getattr(self, "agent", None), {"opusplan": self._opusplan_active})
         route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
         if route is None:
             return
@@ -609,6 +613,7 @@ class CLIModelSwitchMixin:
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+        agent.opusplan_active = bool(getattr(self, "_opusplan_active", False))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
         primary = snapshot.get("agent_primary_runtime")
@@ -749,6 +754,9 @@ class CLIModelSwitchMixin:
             from hermes_cli.models_validate import offered_model_ids
             model_list = offered_model_ids(
                 model_list, provider_data.get("slug"), provider_data.get("api_url"))
+            from hermes_cli.opusplan import picker_model_ids
+            model_list = picker_model_ids(model_list, provider_data.get("slug", ""),
+                                          base_url=provider_data.get("api_url") or "", user_providers=state.get("user_provs"))
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

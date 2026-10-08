@@ -348,9 +348,11 @@ A one-turn switch breaks the provider's prompt-cache prefix twice (switching out
 
 ### `opusplan`: plan on the big model, delegate to the cheap one
 
-`opusplan` is a special model value, modelled on Claude Code's opusplan (Opus plans, Sonnet executes) but not tied to Anthropic. It works anywhere a model is chosen: `model.default: opusplan` in `config.yaml`, `/model opusplan` in a session, and `hermes chat --model opusplan` at startup.
+`opusplan` is a provider-aware **planner + delegated-worker orchestration preset**, not Claude Code's literal Plan-mode lifecycle. The parent stays on the plan model; it does not automatically switch to exec after planning. Delegation happens only when the agent calls `delegate_task`.
 
-While `opusplan` is active, the main conversation runs on the active provider's **plan** model (big, reasoning) and everything delegated runs on its **exec** model (cheap, worker): `delegate_task` subagents, cron jobs, and kanban workers. The plan model plans and hands work out; the exec model does it.
+Select the `opusplan` row in the Desktop or in-session CLI model picker for a provider with a declared pair, or use `/model opusplan --session` or `hermes chat --model opusplan`. No global default change is required. The session stores the mode separately from the resolved model ID so switching and resuming preserve it; selecting an ordinary model disables it. `model.default: opusplan` remains an optional profile-wide choice.
+
+While `opusplan` is selected, the main conversation runs on the provider's **plan** model and `delegate_task` children default to its **exec** model. Independent cron jobs and kanban tasks retain their own route and are not globally forced onto exec by an interactive session. A cron job explicitly configured with `opusplan` is a separate parent on the plan model.
 
 Hermes finds a provider's plan/exec pair in this order, and never guesses:
 
@@ -371,10 +373,12 @@ providers:
     api_key: ${ECC_ROUTER_KEY}
     opusplan:
       plan: GLM-5.3-Flash-850K      # main conversation
-      exec: Qwen3.8FlashNext        # subagents, cron jobs, kanban workers
+      exec: Qwen3.8FlashNext        # delegated children only
 ```
 
 With that config the chat runs `GLM-5.3-Flash-850K`, and a `delegate_task` child runs `Qwen3.8FlashNext` on the same router, without setting `delegation.model`. Both `plan` and `exec` are required; a block with only one is an error.
+
+This local example is a generic plan/exec split, **not genuine Claude Opus/Sonnet**. For Claude models, use an approved provider that actually serves them and declares its own pair/aliases. Hermes does not substitute local models or relay subscription credentials.
 
 Notes:
 

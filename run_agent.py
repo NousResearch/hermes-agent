@@ -308,7 +308,11 @@ class AIAgent(
         """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
         before the first turn (``hermes --resume`` restores it)."""
         from tools.approval_yolo import with_session_yolo
-        return with_session_yolo(self._session_init_model_config, self.session_id)
+        config = with_session_yolo(self._session_init_model_config, self.session_id)
+        if isinstance(getattr(self, "opusplan_active", None), bool):
+            config = dict(config or {})
+            config["opusplan"] = self.opusplan_active
+        return config
 
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""

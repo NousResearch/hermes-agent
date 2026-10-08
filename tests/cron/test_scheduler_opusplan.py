@@ -1,4 +1,4 @@
-"""Cron jobs and kanban workers are the unattended-work tier: under ``opusplan`` they run the exec model."""
+"""Detached cron/kanban sessions are not implicitly exec children of a chat picker."""
 from __future__ import annotations
 
 import json
@@ -22,20 +22,20 @@ def _job_model(job):
 
 
 class TestCronModel:
-    def test_unpinned_job_under_opusplan_runs_the_exec_model(self):
+    def test_unpinned_job_under_opusplan_runs_the_plan_model(self):
         _config()
-        assert _job_model({}) == "Qwen3.8FlashNext"
+        assert _job_model({}) == "GLM-5.3-Flash-850K"
 
-    def test_job_pinned_to_opusplan_runs_the_exec_model(self):
+    def test_job_pinned_to_opusplan_runs_the_plan_model(self):
         _config("some-other-model")
-        assert _job_model({"model": "opusplan", "provider": "ecc-router"}) == "Qwen3.8FlashNext"
+        assert _job_model({"model": "opusplan", "provider": "ecc-router"}) == "GLM-5.3-Flash-850K"
 
     def test_cron_model_override_of_opusplan_is_honoured(self):
         _config()
         cfg = json.loads((get_hermes_home() / "config.yaml").read_text())
         cfg["cron"] = {"model": "opusplan", "model_provider": "ecc-router"}
         (get_hermes_home() / "config.yaml").write_text(json.dumps(cfg))
-        assert _job_model({}) == "Qwen3.8FlashNext"
+        assert _job_model({}) == "GLM-5.3-Flash-850K"
 
     def test_explicit_job_model_is_untouched(self):
         _config()
@@ -67,11 +67,11 @@ class TestKanbanWorker:
         monkeypatch.setattr(dispatch, "_resolve_worker_cli_toolsets", lambda home: None)
         self.dispatch = dispatch
 
-    def test_worker_of_an_opusplan_profile_is_launched_on_the_exec_model(self):
+    def test_worker_has_no_implicit_exec_override(self):
         _config()
         argv = self.dispatch._worker_argv(self._task(), "worker", str(get_hermes_home()))
-        assert argv[argv.index("-m") + 1] == "Qwen3.8FlashNext"
-        assert argv[argv.index("--provider") + 1] == "ecc-router"
+        assert "-m" not in argv
+        assert "--provider" not in argv
 
     def test_task_model_override_still_wins(self):
         _config()

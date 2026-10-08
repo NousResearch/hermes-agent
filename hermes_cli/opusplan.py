@@ -2,8 +2,9 @@
 
 ``opusplan`` is a special model value (``model.default: opusplan``, ``/model opusplan``,
 ``--model opusplan``). The main session runs on the active provider's **plan** model (the big /
-reasoning one) while delegation, cron and kanban workers run on its **exec** model (the cheap
-/ worker one), mirroring Claude Code's opusplan without hardcoding any vendor.
+reasoning one) while delegated children run on its **exec** model (the worker one).
+This is an orchestration preset, not Claude Code's Plan-mode lifecycle: the parent
+does not automatically change models after planning, and delegation remains tool-driven.
 
 The plan/exec pair of a provider resolves in this order, never by guessing:
 
@@ -33,6 +34,18 @@ class OpusplanError(ValueError):
 def is_opusplan(value: Any) -> bool:
     """True when ``value`` is the ``opusplan`` model keyword (case-insensitive)."""
     return isinstance(value, str) and value.strip().lower() == OPUSPLAN
+
+
+def picker_model_ids(models: Iterable[str], provider: str, *, base_url: str = "", user_providers: Any = None) -> list[str]:
+    """Offer the preset only for providers with a declared pair; never infer one or resolve auth."""
+    result = [m for m in models if not is_opusplan(m)]
+    if not _clean_names([provider]):
+        return result
+    try:
+        resolve_opusplan_pair([provider], base_url=base_url, user_providers=user_providers or {})
+    except OpusplanError:
+        return result
+    return [OPUSPLAN, *result]
 
 
 def _norm_model_id(model: Any) -> str:
@@ -189,6 +202,17 @@ def configured_default_model(cfg: Mapping[str, Any]) -> str:
     return ""
 
 
+def stored_mode(raw: Any) -> bool:
+    """Read the persisted mode bit without importing a frontend or guessing from a model ID."""
+    import json
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+    return isinstance(raw, Mapping) and raw.get(OPUSPLAN) is True
+
+
 def mark_agent(agent: Any, active: bool) -> None:
     """Record on a live agent whether its session runs under ``opusplan`` (read by delegation)."""
     if agent is not None:
@@ -276,7 +300,7 @@ def configured_plan_model(cfg: Mapping[str, Any]) -> str:
 def apply_session_override(agent: Any, override: Optional[Mapping[str, Any]]) -> None:
     """A gateway session's ``/model`` override outranks the config default: copy its ``opusplan`` flag onto the agent."""
     flag = (override or {}).get(OPUSPLAN)
-    if isinstance(flag, bool):
+    if agent is not None and isinstance(flag, bool):
         agent.opusplan_active = flag
 
 

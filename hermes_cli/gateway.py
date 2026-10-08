@@ -3448,6 +3448,10 @@ def _retire_hermes_replace_dropin(system: bool = False) -> bool:
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
+    # Hosts that manage their own unit (ExecStart on a checkout venv) opt out: no unit write, no
+    # launcher rewrite, no daemon-reload. Set it in the unit's Environment= so every caller sees it.
+    if os.environ.get("HERMES_DISABLE_SERVICE_UNIT_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return False
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         return False

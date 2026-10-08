@@ -856,6 +856,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |
 | `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that **hard-blocks** `write_file`/`patch` writes outside the listed roots (no approval prompt). Supports multiple directories separated by `os.pathsep` (`:` on Unix, `;` on Windows). See [HERMES_WRITE_SAFE_ROOT](#hermes_write_safe_root) below. |
 | `HERMES_DISABLE_LAZY_INSTALLS` | Internal PM policy used by tests and install probes. Truthy values refuse on-demand installation. It overrides the user-facing `security.allow_lazy_installs` setting. Do not put it in `.env`. |
+| `HERMES_DISABLE_SERVICE_UNIT_REFRESH` | Internal service policy for hosts that manage their own gateway systemd unit (for example `ExecStart` on a checkout venv). Truthy values stop `hermes gateway` from rewriting the installed unit and the `.hermes/bin/hermes` launcher, and from running `daemon-reload`, on gateway start, install, start/restart and `hermes update`. Set it with `Environment=` in a unit drop-in. Do not put it in `.env`. |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
 | `HERMES_BUNDLED_SKILLS` | Comma-separated override for the list of bundled skills loaded at startup. |
 | `HERMES_OPTIONAL_SKILLS` | Comma-separated list of optional-skill names to auto-install on first run. |

@@ -97,17 +97,17 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
     return decode_room_grant(self._room_grant_secret(), token, permission=permission)
 
 
-def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _room_grant_claims(self, request: "web.Request", *, permission: str, conn=None) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
     db_path = hosted_rooms.default_db_path()
-    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
+    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is revoked")
     if _retirement_only(claims):
         from gateway.platforms.api_server_run_authority import room_authority
         if not self._run_idempotency_store.permits_room_retirement(room_authority(claims)):
             raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
-    elif not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
+    elif not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims, conn=conn):
         raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
 
@@ -133,7 +133,7 @@ def _previous_authority(claims, body):
 
 def _record_invitation(self, claims, body):
     from gateway import hosted_rooms
-    from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
+    from gateway.platforms.api_server_run_authority import room_authority
     authority = room_authority(claims)
     if _retirement_only(claims):
         if not self._run_idempotency_store.permits_room_retirement(authority):
@@ -141,23 +141,18 @@ def _record_invitation(self, claims, body):
         return
     previous = _previous_authority(claims, body)
     previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
-    namespace = room_namespace(claims)
-    if not self._run_idempotency_store.accepts_room_authority(authority, previous, namespace, claims, previous_home):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    if (previous is None and not self._run_idempotency_store.knows_room_authority(authority)
-            and not self._run_idempotency_store.knows_room_target(claims)):
-        # Old reservations predate namespace metadata. Do not displace one with an
-        # unbound origin merely because its caller selected a higher epoch.
-        with hosted_rooms._transaction(hosted_rooms.default_db_path()) as conn:
-            existing = conn.execute("""SELECT 1 FROM hosted_room_peer_reservations
-                WHERE room_id=? AND target_profile=?""", (claims["room_id"], claims["target_profile"])).fetchone()
-        if existing is not None:
-            raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
-    # Fence every affected member durably before replacing their shared reservation.
-    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home, namespace, claims):
-        raise RoomGrantReauthorizationRequired("room authority has already advanced")
-    hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+    db_path = hosted_rooms.default_db_path()
+    # Every participant takes the grant writer before the RunStore lock. Holding
+    # both through grant commit closes the captured-writer publication window.
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        def commit_reservation(known):
+            if previous is None and not known and conn.execute(
+                    "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
+                    (claims["room_id"], claims["target_profile"])).fetchone() is not None:
+                raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+            conn.commit()
+        self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
 
 
 async def _handle_room_member_invitation(

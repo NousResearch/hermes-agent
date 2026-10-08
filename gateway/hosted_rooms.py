@@ -7,6 +7,8 @@ transport queue. Callers supply the database path (production handlers use the g
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import hashlib
 import json
 import re
@@ -717,7 +719,7 @@ def _reservation_superseded(row: sqlite3.Row, gateway_id: str, epoch: int) -> bo
 
 
 def reserve_peer_room(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
+    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None, conn=None) -> None:
     """Fence direct Desktop prompts before the first peer run is admitted."""
     timestamp = _now(now)
     expiry = float(expires_at)
@@ -725,7 +727,7 @@ def reserve_peer_room(
         raise HostedRoomError("peer room reservation must expire in the future")
     values = _reservation_claims(claims)
     room_id, _, target_profile, gateway_id, epoch = values
-    with _transaction(db_path, immediate=True) as conn:
+    with nullcontext(conn) if conn is not None else _transaction(db_path, immediate=True) as conn:
         conn.execute("DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?", (timestamp,))
         authority_rows = conn.execute(
             f"""SELECT authority_gateway_id, authority_epoch
@@ -753,7 +755,9 @@ def reserve_peer_room(
                    updated_at=excluded.updated_at""", (*values, expiry, timestamp, timestamp))
 
 
-def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
+def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...], *, conn=None) -> sqlite3.Row | None:
+    if conn is not None:
+        return conn.execute(sql, params).fetchone()
     with _transaction(db_path) as conn:
         return conn.execute(sql, params).fetchone()
 
@@ -764,23 +768,23 @@ def peer_room_is_reserved(db_path: DbPath, *, room_id: str, target_profile: str,
     return _read_one(db_path, _SELECT_LIVE_RESERVATION, params) is not None
 
 
-def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None, conn=None) -> bool:
     """Require a grant to match the target's current live reservation."""
     timestamp = _now(now)
     return _read_one(
         db_path, """SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
             AND target_profile=? AND authority_gateway_id=? AND authority_epoch=?
-            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp)) is not None
+            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp), conn=conn) is not None
 
 
-def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None, conn=None) -> bool:
     """Return whether a grant predates its exact scope's revocation fence."""
     timestamp = _now(now)
     scope_key = _room_grant_scope_key(claims)
     issued_at = float(claims.get("issued_at") or 0)
     row = _read_one(
         db_path, """SELECT revoked_before FROM hosted_room_revoked_grants
-            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp))
+            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp), conn=conn)
     return row is not None and issued_at <= float(row["revoked_before"])
 
 

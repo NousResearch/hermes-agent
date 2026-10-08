@@ -1398,9 +1398,15 @@ def build_cache_parity_fork(
     # not a foreground turn (``agent/turn_facade.py``): a /btw answers beside a running review
     # and never fences one.
     review_agent._foreground_exempt_fork = True
-    # Compaction bounds a single request; this bounds the WHOLE review (checked in
-    # conversation_loop via _review_input_budget_exhausted).
-    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, review_agent)
+    # Compaction bounds a single request; the aggregate budget bounds the WHOLE automatic review
+    # and is reserved before every provider request, the first included (conversation_loop).
+    # /btw is one prefix-extension call (tools denied, three iterations at most) whose first
+    # request always reaches the provider, so it carries no aggregate budget.
+    review_agent._review_input_token_budget = (
+        _review_input_token_budget(task_cfg, review_agent)
+        if write_origin == "background_review"
+        else None
+    )
     return review_agent, _rt, _routed
 
 

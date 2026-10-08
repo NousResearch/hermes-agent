@@ -10,6 +10,7 @@ would cross it, mirroring the iteration-budget exit.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -73,14 +74,21 @@ def _tool_definition() -> dict:
     }
 
 
-def _make_loop_agent():
+@contextmanager
+def _agent_init_seams(context_window: int = 256_000):
+    """The provider, tool-registry and model-catalog seams ``AIAgent.__init__`` reaches."""
     with (
         patch("model_tools.get_tool_definitions", return_value=[_tool_definition()]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
-        patch("agent.context_compressor.get_model_context_length", return_value=256_000),
+        patch("agent.model_metadata.get_model_context_length", return_value=context_window),
+        patch("agent.context_compressor.get_model_context_length", return_value=context_window),
     ):
+        yield
+
+
+def _make_loop_agent():
+    with _agent_init_seams():
         agent = AIAgent(
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
@@ -90,7 +98,12 @@ def _make_loop_agent():
             skip_memory=True,
             max_iterations=10,
         )
+    _wire_loop_doubles(agent)
+    return agent
 
+
+def _wire_loop_doubles(agent):
+    """A scripted client, a compressor that never fires and an inline tool executor."""
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
@@ -129,7 +142,6 @@ def _make_loop_agent():
         )
 
     agent._execute_tool_calls = _fake_execute_tool_calls
-    return agent
 
 
 def _run_with_responses(agent, responses, *, user_message="do some tool work"):
@@ -318,6 +330,68 @@ def test_no_budget_attribute_leaves_tool_loop_unbounded():
     assert agent.client.chat.completions.create.call_count == 4
     assert result["completed"] is True
     assert result["final_response"] == "done"
+
+
+@pytest.mark.parametrize(
+    ("write_origin", "expected"),
+    [("background_review", 49_152), ("side_question", None)],
+)
+def test_aggregate_input_budget_is_scoped_to_the_review_fork(write_origin, expected):
+    """75% of the fork's window bounds the automatic review; a /btw fork carries no aggregate
+    budget at all (its single request is answered for by the provider's window)."""
+    from agent.background_review import build_cache_parity_fork
+
+    parent = _make_loop_agent()
+    with _agent_init_seams(context_window=65_536):
+        fork, _rt, _routed = build_cache_parity_fork(
+            parent, {}, max_iterations=3, write_origin=write_origin
+        )
+
+    assert fork._review_input_token_budget == expected
+
+
+def test_side_question_fork_first_request_is_never_refused_by_the_review_budget():
+    """The aggregate budget bounds the WHOLE automatic review and is reserved before every
+    provider request, the first included. /btw shares the fork builder but is one
+    prefix-extension call over the live transcript: upstream always issued that request and
+    let the provider answer for the window, so a transcript past the review's 75% share must
+    still reach the provider instead of silently falling back to the digest."""
+    from agent.background_review import _review_input_token_budget, build_cache_parity_fork
+    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.side_question import answer_side_question
+
+    parent = _make_loop_agent()
+    built = []
+
+    def build_wired_fork(agent, task_cfg, **kwargs):
+        with _agent_init_seams(context_window=65_536):
+            fork, rt, routed = build_cache_parity_fork(agent, task_cfg, **kwargs)
+        # What the review budget would allow a fork of this window, before the loop doubles
+        # replace the compressor the resolver reads.
+        review_share = _review_input_token_budget({}, fork)
+        _wire_loop_doubles(fork)
+        fork.client.chat.completions.create.side_effect = [_final_response()]
+        fork._cleanup_task_resources = lambda *_a, **_k: None
+        built.append((fork.client.chat.completions.create, review_share))  # close() drops client
+        return fork, rt, routed
+
+    history = [
+        {"role": "user", "content": "x " * 110_000},
+        {"role": "assistant", "content": "noted"},
+    ]
+    with (
+        patch("agent.background_review.build_cache_parity_fork", build_wired_fork),
+        patch(
+            "agent.side_question._answer_via_oneshot",
+            side_effect=AssertionError("/btw fell back to the digest"),
+        ),
+    ):
+        answer = answer_side_question("what did I ask for?", history, parent_agent=parent)
+
+    ((create, review_share),) = built
+    assert estimate_messages_tokens_rough(history) > review_share  # past the review's budget
+    assert create.call_count == 1
+    assert answer == "done"
 
 
 def test_review_input_budget_exhausted_predicate_edge_cases():

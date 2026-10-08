@@ -296,6 +296,26 @@ def test_extract_absorbed_into_picks_up_consolidation(curator_env):
 
 
 
+def test_consolidation_in_the_advertised_operations_shape_is_not_a_prune(curator_env):
+    """skill_manage's schema advertises only the operations array; a consolidation made through it must
+    classify as consolidated (cron jobs are migrated to the umbrella, not stripped of the skill)."""
+    delete_call = {"name": "skill_manage", "arguments": json.dumps({"operations": [
+        {"action": "delete", "name": "narrow-skill", "absorbed_into": "umbrella"}]})}
+    diff = curator_env._diff_and_classify(
+        {"narrow-skill", "umbrella"}, {"umbrella"}, [delete_call], model_final="Merged it.")
+    assert [(e["name"], e["into"]) for e in diff.consolidated] == [("narrow-skill", "umbrella")]
+    assert diff.pruned == []
+
+
+def test_operations_shaped_write_into_umbrella_is_consolidation_evidence(curator_env):
+    write_call = {"name": "skill_manage", "arguments": json.dumps({"operations": [
+        {"action": "write_file", "name": "umbrella", "file_path": "references/narrow-skill.md",
+         "file_content": "moved"}]})}
+    result = curator_env._classify_removed_skills(
+        removed=["narrow-skill"], added=[], after_names={"umbrella"}, tool_calls=[write_call])
+    assert [(e["name"], e["into"]) for e in result["consolidated"]] == [("narrow-skill", "umbrella")]
+
+
 def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
     """Patch, create, write_file etc. must not leak into declarations."""
     declarations = curator_env._extract_absorbed_into_declarations([

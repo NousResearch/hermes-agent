@@ -274,21 +274,6 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
 
 
-def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
-    """The OpenRouter row is already curated; its bottom "Free tier" block must survive the picker cap
-    while an ordinary provider row stays capped."""
-    curated = [(f"vendor/model-{i}", "") for i in range(55)] + [("stealth/free-model", "free, stealth model")]
-    other = [f"other-{i}" for i in range(60)]
-    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [
-        _make_provider("openrouter", models=[mid for mid, _ in curated][:50]),
-        _make_provider("deepseek", models=other[:50]) | {"total_models": len(other)},
-    ])
-    monkeypatch.setattr(models_mod, "fetch_openrouter_models", lambda **_: curated)
-
-    rows = {r["slug"]: r for r in model_switch_providers.list_picker_providers(max_models=50)}
-
-    assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
-    assert len(rows["deepseek"]["models"]) == 50
 # ---------------------------------------------------------------------------
 # providers.openrouter.models survives the OpenRouter row rebuild (#121903)
 # ---------------------------------------------------------------------------
@@ -338,3 +323,67 @@ def test_openrouter_row_without_configured_models_is_the_live_list(monkeypatch):
                                    live=["a/curated"])
     assert rows["openrouter"]["models"] == ["a/curated"]  # stale ids still drop out
     assert rows["deepseek"]["models"] == ["pinned/extra", "deepseek-chat"]  # other rows untouched
+
+
+def test_configured_openrouter_models_survive_real_config_and_picker(tmp_path, monkeypatch):
+    """Configured IDs stay profile-local through disk loading and real row construction."""
+    import json
+    from agent import secret_scope
+    from hermes_cli.inventory import load_picker_context
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home, model in zip(homes, ("stealth/profile-a", "stealth/profile-b")):
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({
+            "model": {"provider": "openrouter"},
+            "model_catalog": {"enabled": False},
+            "providers": {"openrouter": {"models": [model, "catalog/shared"]}},
+        }), encoding="utf-8")
+        (home / ".env").write_text("OPENROUTER_API_KEY=dummy\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr(models_mod, "cached_provider_model_ids", lambda *a, **k: ["catalog/shared"])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models",
+                        lambda *a, **k: [("catalog/shared", ""), ("catalog/other", "")])
+    monkeypatch.setattr(models_mod, "_spawn_swr_refresh", lambda *a, **k: None)
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        for home, expected in ((homes[0], "stealth/profile-a"),
+                               (homes[1], "stealth/profile-b"),
+                               (homes[0], "stealth/profile-a")):
+            home_token = set_hermes_home_override(home)
+            secret_token = secret_scope.set_secret_scope(
+                secret_scope.build_profile_secret_scope(home), profile_home=str(home))
+            try:
+                ctx = load_picker_context()
+                rows = model_switch_providers.list_picker_providers(
+                    current_provider=ctx.current_provider, user_providers=ctx.user_providers,
+                    custom_providers=ctx.custom_providers, non_blocking_catalogs=True,
+                    probe_custom_providers=False, max_models=2)
+                row = next(r for r in rows if r["slug"] == "openrouter")
+                assert row["models"] == [expected, "catalog/shared", "catalog/other"]
+                assert row["total_models"] == 3
+            finally:
+                secret_scope.reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
+    """The OpenRouter row is already curated; its bottom "Free tier" block must survive the picker cap
+    while an ordinary provider row stays capped."""
+    curated = [(f"vendor/model-{i}", "") for i in range(55)] + [("stealth/free-model", "free, stealth model")]
+    other = [f"other-{i}" for i in range(60)]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [
+        _make_provider("openrouter", models=[mid for mid, _ in curated][:50]),
+        _make_provider("deepseek", models=other[:50]) | {"total_models": len(other)},
+    ])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models", lambda **_: curated)
+
+    rows = {r["slug"]: r for r in model_switch_providers.list_picker_providers(max_models=50)}
+
+    assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
+    assert len(rows["deepseek"]["models"]) == 50

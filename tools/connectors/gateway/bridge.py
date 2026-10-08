@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Optional, Sequence
 
-from tools.connectors.gateway.config import connectors_available
+from tools.connectors.gateway.config import connectors_available, guest_identity_pending
 from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
 from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
 from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
@@ -13,8 +13,14 @@ logger = logging.getLogger(__name__)
 
 SIGN_IN_EXPIRED = "sign_in_expired"
 UNREACHABLE = "unreachable"
+# No Nous identity yet: the first hosted manage_connections action creates one.
+NOT_SET_UP = "not_set_up"
+NOT_SET_UP_MESSAGE = ("Hosted connectors are not set up for this user yet. "
+                      "Call manage_connections to connect the app first; that sets them up.")
 
 __all__ = [
+    "NOT_SET_UP",
+    "NOT_SET_UP_MESSAGE",
     "SIGN_IN_EXPIRED",
     "UNREACHABLE",
     "ConnectorLeg",
@@ -35,6 +41,8 @@ _TOKEN_REJECTED_CODES = frozenset({"UNAUTHORIZED", "INVALID_TOKEN", "TOKEN_EXPIR
 
 
 def _leg_failure(exc: Exception) -> Optional[str]:
+    if isinstance(exc, GatewayAuthError) and exc.code == NOT_SET_UP:
+        return NOT_SET_UP
     if isinstance(exc, GatewayAuthError):
         if exc.status == 401 or str(exc.code).upper() in _TOKEN_REJECTED_CODES:
             return SIGN_IN_EXPIRED
@@ -43,8 +51,11 @@ def _leg_failure(exc: Exception) -> Optional[str]:
 
 
 def _default_client_factory():
+    """The real client for the model's read and execute legs. These never create an identity."""
     from tools.connectors.gateway.client import ConnectorClient
 
+    if guest_identity_pending():
+        raise GatewayAuthError(NOT_SET_UP_MESSAGE, code=NOT_SET_UP)
     return ConnectorClient()
 
 

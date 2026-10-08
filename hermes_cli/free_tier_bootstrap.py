@@ -1,4 +1,5 @@
-"""Serve-start bootstrap for the Nous free tier: the ONE place a free-tier identity is created.
+"""Serve-start bootstrap for the Nous free tier: the one place a free-tier identity that carries
+inference is created.
 
 Every Hermes process that may need the free tier runs this once at boot (``hermes serve`` on a
 daemon thread beside the other background boots; the CLI first-run guard synchronously). It
@@ -6,7 +7,9 @@ inventories credentials cheap-first, creates the identity only when the launch g
 (:func:`hermes_cli.anon_auth.guest_enabled`), resolves which provider carries inference, records
 the answer in process memory, and tells every connected client with one ``setup.ready`` event.
 
-Nothing else mints. ``free_tier.status`` and ``setup.status`` read the record; provider resolution
+Besides this boot path, only the first hosted connector action mints, and only for a user with no
+Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``; that guest never opens the
+free model). ``free_tier.status`` and ``setup.status`` read the record; provider resolution
 never reaches the portal; a dead credential is replaced by the explicit re-mint in
 ``auth_nous.resolve_nous_runtime_credentials``. Ruling: NS-845 Q1.2 (recorded on NS-847).
 """

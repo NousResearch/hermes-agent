@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.connectors.gateway.bridge import SIGN_IN_EXPIRED, UNREACHABLE
+from tools.connectors.gateway.bridge import NOT_SET_UP, NOT_SET_UP_MESSAGE, SIGN_IN_EXPIRED, UNREACHABLE
 from tools.connectors.gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
 from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 
@@ -16,11 +16,18 @@ def connections_in_scope(tool_defs: Iterable[dict[str, Any]]) -> bool:
 
 def connectors_unavailable(failure: str, *, verb: str,
                            names: Optional[list[str]] = None) -> dict[str, Any]:
+    if failure == NOT_SET_UP:
+        field: dict[str, Any] = {"status": NOT_SET_UP, "hint": (
+            f"{NOT_SET_UP_MESSAGE} Hosted apps (Gmail, Calendar, Notion and more) are then searchable. "
+            "If the request is better served by the tools above, use those instead.")}
+        if names:
+            field["names"] = names
+        return field
     hint = (f"Hosted connector tools could not be {verb} right now. "
             "Do not conclude the app is missing.")
     if failure == SIGN_IN_EXPIRED:
         hint += " The user must sign in to Nous again."
-    field: dict[str, Any] = {"status": "unavailable", "reason": failure, "hint": hint}
+    field = {"status": "unavailable", "reason": failure, "hint": hint}
     if names:
         field["names"] = names
     return field

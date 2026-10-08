@@ -1,7 +1,9 @@
 """Nous free-tier identity: the ``anonymous`` auth method of the ``nous`` provider.
 
-The identity is created in exactly one place, at boot (``hermes_cli.free_tier_bootstrap``), and only
-while ``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``). The bootstrap mints an anonymous Nous
+The identity is created in two places: at boot (``hermes_cli.free_tier_bootstrap``) while
+``HERMES_GUEST_ONBOARDING=1`` (see ``guest_enabled``), and on the first hosted connector action for
+anyone without a Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated only
+by ``guest_allowed``). Either mints an anonymous Nous
 account (``POST /api/anonymous/create``); its ``anon_`` credential is later exchanged for short-lived
 JWTs (``POST /api/anonymous/token``). The result is persisted as the singleton ``providers.nous``. In
 the resolver ladder (``resolve_provider``) an existing free-tier identity sits directly above the
@@ -155,15 +157,18 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
 
 
 def guest_enabled() -> bool:
-    """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off."""
-    if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
-        return False
+    """The free tier is on for this process: the launch gate is set AND :func:`guest_allowed`."""
+    return (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() == "1" and guest_allowed()
+
+
+def guest_allowed() -> bool:
+    """``nous.guest`` (default True) has not switched guests off. Enough for a guest used only for
+    connectors; the free model and the boot mint also need the launch gate (:func:`guest_enabled`)."""
     try:
         from hermes_cli.config import load_config_readonly
         nous_cfg = load_config_readonly().get("nous")
-    except Exception as exc:  # config unreadable: keep today's behaviour (no guest) rather than mint
-        logger.debug("guest: config unreadable, treating nous.guest as false: %s", exc)
+    except Exception:  # config unreadable: keep today's behaviour (no guest) rather than mint
+        logger.debug("guest: config unreadable, treating nous.guest as false", exc_info=True)
         return False
     if not isinstance(nous_cfg, dict):
         return True
@@ -624,18 +629,21 @@ def _reconcile_and_provision(*, timeout_seconds: float) -> Optional[dict[str, An
 
 def ensure_portal_identity(
     *, explicit: bool, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS, force: bool = False,
+    for_connectors: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Make sure this profile has a Nous identity (guest or account); mint a guest only if the shared
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
 
     ``explicit`` is required and must be True: the only callers are the boot bootstrap
-    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the setup
-    chat's apps card (``setup_choose_tool._connectors_closed``, one attempt), and the
-    dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
-    ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
-    of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
+    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the first
+    hosted connector action (``tools.connectors.gateway.config.ensure_guest_identity``), and the
+    dead-credential replacements
+    (``auth_nous.resolve_nous_runtime_credentials``, ``managed_tool_gateway._replace_dead_guest_token``).
+    Nothing creates an identity as a side effect of reading status, resolving a provider or fetching a
+    connector bearer (NS-845 Q1.2).
 
-    Order: ``guest_enabled`` gate -> reconcile with the shared store -> mint. Locks are taken profile
+    Order: gate -> reconcile with the shared store -> mint. The gate is ``guest_enabled``, or only
+    ``guest_allowed`` with ``for_connectors=True``: a connectors guest never opens the free model. Locks are taken profile
     first, then shared, matching every other Nous path. Blocking, bounded by ``timeout_seconds``; the bootstrap puts it on its own thread.
 
     A failed mint is memoised with a cooldown (``MintFailure``): until it passes, and for a
@@ -646,7 +654,7 @@ def ensure_portal_identity(
     """
     if not explicit:
         raise ValueError("ensure_portal_identity: only explicit creators may call this (explicit=True)")
-    if not guest_enabled():
+    if not (guest_allowed() if for_connectors else guest_enabled()):
         return None
     failure = _mint_failure_for_profile()
     if failure and not force and not current_nous_state() and time.monotonic() < failure.not_before:

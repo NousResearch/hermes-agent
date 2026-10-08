@@ -78,12 +78,15 @@ def _session_owner(rid, owner):
 
 
 def _account_gate_closed(rid):
-    from tools.connectors import connectors_available
+    from tools.connectors import connectors_available, ensure_guest_identity
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
-    if connectors_available():
-        return None
-    return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
+    if not connectors_available():
+        return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
+    # Opening the Connectors page is the user asking for apps: create the guest identity here.
+    if setup_error := ensure_guest_identity():
+        return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, setup_error)
+    return None
 
 
 def _parse_params(rid, params, model):

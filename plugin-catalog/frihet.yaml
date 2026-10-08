@@ -49,7 +49,7 @@ repo: https://github.com/Frihet-io/hermes-frihet
 # Tests: 84 pass + 3 pre-existing skips. hermes plugins validate
 # --install-deps 15/15 with security scan "safe".
 sha: b77f5df4b269ada5296ee07fc9c03d118933cbc0
-description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp."
+description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical 158-operation Frihet surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
 maintainer: Frihet-io
 tier: community
 category: tools

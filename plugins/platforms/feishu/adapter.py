@@ -753,6 +753,14 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
 
 # --- Content extraction utilities (card / forward / text walking) ---
 
+#: Depth budget shared by the Feishu card walkers (``_walk_nodes`` / ``_collect_text_segments``).
+#: ``message.content`` is sender-authored JSON that ``json.loads`` nests ~10k levels deep, and
+#: these walkers recursed shape-blind — without a cap a remote sender crashes inbound
+#: normalization with ``RecursionError`` at ~995 levels (#132003). Real interactive cards stay
+#: under ~15 levels, so 100 leaves them untouched while keeping the stack far from exhaustion.
+_FEISHU_CARD_MAX_DEPTH = 100
+
+
 def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
     candidates: List[Any] = []
     for key in ("messages", "items", "message_list", "records", "content"):
@@ -802,11 +810,21 @@ def _collect_action_labels(payload: Any) -> List[str]:
     return _unique_lines(labels)
 
 
-def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
+def _collect_text_segments(
+    value: Any, *, in_rich_block: bool, depth: int = 0
+) -> List[str]:
+    if depth > _FEISHU_CARD_MAX_DEPTH:
+        return []
     if isinstance(value, str):
         return [_normalize_feishu_text(value)] if in_rich_block else []
     if isinstance(value, list):
-        return [seg for item in value for seg in _collect_text_segments(item, in_rich_block=in_rich_block)]
+        return [
+            seg
+            for item in value
+            for seg in _collect_text_segments(
+                item, in_rich_block=in_rich_block, depth=depth + 1
+            )
+        ]
     if not isinstance(value, dict):
         return []
     tag = str(value.get("tag", "") or value.get("type", "")).strip().lower()
@@ -819,7 +837,11 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
                 segments.append(_normalize_feishu_text(item))
     for key, item in value.items():
         if key not in _SKIP_TEXT_KEYS:
-            segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
+            segments.extend(
+                _collect_text_segments(
+                    item, in_rich_block=next_in_rich_block, depth=depth + 1
+                )
+            )
     return segments
 
 
@@ -860,14 +882,16 @@ def _find_first_text(payload: Any, *, keys: tuple[str, ...]) -> str:
     return ""
 
 
-def _walk_nodes(value: Any):
+def _walk_nodes(value: Any, depth: int = 0):
+    if depth > _FEISHU_CARD_MAX_DEPTH:
+        return
     if isinstance(value, dict):
         yield value
         for item in value.values():
-            yield from _walk_nodes(item)
+            yield from _walk_nodes(item, depth + 1)
     elif isinstance(value, list):
         for item in value:
-            yield from _walk_nodes(item)
+            yield from _walk_nodes(item, depth + 1)
 
 
 def _first_non_empty_text(*values: Any) -> str:

@@ -450,6 +450,12 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # The native Codex harness owns continuation/completion for opt-in gateway goals.
+    # Old rows remain Hermes-owned; a config change must not steal an in-flight goal.
+    runtime: str = "hermes"
+    goal_id: Optional[str] = None
+    token_budget: Optional[int] = None
+    native_goal: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -467,6 +473,8 @@ class GoalState:
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
+            runtime=data.get("runtime", "hermes"), goal_id=data.get("goal_id"),
+            token_budget=data.get("token_budget"), native_goal=data.get("native_goal"),
             subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -1487,6 +1495,8 @@ class GoalManager:
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
+        if state.runtime == "codex":
+            return _decision(state.status, False, None, "native", "Codex owns goal continuation", "")
 
         # Parked on a live process or an unexpired deadline: quiesce without burning a turn.
         if self.is_waiting():

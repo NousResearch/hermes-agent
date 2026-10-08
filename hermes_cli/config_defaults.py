@@ -73,6 +73,7 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
+        "codex_turn_timeout": 600, "codex_idle_timeout": 1800,  # 0 total uses idle guard
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
@@ -1396,10 +1397,9 @@ DEFAULT_CONFIG = {
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
     "prefill_messages_file": "",
-    # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
-    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
+    # Hermes goals use a judge + turn budget; native Codex goals own their continuation.
     "goals": {
+        "runtime": "hermes", "codex_token_budget": 200000,  # native opt-in; 0/null = uncapped
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,

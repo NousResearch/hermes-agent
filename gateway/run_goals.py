@@ -86,9 +86,9 @@ class GatewayGoalsMixin:
     async def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return ``(GoalManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.codex_goals import goal_manager_for_session
             max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+            return lambda sid: goal_manager_for_session(sid, default_max_turns=max_turns)
         return await self._manager_for_event(event, "goal", _load)
 
     async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
@@ -285,6 +285,8 @@ class GatewayGoalsMixin:
         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
         if mgr is None or not mgr.is_active():
             return
+        if mgr.state.runtime == "codex":
+            return  # Native Goal already owns continuation; never add a second judge/FIFO loop.
 
         _bg_procs, _active_deleg = None, 0
         with suppress(Exception):

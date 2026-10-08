@@ -470,6 +470,7 @@ Known limitations:
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth add openai-codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.
 - **`delegate_task`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
+- **A completed message is not a completed turn.** `item/completed` can carry interim progress, even when the message has a `final_answer` phase. Hermes waits for `turn/completed`; if the turn reaches its deadline (currently 600 seconds by default) without that event, it interrupts and retires the client, reports the task as incomplete, and retains the last assistant message as partial progress. An interrupted or failed terminal status is also incomplete. Already-streamed progress does not suppress the distinct diagnostic reply. Timeout handling does not automatically replay the task or guarantee rollback of tool side effects.
 - **`fallback_providers` fail over only on quota and rate-limit failures.** When a codex app-server turn fails with a billing / usage-limit / rate-limit error, Hermes switches to the configured [fallback provider](./fallback-providers.md) and retries the same turn on it; auth failures (`codex login` expired), turn timeouts and unknown-model errors do not fail over on this runtime and surface as the turn's error instead.
 - **Prior Hermes history is seeded only into a thread codex starts from scratch.** A codex thread that codex hands back via `thread/resume` already holds the conversation. When no resumable thread exists — the session ran on another provider before `/model` switched to openai-codex, codex could not resume the stored thread, or the running thread was retired — the new thread's `developerInstructions` carry Hermes' system prompt followed by the session's prior turns (user and assistant text, tool names, tool-result previews; the most recent ~32K characters). When the composed prompt changes mid-session (for example `/personality` in the TUI or Desktop), the next turn retires the running thread and starts a new one carrying the updated prompt plus that same history seed.
 - **The codex thread itself does survive a restart.** After each committed turn Hermes stores the codex thread id on the session row (`codex_thread_id` in the session's `model_config`, `hermes sessions` / `state.db`). The next agent built for that same Hermes session — a later `/api/sessions/{id}/chat` request, or the first turn after the API server or gateway restarts — issues `thread/resume` for the stored id before `turn/start`, so the model keeps its own memory of the earlier turns (that is why no history seed is sent on resume). When codex cannot hand the thread back (its rollout was deleted, `CODEX_HOME` changed, the previous app-server was killed while still writing it), Hermes fails closed: it drops the stored id, starts a fresh thread and shows one line — `Codex thread could not be resumed; starting a new one.` — on the status rail of the surface you are on (CLI, TUI/Desktop, messaging gateway). A `/new` session never resumes an older thread.
@@ -523,3 +524,54 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
 ```
 
 For implementation details, see [PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182) and the [Codex app-server protocol README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+
+## Long-running gateway Goals (opt-in)
+
+With a Codex app-server supporting `thread/goal/set|get|clear` (validated with Codex
+0.160.0), a messaging gateway can hand `/goal` continuation and completion to the
+native Codex Goal runtime rather than the Hermes auxiliary judge:
+
+```yaml
+model:
+  openai_runtime: codex_app_server
+agent:
+  codex_turn_timeout: 0       # no wall-clock turn cutoff
+  codex_idle_timeout: 1800    # interrupt after 30 minutes without scoped wire activity
+goals:
+  runtime: codex
+  codex_token_budget: 200000  # per-goal cumulative resource guard; 0/null is explicitly uncapped
+```
+
+The defaults remain `goals.runtime: hermes` and a 600-second total turn timeout.
+The gateway's independent inactivity watchdog still applies. A quiet tool taking
+longer than either inactivity guard can be interrupted; this is not infinite
+execution. Notifications indicate wire activity, not proof of meaningful work.
+
+A native Goal receives one kickoff. Codex schedules subsequent tool-working turns;
+Hermes consumes those turns, persists each transcript, mirrors native status, and
+avoids a second judge/FIFO scheduler. The Hermes `goals.max_turns` cap does not apply
+and `/goal resume` does not reset native token usage. Existing active or paused
+Hermes-owned Goals retain their owner after the configuration change.
+
+`/goal status`, `/goal pause`, `/goal resume`, `/goal clear`, and `/stop` remain user
+controls. Completion requires native `complete` and any configured completion
+gates. `blocked`, `budgetLimited`, `usageLimited`, interruption, API errors, and
+failed gates never mean successful delivery. A terminal/resource-limited Goal
+requires a newly authorized Goal instead of silently replenishing its budget.
+Changing criteria during execution pauses the old objective; explicitly set a new
+Goal for the revised criteria. Native Goals do not support Hermes process wait
+barriers. Empty no-tool turns are not force-continued.
+
+Transcript or transport failures pause the mirror and retire the client rather
+than replaying actions. Resume stays on the original native thread; failure to
+recover that thread cannot silently reset its Goal progress/budget. This bridge
+does not automatically restart unfinished Goals after a gateway restart: inspect
+status and explicitly resume. Other Hermes runtimes and CLI Goals are unchanged.
+
+Goals created by Codex's native `create_goal` tool inside an ordinary gateway turn
+are also adopted in this opt-in mode. Hermes mirrors the returned objective,
+thread, budget and cumulative usage, then consumes automatic turns without sending
+another kickoff or resetting the budget. Adoption is generation-fenced: a newer
+user pause, clear, replacement, or Hermes-owned Goal is not silently overridden.
+Cache TTL, LRU and memory-pressure cleanup respect the live native event-consumer
+lease; a persisted `active` flag alone does not keep an abandoned cache entry alive.

@@ -610,7 +610,8 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
                                 and getattr(agent, "_codex_session_model_provider", None) == model_provider):
             return
         _close_codex_session(agent)
-    resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
+    from agent.codex_runtime_goals import native_resume_thread
+    resume_thread_id = native_resume_thread(agent) or (None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent))
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
@@ -699,7 +700,7 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
+    usage_result = (turn.usage_result or {}) if getattr(turn, "usage_recorded", False) else _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)
@@ -711,11 +712,24 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
             original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
+    if turn.final_text and not turn.interrupted and turn.error is None and (should_review_memory or should_review_skills):
         _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
             messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
         ))
     return usage_result
+
+
+def _codex_terminal_response(turn) -> str:
+    """Keep partial text without allowing a streamed progress message to hide the failure."""
+    if turn.error:
+        response = f"Codex app-server task incomplete: {turn.error}"
+    elif turn.interrupted:
+        response = "Codex app-server task interrupted; it did not complete."
+    else:
+        return turn.final_text
+    if turn.final_text:
+        response += f"\n\nLast assistant message (not a completion confirmation):\n{turn.final_text}"
+    return response
 
 
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
@@ -732,8 +746,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
-        turn = agent._codex_session.run_turn(
-            user_input=user_message,
+        from agent.codex_runtime_goals import run_app_server_work
+        turn = run_app_server_work(
+            agent, user_message, messages=messages,
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
             service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:
@@ -757,9 +772,11 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=getattr(turn, "native_turns", 0) or 1,
+        completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        final_response=_codex_terminal_response(turn), agent_persisted=True,
+        codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
         **usage_result,
     )
 

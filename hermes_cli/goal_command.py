@@ -151,6 +151,12 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         contract = contract if not contract.is_empty() else None
     previous = mgr.state.goal if mgr.has_goal() else ""
     state = mgr.set(headline or arg, contract=contract)
+    if getattr(mgr, "runtime_name", None) == "codex":
+        budget = str(state.token_budget) if state.token_budget is not None else "unlimited"
+        output = (f"⊙ Codex Goal set (token budget: {budget}; no Hermes turn-count cap): {state.goal}\n"
+                  "Codex owns verification and automatic continuation. Controls: /goal status, /goal pause, "
+                  "/goal resume, /goal clear; /stop interrupts execution.")
+        return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
     output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
                     budget=state.max_turns, goal=state.goal)
     if previous and previous != state.goal:

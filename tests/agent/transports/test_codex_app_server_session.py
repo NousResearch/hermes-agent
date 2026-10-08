@@ -886,33 +886,46 @@ class TestSessionRetirement:
 
 
 
-    def test_final_agent_message_without_turn_completed_is_recovered(self):
-        """A completed assistant item is still a usable terminal response when
-        codex omits turn/completed and then goes quiet.
-        """
+    @pytest.mark.parametrize("phase", [None, "commentary", "final_answer"])
+    @pytest.mark.parametrize("terminal_status", [None, "completed", "interrupted", "failed"])
+    @pytest.mark.parametrize("drain_for_approval", [False, True])
+    def test_only_terminal_event_settles_agent_message(self, phase, terminal_status, drain_for_approval):
+        """A message is progress until the turn settles, including notifications drained for approvals."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
-            item={"type": "agentMessage", "id": "m1", "text": "done"},
-            threadId="t",
-            turnId="tu1",
+            item={"type": "agentMessage", "id": "m1", "text": "still checking", "phase": phase},
+            threadId="t", turnId="tu1",
         )
-        s = make_session(client)
-        r = s.run_turn(
-            "hi",
-            turn_timeout=0.05,
-            notification_poll_timeout=0.01,
-        )
-        assert r.final_text == "done"
-        assert r.interrupted is False
-        assert r.error is None
-        assert r.should_retire is False
-        assert any(
-            msg["role"] == "assistant" and msg.get("content") == "done"
-            for msg in r.projected_messages
-        )
-        assert not any(method == "turn/interrupt" for method, _ in client.requests)
-
+        if terminal_status:
+            client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": terminal_status})
+        if drain_for_approval:
+            client.queue_server_request("item/commandExecution/requestApproval", command="echo hi")
+        session = make_session(client)
+        # Advance only once the wire goes silent, not after a fixed number of
+        # clock reads (an inactivity watchdog legitimately reads the clock too).
+        clock = [0.0]
+        take_notification = client.take_notification
+        def timed_notification(timeout=0):
+            if not client._notifications:
+                clock[0] = 601.0
+            return take_notification(timeout)
+        client.take_notification = timed_notification
+        with patch.object(session_mod.time, "monotonic", side_effect=lambda: clock[0]):
+            result = session.run_turn("hi", turn_timeout=600.0, notification_poll_timeout=0.0)
+        assert result.final_text == "still checking"
+        assert any(msg.get("content") == result.final_text for msg in result.projected_messages)
+        interrupts = [(method, params) for method, params in client.requests if method == "turn/interrupt"]
+        if terminal_status is None:
+            assert result.interrupted is True
+            assert "timed out" in result.error
+            assert result.should_retire is True
+            assert interrupts == [("turn/interrupt", {"threadId": result.thread_id, "turnId": result.turn_id})]
+        else:
+            assert result.interrupted is (terminal_status == "interrupted")
+            assert bool(result.error) is (terminal_status == "failed")
+            assert result.should_retire is False
+            assert interrupts == []
 
     def test_post_tool_silence_warns_but_does_not_retire_a_healthy_turn(self, caplog):
         """#112928: codex can reason for minutes after a large tool result without
@@ -1169,9 +1182,9 @@ class TestTransportLoss:
         session = make_session(client)
         started = session._run_started_turn
 
-        def close_then_run(result, ts, *args):
+        def close_then_run(result, ts, *args, **kwargs):
             session.close()
-            return started(result, ts, *args)
+            return started(result, ts, *args, **kwargs)
 
         session._run_started_turn = close_then_run
         result = session.run_turn("hi", turn_timeout=3, notification_poll_timeout=0.001)

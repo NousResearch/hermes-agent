@@ -172,9 +172,41 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             return filtered[:limit]
         return _dedupe_results(results)[:limit]
 
+    def _search_api(self, query: str, limit: int) -> Optional[List[SkillMeta]]:
+        # /skills ignores keyword filters; /search is ClawHub's ranked search API.
+        # A separate cache key avoids reusing misses from the listing fallback.
+        cache_key = f"clawhub_search_api_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
+        cached = _cached_metas(cache_key)
+        if cached is not None:
+            return cached
+        data = self._get_json(f"{self.BASE_URL}/search", timeout=5, params={"q": query, "limit": limit})
+        rows = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return None
+        results = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            meta = self._item_to_meta(item)
+            if meta is None:
+                continue
+            owner = self._owner_from_payload(item) or _first_str(item.get("ownerHandle"))
+            if owner:
+                # Different publishers may share a slug. Preserve identity for installs
+                # and deduplication rather than resolving an ambiguous bare slug.
+                meta.identifier = f"@{owner}/{meta.identifier}"
+                meta.extra["owner"] = owner
+            results.append(meta)
+        results = _dedupe_results(results)[:limit]
+        _cache_metas(cache_key, results)
+        return results
+
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         query = query.strip()
         if query:
+            results = self._search_api(query, limit)
+            if results is not None:
+                return results
             if len(_query_terms(query)) >= 2:
                 direct = self._exact_slug_meta(query)
                 if direct:

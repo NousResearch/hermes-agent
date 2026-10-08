@@ -10,11 +10,10 @@ from argparse import Namespace
 from unittest.mock import patch
 
 import pytest
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
+    _install_dotenv_stub()
 
 from hermes_cli.auth import resolve_provider
 from hermes_cli.config import load_config

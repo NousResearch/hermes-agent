@@ -21,6 +21,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
@@ -520,9 +521,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     _QueuedMediaAgent.calls = 0
     _QueuedMediaAgent.first_response = f"Quote here\nMEDIA:{media_file}\n{protected}"
 
-    fake_dotenv = types.ModuleType("dotenv")
-    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     fake_run_agent = types.ModuleType("run_agent")
     setattr(fake_run_agent, "AIAgent", _QueuedMediaAgent)

@@ -33,9 +33,7 @@ This drives the REAL ``_handle_message_with_agent`` against a REAL SessionDB
 the invariant: after a first turn, snapshot == live count → next turn reuses.
 """
 
-import sys
 import threading
-import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,6 +43,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
@@ -54,9 +53,7 @@ SESSION_ID = "sess-first-turn"
 def _bootstrap(monkeypatch, tmp_path, db):
     """GatewayRunner wired to a REAL SessionDB for count reads, mirroring the
     proven #42039 harness but with a live cache + real transcript counter."""
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     config = GatewayConfig()
     runner = gateway_run.GatewayRunner(config)

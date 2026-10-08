@@ -14,8 +14,6 @@ This test covers the two fallback paths that previously lacked
    the actual message count
 """
 
-import sys
-import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,13 +25,12 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_transcript import TranscriptReadError
+from tests.dotenv_stub import install as _install_dotenv_stub
 
 
 def _bootstrap(monkeypatch, tmp_path):
     """Minimal GatewayRunner setup shared by all tests in this module."""
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    _install_dotenv_stub(monkeypatch)
 
     config = GatewayConfig()
     runner = gateway_run.GatewayRunner(config)

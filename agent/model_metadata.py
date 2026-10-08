@@ -2562,17 +2562,30 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
+    * On an interleaved Anthropic turn ``anthropic_content_blocks`` is the ordered replay channel;
+      both the native converter (``assistant_replay_carrier``) and the chat-completions transport
+      take those blocks and never ship ``reasoning_content``/``reasoning_details`` alongside them.
+      Counting the generic carrier too double-charges the same thinking text (1.9x measured), so the
+      ordered channel displaces every other thinking key. (``_anthropic_content_blocks`` with the
+      underscore is a different, legacy tool-result image stash, not this channel.)
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
+    # Anthropic's ordered replay channel carries the turn's thinking verbatim and the converters
+    # never ALSO ship the generic carriers beside it, so it displaces reasoning/reasoning_content/
+    # reasoning_details (mirrors ``native_anthropic_accounting_projection``).
+    ordered_anthropic_blocks = msg.get("anthropic_content_blocks")
+    ordered_anthropic_wins = isinstance(ordered_anthropic_blocks, list) and bool(ordered_anthropic_blocks)
     _rc = msg.get("reasoning_content")
-    drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
+    drop_reasoning_dup = ordered_anthropic_wins or (isinstance(_rc, str) and bool(_rc.strip()))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+            continue
+        if k == "reasoning_content" and ordered_anthropic_wins:
             continue
         if k == "api_content":
             if sidecar_wins:

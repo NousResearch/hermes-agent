@@ -155,6 +155,9 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: emoji reactions that route to the agent (true/all, or comma-separated emoji names; default: unset = reactions ignored)
+# MATTERMOST_REACTION_TRIGGERS=white_check_mark,thumbsup
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -251,6 +254,32 @@ Behavior:
 - Find a channel ID via the Mattermost UI → channel header → "View Info", or read it from the channel URL.
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
+## Reactions
+
+By default, emoji reactions are acknowledged and dropped — a 👍 on a bot message does nothing. Set `mattermost.reaction_triggers` to route reactions into the agent loop:
+
+```yaml
+mattermost:
+  # Opt-in. false/absent (default) = reactions are acked and dropped.
+  # true = any reaction ON THE BOT'S OWN MESSAGES routes to the agent.
+  reaction_triggers: true
+  # Or an explicit emoji allowlist — only these names route, and they may
+  # target ANY message (emoji-handoff workflows, e.g. :white_check_mark: to approve):
+  # reaction_triggers: [white_check_mark, thumbsup]
+```
+
+Environment equivalent: `MATTERMOST_REACTION_TRIGGERS` (`true`/`all` or a comma-separated list of emoji names).
+
+Behavior:
+
+- The reaction arrives as a normal agent turn with text `reaction:added:<emoji>` / `reaction:removed:<emoji>` (common Mattermost emoji names are rendered as their unicode glyph, e.g. `white_check_mark` → ✅; unmapped names pass through as-is).
+- The `@mention` requirement is skipped — there is no mention to type — but `allowed_channels` and `MATTERMOST_ALLOWED_USERS` still apply exactly as for typed messages: a random user's reaction cannot reach the agent anywhere their message couldn't.
+- With `reaction_triggers: true`, only reactions on the bot's **own** messages route (approve/acknowledge flows). With an explicit emoji allowlist, the listed emojis route from any message.
+- The bot's own reactions (e.g. progress indicators) never feed back.
+- The reacted-to post's thread is preserved: reacting in a thread routes into that thread's session.
+- Independent of this opt-in, every human reaction fires the `reaction:added`/`reaction:removed` [gateway hooks](../features/hooks.md#available-events) for observers that don't need agent turns.
+- No extra API scope or subscription is needed: the Mattermost WebSocket stream already delivers reaction events for channels the bot is a member of.
 
 ## Troubleshooting
 

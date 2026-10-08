@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_REACTION_TRIGGERS
+    description: "Comma-separated emoji names that route user reactions to the agent. 'true' = any reaction on the bot's own messages. Unset = reactions ignored."
+    prompt: "Reaction trigger emoji names (comma-separated)"
+    password: false

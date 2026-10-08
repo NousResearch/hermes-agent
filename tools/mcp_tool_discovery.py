@@ -679,6 +679,51 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
             "pending": sorted(connecting - wanted)}
 
 
+def release_mcp_scope(scope: str, names: Optional[Set[str]] = None, *, timeout: float = 15.0) -> List[str]:
+    """Retire one registry scope's MCP footprint (all of it, or just *names*): close the
+    connections it owns, forget its lazily cached servers, drop its overlays on connections it
+    adopted from another scope, and sweep any remaining ``mcp-*`` registrations so an empty
+    overlay is removed from the registry. For owners that come and go inside one process (an
+    ACP session's scope); a profile's own scope keeps using ``shutdown_mcp_servers``. Returns
+    the server names that were released."""
+    from tools.registry import registry, reset_registry_scope, set_registry_scope
+
+    def _wanted(key) -> bool:
+        return names is None or _key_name(key) in names
+
+    token = set_registry_scope(scope)
+    try:
+        scope = registry.current_scope_key()
+        with _core._lock:
+            owned = {key for key, owner in _core._server_scope_keys.items() if owner == scope and _wanted(key)}
+            owned |= {key for key in _core._servers if _key_scope(key) == scope and _wanted(key)}
+            lazy = {key for key in _core._lazy_server_configs if _key_scope(key) == scope and _wanted(key)}
+            adopted = {key for key, scopes in _core._server_tool_scopes.items()
+                       if scope in scopes and _key_scope(key) != scope and _wanted(key)}
+        released = {_key_name(key) for key in owned | lazy | adopted}
+        for key in adopted:
+            _registration._remove_server_scope(key, scope)
+        if owned:
+            _lifecycle.shutdown_mcp_servers(
+                scope=scope, names=None if names is None else set(names), timeout=timeout)
+        for key in lazy:
+            _forget_lazy_server(key)
+        # Whatever is left in the overlay (a tool registered after the snapshot, or a server task
+        # whose own teardown failed) must not outlive the scope.
+        with registry._lock:
+            leftovers = [(entry.name, entry.toolset) for entry in registry._scoped_tools.get(scope, {}).values()
+                         if entry.toolset.startswith("mcp-")
+                         and (names is None or entry.toolset[len("mcp-"):] in names)]
+        for tool_name, toolset in leftovers:
+            registry.deregister(tool_name, scope=scope)
+            released.add(toolset[len("mcp-"):])
+        for server_name in released:
+            _registration._restore_server_toolset_alias(server_name)
+        return sorted(released)
+    finally:
+        reset_registry_scope(token)
+
+
 def _awaiting_connect(wanted: Set[str], scope) -> List[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared

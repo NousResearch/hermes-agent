@@ -6,6 +6,7 @@ tools/*.py import it at module level; model_tools.py imports both; run_agent/cli
 model_tools."""
 
 import ast
+from contextvars import ContextVar, Token
 import functools
 import importlib
 import inspect
@@ -21,6 +22,23 @@ from typing import Callable, Dict, List, Optional, Set
 from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
+
+# Optional ownership boundary for surfaces (notably ACP) that multiplex sessions inside one
+# profile.  The value is already a canonical registry key; ordinary callers remain home-scoped.
+_registry_scope_override: ContextVar[Optional[str]] = ContextVar(
+    "hermes_tool_registry_scope_override", default=None)
+
+
+def set_registry_scope(scope: str) -> Token:
+    return _registry_scope_override.set(hermes_home_key(scope))
+
+
+def reset_registry_scope(token: Token) -> None:
+    _registry_scope_override.reset(token)
+
+
+def registry_scope_override() -> Optional[str]:
+    return _registry_scope_override.get()
 
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
@@ -445,7 +463,7 @@ class ToolRegistry:
 
     @staticmethod
     def current_scope_key() -> str:
-        return hermes_home_key()
+        return registry_scope_override() or hermes_home_key()
 
     @staticmethod
     def _grouped(entries: List[ToolEntry]) -> Dict[str, List[ToolEntry]]:
@@ -477,7 +495,10 @@ class ToolRegistry:
 
     def _snapshot_state(
         self, scope: Optional[str] = None) -> tuple[List[ToolEntry], Dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
+        """Return a coherent snapshot of registry entries and toolset checks (default: the
+        current registry scope, including an ACP session override)."""
+        if scope is None:
+            scope = self.current_scope_key()
         with self._lock:
             entries = list(self._merged_tools(scope).values())
             checks = dict(self._toolset_checks)

@@ -256,6 +256,39 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
 
+    @staticmethod
+    def _mcp_session_scope(state: SessionState) -> str:
+        """Stable registry owner for one ACP session, distinct even within one profile."""
+        from hermes_constants import hermes_home_key
+        # The profile home, never an already-bound session override (no nested session scopes).
+        return os.path.join(hermes_home_key(), ".acp-sessions", state.session_id)
+
+    def _retire_session_mcp(self, state: SessionState, names: set[str] | None = None) -> list[str]:
+        """Tear down this session's MCP registrations/connections (all, or just *names*) and drop
+        its registry overlay once empty. Blocking; call off the event loop."""
+        from tools.mcp_tool_discovery import release_mcp_scope
+
+        released = release_mcp_scope(self._mcp_session_scope(state), names)
+        if names is None:
+            state.mcp_server_configs = {}
+        else:
+            state.mcp_server_configs = {
+                name: config for name, config in (state.mcp_server_configs or {}).items() if name not in names}
+        return released
+
+    def retire_all_session_mcp(self) -> int:
+        """Release every live session's MCP scope (process shutdown). Best-effort; returns the count."""
+        retired = 0
+        with self.session_manager._lock:
+            states = [state for state in self.session_manager._sessions.values() if state.mcp_server_configs]
+        for state in states:
+            try:
+                self._retire_session_mcp(state)
+                retired += 1
+            except Exception:
+                logger.debug("Session %s: failed to retire ACP MCP scope", state.session_id, exc_info=True)
+        return retired
+
     # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
@@ -427,38 +460,60 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def _register_session_mcp_servers(
         self, state: SessionState, mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None
     ) -> None:
-        """Register ACP-provided MCP servers and refresh the agent tool surface."""
-        if not mcp_servers:
+        """Make the session's ACP-provided MCP set exactly *mcp_servers* and refresh the agent tool surface.
+
+        Servers the session registered earlier that are absent from (or reconfigured in) the new set are
+        retired first, so a load/resume with a different or empty set never keeps serving old handlers."""
+        configs = {s.name: _mcp_server_config(s) for s in (mcp_servers or [])}
+        previous = dict(state.mcp_server_configs or {})
+        if not configs and not previous:
             return
-        try:
-            from agent.runtime_cwd import set_session_cwd
-            from tools.mcp_tool_discovery import register_mcp_servers
+        stale = {name for name, config in previous.items() if configs.get(name) != config}
+        if stale:
+            try:
+                await asyncio.to_thread(self._retire_session_mcp, state, stale)
+            except Exception:
+                logger.warning("Session %s: failed to retire replaced ACP MCP servers", state.session_id, exc_info=True)
+        state.mcp_server_configs = dict(configs)
+        if configs:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+                from tools.mcp_tool_discovery import register_mcp_servers
+                from tools.registry import reset_registry_scope, set_registry_scope
 
-            configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
+                def _register_pinned() -> None:
+                    # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
+                    # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
+                    set_session_cwd(state.cwd)
+                    token = set_registry_scope(self._mcp_session_scope(state))
+                    try:
+                        register_mcp_servers(configs)
+                    finally:
+                        reset_registry_scope(token)
 
-            def _register_pinned() -> None:
-                # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
-                # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
-                set_session_cwd(state.cwd)
-                register_mcp_servers(configs)
-
-            await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
-        except Exception:
-            logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
-            return
+                await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
+            except Exception:
+                logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
+                return
         try:
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools
 
+            from tools.registry import reset_registry_scope, set_registry_scope
             agent = state.agent
-            agent.enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(agent, "enabled_toolsets", None),
-                mcp_server_names=[s.name for s in mcp_servers],
-            )
-            agent.tools = get_tool_definitions(
-                enabled_toolsets=agent.enabled_toolsets,
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
-            )
+            dropped = {f"mcp-{name}" for name in previous if name not in configs}
+            current = getattr(agent, "enabled_toolsets", None)
+            if current is not None and dropped:
+                current = [toolset for toolset in current if toolset not in dropped]
+            token = set_registry_scope(self._mcp_session_scope(state))
+            try:
+                agent.enabled_toolsets = _expand_acp_enabled_toolsets(current, mcp_server_names=list(configs))
+                agent.tools = get_tool_definitions(
+                    enabled_toolsets=agent.enabled_toolsets,
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
+                )
+            finally:
+                reset_registry_scope(token)
             agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
             inject_memory_provider_tools(agent)
             if callable(invalidate := getattr(agent, "_invalidate_system_prompt", None)):
@@ -790,7 +845,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 token = set_edit_approval_requester(edit_approval_requester)
                 return lambda: reset_edit_approval_requester(token)
 
+            def _mcp_registry() -> Callable[[], None]:
+                from tools.registry import reset_registry_scope, set_registry_scope
+
+                token = set_registry_scope(self._mcp_session_scope(state))
+                return lambda: reset_registry_scope(token)
+
             _bind_guarded(stack, "session context", _session_context)
+            _bind_guarded(stack, "MCP registry", _mcp_registry)
             if approval_cb:
                 _bind_guarded(stack, "approval callback", _approval)
             if edit_approval_requester:

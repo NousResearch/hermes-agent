@@ -1604,7 +1604,7 @@ _plugin_manager: Optional[PluginManager] = None
 _plugin_managers_by_home: dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 _plugin_manager_teardown_condition = threading.Condition(_plugin_managers_lock)
-_plugin_manager_teardown_owners: Dict[Path, Tuple[int, PluginManager]] = {}
+_plugin_manager_teardown_owners: Dict[Path, Tuple[int, Optional[PluginManager]]] = {}
 
 # Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
 # isolated in per-profile managers, so every manager in this process must see the same live host.
@@ -1723,6 +1723,9 @@ def get_plugin_manager() -> PluginManager:
             owner, tearing_down = _plugin_manager_teardown_owners[current_home]
             if owner == thread_id:
                 manager = tearing_down
+                if manager is None:
+                    from hermes_cli.plugins_lifecycle import _get_or_create_reentrant_manager
+                    manager = _get_or_create_reentrant_manager(current_home, thread_id)
                 break
             _plugin_manager_teardown_condition.wait()
         else:

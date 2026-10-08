@@ -84,11 +84,9 @@ def finish_compression_attempt(
     if not pending:
         return
     # Classify the stored value, so the outcome and the recorded reason always agree.
-    reason = fields_.compression_failure_class("failed", failure_class)
-    outcome = (
-        "success" if commit_status == "committed"
-        else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
-    )
+    committed = commit_status == "committed"
+    reason = fields_.compression_failure_class("success" if committed else "failed", failure_class)
+    outcome = "success" if committed else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
     record_compression(
         trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length,
         failure_class=reason,

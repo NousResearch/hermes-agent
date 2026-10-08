@@ -80,7 +80,7 @@ The `/yolo` command is a **toggle** — each use flips the mode on or off:
   ⚠ YOLO mode OFF — dangerous commands will require approval.
 ```
 
-YOLO mode is available in both CLI and gateway sessions. `/yolo` applies only to the session it was typed in. On a messaging platform it is saved with the chat's session, so it survives a gateway restart; `/new` and `/resume` start the next conversation with approvals back on.
+YOLO mode is available in both CLI and gateway sessions. `/yolo` applies only to the session it was typed in. It is saved with the session, so it survives a restart: a messaging chat keeps it across gateway restarts, and the TUI and the Desktop app keep it when you reopen or resume the session. On a messaging platform, `/new` and `/resume` start the next conversation with approvals back on.
 
 When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
 

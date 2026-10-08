@@ -52,7 +52,7 @@ class StateStoreInterface(Protocol):
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set a title with ``user`` authority; False when the row is missing.
 
-        Raises ValueError for a sanitized title over ``SessionDB.MAX_TITLE_LENGTH``,
+        Raises ValueError for a sanitized title over the reference store's maximum length,
         a title held by another live owner (including a hidden canonical
         Bot Chat), or a rename of that hidden canonical Bot Chat itself.
         """
@@ -62,7 +62,7 @@ class StateStoreInterface(Protocol):
         """Set an automatic title from ``derived`` or ``llm`` provenance.
 
         Raises ValueError for any other source, a sanitized title over
-        ``SessionDB.MAX_TITLE_LENGTH``, or a title held by another live owner
+        the reference store's maximum length, or a title held by another live owner
         (including a hidden canonical Bot Chat). Returns False without changing
         a missing row, a title of equal or higher authority, or a hidden
         canonical Bot Chat's title.
@@ -73,7 +73,7 @@ class StateStoreInterface(Protocol):
     def sanitize_title(title: Optional[str]) -> Optional[str]:
         """Normalize a title (strip control chars, collapse whitespace); None when empty.
 
-        Raises ValueError when the normalized title exceeds ``SessionDB.MAX_TITLE_LENGTH``.
+        Raises ValueError when the normalized title exceeds the reference store's maximum length.
         """
         ...
 
@@ -82,7 +82,7 @@ class StateStoreInterface(Protocol):
 
     # ── Session reads ──────────────────────────────────────────────────────
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Full session row (prompt resolved through the prompt store when present)."""
+        """Full session row (prompt resolved through the prompt store when present), or None if missing."""
         ...
 
     def get_messages_as_conversation(self, session_id: str, **kwargs) -> List[Dict[str, Any]]:
@@ -90,15 +90,26 @@ class StateStoreInterface(Protocol):
         ...
 
     def search_messages(self, query: str, **kwargs) -> List[Dict[str, Any]]:
-        """FTS-backed message search across sessions."""
+        """Search messages across sessions using the available route.
+
+        The reference SQLite store uses FTS when healthy and a canonical-row
+        LIKE fallback when FTS is unavailable or an FTS MATCH read raises
+        ``sqlite3.OperationalError``. The fallback supports only its documented
+        query subset; ranking, proximity, and other FTS semantics may differ.
+        ``[]`` means no match from the route that ran, not a suppressed
+        canonical-read failure: errors reading canonical rows propagate.
+        """
         ...
 
     # ── System-prompt invalidation ─────────────────────────────────────────
     def clear_stored_system_prompts(self) -> Dict[str, Any]:
         """Invalidate every stored system-prompt snapshot.
 
-        Sessions keep their rows; the resolved prompt becomes unset so the
-        next run/resume rebuilds it from the live configuration. Idempotent:
+        Sessions keep their rows; the resolved prompt becomes unset (``None``
+        for the reference out-of-line layout, ``''`` for true legacy inline)
+        so the next run/resume rebuilds it from the live configuration.
+        The reference SQLite operation is atomic per call, not across this
+        method and other store methods. Idempotent:
         with nothing stored (or already cleared) it reports ``cleared == 0``.
 
         Returns ``{"cleared": <int>, "storage_mode": <str>}`` where

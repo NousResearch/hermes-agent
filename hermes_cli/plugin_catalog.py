@@ -91,6 +91,7 @@ class PluginCatalogEntry:
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
+    known_issues: List[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
     @property
     def install_identifier(self) -> str:
@@ -110,6 +111,7 @@ class PluginCatalogEntry:
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
             },
+            "known_issues": list(self.known_issues),
         }
 
 
@@ -167,6 +169,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -385,13 +388,15 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return _stale_live_cache(cache)
 
 
-_in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = no git checkout
+_in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = no usable in-tree time
 
 
 def in_tree_catalog_time() -> Optional[float]:
     """Commit time (epoch) of the last change to this checkout's ``plugin-catalog/``, or ``None`` when
     the install is not a git checkout (a release/pip install cannot be newer than the published doc).
-    Resolved once per process."""
+    On a git checkout whose path history is unreadable without network — the treeless ``tree:0`` layout
+    ``hermes update`` produces — the newest checked-out catalog file's mtime stands in for it, so a
+    freshly updated checkout still outranks a doc fetched before the bump. Resolved once per process."""
     global _in_tree_catalog_time
     if _in_tree_catalog_time != -1.0:
         return _in_tree_catalog_time
@@ -399,14 +404,36 @@ def in_tree_catalog_time() -> Optional[float]:
     resolved: Optional[float] = None
     if (root / ".git").exists():
         try:
-            import subprocess
-            out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL)
-            resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+            from hermes_cli._subprocess_compat import bounded_git_probe
+
+            # Path history needs missing trees on tree:0 clones. The shared probe disables
+            # lazy fetch only for its child and bounds timeout cleanup on every platform.
+            out = bounded_git_probe(
+                ["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
+                timeout=10,
+            )
+            resolved = float(out) if out else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
+        if resolved is None:
+            # "History unreadable without network" must not collapse into "not a git checkout":
+            # ``None`` feeds the frozen-copy rule that defers to the live doc, which would let a
+            # cache fetched before ``hermes update`` re-pin the old sha on exactly the installs
+            # that just bumped it. A treeless clone still has its checked-out files — only the
+            # historical trees are missing — and their mtime dates the checkout that wrote them.
+            resolved = _catalog_worktree_mtime()
     _in_tree_catalog_time = resolved
     return resolved
+
+
+def _catalog_worktree_mtime() -> Optional[float]:
+    """Newest mtime under the checkout's ``plugin-catalog/``: a no-network freshness signal for clones
+    whose path history is unreachable (treeless or offline). ``None`` when nothing is checked out."""
+    try:
+        times = [p.stat().st_mtime for p in get_catalog_dir().rglob("*") if p.is_file()]
+    except OSError:
+        return None
+    return max(times) if times else None
 
 
 def _live_generated_time(data: Dict[str, Any]) -> Optional[float]:
@@ -498,4 +525,9 @@ def entry_capability_summary(entry: PluginCatalogEntry) -> str:
         bits.append(f"Platforms: {', '.join(entry.platforms)}.")
     if entry.requires_hermes:
         bits.append(f"Requires Hermes {entry.requires_hermes}.")
+    if entry.known_issues:
+        # #124058: informational — the catalog documents traps (unsupported
+        # install-method/mode combinations); surface them at install prompts
+        # without blocking the install.
+        bits.append(f"Known issues: {'; '.join(entry.known_issues)}.")
     return " ".join(bits)

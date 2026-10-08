@@ -556,7 +556,7 @@ _version = _simple_command(
 def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "status")
     from hermes_cli.status import show_status
-    output = _capture_output(lambda: show_status(SimpleNamespace(all=False, deep=False)))
+    output = _capture_output(lambda: show_status(SimpleNamespace(full=True, deep=False)))
     return _strip_console_status_footer(output)
 
 
@@ -651,24 +651,17 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 def _guard_exports(db, session_ids: list[str]) -> None:
     """Per-session export budget: only an individual runaway transcript trips it; 0 disables."""
-    from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
-    limit = resolved_max_export_messages()
-    if limit <= 0:
-        return
+    from hermes_state import SessionExportTooLargeError
     try:
-        for session_id in session_ids:
-            db.assert_export_safe(session_id, max_messages=limit)
+        db.assert_exports_safe(session_ids)
     except SessionExportTooLargeError as exc:
-        raise ConsoleCommandError(
-            f"Session '{exc.session_id}' has more than {limit:,} "
-            "exportable messages; in-memory export is capped per session. "
-            "Use the Sessions page's streaming Export action, or set "
-            "sessions.max_export_messages: 0 in config.yaml to disable "
-            "the guard.") from exc
+        raise ConsoleCommandError(str(exc)) from exc
 
 
 @_captured
 def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
+    from hermes_cli.session_export import export_projection
+
     ns = _parse("sessions export", args, "output", "--source", "--session-id")
     with _session_db() as db:
         if ns.session_id:
@@ -676,15 +669,13 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
             if not resolved_session_id:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
             _guard_exports(db, [resolved_session_id])
-            # Transfer projection: every row with its active/compacted flags, so an import of this
-            # JSONL restores a compacted session's whole history instead of only its live rows.
-            rows = [db.export_session(resolved_session_id, include_inactive=True)]
+            rows = [db.export_session(resolved_session_id, **export_projection(False))]
             if not rows[0]:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         else:
             found = db.search_sessions(source=ns.source, limit=100000)
             _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source, include_inactive=True)
+            rows = db.export_all(source=ns.source, **export_projection(False))
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"
@@ -869,11 +860,3 @@ def run_console_repl(
             print(result.output, file=stderr if result.status == "error" else stdout)
         if result.status == "exit":
             return 0
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import shlex  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

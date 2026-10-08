@@ -1195,7 +1195,7 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
 
 def humanize_oauth_registration_error(
     server_name: str, exc: BaseException | str, *, server_url: str | None = None) -> str | None:
-    """Turn a DCR 403/Forbidden into a useful next step; None for anything else so the caller keeps the
+    """Turn a DCR 403/Forbidden or 404 into a useful next step; None for anything else so the caller keeps the
     original text. Figma gates DCR on exact ``client_name`` (auto-set to ``Claude Code``), so this fires
     when the user overrode it or an older Hermes is running."""
     msg = str(exc)
@@ -1203,6 +1203,15 @@ def humanize_oauth_registration_error(
     from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
     if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
         return None
+    # A 404 on registration (Google's hosted Gmail/Drive MCP servers answer the SDK's guessed /register with
+    # one) is the same permanent "no RFC 7591 DCR" class as a 403 refusal (#78190).
+    if ("404" in msg and ("not found" in lowered or "/register" in lowered)
+            and any(k in lowered for k in ("regist", "dcr", "dynamic client"))):
+        return (
+            f"'{server_name}' does not support automatic client registration — the registration request returned "
+            "404 (typical for Google's hosted Gmail/Drive MCP servers and other providers without RFC 7591 dynamic "
+            "client registration). Create an OAuth client for this provider and add it under config.yaml as "
+            f"`oauth: {{client_id: ..., client_secret: ...}}`, then re-run:\n  hermes mcp login {server_name}")
     looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
         any(k in lowered for k in ("regist", "dcr", "dynamic client"))
         or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
@@ -1246,21 +1255,3 @@ def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | Non
             "__doc__": "SDK provider plus Hermes' token-endpoint fixes (see ``HermesProviderMixin``).",
             "__module__": __name__, "_hermes_logger": logger})
     return HermesOAuthClientProvider(server_url=server_url, **kwargs)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from contextlib import contextmanager  # noqa: F401,E402
-
-OAuthClientInformationFull: Any = None
-
-OAuthClientMetadata: Any = None
-
-OAuthClientProvider: Any = None
-
-OAuthMetadata: Any = None
-
-OAuthToken: Any = None
-# ---- END PLUGIN-COMPAT ----

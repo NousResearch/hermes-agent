@@ -974,10 +974,19 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
-_EXIT_SUMMARY_MARKER = "Resume this session with:"
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+
+
+def _exit_summary_marker() -> str:
+    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
+    from agent.i18n import t
+    return t("cli.session.exit_resume_hint")
+
+
+def _log_noise_prefixes() -> tuple[str, ...]:
+    from agent.i18n import t
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -1002,13 +1011,13 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+    cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
         raw = raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_LOG_NOISE_PREFIXES):
+        if ln and not ln.startswith(_log_noise_prefixes()):
             lines.append(ln)
     return " ".join(lines)[-400:]
 
@@ -2040,6 +2049,19 @@ def _dispatch_lane_task(
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
+        # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
+        # condition never expires on its own, so write it once: a repeat only when something
+        # else happened on the card since (reassign, comment) — not one row per tick forever,
+        # and not one row per foreign home per tick on a shared board (#101015).
+        if not dry_run:
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                if (last is None or last["kind"] != "skipped_nonspawnable"
+                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                    _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2472,45 +2494,25 @@ def _isolated_store_python() -> bool:
     return bool(sys.flags.isolated)
 
 
-def _published_posix_launcher() -> Optional[str]:
-    """Install wrapper that re-inserts the repo on ``sys.path``.
-
-    Isolated store Python does not have ``hermes_cli`` on its default path.
-    Do not import ``hermes_cli._launchers`` here (it pulls ``pm``; this
-    module sits below that). Windows ``.cmd``/``.bat`` wrappers are unsafe
-    as argv[0] with task-derived args — use the interpreter-bound command.
-    """
-    shim = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
-    if shim.is_file() and os.access(shim, os.X_OK) and not _is_windows_batch_shim(str(shim)):
-        return str(shim)
-    return None
-
-
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package).
-
-    ``python -m hermes_cli.main`` is correct when this interpreter has the
-    package on its default module path (venv / pip). Isolated store Python
-    (``python -I``, Desktop / launchd launcher) only sees ``hermes_cli``
-    because the published wrapper inserts the install root — a naked ``-m``
-    child then dies with ModuleNotFoundError and the kanban circuit breaker
-    blocks the card. Prefer that wrapper when it exists; never a PATH
-    ``hermes`` (#111569). When the published wrapper is absent (for example
-    a source checkout or a Windows batch-only install), build the same
-    installation-bound bootstrap command directly instead of returning a bare
-    ``-m`` that cannot import the package from a worker workspace.
-    """
+    """Use this install's launcher/bootstrap when isolated; otherwise its module."""
     if _isolated_store_python():
-        launcher = _published_posix_launcher()
-        if launcher:
-            return [launcher]
-        from hermes_cli._runtime_command import bootstrap_runtime_command
-
-        return bootstrap_runtime_command(
-            Path(__file__).resolve().parents[1], python=sys.executable
-        )
+        from hermes_cli._runtime_command import isolated_hermes_argv
+        return isolated_hermes_argv(Path(__file__).resolve().parents[1], python=sys.executable)
     return [sys.executable, "-m", "hermes_cli.main"]
+
+
+def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
+    """Pin source imports for bare module workers (#122299, #122487, #122500).
+
+    The parent may have inserted its root in-process; a scrubbed child loses it.
+    Resolved shims own their imports. Cron uses the same pin (#112729).
+    """
+    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+        return
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2572,16 +2574,10 @@ def _hermes_path_argv(path: str) -> list[str]:
 
 
 def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
-    (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's module invocation
-    (or installation-bound bootstrap under isolated Python; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the interpreter-bound command) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
-    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    """Prefer an explicit override, then this interpreter's module/bootstrap, then PATH.
+
+    Bare overrides skip implicit cwd lookup; Windows batch shims use Python.
+    Installation binding prevents PATH shadowing (#111569).
     """
     import importlib.util
     import shutil
@@ -2942,6 +2938,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The module argv must carry the import context that made it resolvable:
+    # the shim's in-process path injection is invisible to the bare child.
+    _propagate_module_import_root(cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

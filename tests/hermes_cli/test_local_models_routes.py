@@ -84,6 +84,18 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_sizes_a_split_model_by_all_its_parts(client):
+    """A split's first file can be a metadata stub of a few MB. The row reports the model the user
+    has on disk, so a side-loaded split outside the catalog is every part, not part 1."""
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    _write_fake_gguf(models_dir() / "Side-Split-00001-of-00002.gguf", size=1024)
+    _write_fake_gguf(models_dir() / "Side-Split-00002-of-00002.gguf", size=8192)
+    rows = {m["id"]: m for m in client.get("/api/local-models/status").json()["models"]}
+
+    assert rows["Side-Split"]["size_bytes"] == (4 + 1024) + (4 + 8192)
+
+
 def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace
@@ -168,6 +180,38 @@ def test_catalog_prices_every_entry_for_this_machine(client):
         else:
             assert "memory" in row["fit_summary"].lower()
         assert isinstance(row["downloaded"], bool)
+
+
+@pytest.mark.parametrize("backend, expected", [
+    ("auto", "qwen3.8-27b"), ("cuda", "qwen3.8-27b"),
+    ("vulkan", "qwen3.6-35b-a3b"), ("cpu", "qwen3.6-35b-a3b"),
+])
+def test_calibrated_catalog_and_quickstart_respect_backend(client, monkeypatch, backend, expected):
+    from hermes_cli.local_runtime import binaries, bootstrap, catalog, hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    budget = HardwareBudget(int(48 * (1 << 30) * .8), 48 << 30, 0, uma=True,
+                            gpu_name="NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)", platform="win32")
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
+    monkeypatch.setattr(bootstrap, "staged_model_ids", lambda: set())
+    monkeypatch.setattr(binaries, "installed_engine",
+                        lambda *args, **kwargs: binaries.Engine("cuda", "b10964", Path("unused")))
+    monkeypatch.setattr(local_models, "_load_config", lambda: {"local_runtime": {"backend": backend}})
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("recommendation must not launch a model or run another hardware probe")
+
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", no_probe)
+    monkeypatch.setattr(bootstrap, "ensure_local_runtime", no_probe)
+    response = client.get("/api/local-models/catalog")
+    assert response.status_code == 200
+    chosen = [row["id"] for row in response.json()["models"] if row["recommended"]]
+    assert chosen == [expected]
+    assert local_models._quickstart_target(local_models.QuickstartBody(), budget)[0].id == expected
+    explicit = local_models.QuickstartBody(model_id="qwen3.8-27b")
+    assert local_models._quickstart_target(explicit, budget)[0].id == "qwen3.8-27b"
 
 
 def test_catalog_never_hides_unaffordable_models(client, monkeypatch):

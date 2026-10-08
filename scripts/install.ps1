@@ -4,12 +4,16 @@
 #   -Manifest             print the stage list as JSON
 #   -Stage NAME [-Json]   run one stage
 #   -NonInteractive       skip stages that need input
+#   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
 #   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later installs and
-#                         `hermes update`, undone by
+#                         Chromium); remembered by later
+#                         installs and `hermes update`, undone by
 #                         `hermes pm install agent-browser`
+#   -SkipComputerUse      do not install the computer-use driver (cua-driver);
+#                         remembered the same way, undone by
+#                         `hermes pm install cua-driver`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
@@ -22,12 +26,16 @@ param(
     [string]$Stage,
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
+    # Pre-rework spelling of -NonInteractive, still accepted so install
+    # wrappers written against the old switch keep binding (#125350).
+    [switch]$SkipSetup,
     [switch]$Json,
     [switch]$IncludeDesktop,
     # Same opt-out as install.sh --skip-browser: PM records it, so later
     # installs and `hermes update` keep the browser tools off until
     # `hermes pm install agent-browser` opts back in.
     [switch]$SkipBrowser,
+    [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -37,6 +45,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# -SkipSetup is the pre-rework spelling of -NonInteractive.
+if ($SkipSetup) { $NonInteractive = $true }
 
 # --- Dot-source guard (part 1: detect) ---------------------------------------
 # Tests (and any embedding host) dot-source this file (`. install.ps1`) to get
@@ -82,14 +93,14 @@ $script:UvPinFiles = @{
 $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
-        Sha256 = "1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
     }
     "win32-arm64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-arm64.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
-        Sha256 = "4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
     }
 }
 # --- END GENERATED: bootstrap pins ---
@@ -319,6 +330,22 @@ function Initialize-ResolvedPaths {
     } else {
         Join-Path $resolvedHome 'hermes-agent'
     }
+    # A HermesHome equal to or inside InstallDir puts the pm tool store
+    # (<home>\tools) inside the checkout: the repository stage's
+    # occupied-directory preflight then refuses every retry after the first
+    # run populated it, and `git stash --include-untracked` would sweep the
+    # toolchain into the stash. Refuse before anything downloads (#124526)
+    # unless HERMES_RUNTIME_DIR parks the store outside the checkout.
+    # The store lands in HERMES_RUNTIME_DIR when set (Get-PmStoreRoot), else under HermesHome.
+    $cmpStore = if ($env:HERMES_RUNTIME_DIR) { "$env:HERMES_RUNTIME_DIR" } else { "$resolvedHome" }
+    $cmpStore = $cmpStore.TrimEnd('\', '/')
+    $cmpDir = "$resolvedDir".TrimEnd('\', '/')
+    $dirPrefix = $cmpDir + [IO.Path]::DirectorySeparatorChar
+    $storeInside = $cmpStore -eq $cmpDir -or
+        $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
+    if ($storeInside) {
+        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
+    }
     # The param() variables live in the CALLER's scope, which is the script
     # scope only under -File. Under the documented
     # `& ([scriptblock]::Create((irm ...)))` install they live in the
@@ -395,13 +422,13 @@ function Invoke-VerifiedDownload {
         if ($digest -eq $Sha256.ToLowerInvariant()) { return }
         Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue
         # Wrong bytes = tampering or a corrupt mirror, not a routing problem.
-        Fail "download digest mismatch for $candidate (expected $Sha256, got $digest)"
+        Fail "download digest mismatch for $candidate (expected $Sha256, got $digest)" download_digest_mismatch
     }
     $tried = $urls -join " or "
     if ($httpFailure) {
-        Fail "failed to download from $tried : $httpFailure"
+        Fail "failed to download from $tried : $httpFailure" download_failed
     }
-    Fail "failed to download from $tried"
+    Fail "failed to download from $tried" download_failed
 }
 
 # Best-effort: how big is $Uri, per the server? Returns 0 when the server
@@ -485,16 +512,12 @@ function Invoke-DownloadWithProgress {
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
 # bytes — no astral-latest, no irm|iex. Returns the uv.exe path.
 function Get-Uv {
-    $existing = Get-Command uv -ErrorAction SilentlyContinue
-    if ($existing) {
-        # Developer shortcut: fetches nothing, but only for a new-enough uv.
-        if (Test-UvAtLeastPin $existing.Source) { return $existing.Source }
-        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; downloading our own copy"
-    }
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:UvPinFiles[$target]
     if (-not $pin) {
-        Fail "no pinned uv artifact for $target; install uv manually: https://docs.astral.sh/uv/"
+        Fail "no pinned uv artifact for $target; Hermes does not support this host" unsupported_platform
     }
     $entry = Join-Path (Get-PmStoreRoot) "uv-$($script:UvPinVersion)-$target"
     $uvExe = Join-Path $entry "uv.exe"
@@ -514,7 +537,7 @@ function Get-Uv {
         # The zip carries uv.exe (+ uvx.exe) at the root or under one
         # versioned wrapper dir — take whichever layout arrived.
         $found = Get-ChildItem -Path $extractDir -Filter "uv.exe" -Recurse | Select-Object -First 1
-        if (-not $found) { Fail "uv.exe not found in the downloaded archive" }
+        if (-not $found) { Fail "uv.exe not found in the downloaded archive" uv_unusable }
         New-Item -ItemType Directory -Force -Path $entry | Out-Null
         Move-Item -Path $found.FullName -Destination $uvExe -Force
         $uvx = Get-ChildItem -Path $extractDir -Filter "uvx.exe" -Recurse | Select-Object -First 1
@@ -522,7 +545,7 @@ function Get-Uv {
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if (-not (Test-UvAtLeastPin $uvExe)) { Fail "pinned uv staged but does not run on this host" }
+    if (-not (Test-UvAtLeastPin $uvExe)) { Fail "pinned uv staged but does not run on this host" uv_unusable }
     return $uvExe
 }
 
@@ -540,34 +563,32 @@ function Get-PinnedGit {
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        $tarPath = Join-Path $tmpDir "git.tar.bz2"
-        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $tarPath
+        $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
+        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-        # The pinned artifact is a git-for-windows tar.bz2 (the same one pm
-        # itself extracts). Windows 10+ ships bsdtar with bzip2 support in
-        # System32; a GNU tar earlier on PATH (Cygwin/MSYS) reads C:\ as a
-        # remote host, so never resolve it from PATH.
-        $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
-        # MSYS ships these as symlinks into /proc. Without symlink rights (not
-        # elevated, no Developer Mode) tar cannot create them and fails the
-        # whole extract. Skip exactly the links pm's own extractor skips
-        # (pm/store.py extract_tar git_msys) so any other failure still fails.
-        # '^' anchors bsdtar's otherwise any-path-component match.
-        $msysProcLinks = @('dev/fd', 'dev/stdin', 'dev/stdout', 'dev/stderr', 'etc/mtab')
-        $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
-        Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
-        if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
-        # Layout: Git-<ver>/cmd\git.exe — flatten the single wrapper dir.
-        $inner = @(Get-ChildItem $extractDir)
-        $src = $extractDir
-        if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $src = $inner[0].FullName }
-        if (-not (Test-Path (Join-Path $src "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
+        # PortableGit's self-extracting 7z carries its own extractor: stock
+        # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
+        Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
+        # A GUI-subsystem exe: `&` would not wait for it. Under -y it reports
+        # nothing, so the exit code is all there is. Bound the wait like pm's
+        # timeout; kill the whole tree, since the stub's post-install children
+        # would otherwise keep $tmpDir held past the cleanup below.
+        $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
+        if (-not $sfx.WaitForExit(600000)) {
+            Invoke-Native { taskkill.exe /T /F /PID $sfx.Id 2>&1 | Out-Null }
+            $sfx.WaitForExit()
+            Fail "pinned git self-extractor timed out after 600s" git_extract_failed
+        }
+        if ($sfx.ExitCode) {
+            Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)" git_extract_failed
+        }
+        if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" git_extract_failed }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
         # Prerequisites run first, so on a fresh host the store root does not
         # exist yet; Move-Item never creates the destination's parent.
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $src $entry
+        Move-Item $extractDir $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -609,9 +630,22 @@ function Write-Banner {
 # Native calls run through here; the exit code stays in $LASTEXITCODE for the
 # caller to judge. (The relaxed preference lives in this function's scope and
 # reaches only the block invoked from it.)
-function Invoke-Native([scriptblock]$Command) {
+function Invoke-Native([scriptblock]$Command, [switch]$Utf8Output) {
     $ErrorActionPreference = 'Continue'
-    & $Command
+    if (-not $Utf8Output) { & $Command; return }
+
+    # Windows PowerShell 5.1 decodes captured native stdout using the console
+    # code page. uv prints UTF-8 even when that code page is CP936/CP437.
+    # Scope the decoder to UTF-8 producers; other tools and an iex caller
+    # must retain their original encoding. $OutputEncoding controls stdin,
+    # so changing it would not repair paths returned by `uv python find`.
+    $previousNativeOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        & $Command
+    } finally {
+        [Console]::OutputEncoding = $previousNativeOutputEncoding
+    }
 }
 
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
@@ -694,10 +728,47 @@ function Test-UvAtLeastPin([string]$Path) {
     $have = ("$out".Trim() -split '\s+')[1] -replace '[^0-9.].*$', ''
     try { return ([version]$have -ge [version]$script:UvPinVersion) } catch { return $false }
 }
-function Fail([string]$msg) {
+function Fail([string]$msg, [string]$Class = "other") {
     # Throw, never exit: the entry points below own reporting and the exit
     # code, and the stage dispatcher's catch emits the -Json failure frame.
+    # $Class: closed failure class for the local install receipt.
+    $script:FailureClass = $Class
     throw $msg
+}
+
+# One local receipt per full-ladder run, under the profile's shared-metrics dir.
+# Only closed tokens and two timestamps (never the error text, paths or URLs);
+# the installer never sends anything. Hermes reports it as hermes.install.run on
+# a later start only while shared metrics collection is on, and deletes it
+# unreported when collection is off. Best effort: never fails the install.
+function Write-InstallReceipt([string]$Outcome, [string]$FailedStage, [string]$Class) {
+    if ($script:InstallReceiptWritten) { return }
+    $script:InstallReceiptWritten = $true
+    $tmp = $null  # never a caller's $tmp (dynamic scope) in the catch below
+    try {
+        $dir = Join-Path $HermesHome "telemetry\shared_metrics\pending_installs"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $id = [guid]::NewGuid().ToString("N")
+        $json = '{{"id":"{0}","installer":"install_ps1","outcome":"{1}","failed_stage":"{2}","failure_class":"{3}","started_at":{4},"finished_at":{5}}}' -f `
+            $id, $Outcome, ($FailedStage -replace '-', '_'), $Class, $script:InstallStarted, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $tmp = Join-Path $dir ".$id.tmp"
+        [IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
+        Move-Item -LiteralPath $tmp -Destination (Join-Path $dir "$id.json") -Force
+    } catch {
+        # A full disk leaves a partial temp file the reader never looks at (it skips dotfiles).
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# The receipt class for a ladder stage that threw. A native child Ctrl-C ended
+# (130, or Windows STATUS_CONTROL_C_EXIT 0xC000013A) is a user abort even when
+# the host did not stop the pipeline first; it beats the stage's own class.
+# (A Ctrl-C the host saw stops the pipeline: catch is skipped and finally
+# records `interrupted`.)
+function Get-StageFailureClass {
+    if ($global:LASTEXITCODE -in @(130, -1073741510, 3221225786)) { return "interrupted" }
+    if ($script:FailureClass) { return $script:FailureClass }
+    return "other"
 }
 
 function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = "") {
@@ -723,9 +794,19 @@ $Stages = @(
 $Stages += @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
 function Stage-Prerequisites {
     if (-not (Ensure-Git)) {
-        Fail "no pinned Git artifact for this Windows architecture"
+        Fail "no pinned Git artifact for this Windows architecture" unsupported_platform
     }
     Write-Ok "prerequisites ok (git)"
+}
+
+# A treeless checkout must never write a commit-graph: over a graph with changed-path
+# data that lazy-fetches the trees of every unseen commit, in a loop (#127711).
+# gc.auto stays on: `hermes update` folds lazy-fetch packs with `gc --auto`.
+function Disable-TreelessGraphWrites([string]$Dir) {
+    foreach ($key in 'maintenance.commit-graph.enabled', 'gc.writeCommitGraph', 'fetch.writeCommitGraph') {
+        Invoke-Native { git -C $Dir config $key false } | Out-Null
+        if ($LASTEXITCODE) { Write-Warn "could not set $key in $Dir" }
+    }
 }
 
 function Stage-Repository {
@@ -735,10 +816,10 @@ function Stage-Repository {
         $item = Get-Item -LiteralPath $InstallDir -Force
         $empty = $item.PSIsContainer -and -not $item.LinkType -and -not (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)
         if (-not $empty) {
-            Fail "$InstallDir exists and is not a Hermes git checkout. Move it aside, or install elsewhere with -InstallDir <path>."
+            Fail "$InstallDir exists and is not a Hermes git checkout. Move it aside, or install elsewhere with -InstallDir <path>." dir_not_checkout
         }
     }
-    if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
+    if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" unsupported_platform }
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the initial
     # commit yet", #40998). Move it aside -- never delete it, it may hold
@@ -757,10 +838,40 @@ function Stage-Repository {
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
-            if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" }
+            if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" git_fetch_failed }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin $Branch }
-        if ($LASTEXITCODE) { Fail "git fetch failed" }
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older installer maps only
+        # the tag, so a by-name fetch never writes the origin/$Branch used below (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor marker
+        # (#124272), and an install stuck there never fetches the updater that heals it.
+        # Marking is idempotent and never rewrites objects.
+        $promisor = Invoke-Native { git -C $InstallDir config --bool --get remote.origin.promisor }
+        $packDir = Join-Path $InstallDir '.git\objects\pack'
+        if ("$promisor".Trim() -eq 'true' -and (Test-Path -LiteralPath $packDir)) {
+            Get-ChildItem -LiteralPath $packDir -Filter 'pack-*.pack' | ForEach-Object {
+                $marker = [IO.Path]::ChangeExtension($_.FullName, '.promisor')
+                if (-not (Test-Path -LiteralPath $marker)) {
+                    try { New-Item -ItemType File -Path $marker | Out-Null }
+                    catch { Write-Warn "could not mark $marker as a partial-clone pack" }
+                }
+            }
+            Disable-TreelessGraphWrites $InstallDir
+            # A treeless (tree:0) checkout from a late-September installer downloads whole
+            # directory snapshots again on every history walk (#129514). Fetch its trees once; the
+            # new filter is recorded only after that succeeds, so `hermes update` retries otherwise.
+            $partialFilter = Invoke-Native { git -C $InstallDir config --get remote.origin.partialclonefilter }
+            if ("$partialFilter".Trim() -eq 'tree:0') {
+                Invoke-Logged -MayFail "Fetching directory history once (treeless checkout)" { git -C $InstallDir -c gc.auto=0 -c maintenance.auto=false fetch --refetch --filter=blob:none origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+                if ($LASTEXITCODE) {
+                    Write-Warn "could not fetch the directory history; the next hermes update retries it"
+                } else {
+                    Invoke-Native { git -C $InstallDir config remote.origin.partialclonefilter blob:none }
+                    if ($LASTEXITCODE) { Write-Warn "could not record the blobless filter in $InstallDir" }
+                }
+            }
+        }
+        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        if ($LASTEXITCODE) { Fail "git fetch failed" git_fetch_failed }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that
@@ -773,14 +884,21 @@ function Stage-Repository {
             if (Invoke-Native { git -C $InstallDir ls-files --unmerged }) {
                 Write-Warn "clearing unmerged index entries from a previous conflict"
                 Invoke-Native { git -C $InstallDir reset -q }
-                if ($LASTEXITCODE) { Fail "cannot clear the unmerged index in $InstallDir" }
+                if ($LASTEXITCODE) { Fail "cannot clear the unmerged index in $InstallDir" local_changes_blocked }
             }
             Invoke-Logged "Stashing local changes" { git -C $InstallDir stash push --include-untracked -m "hermes-install-autostash-$stamp" }
-            if ($LASTEXITCODE) { Fail "could not stash local changes in $InstallDir; commit or move them aside, then rerun" }
+            if ($LASTEXITCODE) { Fail "could not stash local changes in $InstallDir; commit or move them aside, then rerun" local_changes_blocked }
             Write-Warn "local changes stashed as hermes-install-autostash-$stamp"
         }
-        Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
-        if ($LASTEXITCODE) { Fail "git checkout failed" }
+        # checkout's branch guess only sees remote refs the refspec maps, so a narrow checkout
+        # (detached at its tag, no local branch) gets the branch created at the fetched tip.
+        Invoke-Native { git -C $InstallDir show-ref --verify --quiet "refs/heads/$Branch" }
+        if ($LASTEXITCODE) {
+            Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout -b $Branch "origin/$Branch" }
+        } else {
+            Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
+        }
+        if ($LASTEXITCODE) { Fail "git checkout failed" git_checkout_failed }
         # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
         # diffstat arrives as one burst. Hermes-Setup.exe forwards every line
         # to its window as a separate event; the burst overflows the Windows
@@ -795,22 +913,22 @@ function Stage-Repository {
             # does, after parking the old tip. Mirrors scripts/install.sh.
             # Keep commits absent from origin in the updater's rescue namespace.
             $droppedText = (Invoke-Native { git -C $InstallDir rev-list --count "origin/$Branch..HEAD" 2>$null })
-            if ($LASTEXITCODE) { Fail "cannot count commits before reset" }
+            if ($LASTEXITCODE) { Fail "cannot count commits before reset" git_reset_failed }
             [long]$dropped = 0
-            if (-not [long]::TryParse("$droppedText".Trim(), [ref]$dropped)) { Fail "cannot count commits before reset" }
+            if (-not [long]::TryParse("$droppedText".Trim(), [ref]$dropped)) { Fail "cannot count commits before reset" git_reset_failed }
             if ($dropped -gt 0) {
                 Invoke-Native { git -C $InstallDir merge-base HEAD "origin/$Branch" 2>$null } | Out-Null
                 $rescueKind = if ($LASTEXITCODE -eq 0) { 'diverged' } else { 'orphan' }
                 $prior = (Invoke-Native { git -C $InstallDir rev-parse --short=12 HEAD 2>$null })
-                if ($LASTEXITCODE -or -not $prior) { Fail "cannot identify commits before reset" }
+                if ($LASTEXITCODE -or -not $prior) { Fail "cannot identify commits before reset" git_reset_failed }
                 $rescue = "refs/hermes-update-backups/$rescueKind-$Branch-$stamp-$prior"
                 Invoke-Native { git -C $InstallDir update-ref $rescue HEAD 2>$null }
-                if ($LASTEXITCODE) { Fail "cannot back up $dropped local commit(s); refusing to reset" }
+                if ($LASTEXITCODE) { Fail "cannot back up $dropped local commit(s); refusing to reset" git_reset_failed }
                 Write-Warn "$dropped commit(s) not on origin/$Branch backed up to $rescue"
                 Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
             }
             Invoke-Logged "Resetting to origin/$Branch" { git -C $InstallDir reset --hard "origin/$Branch" }
-            if ($LASTEXITCODE) { Fail "git reset failed" }
+            if ($LASTEXITCODE) { Fail "git reset failed" git_reset_failed }
             Write-Warn "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
@@ -834,13 +952,14 @@ function Stage-Repository {
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
-                # Treeless: every commit and release tag (runtime identity is the
-                # nearest reachable release; -Commit pins and branch switches
-                # still resolve), trees and blobs fetched on demand, so the
-                # download stays close to a --depth 1 clone.
+                # Blobless: every commit, tree and release tag (runtime identity is
+                # the nearest reachable release; -Commit pins and branch switches
+                # still resolve), file contents fetched on demand. Not treeless:
+                # a long-lived treeless checkout re-downloads whole trees on every
+                # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=tree:0 --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -849,7 +968,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) {
                     foreach ($attempt in 1..2) {
                         Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
@@ -858,8 +977,9 @@ function Stage-Repository {
                     }
                 }
             }
-            if (-not $cloned) { Fail "git clone failed; no checkout published" }
+            if (-not $cloned) { Fail "git clone failed; no checkout published" git_clone_failed }
             Move-Item -LiteralPath $tree -Destination $InstallDir
+            Disable-TreelessGraphWrites $InstallDir
             Write-Ok "Hermes Agent cloned"
         } finally {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
@@ -870,9 +990,9 @@ function Stage-Repository {
         # records both, and a commit off that branch would make the next plain
         # rerun "update" onto a different line.
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
-        if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" }
+        if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
         Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }
-        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" }
+        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" git_checkout_failed }
     }
 }
 
@@ -901,13 +1021,13 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
-        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" python_install_failed }
+        $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
-    if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
+    if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" python_install_failed }
     $script:BootstrapPython = $bootPy.Trim()
     return $script:BootstrapPython
 }
@@ -921,8 +1041,9 @@ function Invoke-BootstrapPm {
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
+        if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
-        if ($LASTEXITCODE) { Fail "dependency install failed" }
+        if ($LASTEXITCODE) { Fail "dependency install failed" deps_install_failed }
     } finally {
         Pop-Location
     }
@@ -950,7 +1071,7 @@ function Invoke-SourceCompletion([bool]$Desktop) {
     } finally {
         Pop-Location
     }
-    if ($code) { Fail "app products or command publication failed (exit $code)" }
+    if ($code) { Fail "app products or command publication failed (exit $code)" products_build_failed }
     Write-Ok "app products and hermes command ready"
 }
 
@@ -968,7 +1089,7 @@ function Publish-UserCommand {
     } finally {
         Pop-Location
     }
-    if ($code) { Fail "launcher staging failed" }
+    if ($code) { Fail "launcher staging failed" products_build_failed }
     Set-LauncherUserPath $binDir
     Write-Ok "hermes command installed at $binDir"
 }
@@ -1050,7 +1171,9 @@ function Invoke-InstalledHermes([string[]]$CommandArgs) {
     $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallDir)
     $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1) + $CommandArgs
     Invoke-Native { & $runtimeCommand[0] @runtimeArgs }
-    if ($LASTEXITCODE) { Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" }
+    if ($LASTEXITCODE) {
+        Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" $(if ($CommandArgs[0] -eq 'setup') { 'setup_failed' } else { 'gateway_failed' })
+    }
 }
 
 function Stage-Setup {
@@ -1090,7 +1213,7 @@ function Confirm-DesktopArtifact {
             if (Test-Path $cand) { $desktopExe = $cand; break }
         }
         if (-not $desktopExe) {
-            Fail "desktop build produced no Hermes.exe under $desktopDir\release\*-unpacked"
+            Fail "desktop build produced no Hermes.exe under $desktopDir\release\*-unpacked" products_build_failed
         }
         Write-Ok "Desktop ready: $desktopExe"
 
@@ -1119,7 +1242,7 @@ function Confirm-DesktopArtifact {
 function Stage-Complete {
     $commit = $Commit
     if (-not $commit) {
-        if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
+        if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" unsupported_platform }
         $commit = Invoke-Native { git -C $InstallDir rev-parse HEAD 2>$null }
     }
     if ($commit) {
@@ -1277,15 +1400,25 @@ if ($Stage) {
 
 # No -Stage: run the whole ladder — the same authoritative list the
 # manifest prints, so -IncludeDesktop inserts desktop here too.
+$script:InstallStarted = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$script:InstallStage = "prerequisites"
+$script:InstallReceiptWritten = $false
 try {
     Write-Banner
     foreach ($s in $Stages) {
+        $script:InstallStage = $s.name
+        $script:FailureClass = ""
         Invoke-StageByName $s.name
     }
+    Write-InstallReceipt "success" "none" "none"
     Write-PathReloadHint
 } catch {
+    Write-InstallReceipt "failed" $script:InstallStage (Get-StageFailureClass)
     Write-Err "$_"
     if ($script:RunAsFile) { exit 1 }
     # Under iex: report failure without closing the user's window.
     $global:LASTEXITCODE = 1
+} finally {
+    # Ctrl-C stops the run without reaching catch; finally still runs (no-op after a receipt).
+    Write-InstallReceipt "failed" $script:InstallStage "interrupted"
 }

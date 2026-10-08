@@ -18,9 +18,16 @@ import {
 import { getGlobalModelOptions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
-import { FREE_TIER_MODEL, friendlyWait, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
+import {
+  $freeTierStatus,
+  FREE_TIER_MODEL,
+  friendlyWait,
+  NOUS_PROVIDER_ID,
+  refreshFreeTierStatus
+} from '@/store/free-tier'
 import {
   $freeTierSignIn,
+  $freeTierTurnCompleted,
   beginFreeTierSignIn,
   claimFreeTierSignIn,
   closeFreeTierSignIn,
@@ -28,9 +35,14 @@ import {
   copyFreeTierUrl,
   freeTierSignInClaim,
   type FreeTierSignInFailure,
-  releaseFreeTierSignIn
+  releaseFreeTierSignIn,
+  sameGatewayRoute,
+  stopFreeTierOffer,
+  syncFreeTierOffer
 } from '@/store/free-tier-sign-in'
 import { refreshOnboardingProviders } from '@/store/onboarding'
+import { $onboardingGate } from '@/store/onboarding-gate'
+import { $onboardingSurfaces } from '@/store/onboarding-presence'
 import { $currentModel, setModelPickerOpen } from '@/store/session'
 
 interface FreeTierSignInDialogProps {
@@ -72,6 +84,32 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     }
   }, [owned, requestGateway, state.status])
 
+  // The sign-in offer rides every status read, and retries once guided
+  // onboarding leaves the screen. A completed free-tier turn re-reads the
+  // status, since that is when the backend arms the next offer. Only the
+  // owner (main windows) times it.
+  useEffect(() => {
+    if (!owned) {
+      return
+    }
+
+    const sync = () => syncFreeTierOffer($freeTierStatus.get(), requestGateway)
+
+    const stops = [
+      $freeTierStatus.listen(sync),
+      $onboardingGate.listen(sync),
+      $onboardingSurfaces.listen(sync),
+      $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway, sameGatewayRoute()))
+    ]
+
+    sync()
+
+    return () => {
+      stops.forEach(stop => stop())
+      stopFreeTierOffer()
+    }
+  }, [owned, requestGateway])
+
   if (!owned || state.status === 'closed' || state.status === 'requested') {
     return null
   }
@@ -105,6 +143,19 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
   return (
     <Dialog onOpenChange={open => !open && closeFreeTierSignIn()} open>
       <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
+        {state.status === 'offer' && (
+          <Screen body={copy.offer.body} heading={copy.offer.heading}>
+            <Actions>
+              <Button onClick={() => closeFreeTierSignIn()} size="sm" type="button" variant="text">
+                {copy.offer.notNow}
+              </Button>
+              <Button onClick={retry} type="button">
+                {copy.offer.signIn}
+              </Button>
+            </Actions>
+          </Screen>
+        )}
+
         {state.status === 'setting_up' && (
           <Screen heading={copy.signInHeading}>
             <Spinner>{state.minting ? copy.settingUp : copy.waiting}</Spinner>

@@ -35,16 +35,17 @@ class SelectionContext:
 
 
 def selection_context_for_agent(agent: object) -> Optional[SelectionContext]:
-    """:class:`SelectionContext` from a live ``AIAgent``: the compressor's measured
-    ``last_prompt_tokens`` (what the provider billed on the latest turn), else the session prompt
-    counter. ``None`` when no live size is known — the guard then stays silent rather than guess."""
+    """:class:`SelectionContext` from a live ``AIAgent``.
+
+    Uses the compressor's measured ``last_prompt_tokens`` (what the provider billed
+    on the latest turn). ``session_prompt_tokens`` is a lifetime sum and is not live
+    occupancy, so it is not a fallback (#126343). ``None`` when no positive
+    measurement exists — the guard stays silent rather than guess."""
     if agent is None:
         return None
     try:
         cc = getattr(agent, "context_compressor", None)
         tokens = int(getattr(cc, "last_prompt_tokens", 0) or 0) if cc else 0
-        if tokens <= 0:
-            tokens = int(getattr(agent, "session_prompt_tokens", 0) or 0)
     except Exception:
         tokens = 0
     if tokens <= 0:

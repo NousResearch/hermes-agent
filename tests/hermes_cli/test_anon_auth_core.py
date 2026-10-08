@@ -39,12 +39,13 @@ def _shared_store(tmp_path) -> dict:
 
 
 class TestIdentityLifecycle:
-    def test_fresh_install_mints_once_and_is_the_active_provider(self, portal, tmp_path):
+    def test_fresh_install_mints_once_and_resolves_without_claiming_active_provider(self, portal, tmp_path):
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(state)
         assert "refresh_token" not in state
         store = _load_auth_store()
-        assert store["active_provider"] == "nous"
+        assert "active_provider" not in store
+        assert resolve_provider("auto") == "nous"
         assert anon_auth.is_guest_state(store["providers"]["nous"])
         assert _shared_store(tmp_path).get("anon_token") == state["anon_token"]
         assert portal.minted == 1
@@ -135,6 +136,25 @@ class TestExplicitProvision:
         _write_config(monkeypatch, guest=False)
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert portal.minted == 0
+
+    @pytest.mark.parametrize("raw, body", [
+        ("true", {"preview_full_connectors": True}),
+        ("1", {"preview_full_connectors": True}),
+        ("false", {"preview_full_connectors": False}),
+        ("0", {"preview_full_connectors": False}),
+        (None, {}),
+        ("yes", {}),
+    ])
+    def test_preview_full_connectors_rides_the_create_call(self, portal, monkeypatch, raw, body):
+        """The cohort reaches the account service on the one call that creates the account, as a
+        real boolean. "1" turns it on, as it does HERMES_GUEST_ONBOARDING, so one bundle command reads
+        the same for both; an unrecognised value leaves the body empty (the service default)."""
+        if raw is None:
+            monkeypatch.delenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raw)
+        anon_auth.ensure_portal_identity(explicit=True)
+        assert portal.create_requests == [body]
 
 
 class TestResolverIsUnchanged:
@@ -320,7 +340,7 @@ class TestBootstrapIsTheOneCreator:
     def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal):
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.free_tier and record.has_identity and record.provider_configured
+        assert record.free_tier_account and record.has_identity and record.provider_configured
         assert record.inference_provider == "nous" and record.other_providers is False
         assert portal.minted == 1
         again = fb.run_bootstrap()
@@ -332,7 +352,7 @@ class TestBootstrapIsTheOneCreator:
         fb = self._fresh()
         record = fb.run_bootstrap()
         assert record.other_providers is True and record.has_identity is True
-        assert record.free_tier is True, "the identity exists for connectors"
+        assert record.free_tier_account is True, "the identity exists for connectors"
         assert record.inference_provider != "nous"
         assert _load_auth_store().get("active_provider") != "nous", "a mint beside an own key must not hijack inference"
         assert portal.minted == 1
@@ -357,7 +377,7 @@ class TestBootstrapIsTheOneCreator:
         portal.gate_closed = True
         fb = self._fresh()
         record = fb.run_bootstrap()
-        assert record.has_identity is False and record.free_tier is False and record.error
+        assert record.has_identity is False and record.free_tier_account is False and record.error
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
         # The explicit retry (desktop free_tier.provision) is also memoised for the process.
         assert anon_auth.ensure_portal_identity(explicit=True) is None

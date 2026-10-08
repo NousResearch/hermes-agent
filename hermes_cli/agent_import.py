@@ -663,28 +663,3 @@ def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:
     parts = [f"{summary[k]} {label}" for k, _, _, label in groups if summary.get(k)]
     if parts:
         print_info(f"Summary: {', '.join(parts)}")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def backup_memory_file(path: Path) -> Optional[Path]:
-    """Snapshot ``path`` before a destructive rewrite; return the backup path.
-
-    Restores parity with the openclaw migration script this module was ported
-    from, which calls ``maybe_backup(destination)`` before rewriting a memory
-    store.  Uses the same ``<name>.bak.<unix_ts>`` naming as
-    ``MemoryStore._backup_drifted_file``.  Returns None when there is nothing
-    to back up.
-    """
-    if not path.exists():
-        return None
-    backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
-    shutil.copy2(path, backup)
-    return backup
-
-def default_source_dir(agent: str) -> Path:
-    return Path.home() / _AGENT_DEFAULT_DIRS[agent]
-# ---- END PLUGIN-COMPAT ----

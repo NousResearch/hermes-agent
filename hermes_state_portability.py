@@ -6,16 +6,17 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 
 import logging
 import json
+import math
 import time
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -30,7 +31,9 @@ _IMPORT_MESSAGE_TEXT_FIELDS = (
     "tool_call_id", "tool_name", "effect_disposition", "finish_reason",
     "reasoning", "reasoning_content", "platform_message_id", "message_id",
 )
-_IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items")
+_IMPORT_MESSAGE_JSON_FIELDS = (
+    "reasoning_details", "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
+)
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
                            system_prompt_hash,
@@ -40,7 +43,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -51,7 +54,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived
+                           :api_call_count, :archived, :auto_archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -62,6 +65,8 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
+# Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
+_IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -71,7 +76,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
     prompt_join = "" if prompt_select is None else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
     return f"""
             SELECT {select_cols}{prompt_select or ""},
-                {_PREVIEW_RAW_SUBQUERY_SQL},
+                {_sql_preview_raw()},
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             {prompt_join}
@@ -257,9 +262,10 @@ class SessionPortabilityMixin:
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Titled sessions whose first user turn was a ``/skill`` invocation (their titles
-        describe the expanded skill body, not the request). Returns ``id``, ``title`` and
-        the first-turn ``content`` so callers can re-derive what was typed. Newest first."""
+        """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
+        auto-load scaffold (their titles describe the expanded skill body, not the
+        request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
+        re-derive what was typed. Newest first."""
         rows = self._read_rows("""
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -269,10 +275,10 @@ class SessionPortabilityMixin:
                       AND m2.content IS NOT NULL
                     ORDER BY m2.timestamp, m2.id LIMIT 1
                 )
-                WHERE s.title IS NOT NULL AND m.content LIKE ?
+                WHERE s.title IS NOT NULL AND (m.content LIKE ? OR m.content LIKE ?)
                 ORDER BY s.started_at DESC
                 LIMIT ?
-                """, (SKILL_SCAFFOLD_SQL_LIKE, int(limit)))
+                """, (SKILL_SCAFFOLD_SQL_LIKE, AUTO_LOAD_SCAFFOLD_SQL_LIKE, int(limit)))
         return [dict(row) for row in rows]
 
     # ── Export ─────────────────────────────────────────────────────────────
@@ -431,12 +437,46 @@ class SessionPortabilityMixin:
             raise ValueError(f"{field} must be an integer") from exc
 
     @staticmethod
-    def _import_json_object_or_none(value: Any, field: str) -> Optional[str]:
+    def _import_non_finite_path(value: Any, path: str) -> Optional[str]:
+        """First ``path`` of a NaN/inf number anywhere in decoded JSON data, else None.
+
+        Iterative walk (a recursive visitor would overflow on crafted nesting); cycles
+        can't arrive through ``json.loads`` but guard anyway.
+        """
+        pending = [(value, path)]
+        while pending:
+            current, current_path = pending.pop()
+            if isinstance(current, float) and not math.isfinite(current):
+                return current_path
+            if isinstance(current, dict):
+                pending.extend((child, f"{current_path}.{key}") for key, child in current.items())
+            elif isinstance(current, list):
+                pending.extend((child, f"{current_path}[{key}]") for key, child in enumerate(current))
+        return None
+
+    @classmethod
+    def _import_load_json(cls, value: str, path: str) -> Any:
+        """``json.loads`` that refuses NaN/Infinity anywhere in the decoded value.
+
+        A JSON exponent like ``1e309`` decodes to ``float("inf")``, which strict
+        serializers reject and cost analytics mis-handle. Callers that intentionally
+        decode a JSON-backed column (model_config, reasoning items) re-check through
+        here so non-finite values can't reappear after the outer payload was inspected.
+        """
+        parsed = json.loads(value)  # NaN/Infinity are accepted syntax; catch them after decode
+        non_finite = cls._import_non_finite_path(parsed, path)
+        if non_finite is not None:
+            raise ValueError(f"non-finite number at {non_finite}")
+        return parsed
+
+    @classmethod
+    def _import_json_object_or_none(cls, value: Any, field: str) -> Optional[str]:
         if value is None:
             return None
+        path = f"session.{field}"
         if isinstance(value, str):
             try:
-                parsed = json.loads(value)
+                parsed = cls._import_load_json(value, path)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"{field} must be valid JSON") from exc
             if not isinstance(parsed, dict):
@@ -444,6 +484,8 @@ class SessionPortabilityMixin:
             return value
         if not isinstance(value, dict):
             raise ValueError(f"{field} must be a JSON object")
+        if cls._import_non_finite_path(value, path) is not None:
+            raise ValueError(f"non-finite number at {path}")
         try:
             return json.dumps(value)
         except (TypeError, ValueError) as exc:
@@ -457,6 +499,83 @@ class SessionPortabilityMixin:
         except (TypeError, ValueError):
             return default
 
+    # SQLite binds Python ints only inside the signed 64-bit range; anything wider
+    # raises OverflowError at INSERT time (an unhandled 500, not a 400).
+    _SQLITE_INT_MIN = -(1 << 63)
+    _SQLITE_INT_MAX = (1 << 63) - 1
+
+    @classmethod
+    def _import_int_or_bounded(cls, value: Any, field: str, default: int) -> int:
+        """Import an int column: SQL-int-range or *default* (never fails the import)."""
+        number = cls._coerce_or(value, int, default)
+        if number is None:
+            return default
+        if isinstance(number, bool) or not (cls._SQLITE_INT_MIN <= number <= cls._SQLITE_INT_MAX):
+            return default
+        return number
+
+    def _normalize_import_message(self, message: Dict[str, Any], message_index: int) -> Dict[str, Any]:
+        """Type-check one payload message; raises ValueError naming the offending field."""
+        clean_message = dict(message)
+        role = clean_message.get("role")
+        if not isinstance(role, str) or not role:
+            raise ValueError(f"messages[{message_index}].role must be a non-empty string")
+        for field in _IMPORT_MESSAGE_TEXT_FIELDS:
+            clean_message[field] = self._import_text_or_none(clean_message.get(field), field)
+        token_count = self._import_int_or_none(clean_message.get("token_count"), "token_count")
+        if token_count is not None and not (self._SQLITE_INT_MIN <= token_count <= self._SQLITE_INT_MAX):
+            raise ValueError("token_count is outside SQLite's integer range")
+        clean_message["token_count"] = token_count
+        message_path = f"session.messages[{message_index}]"
+        timestamp = clean_message.get("timestamp")
+        if timestamp is not None and coerce_epoch(timestamp, field="messages[].timestamp") is None:
+            raise ValueError(f"{message_path}.timestamp must be a supported Unix timestamp")
+        self._validate_import_message_content(clean_message.get("content"), message_path)
+        for field in _IMPORT_MESSAGE_JSON_FIELDS:
+            json_value = clean_message.get(field)
+            if isinstance(json_value, str):
+                # Malformed JSON text persists verbatim (readers fall back via _json_or);
+                # only a PARSED non-finite number is rejected — it would break strict
+                # JSON serializers once decoded back out of the row.
+                try:
+                    self._import_load_json(json_value, f"{message_path}.{field}")
+                except json.JSONDecodeError:
+                    pass
+                except ValueError:
+                    raise
+            elif json_value is not None:
+                non_finite = self._import_non_finite_path(json_value, f"{message_path}.{field}")
+                if non_finite is not None:
+                    raise ValueError(f"non-finite number at {non_finite}")
+        return clean_message
+
+    @classmethod
+    def _validate_import_message_content(cls, content: Any, message_path: str) -> None:
+        """Scalar message content must be bindable and later serializable."""
+        if isinstance(content, int) and not isinstance(content, bool) and not (
+                cls._SQLITE_INT_MIN <= content <= cls._SQLITE_INT_MAX):
+            # SQLite can't bind a wider int: this reached INSERT and raised OverflowError.
+            raise ValueError(f"{message_path}.content is outside SQLite's integer range")
+        if isinstance(content, float) and not math.isfinite(content):
+            raise ValueError(f"non-finite number at {message_path}.content")
+        if isinstance(content, (bytes, bytearray)):
+            raise ValueError(f"{message_path}.content must be a string, list, object, finite number, or null")
+
+    @classmethod
+    def _import_float_or_finite(cls, value: Any, field: str) -> Optional[float]:
+        """Import a float column: finite float or None (never fails the import).
+
+        A JSON exponent like ``1e309`` decodes to ``float("inf")``; persisted, it later
+        breaks strict JSON serialization in the session APIs. Missing stays missing.
+        """
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
     def _normalize_import_session(self, raw: Dict[str, Any], session_id: str, messages: list) -> Dict[str, Any]:
         """Type-check one payload session + its messages; raises ValueError."""
         clean_session = dict(raw)
@@ -464,16 +583,21 @@ class SessionPortabilityMixin:
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
+        started_at = clean_session.get("started_at")
+        if started_at is not None and coerce_epoch(started_at, field="started_at") is None:
+            raise ValueError("session.started_at must be a supported Unix timestamp")
+        for field in _IMPORT_FLOAT_COLS:
+            value = clean_session.get(field)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"non-finite number at session.{field}")
+        for field in _IMPORT_INT_COLS:
+            value = clean_session.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and not (
+                    self._SQLITE_INT_MIN <= value <= self._SQLITE_INT_MAX):
+                raise ValueError(f"{field} is outside SQLite's integer range")
         clean_messages: List[Dict[str, Any]] = []
         for message_index, message in enumerate(messages):
-            clean_message = dict(message)
-            role = clean_message.get("role")
-            if not isinstance(role, str) or not role:
-                raise ValueError(f"messages[{message_index}].role must be a non-empty string")
-            for field in _IMPORT_MESSAGE_TEXT_FIELDS:
-                clean_message[field] = self._import_text_or_none(clean_message.get(field), field)
-            clean_message["token_count"] = self._import_int_or_none(clean_message.get("token_count"), "token_count")
-            clean_messages.append(clean_message)
+            clean_messages.append(self._normalize_import_message(message, message_index))
         return {"session": clean_session, "messages": clean_messages}
 
     def _validate_import_payload(self, sessions: List[Dict[str, Any]]) -> tuple:
@@ -538,11 +662,12 @@ class SessionPortabilityMixin:
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
             "started_at": time.time() if started_at is None else started_at,
-            "archived": 1 if raw.get("archived") else 0,
+            **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
             **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
-            **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
-            **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
+            **{col: self._import_float_or_finite(raw.get(col), col) for col in _IMPORT_FLOAT_COLS},
+            **{col: self._import_int_or_bounded(raw.get(col), col, 0) for col in _IMPORT_INT_COLS},
         }
+        params["auto_archived"] &= params["archived"]  # only the sweep sets it, and only on rows it archives
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value

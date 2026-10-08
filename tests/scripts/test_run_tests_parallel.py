@@ -437,6 +437,37 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
     assert sorted(path.name for path in receipt.iterdir()) == expected
 
 
+@pytest.mark.parametrize("selector", ["files", "discovery"])
+@pytest.mark.parametrize("ignore", ["glob", "glob-spaced", "path"])
+def test_passthrough_ignore_drops_files_the_runner_hands_pytest_explicitly(
+    tmp_path, selector, ignore,
+):
+    """Each file reaches its own pytest as an explicit argument, which pytest's
+    --ignore/--ignore-glob never filter; the runner must apply them itself. The
+    Windows lane's ``--ignore-glob='*test_desktop_update_windows_*.py'`` gate was a
+    no-op, so those files ran (and hit the per-file cap) on PRs it meant to spare."""
+    root = _probe_root(tmp_path)   # relative globs anchor at the repo root (per-file pytest's cwd)
+    probe = root / "tests" / "probe"
+    probe.mkdir(parents=True)
+    receipt = tmp_path / "witnesses"
+    receipt.mkdir()
+    for name in ("keep", "gated_skipme"):
+        (probe / f"test_{name}.py").write_text(
+            f"from pathlib import Path\ndef test_{name}():\n    Path({str(receipt / name)!r}).touch()\n",
+            encoding="utf-8")
+    pick = (["--files", os.pathsep.join(f"tests/probe/test_{n}.py" for n in ("keep", "gated_skipme"))]
+            if selector == "files" else ["--paths", str(probe)])
+    flag = {"glob": ["--ignore-glob=*test_gated_*.py"],
+            "glob-spaced": ["--ignore-glob", "*test_gated_*.py"],
+            "path": ["--ignore=tests/probe/test_gated_skipme.py"]}[ignore]
+    runner = root / "scripts/run_tests_parallel.py"
+    result = subprocess.run([sys.executable, str(runner), *pick, "-j", "1", "--file-timeout", "30", "--", *flag],
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(path.name for path in receipt.iterdir()) == ["keep"], result.stdout
+    assert "excluded 1 test file" in result.stdout, result.stdout
+
+
 
 
 @pytest.mark.platforms("posix")  # POSIX signal death; Windows has no SIGSEGV exit
@@ -574,3 +605,19 @@ def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Pa
         off_host.add("posix")
     assert {n.split("platforms(")[1].split(")")[0].strip("'") for n in notes} == off_host, proc.stdout
     assert all("they run on the" in n for n in notes), proc.stdout
+
+
+def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(capsys) -> None:
+    """Each CI slice job restores its own duration cache; the slices must still cover every file once."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_slices", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    root = Path("/repo")
+    files = [root / f"tests/t_{i:03d}.py" for i in range(101)]
+    caches = [{f"tests/t_{i:03d}.py": float(i) for i in range(101)}, {"tests/t_000.py": 500.0}, {}]
+    slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
+              for i in range(3)]
+    assert sorted(f for s in slices for f in s) == sorted(files)

@@ -1,25 +1,19 @@
-import type { OnboardingEnsureSetupProfileResult } from '@hermes/shared'
+import type { OnboardingEnsureSetupProfileResult, OnboardingEnsureSetupSessionResult } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
-import type { SessionCreateOverrides } from '@/app/session/hooks/use-session-actions/create-overrides'
-import {
-  $chatOnboardingThreadIds,
-  endChatOnboardingSolo,
-  pickOnboardingGreeting,
-  takeGuideShape
-} from '@/components/onboarding-chat/assembly'
-import { $setupSession, guideSourceConnectionId, SETUP_CHAT_TITLE } from '@/components/onboarding-chat/setup-profile'
-import { chatMessageText } from '@/lib/chat-messages'
+import { $chatOnboardingThreadIds, endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
+import { $introTurnSent, openIntro, rememberLaunchSource } from '@/components/onboarding-chat/intro'
+import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-session'
+import type { ChatMessagePart } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
-import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
-import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
-import { skipGuide } from '@/store/onboarding-gate'
+import { $setupProfileName, type GuideKickoffResult } from '@/store/onboarding-gate'
+import { $introStartExit } from '@/store/onboarding-intro'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
-import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
   $activeGatewayProfile,
   $newChatProfile,
@@ -27,92 +21,107 @@ import {
   ensureGatewayAgent,
   ensureGatewayProfile
 } from '@/store/profile'
-import { $activeSessionId, $messages, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
+import { createKickoffMachine, KickoffFailure, KickoffSkipped, NO_DEADLINE } from './onboarding-kickoff-machine'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
-/** The connectors card is two turns after the guide opens; its two reads are slow cold, so they start now. */
-function prefetchGuideCatalogs(storedId: null | string, runtimeId: string): void {
+function prefetchGuideCatalogs(storedId: null | string): void {
   if (storedId) {
-    prefetchConnectorCatalog(storedId, runtimeId)
+    prefetchConnectorCatalog(storedId)
     prefetchOnboardingPlugins(storedId)
   }
 }
 
-export interface OnboardingKickoffOptions extends Pick<
-  ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'resumeSession'
-> {
+/** Runs a slash command as if typed; `hidden` keeps its user row out of every transcript. */
+export type KickoffSlashCommand = (command: string, options: { hidden: true; sessionId: string }) => Promise<void>
+
+interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
   requestGateway: AmbientGatewayRequest
-  /** The caller's own requestGateway reads the pin. */
-  runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
+  runSlashCommand: KickoffSlashCommand
 }
 
 interface SetupStatus {
   ready?: boolean
   provider_configured?: boolean
-  free_tier?: boolean
+  free_tier_route?: boolean
 }
 
-interface GuideSession {
-  id: string
-  resolved_id?: string
+const answeredSetupCard = (part: ChatMessagePart) =>
+  part.type === 'tool-call' && part.toolName === 'setup_choose' && part.result !== undefined
+
+/**
+ * Where the setup chat's opening stands after a relaunch. `blank`: no assistant words yet. `stalled`: no
+ * live turn, and nothing after the last answered card drives the chat on — the backend's name and accent
+ * cards were not both answered, or the model never spoke after the last answer (the app quit mid-turn).
+ */
+function setupChatOpening(runtimeId: string): { blank: boolean; stalled: boolean } {
+  const state = $sessionStates.get()[runtimeId]
+  const parts = (state?.messages ?? []).filter(m => m.role === 'assistant' && !m.hidden).flatMap(m => m.parts)
+  const blank = !parts.some(part => part.type === 'text' && part.text.trim())
+
+  if (!state || state.busy || state.awaitingResponse || state.turnLive || state.needsInput) {
+    return { blank, stalled: false }
+  }
+
+  const answers = parts.flatMap((part, index) => (answeredSetupCard(part) ? [index] : []))
+
+  if (answers.length < 2) {
+    return { blank, stalled: true }
+  }
+
+  const spoke = parts
+    .slice(answers[answers.length - 1] + 1)
+    .some(part => part.type === 'tool-call' || (part.type === 'text' && part.text.trim()))
+
+  return { blank, stalled: !spoke }
 }
 
 export async function adoptGuideSession(
   setupProfile: string,
-  canonical: GuideSession,
-  freeTier: SetupStatus['free_tier'],
+  storedId: string,
+  freeTierRoute: SetupStatus['free_tier_route'],
   resumeSession: OnboardingKickoffOptions['resumeSession'],
   guideRequest: AmbientGatewayRequest
-): Promise<void> {
-  await resumeSession(canonical.resolved_id ?? canonical.id, true)
+): Promise<string> {
+  await resumeSession(storedId, true)
   const adoptedRuntimeId = $activeSessionId.get()
   const state = adoptedRuntimeId ? $sessionStates.get()[adoptedRuntimeId] : undefined
 
-  // resumeSession can settle without adopting (failed or superseded resume).
-  // Only release the splash for the guide's actual binding and visible transcript.
   if (
     !adoptedRuntimeId ||
     !state?.storedSessionId ||
-    ![canonical.id, canonical.resolved_id].includes(state.storedSessionId) ||
     $selectedStoredSessionId.get() !== state.storedSessionId ||
-    $activeGatewayProfile.get() !== setupProfile ||
-    !$messages.get().some(message => message.role === 'assistant' && !message.hidden && chatMessageText(message).trim())
+    $activeGatewayProfile.get() !== setupProfile
   ) {
     throw new Error('The welcome conversation could not be loaded. Please try again.')
   }
 
-  $chatOnboardingThreadIds.set([canonical.id, adoptedRuntimeId])
+  $chatOnboardingThreadIds.set([...new Set([storedId, state.storedSessionId, adoptedRuntimeId])])
   $setupSession.set({
-    connectionId: guideSourceConnectionId(canonical.id),
+    connectionId: guideSourceConnectionId(storedId),
     profile: setupProfile,
     runtimeId: adoptedRuntimeId,
-    storedId: canonical.id
+    storedId
   })
-  prefetchGuideCatalogs(canonical.id, adoptedRuntimeId ?? canonical.id)
+  prefetchGuideCatalogs(storedId)
 
-  if (freeTier) {
+  if (freeTierRoute) {
     await guideRequest('config.set', {
       session_id: adoptedRuntimeId,
       key: 'reasoning',
       value: 'minimal'
     })
   }
+
+  return adoptedRuntimeId
 }
 
-/** Seeds the runbook and a pre-written greeting on the setup profile before the phase advances.
- * The seeded assistant row shows the chat's first message without a model turn. */
-export function useOnboardingKickoff({
-  createBackendSessionForSend,
-  requestGateway,
-  resumeSession,
-  runCreatePinnedTo
-}: OnboardingKickoffOptions) {
-  return useCallback(async (): Promise<boolean> => {
+export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCommand }: OnboardingKickoffOptions) {
+  return useCallback(async (): Promise<GuideKickoffResult> => {
     if (!isOnboardingEnabled()) {
-      return false
+      return 'off'
     }
 
     const previousNewChatProfile = $newChatProfile.get()
@@ -121,105 +130,121 @@ export function useOnboardingKickoff({
     const previousConnectionId = activeGatewayConnectionId()
     const previousSetupSession = $setupSession.get()
     const previousThreadIds = $chatOnboardingThreadIds.get()
+    const machine = createKickoffMachine()
     let swapped = false
 
+    // Past the boot budget the start keeps waiting, and the starting screen offers a way out.
+    const offerExit = window.setTimeout(
+      () =>
+        $introStartExit.set(() =>
+          machine.stop(new KickoffSkipped('Setup was skipped while Hermes was still starting.'))
+        ),
+      BACKEND_BOOT_WAIT_TIMEOUT_MS
+    )
+
     try {
-      const { name: setupProfile } = await requestGateway<OnboardingEnsureSetupProfileResult>(
-        'onboarding.ensure_setup_profile',
-        {}
-      )
+      // Every call here is idempotent, so a retry repeats the whole step. The calls carry no deadline: a cold
+      // first boot answers them late, and the machine fails on the signals that mean it never will.
+      const prepared = await machine.attempt('preparing', async () => {
+        const { name: setupProfile } = await requestGateway<OnboardingEnsureSetupProfileResult>(
+          'onboarding.ensure_setup_profile',
+          {},
+          NO_DEADLINE,
+          machine.signal
+        )
 
-      // Probe the guide's own socket before switching profiles so a refusal
-      // leaves classic onboarding on the user's current backend.
-      const record = await requestGatewayForProfile<SetupStatus>(setupProfile, 'setup.status', {})
+        $setupProfileName.set(setupProfile)
 
-      if (record.ready !== true || record.provider_configured !== true) {
-        return false
+        // Foreground: the user is watching the starting screen, so a cold spawn of the setup profile's
+        // backend takes the reserved slot and skips the background redial cooldown.
+        const record = await requestGatewayForProfile<SetupStatus>(
+          setupProfile,
+          'setup.status',
+          {},
+          NO_DEADLINE,
+          machine.signal,
+          { spawnPriority: 'foreground' }
+        )
+
+        if (record.ready !== true || record.provider_configured !== true) {
+          // A retry after the swap saw a ready provider the first time; the swap has to be undone.
+          if (swapped) {
+            throw new KickoffFailure('Inference stopped reporting ready while the welcome chat opened.')
+          }
+
+          return null
+        }
+
+        if (!swapped) {
+          takeGuideShape()
+          rememberLaunchSource()
+          swapped = true
+          $newChatRoute.set(null)
+          $newChatProfile.set(setupProfile)
+        }
+
+        await ensureGatewayProfile(setupProfile)
+
+        // Finds the setup chat by title or creates it; `empty` is true only before its first turn.
+        const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>(
+          'onboarding.ensure_setup_session',
+          {},
+          NO_DEADLINE,
+          machine.signal
+        )
+
+        return { record, setupChat, setupProfile }
+      })
+
+      if (!prepared) {
+        machine.enter('off', 'no inference ready')
+
+        return 'off'
       }
 
-      swapped = true
-      $newChatRoute.set(null)
-      $newChatProfile.set(setupProfile)
-      await ensureGatewayProfile(setupProfile)
+      const { record, setupChat, setupProfile } = prepared
 
-      // Idempotent: the gate already took the shape on the tick the guide was
-      // owed, so no full-size shell painted during the profile round trips.
-      takeGuideShape()
-      await loadMachineProfile()
+      // The way out covers the waits only. Opening switches the session and cannot be cancelled halfway, so a
+      // stop there would roll back under a resume that still lands on the setup chat.
+      window.clearTimeout(offerExit)
+      $introStartExit.set(null)
+
+      machine.enter('opening', `session ${setupChat.session_id}`)
 
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(setupProfile, method, params, timeout)
 
-      // Look the guide up by its exact title: a relaunch adopts the existing guide session before creating
-      // one, so the backend's UNIQUE(title) constraint cannot leave an untitled duplicate behind.
-      const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
-        include_hidden: true,
-        title: SETUP_CHAT_TITLE
-      })
-
-      const canonical = registryHit?.sessions?.[0]
-
-      if (canonical?.id) {
-        await adoptGuideSession(setupProfile, canonical, record.free_tier, resumeSession, guideRequest)
-
-        // runGuideKickoff records the guided phase only after adoption.
-        return true
-      }
-
-      const capabilities = await readOnboardingCapabilities({
-        connectionId: previousConnectionId,
-        profile: setupProfile
-      })
-
-      const seedMessages = buildChatOnboardingSeedMessages(
-        pickOnboardingGreeting(),
-        record.free_tier !== true,
-        capabilities
-      )
-
-      const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
-
-      if (record.free_tier) {
-        createOverrides.reasoningEffort = 'minimal'
-      }
-
-      const runtimeId = await runCreatePinnedTo(setupProfile, () =>
-        createBackendSessionForSend(null, seedMessages, createOverrides)
-      )
-
-      if (!runtimeId) {
-        throw new Error('The welcome chat could not be created. Please try again.')
-      }
-
-      const storedId = $selectedStoredSessionId.get()
-      $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
-      prefetchGuideCatalogs(storedId, runtimeId)
-      $setupSession.set({
-        connectionId: guideSourceConnectionId(storedId),
-        profile: setupProfile,
-        runtimeId,
-        storedId
-      })
-
-      // Set the title explicitly so the backend does not name the session after the hidden runbook message.
-      await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
-
-      await adoptGuideSession(
+      const runtimeId = await adoptGuideSession(
         setupProfile,
-        { id: storedId ?? runtimeId },
-        record.free_tier,
+        setupChat.session_id,
+        record.free_tier_route,
         resumeSession,
         guideRequest
       )
 
-      return true
+      // A relaunch reopens the same setup chat; one whose opening was cut off is sent the command again.
+      const opening = setupChat.empty ? { blank: true, stalled: true } : setupChatOpening(runtimeId)
+
+      openIntro(opening.blank)
+      $introTurnSent.set(!opening.stalled)
+
+      if (opening.stalled) {
+        // The skill turn: the backend plays the fixed cards, then the model takes over.
+        void runSlashCommand('/initiate-setup', { hidden: true, sessionId: runtimeId }).finally(() =>
+          $introTurnSent.set(true)
+        )
+      }
+
+      machine.enter('started')
+
+      return 'started'
     } catch (error) {
+      machine.enter('failed', error instanceof Error ? error.message : String(error))
       $newChatProfile.set(previousNewChatProfile)
       $newChatRoute.set(previousNewChatRoute)
       $setupSession.set(previousSetupSession)
       $chatOnboardingThreadIds.set(previousThreadIds)
       endChatOnboardingSolo()
-      skipGuide()
 
       if (swapped) {
         await (
@@ -231,14 +256,21 @@ export function useOnboardingKickoff({
         })
       }
 
-      console.error('[setup] welcome chat could not start', error)
-      notify({
-        kind: 'error',
-        title: 'Welcome chat needs attention',
-        message: error instanceof Error ? error.message : 'The welcome chat could not start.'
-      })
+      // Going on without setup is the person's choice, not an error to report.
+      if (!(error instanceof KickoffSkipped)) {
+        console.error('[setup] welcome chat could not start', error)
+        notify({
+          kind: 'error',
+          title: 'Welcome chat needs attention',
+          message: error instanceof Error ? error.message : 'The welcome chat could not start.'
+        })
+      }
 
-      return false
+      return 'failed'
+    } finally {
+      window.clearTimeout(offerExit)
+      $introStartExit.set(null)
+      machine.dispose()
     }
-  }, [createBackendSessionForSend, requestGateway, resumeSession, runCreatePinnedTo])
+  }, [requestGateway, resumeSession, runSlashCommand])
 }

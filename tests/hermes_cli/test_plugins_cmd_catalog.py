@@ -134,6 +134,43 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
+def test_the_catalog_name_you_installed_with_works_for_every_later_verb(world, tmp_path):
+    """17 catalog entries install under a different manifest name (`hermes-memory-wiki` lands as
+    `plugins/memory-wiki`). Every later verb must accept the name the user typed at install, resolved
+    through the installer's own record; a URL install shipping a forged sidecar must not claim it."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: renamed-plugin\nversion: 1.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "manifest name differs from catalog name")
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert pc._find_plugin_entry("cat-plugin") is None
+
+    pc.cmd_install("cat-plugin", enable=False)
+    target = world["plugins_dir"] / "renamed-plugin"
+    assert target.is_dir() and pc._get_enabled_set() == set()
+
+    pc.cmd_enable("cat-plugin")
+    assert pc._get_enabled_set() == {"renamed-plugin"}
+    pc.cmd_show("cat-plugin")
+    pc.cmd_capabilities("cat-plugin")
+    pc.cmd_disable("cat-plugin")
+    assert pc._get_disabled_set() == {"renamed-plugin"}
+    assert pc.dashboard_set_agent_plugin_enabled("cat-plugin", enabled=True)["name"] == "renamed-plugin"
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"] is True
+    assert pc.dashboard_remove_user_plugin("cat-plugin")["ok"] is True
+    assert not target.exists()
+    assert "renamed-plugin" not in pc._get_enabled_set()
+
+
+def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):
+    import hermes_cli.observability.shared_metrics_events as events
+
+    calls = []
+    monkeypatch.setattr(events, "record_extension_install", lambda **kw: calls.append(kw))
+    assert pc.dashboard_install_plugin(world["repo"].as_uri(), force=False, enable=False)["ok"]
+    assert pc.dashboard_install_plugin("", force=True, enable=False, catalog_name="cat-plugin")["ok"]
+
+    assert calls == [{"kind": "plugin", "source": "local", "name": None, "outcome": "success"}]
 
 
 def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():
@@ -321,6 +358,93 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
+_HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
+
+
+_PROVIDER = "def register(ctx):\n    ctx.register_memory_provider(object())\n"
+
+
+@pytest.mark.parametrize("init,enable", [
+    (_PROVIDER, True),
+    (_PROVIDER, False),
+    (_HOOK, True),
+    ('"""Recall hook. Not a MemoryProvider: it only injects context."""\n' + _HOOK, True),
+])
+def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, monkeypatch,
+                                                                                  init, enable):
+    """A memory provider activates through memory.provider alone — the loader never consults
+    plugins.enabled — so "Enable now?" must select the provider, and a decline must point at
+    `hermes memory setup`, never at the dead-end `plugins enable` hint. Catalog category "memory" also
+    holds hook plugins: those enable normally and leave the user's memory.provider alone, even when their
+    docstring names MemoryProvider (the loader would return None for them)."""
+    repo = world["repo"]
+    provider = init is _PROVIDER
+    (repo / "__init__.py").write_text(init)
+    world["state"]["pin"] = _commit(repo, "memory category plugin")
+
+    def _memory_entries():
+        return [pc_cat.PluginCatalogEntry(name="cat-plugin", repo=repo.as_uri(), sha=world["state"]["pin"],
+                                          description="d", maintainer="t", category="memory")]
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: _memory_entries())
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    if not provider:
+        pc._save_memory_provider("honcho")
+        pc.cmd_install("cat-plugin", enable=enable)
+        assert (pc._get_current_memory_provider(), pc._get_enabled_set()) == ("honcho", {"cat-plugin"})
+        return
+    pc.cmd_install("cat-plugin", enable=enable)
+    assert pc._get_current_memory_provider() == ("cat-plugin" if enable else "")
+    assert pc._get_enabled_set() == set()
+    assert any("hermes memory setup" in line for line in printed)
+    assert not any("plugins enable cat-plugin" in line for line in printed)
+
+
+@pytest.mark.parametrize("prior", [None, "disabled", "enabled"])
+def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_path, monkeypatch, prior):
+    """A URL (non-catalog) install whose tree satisfies the memory-provider contract gets the same
+    provider activation path — the catalog category is a shortcut, not the only trigger. An explicit
+    --enable must leave the provider loadable: a plugins.disabled entry would make the loader refuse it,
+    and a reinstall must repair the old state that listed the provider in plugins.enabled instead."""
+    from hermes_cli.config import load_config, save_config
+    from plugins.memory import _explicitly_disabled, find_provider_dir
+
+    repo = tmp_path / "mem-repo"
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text("name: mem-plugin\nversion: 1.0.0\ndescription: d\n")
+    (repo / "__init__.py").write_text("from agent.memory_provider import MemoryProvider\n\n\n"
+                                      "class Mem(MemoryProvider):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
+    _commit(repo, "v1")
+
+    printed: list[str] = []
+
+    def _capture(*args, **_kwargs):
+        printed.extend(str(a) for a in args)
+
+    monkeypatch.setattr(pc, "_console",
+                        lambda: type("C", (), {"print": staticmethod(_capture)})())
+
+    if prior == "enabled":
+        pc.cmd_install(repo.as_uri(), enable=False)
+    if prior:
+        cfg = load_config()
+        cfg.setdefault("plugins", {})[prior] = ["mem-plugin"]
+        save_config(cfg)
+    pc.cmd_install(repo.as_uri(), enable=True, force=prior == "enabled")
+    assert pc._get_current_memory_provider() == "mem-plugin"
+    assert pc._get_enabled_set() == ({"mem-plugin"} if prior == "enabled" else set())
+    assert not _explicitly_disabled("mem-plugin", find_provider_dir("mem-plugin"))
+    assert any("memory.provider" in line for line in printed)
+
+
 def test_annotated_tag_pin_keeps_reviewed_trust_and_reads_as_at_pin(world, monkeypatch):
     """A pin recorded as `git rev-parse <tag>` names the TAG object; HEAD can only ever be the commit it
     points at. Trust (scan skips the caution prompt) and the at-pin check must both use the peeled commit,
@@ -370,3 +494,28 @@ def test_repin_that_widens_the_plugin_requires_consent_on_every_surface(world, m
     # Consent given → applied.
     assert pc.dashboard_update_user_plugin("cat-plugin", accept_capabilities=True)["unchanged"] is False
     assert _head(target) == wide
+
+
+def test_catalog_rows_maps_resolves_the_live_catalog_once(monkeypatch):
+    """``_plugin_rows`` needs pins, versions and titles together; taking them via the three single-map
+    helpers pays the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). ``catalog_rows_maps`` must resolve once and
+    stay best effort like the per-map helpers: an empty triple on failure."""
+    calls = []
+
+    def fake_live():
+        calls.append(1)
+        return [pc_cat.PluginCatalogEntry(name="a", repo="https://github.com/o/r", sha="a" * 40,
+                                          description="d", maintainer="t", version="1.2.3", title="Alpha"),
+                pc_cat.PluginCatalogEntry(name="b", repo="https://github.com/o/r2", sha="b" * 40,
+                                          description="d", maintainer="t")]
+
+    monkeypatch.setattr(cat, "load_catalog_live", fake_live)
+    assert cat.catalog_rows_maps() == ({"a": "a" * 40, "b": "b" * 40}, {"a": "1.2.3"}, {"a": "Alpha"})
+    assert len(calls) == 1
+
+    def boom():
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(cat, "load_catalog_live", boom)
+    assert cat.catalog_rows_maps() == ({}, {}, {})

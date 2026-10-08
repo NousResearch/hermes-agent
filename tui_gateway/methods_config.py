@@ -208,7 +208,8 @@ def _cfg_get_reasoning(params):
     session = _sessions.get(params.get("session_id", "")) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
-        reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
+        from agent.voice_turn_route import session_runtime_view
+        reasoning_config = getattr(session_runtime_view(session.get("agent")), "reasoning_config", None)
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
@@ -233,7 +234,7 @@ def _cfg_get_fast(params):
             else session.get("create_service_tier_override"))
     if tier is None:
         tier = _load_service_tier()
-    return {"value": "fast" if tier == "priority" else "normal"}
+    return {"value": {"priority": "fast", "ultrafast": "ultrafast"}.get(tier, "normal")}
 
 
 def _cfg_get_thinking_mode(params):
@@ -390,8 +391,10 @@ def _(rid, params: dict) -> dict:
     added after boot — the Models page, a picker key, ``hermes setup`` from a shell — flips it
     without a restart. If the record
     is still missing after the wait, or a named profile is asked about, today's live probe answers.
-    The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
+    The record's fields ride along additively (``ready``, ``free_tier_account``, ``free_tier_route``,
+    ``other_providers``)."""
     try:
+        from hermes_cli.anon_auth import free_tier_route
         from hermes_cli.main import _has_any_provider_configured
         from hermes_cli.free_tier_bootstrap import wait_for_record
 
@@ -404,12 +407,14 @@ def _(rid, params: dict) -> dict:
                 # setup-profile probe lands here, and its kickoff requires ``ready``.
                 launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-                        **({"ready": True, "free_tier": launch.free_tier} if launch is not None else {}),
+                        **({"ready": True, "free_tier_account": launch.free_tier_account,
+                            "free_tier_route": free_tier_route()} if launch is not None else {}),
                         **scoped}
             # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
             # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
-                    "free_tier": record.free_tier, "other_providers": record.other_providers,
+                    "free_tier_account": record.free_tier_account, "free_tier_route": record.free_tier_route,
+                    "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
         return _readiness_check(rid, params, probe, probe_key="status",
                                 wait_seconds=_READINESS_STATUS_SHARE_WAIT_SECONDS)
@@ -435,17 +440,26 @@ def _(rid, params: dict) -> dict:
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
+            startup_model, startup_provider = _resolve_startup_runtime()
             if requested:
-                model, _startup_provider = _resolve_startup_runtime()
-                runtime = resolve_runtime_provider(requested=requested, target_model=model or None)
+                model, runtime = startup_model, resolve_runtime_provider(
+                    requested=requested, target_model=startup_model or None)
             else:
                 model, runtime = _resolve_agent_model_runtime(None, None)
             provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
             provider = runtime.get("provider") or "provider"
             source = str(runtime.get("source") or "")
+            # Without an explicit ``provider`` this probe ran the startup pin and then the
+            # configured fallback chain; when the chain only resolves at its tail, ``runtime``
+            # stops there and the failure blames a provider the user never pinned (#124939).
+            # Attribute failures to the pin (startup pin, else the config model pin).
+            cfg_model = _load_cfg().get("model")
+            pinned = (requested or startup_provider
+                      or (str(cfg_model.get("provider") or "").strip() if isinstance(cfg_model, dict) else ""))
+            blamed = pinned or provider
 
             def fail(error, src):
-                return {"ok": False, "provider": provider, "model": model,
+                return {"ok": False, "provider": blamed, "model": model,
                         "source": src, "error": error, **scoped}
             if (not provider_configured and provider == "bedrock"
                     and source in {"iam-role", "aws-sdk-default-chain"}):
@@ -454,18 +468,30 @@ def _(rid, params: dict) -> dict:
             api_key_text = "" if callable(api_key) else str(api_key or "").strip()
             if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {provider}.", runtime.get("source"))
+                return fail(f"No usable credentials found for {blamed}.", runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
-            # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
+            # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
             return {"ok": True, "provider": runtime.get("provider"), "model": model,
                     "source": runtime.get("source"),
-                    "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
+                    "free_tier_route": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})
+
+
+def _redact_client_text(text: str, cap: int) -> str:
+    """Strict-scrub client text, then cap it. The scrub sees at most 3x the cap: the
+    first line end in [2x, 3x) cap, else a hard 2x-cap cut, so a key cut by the cap
+    still gets redacted but an unbounded (even single-line) RPC param cannot make
+    the superlinear scrub run on megabytes."""
+    from hermes_cli.debug_redaction import redact_debug_support_text
+
+    cut = text.find("\n", 2 * cap, 3 * cap)
+    window = text[: cut + 1] if cut >= 0 else text[: 2 * cap]
+    return redact_debug_support_text(window, max_chars=cap)
 
 
 def _safe_client_label(label: str) -> str:
@@ -483,24 +509,26 @@ def _(rid, params: dict) -> dict:
     and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
     upload failures render inline. Optional: ``error_context`` (-> ``error-context.txt``),
     ``extra_files`` ({label -> text}), ``log_lines`` (default 200); all force-redacted."""
+    # Outside the try: the except path needs it, and agent.redact is a hard dependency.
+    from hermes_cli.debug_redaction import redact_debug_support_text
+
     try:
-        from hermes_cli.debug import _redact_log_text, build_nous_bundle, collect_share_bundle
+        from hermes_cli.debug import build_nous_bundle, collect_share_bundle
         from hermes_cli.diagnostics_upload import share_to_nous
         log_lines = params.get("log_lines")
         if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
             log_lines = 200
         bundle = collect_share_bundle(log_lines=log_lines, redact=True)
-        # Client text goes through the SAME upload-safe redactor as backend logs (force secret
-        # redaction + email masking), never the weaker bare secret pass.
+        # Redact complete client values before applying their support-upload caps.
         error_context = params.get("error_context")
         if isinstance(error_context, str) and error_context.strip():
-            bundle["error-context.txt"] = _redact_log_text(error_context.strip()[:8_000])
+            bundle["error-context.txt"] = _redact_client_text(error_context.strip(), 8_000)
         # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
         extra_files = params.get("extra_files")
         for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
             safe_label = _safe_client_label(label) if isinstance(label, str) else ""
             if safe_label and isinstance(text, str) and text.strip():
-                bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
+                bundle[f"client/{safe_label}"] = _redact_client_text(text, 524_288)
         res = share_to_nous(build_nous_bundle(bundle, redact=True))
         view_url = res.get("viewUrl") or res.get("view_url")
         upload_id = res.get("id")
@@ -509,7 +537,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
                          "expires_at": res.get("expiresAt") or res.get("expires_at")})
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        return _ok(rid, {"ok": False, "error": redact_debug_support_text(e)})
 
 
 def register(server) -> None:

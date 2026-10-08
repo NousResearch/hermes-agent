@@ -696,7 +696,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
-            pinned=bool(a["pinned"]),
+            pinned=bool(a["pinned"]), allow_silent=a["allow_silent"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -908,6 +908,10 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         updates["enabled_toolsets"] = a["enabled_toolsets"]
     if a["attach_to_session"] is not None:
         updates["attach_to_session"] = bool(a["attach_to_session"])
+    if a["allow_silent"] is not None:
+        # Tri-state on the tool surface: only an explicit True/False edits the field, so a model
+        # re-sending the schema with type-default empties cannot flip a job's silence policy.
+        updates["allow_silent"] = bool(a["allow_silent"])
     if a["workdir"] is not None:
         # Empty string clears; otherwise update_job() validates/normalizes.
         updates["workdir"] = _normalize_optional_job_value(a["workdir"]) or None
@@ -1014,7 +1018,8 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    allow_silent: Optional[bool] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1142,6 +1147,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
+            "allow_silent": {
+                "type": "boolean",
+                "description": "Default True: the agent may suppress delivery by responding with [SILENT] when there is nothing new to report. Set False for recurring briefings/heartbeats that must always send something — the [SILENT] guidance is replaced with an always-report instruction and, if the model emits a silence marker anyway, the scheduler delivers a short all-clear instead of the raw marker. Internal silences from no_agent script jobs (empty stdout, wakeAgent=false) stay silent regardless: this flag only governs an LLM agent's explicit silence response. Leave unset to keep the current behaviour."
+            },
         },
         "required": ["action"]
     }
@@ -1170,7 +1179,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "allow_silent")
 
 
 def _cronjob_handler(args, **kw):

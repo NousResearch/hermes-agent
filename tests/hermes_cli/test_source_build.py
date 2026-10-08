@@ -69,7 +69,7 @@ def test_automatic_build_preserves_pm_admission_intent(monkeypatch):
     from hermes_cli.source_build import source_build_env
 
     intent = []
-    def acquire(name, *, base_env, explicit):
+    def acquire(name, *, base_env, explicit, verify=True):
         intent.append(explicit)
         return Runner(name, base_env)
     monkeypatch.setattr(pm, "ensure", acquire)
@@ -108,7 +108,7 @@ def source_checkout(tmp_path, monkeypatch):
     monkeypatch.delenv("NPM_CONFIG_USERCONFIG", raising=False)
     acquired = []
 
-    def acquire(name, *, base_env=None, explicit=False):
+    def acquire(name, *, base_env=None, explicit=False, verify=True):
         acquired.append(name)
         assert name == "npm"
 

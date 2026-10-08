@@ -1458,6 +1458,7 @@ def compute_error_backoff(
         LIVE_RETRY_WAIT_CAP_S, RETRY_AFTER_CAP_S, adaptive_rate_limit_backoff, jittered_backoff,
         provider_retry_after_seconds,
     )
+    from agent.api_error_summary import provider_error_log_detail
     from agent.redact import has_volatile_sensitive_text
     from hermes_cli.anon_auth import on_free_model
 
@@ -1511,7 +1512,7 @@ def compute_error_backoff(
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", agent._summarize_api_error(api_error),
+        _backoff_policy or "default", provider_error_log_detail(api_error),
     )
     return wait_time
 

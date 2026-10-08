@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
 import re
@@ -136,6 +137,257 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
+def _repair_swapped_close_brackets(text: str) -> Optional[str]:
+    """Repair adjacent close brackets the model emitted out of order.
+
+    A strict single-pass scan (string literals respected) that stops at the first
+    closer not matching its stack counterpart. When the very next character is the
+    closer that WOULD match the stack, swapping the two is the minimal repair and the
+    scan resumes. Returns the repaired string, or None when the failure is not this
+    exact pattern (no silent best-effort beyond one well-defined repair class).
+
+    Measured cause: a long Qwen3.8-27B turn emitted the tool_call batch as a
+    JSON string whose tail read `"]}]}"` instead of `"]}"` — the array's `]`
+    landed one position too early, ahead of the arguments object's `}`
+    (5/5 failed attempts identical in shape). Bracket counts stay balanced, so
+    a naive parse fails right at the misplaced `]`.
+    """
+    pairs = {"}": "{", "]": "["}
+    opens = {"{", "["}
+    stack: List[str] = []
+    out = list(text)
+    in_str = False
+    esc = False
+    repairs = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = out[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in opens:
+            stack.append(ch)
+        elif ch in pairs:
+            if stack and stack[-1] == pairs[ch]:
+                stack.pop()
+            elif (
+                i + 1 < n
+                and stack
+                and pairs.get(out[i + 1]) == stack[-1]
+            ):
+                out[i], out[i + 1] = out[i + 1], ch
+                repairs += 1
+                stack.pop()  # the swapped-in closer at out[i] now matches the stack
+            else:
+                return None
+        i += 1
+    if in_str or esc or stack:
+        return None
+    return "".join(out) if repairs else None
+
+
+def _is_valid_calls_batch(obj: Any) -> bool:
+    """Semantic guard for the malformed-tail repairs: a recovered string must parse
+    to a real calls batch (a non-empty list of dicts each carrying a non-empty
+    ``name``). This is what stops a repair from "fixing" a genuinely corrupted or
+    structurally wrong payload into a plausible-but-wrong one."""
+    if not isinstance(obj, list) or not obj:
+        return False
+    return all(isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].strip() for e in obj)
+
+
+def _repair_single_char_edit(text: str) -> Optional[str]:
+    """Recover a stringified ``tool_call`` batch that needs exactly one character
+    fixed: a missing or misplaced bracket/quote-escape, or one missing comma.
+
+    Measured shapes (Qwen3.8-27B, tail region of the stringified batch):
+
+    - the entry object closed one brace too early, leaving ``"name"`` dangling at
+      array level: ``...}]}}, "name": "..."`` (10/94 rejected payloads);
+    - the array closed before the entry object: ``...}]}`` at the very tail
+      (missing one final ``]`` or ``}``);
+    - a dropped comma between batch entries: ``...600}, {"arguments": ...``;
+    - escape-level drift where ``arguments`` is itself a JSON string: the closing
+      quote got over-escaped (``...\\\\\"}]}]}`` — an extra backslash makes the
+      string never terminate).
+
+    Unlike the single-shape strategies above, an one-character edit can have several
+    legal-looking placements, so acceptance is stricter: every edit candidate that
+    parses AND passes :func:`_is_valid_calls_batch` is kept, and the repair is used
+    **only when exactly one semantic batch survives**. Two different valid readings
+    means the slip is ambiguous (deleting ``]`` vs ``}`` at the tail yields
+    structurally different batches) and must be left to the model's retry, never
+    guessed. Two-or-more-edit damage (double slips, truncation) is out of scope on
+    purpose — the combinatorics make unique-solution checking unsound.
+    """
+    results: Dict[str, str] = {}  # canonical batch JSON -> repaired text
+
+    def accept(candidate: str) -> None:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            return
+        if _is_valid_calls_batch(obj):
+            results.setdefault(json.dumps(obj, sort_keys=True, ensure_ascii=False), candidate)
+
+    # Editable positions: brackets outside string literals + backslashes inside
+    # them (the escape-drift shape). A single pass that also tracks in-string state.
+    positions: List[int] = []
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+                positions.append(i)
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{}[]":
+            positions.append(i)
+
+    for i in positions:
+        accept(text[:i] + text[i + 1:])  # delete the one char at i
+    for i in positions + [len(text)]:
+        accept(text[:i] + "]" + text[i:])  # insert ]
+        accept(text[:i] + "}" + text[i:])  # insert }
+        prev = text[i - 1] if i > 0 else ""
+        # A comma only makes sense where a sibling element would follow — after a
+        # closer, never glued to an identifier/number.
+        if prev not in ("", "{", "[") and not prev.isalnum():
+            accept(text[:i] + "," + text[i:])  # insert ,
+
+    if len(results) == 1:
+        return next(iter(results.values()))
+    return None
+
+
+def _repair_missing_tail_closers(text: str) -> Optional[str]:
+    """Recover a batch whose tail is missing one or two final close brackets.
+
+    Measured shape (Qwen3.8-27B, session musg34l4x2opyk, 8 identical failures
+    over multiple days): the stringified batch stops right after closing the
+    inner ``arguments`` object — the enclosing entry object and the batch array
+    are never closed, so the tail reads ``...}}]}`` instead of ``...}}]}}]``.
+
+    Appending is bounded to two closers (8 suffixes, shortest first). A repair is
+    accepted only when it is the UNIQUE valid batch at the shortest working
+    length; a payload truncated mid-content cannot parse after any tail append
+    (dangling string/comma), so this cannot complete garbage.
+    """
+    for depth in (1, 2):
+        found: Dict[str, str] = {}
+        for suffix in itertools.product("]}", repeat=depth):
+            cand = text + "".join(suffix)
+            try:
+                obj = json.loads(cand)
+            except json.JSONDecodeError:
+                continue
+            if _is_valid_calls_batch(obj):
+                found.setdefault(json.dumps(obj, sort_keys=True, ensure_ascii=False), cand)
+        if len(found) == 1:
+            return next(iter(found.values()))
+        if found:  # several valid completions at this length -> ambiguous
+            return None
+    return None
+
+
+def _repair_malformed_calls_string(text: str) -> Optional[str]:
+    """Recover a stringified ``tool_call`` batch from the small-model tail-bracket
+    malformations measured on long Qwen3.8-27B turns. Five bounded strategies,
+    tried in code order:
+
+    1. adjacent close brackets emitted out of order (counts balanced) — handled by
+       :func:`_repair_swapped_close_brackets` (09-29, 5/5 identical shape);
+    2. a valid batch prefix followed by a trailing run of stray close brackets —
+       cut at the prefix end;
+    3. exactly one missing/misplaced character or a dropped comma (early entry
+       close, escape drift, sibling comma loss) — :func:`_repair_single_char_edit`,
+       applied only when the one-edit repair yields a UNIQUE valid batch;
+    4. the batch tail missing its final one/two close brackets —
+       :func:`_repair_missing_tail_closers`, unique completion required;
+    5. exactly one surplus close bracket (counts off by +1) — delete it.
+
+    Each candidate is accepted **only** if it re-parses to a valid calls batch
+    (:func:`_is_valid_calls_batch`), so real corruption is never silently masked.
+    Returns the repaired string, or ``None`` when no bounded repair applies.
+    """
+    # 1. adjacent close brackets out of order (balanced counts).
+    repaired = _repair_swapped_close_brackets(text)
+    if repaired is not None:
+        try:
+            if _is_valid_calls_batch(json.loads(repaired)):
+                return repaired
+        except json.JSONDecodeError:
+            pass
+    # 2. valid batch prefix + trailing stray close brackets -> cut.
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        obj, end = None, None
+    if obj is not None:
+        trail = text[end:]
+        if trail and all(ch in "]}" for ch in trail) and _is_valid_calls_batch(obj):
+            return text[:end]
+    # 4. a single missing/misplaced character (one edit only; the repaired batch
+    #    must be the UNIQUE semantic result, else reject).
+    repaired = _repair_single_char_edit(text)
+    if repaired is not None:
+        return repaired
+    # 5. the batch tail never got its final one/two close brackets — bounded
+    #    append, unique-completion required.
+    repaired = _repair_missing_tail_closers(text)
+    if repaired is not None:
+        return repaired
+    # 3. exactly one surplus close bracket (forward stack scan, delete the mismatch).
+    pairs = {"}": "{", "]": "["}
+    opens = {"{", "["}
+    stack: List[int] = []
+    in_str = False
+    esc = False
+    mismatch: Optional[int] = None
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in opens:
+            stack.append(i)
+        elif ch in pairs:
+            if stack and text[stack[-1]] == pairs[ch]:
+                stack.pop()
+            else:
+                mismatch = i
+                break
+    if mismatch is not None and not in_str:
+        candidate = text[:mismatch] + text[mismatch + 1:]
+        try:
+            obj2 = json.loads(candidate)
+        except json.JSONDecodeError:
+            obj2 = None
+        if _is_valid_calls_batch(obj2):
+            return candidate
+    return None
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -157,7 +409,19 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            # Small-model structural slips in the stringified batch envelope:
+            # adjacent close brackets out of order, a trailing run of stray
+            # close brackets, or one surplus close bracket (each shape measured
+            # on long Qwen3.8-27B turns; see _repair_malformed_calls_string).
+            repaired = _repair_malformed_calls_string(raw_calls)
+            if repaired is not None:
+                try:
+                    raw_calls = json.loads(repaired)
+                    logger.info("tool_call 'calls' recovered a malformed-tail slip")
+                except json.JSONDecodeError as e2:
+                    return [], f"tool_call 'calls' is not valid JSON: {e2}"
+            else:
+                return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

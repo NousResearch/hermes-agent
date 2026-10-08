@@ -1005,6 +1005,13 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
 def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
+    # Surface any snapshot that silently failed since the last turn: a missing
+    # resume point the session believes it has is a coverage hole, not noise.
+    if getattr(agent._checkpoint_mgr, "enabled", False):
+        with contextlib.suppress(Exception):
+            notice = agent._checkpoint_mgr.consume_checkpoint_notice()
+            if notice:
+                agent._emit_warning(notice)
     display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
     if _tool_progress_enabled(agent):
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"

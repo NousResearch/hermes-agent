@@ -795,10 +795,29 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
+        # One-shot user-visible warning per directory whose snapshot could not
+        # be taken; drained by ``consume_checkpoint_notice`` on the next turn.
+        self._pending_failures: List[str] = []
 
     # ------------------------------------------------------------------
     # Turn lifecycle
     # ------------------------------------------------------------------
+
+    def consume_checkpoint_notice(self) -> Optional[str]:
+        """One warning line summarising the directories whose take failed since the last drain.
+
+        A snapshot that silently did not happen is a coverage hole in the
+        ``rollback`` promise: the session holds a resume point it does not
+        actually have. The caller surfaces this to the user instead of
+        dropping it (``agent.tool_executor`` calls it on the next tool start).
+        """
+        if not self._pending_failures:
+            return None
+        dirs = self._pending_failures
+        self._pending_failures = []
+        listed = ", ".join(dirs[:3]) + ("…" if len(dirs) > 3 else "")
+        return (f"⚠️ point de reprise non pris pour {listed} — "
+                "snapshot de checkpoint en échec (voir les logs)")
 
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
@@ -937,10 +956,27 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            from tools.checkpoint_pruning import store_lock
+            from tools.checkpoint_pruning import (
+                STORE_LOCK_TAKE_TIMEOUT_SECONDS,
+                store_lock,
+            )
 
-            with store_lock(_resolve_checkpoint_base()):
-                return self._take(abs_dir, reason)
+            from tools.checkpoint_pruning import PruneError
+
+            try:
+                with store_lock(
+                    _resolve_checkpoint_base(),
+                    wait=True,
+                    timeout=STORE_LOCK_TAKE_TIMEOUT_SECONDS,
+                ):
+                    return self._take(abs_dir, reason)
+            except PruneError:
+                # The store stayed busy for the whole bounded wait: the
+                # snapshot did not happen. Say so once for this directory.
+                self._pending_failures.append(abs_dir)
+                logger.warning("Checkpoint skipped: store busy after %.1fs (%s)",
+                               STORE_LOCK_TAKE_TIMEOUT_SECONDS, abs_dir)
+                return False
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1468,7 +1504,7 @@ class CheckpointManager:
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:
-            logger.debug("Checkpoint git-add failed: %s", err)
+            logger.warning("Checkpoint git-add failed in %s: %s", working_dir, err)
             return False
 
         if self.max_file_size_mb > 0:

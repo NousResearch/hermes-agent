@@ -83,7 +83,7 @@ export class RemoteRevalidationCoordinator {
 interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (connection: TConnection, path: string, options: { timeoutMs: number; freshSocket?: boolean }) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
 }
@@ -104,6 +104,32 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
   retire
 }: EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection>): Promise<TConnection> {
   let connection: TConnection
+
+  // A first probe failure does not prove the descriptor is dead: on a fresh
+  // SSH forward the remote /api/health answer can lose the race against the
+  // background liveness budget while ssh-lifecycle's synchronous bootstrap
+  // (platform/locate/version) still owns the channel, and a quiet-box
+  // cold-start needs ~6-8s. Retiring on the first miss tears down a healthy
+  // forward mid-use and kicks off a reconnect storm, so give the descriptor
+  // one bounded retry before the retire path below runs.
+  async function probeWithRetry(path: string): Promise<void> {
+    try {
+      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS })
+    } catch (firstError) {
+      if (isMissingHealthEndpointError(firstError)) {
+        throw firstError
+      }
+
+      await new Promise(resolve => setTimeout(resolve, POOLED_DISPATCH_PROBE_RETRY_DELAY_MS))
+      // The retry must NOT reuse the keep-alive pool: the first failure may
+      // have come from a stale pooled socket whose SSH mux forward channel
+      // wedged (socket stays open locally, never delivers → 'socket hang
+      // up'). Retrying on the pool would hit the same dead socket and wrongly
+      // retire a healthy forward (#131765). A fresh socket makes the TCP
+      // handshake itself the liveness test.
+      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS, freshSocket: true })
+    }
+  }
 
   try {
     connection = await connectionPromise

@@ -62,6 +62,20 @@ function jsonAgentFor(protocol) {
   return protocol === 'https:' ? HTTPS_JSON_AGENT : HTTP_JSON_AGENT
 }
 
+// A keep-alive pool can hold a socket whose peer (an SSH mux forward channel)
+// wedged mid-session: the socket stays open locally but never delivers, so the
+// next reuse dies with 'socket hang up' — a false 'backend is dead' signal
+// (#131765). Probes that must distinguish "stale pooled socket" from "backend
+// actually gone" need a socket that CANNOT be a stale pool entry: a fresh
+// agent with no keep-alive, so the TCP handshake itself proves liveness. This
+// is deliberately un-pooled — callers use it for one-shot health probes only,
+// never for bulk traffic.
+function freshJsonAgentFor(protocol) {
+  return protocol === 'https:'
+    ? new https.Agent({ keepAlive: false, maxSockets: 1 })
+    : new http.Agent({ keepAlive: false, maxSockets: 1 })
+}
+
 function downloadAgentFor(protocol) {
   return protocol === 'https:' ? HTTPS_DOWNLOAD_AGENT : HTTP_DOWNLOAD_AGENT
 }
@@ -298,6 +312,7 @@ function isSchemeOrSlashRedirect(requestUrl: string, location: null | string): b
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  freshJsonAgentFor,
   htmlResponseError,
   httpStatusError,
   isIdempotentMethod,

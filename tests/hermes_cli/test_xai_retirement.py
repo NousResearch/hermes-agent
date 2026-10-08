@@ -1,4 +1,4 @@
-"""Unit tests for hermes_cli.xai_retirement (May 15, 2026 model retirement)."""
+"""Unit tests for hermes_cli.xai_retirement (xAI model retirements)."""
 from __future__ import annotations
 
 
@@ -81,7 +81,7 @@ class TestFindRetiredPerSlot:
         assert len(issues) == 1
         assert issues[0].config_path == "principal.model"
         assert issues[0].current_model == "grok-code-fast-1"
-        assert issues[0].replacement == "grok-4.3"
+        assert issues[0].replacement == "grok-build-0.1"
         assert issues[0].reasoning_effort is None
 
 # ---------------------------------------------------------------------------
@@ -90,10 +90,13 @@ class TestFindRetiredPerSlot:
 
 class TestMigrationSemantics:
 
-    def test_imagine_pro_maps_to_imagine_quality(self):
-        cfg = {"plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}}}
-        issue = find_retired_xai_refs(cfg)[0]
-        assert issue.replacement == "grok-imagine-image-quality"
+    def test_imagine_pro_and_quality_follow_quality_to_2(self):
+        """quality retires Nov 2, 2026 (served by 2.0); pro already redirected to quality, so it follows."""
+        pro = find_retired_xai_refs({"plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-pro"}}}})[0]
+        quality = find_retired_xai_refs({"plugins": {"image_gen": {"xai": {"model": "grok-imagine-image-quality"}}}})[0]
+        assert pro.replacement == quality.replacement == "grok-imagine-image-2.0"
+        assert (pro.retires_on, quality.retires_on) == ("May 15, 2026", "November 2, 2026")
+        assert pro.guide_url != quality.guide_url
 
     def test_all_retired_have_replacement(self):
         for name, entry in _RETIRED_MODELS.items():

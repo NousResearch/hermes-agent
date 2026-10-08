@@ -115,7 +115,7 @@ DOCTOR_CHECKS = (
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
-    ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
+    ('xAI model retirements', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),

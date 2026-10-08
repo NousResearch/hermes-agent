@@ -347,12 +347,14 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
         narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
 
 
-def test_provider_is_plugin_facing_only():
-    """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
+def test_plugin_provider_and_model_facing_task_pins_keep_separate_surfaces():
+    """Plugin launches accept a provider; model-facing pins belong only to task entries."""
     import dataclasses
     from tools.delegate_tool import DELEGATE_TASK_SCHEMA
 
     assert "provider" in {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-    exposed = set(props) | set(props["tasks"]["items"]["properties"])
-    assert not exposed & {"provider", "model", "base_url", "api_key"}
+    assert not set(props) & {"provider", "model", "base_url", "api_key"}
+    task_props = props["tasks"]["items"]["properties"]
+    assert {"provider", "model"} <= set(task_props)
+    assert not set(task_props) & {"base_url", "api_key"}

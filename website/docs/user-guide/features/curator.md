@@ -182,6 +182,145 @@ skills:
   ledger_max_bytes: 5242880   # 0 = never auto-maintain
 ```
 
+## Native skill-call audit (opt-in)
+
+The mutation ledger above records edits. A separate native-call journal records
+`skill_manage` calls that reach the **final registry dispatch seam after
+middleware**, including handler failures and changes staged for approval by the
+write gate inside the registry. It is **disabled by default**:
+
+```yaml
+skills:
+  native_call_audit: false
+```
+
+The setting requires the exact boolean `true` to enable auditing, not a string
+such as `"true"`. After reviewing the storage and security limits below, these
+are the commands to use in a future deployment; they are not required for
+ordinary curator operation:
+
+```bash
+hermes config set skills.native_call_audit true   # opt in
+hermes config set skills.native_call_audit false  # stop recording new calls
+```
+
+Enabling this journal does not enable background review or consolidation,
+adopt unmanaged skills, or change pins. Disabling it does not erase existing
+audit files. With the setting absent or `false`, native calls do not create the
+journal or its key.
+
+### What is recorded
+
+Both files live directly under the active profile's Hermes home
+(`$HERMES_HOME`, or `~/.hermes/` for the default profile), not inside `skills/`:
+
+- `skill_native_audit.key` — a private 32-byte HMAC key.
+- `skill_native_audit.jsonl` — append-only handler-entry and handler-completion
+  records linked by an audit invocation UUID.
+
+Entry records carry the native runtime's task, session, tool-call, turn, and
+API-request IDs as supplied. Omitted or `None` IDs become `null`; supplied empty
+strings are retained literally and also represent missing provenance. IDs are
+not normalized or synthesized. The invocation UUID is
+only an audit correlation ID: it is not a substitute session ID or a human
+identity. These are runtime provenance labels, **not authenticated human
+identity, authority, or tamper-proof proof of authorship**.
+
+Runtime IDs are retained and may contain routing metadata. Treat the journal as
+private even though arguments and results are fingerprinted rather than stored.
+
+The journal keeps HMAC-SHA256 fingerprints rather than raw arguments or
+results. The input fingerprint covers the **final normalized/coerced registry
+arguments after middleware**, not the provider's original wire arguments or
+pre-normalization handler bytes. The result fingerprint covers the **exact
+registry-returned result**, not the later middleware/plugin-transformed final
+response. A registry-returned string is fingerprinted as a JSON string, even
+when its contents happen to be JSON. Fingerprints use UTF-8 canonical JSON with
+`sort_keys=True`, `separators=(',', ':')`, `ensure_ascii=False`, and
+`allow_nan=False`.
+
+When a mutation ledger entry is successfully written within the audited call,
+its top-level `native_skill_call` field links it to the invocation UUID. The
+existing caller-supplied ledger evidence is unchanged. Completion records link
+the successfully written ledger IDs and an HMAC of each entry's evidence;
+they do not copy that evidence into the new journal. The original curator
+ledger and its content-addressed blobs retain their existing storage behavior:
+**this feature does not scrub their evidence or saved skill content**.
+
+### How to interpret a span
+
+Keep these outcomes separate:
+
+- **Handler outcome:** `success`, `failure`, `approval_pending`, or `exception`
+  (`unknown` when the returned shape does not establish a status). Approval
+  pending is not an applied edit.
+- **Ledger outcome:** `appended`, `missing`, or `disabled`. An appended row is
+  historical evidence of a recorded mutation, not proof that the whole call
+  succeeded. A missing row is not proof that no mutation occurred.
+- **Batch rollback:** `not_observed`, `rolled_back`, or `rollback_failed`.
+  `not_observed` does not guarantee that nothing was rolled back outside the
+  observed path. Ledger rows from an operation later rolled back remain
+  historical rows.
+
+An entry without a matching completion has an **UNKNOWN** outcome. A crash,
+`KeyboardInterrupt`, or failed completion append can leave such an entry-only
+span. There is no atomic transaction spanning the journal, mutation ledger,
+and skill changes; do not infer success from ledger counts alone.
+
+Auditing is **fail-open**: audit failures emit the static warning
+`Native skill-call audit unavailable; tool execution is unaffected.` and do
+not retry or change the original tool invocation's semantics. That audit
+warning contains no exception text, paths, arguments, results, or traceback.
+This guarantee applies to the new audit warning only; existing registry and
+model-layer error logs are outside its scope.
+
+### Coverage, key protection, and retention
+
+Pre-dispatch policy or approval denials and execution middleware that
+short-circuits without calling `next_call` do not reach the final registry seam
+and are **not recorded**. This differs from write-gate pending approval inside
+the registry, which is recorded as `approval_pending`. Direct Python calls,
+out-of-band filesystem edits, and other paths that bypass this seam are not
+covered. Enabling the feature cannot retroactively attribute older edits. HMACs do not authenticate every journal
+field or make the journal tamper-proof; a holder of the key can generate new
+fingerprints.
+
+You need the original key to verify fingerprints against independently held
+arguments, results, or evidence. Protect and back up the key together with the
+journal; **never print or share the key**. Check platform-specific file access
+protections before deployment: a POSIX file mode is not a Windows ACL
+confidentiality guarantee.
+
+File-security behavior is verified on **Linux**; other platforms remain
+unverified. Audit I/O requires no-follow, descriptor-relative file operations
+and directory locking. If required primitives are unavailable, it refuses audit
+I/O with the static fail-open warning above, rather than using an insecure
+fallback. The key and journal must be regular files owned by the effective user,
+with mode `0600` and a single hard link; symlinks and FIFOs are refused. The
+profile directory must also belong to that user and must not be group- or
+world-writable. Existing unsafe files are **not silently chmodded**.
+
+Before appending, the journal's last byte is checked under the same secure
+directory lock using its validated file descriptor. An empty journal or one
+ending in a newline accepts new records. A nonempty, unterminated tail causes
+audit I/O refusal: **every existing byte is preserved**, with no automatic
+newline insertion, truncation, normalization, or repair. Later tool calls still
+execute once but are unrecorded, emit the static unavailable warning, and add
+no new native-call linkage to their mutation ledger entries. Recording remains
+unavailable until separately authorized operator recovery establishes a
+complete newline boundary. The original incomplete span's outcome remains
+**UNKNOWN**; recovery does not establish its outcome. Protect the damaged
+journal and its key together before any operator recovery.
+
+Locking covers each audit I/O operation, with `fsync` for writes; it does not
+make skill changes, ledger entries, and journal records an atomic transaction,
+or make the journal tamper-proof.
+
+The native journal is currently **append-only and unbounded**; the curator
+ledger's `skills.ledger_max_bytes` limit does not apply to it. Choose retention,
+protected backup, and disk-usage monitoring before opting in. Do not assume
+turning the setting off deletes or compacts old records.
+
 ## Archive TTL purge
 
 Archived skills are kept forever by default. If you want `~/.hermes/skills/.archive/` bounded, set a TTL and purge explicitly — purging never runs automatically, and every purged skill is captured into the ledger (with blobs) first, so even a purge leaves an auditable, recoverable trail:

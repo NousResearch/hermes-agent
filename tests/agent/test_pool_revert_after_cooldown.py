@@ -107,6 +107,64 @@ def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(mo
     assert late.api_key == "sk-ant-oat01-PREF" and pool2.select().id == "pref0000"
 
 
+class _SessionOnEntry(_LiveAgent):
+    """A session already bound to a given entry (earlier ones were taken by other sessions).
+
+    Bypasses ``_LiveAgent``'s opening ``select()`` because under ``round_robin`` that call itself
+    renumbers the pool, which is the behaviour under test.
+    """
+
+    def __init__(self, pool, entry_id):
+        self._credential_pool = pool
+        entry = next(e for e in pool.entries() if e.id == entry_id)
+        pool._current_id = entry.id
+        self._credential_pool_entry_id = entry.id
+        self.api_key = entry.runtime_api_key
+
+
+def _round_robin_pool(monkeypatch):
+    monkeypatch.setattr(cp, "get_pool_strategy", lambda provider: cp.STRATEGY_ROUND_ROBIN)
+    pool = CredentialPool(provider="anthropic", entries=[
+        _entry("pref0000", "primary-key", priority=0, auth_type="api_key", token="sk-ant-api03-PREF"),
+        _entry("mid00000", "second-key", priority=1, auth_type="api_key", token="sk-ant-api03-MID"),
+        _entry("fall0000", "backup-key", priority=2, auth_type="api_key", token="sk-ant-api03-FALL"),
+    ])
+    monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
+    return pool
+
+
+def test_round_robin_priorities_are_a_cursor_not_a_preference(monkeypatch):
+    """Pins the premise: ``select()`` renumbers every entry, so ``priority`` cannot rank them."""
+    pool = _round_robin_pool(monkeypatch)
+    assert [(e.id, e.priority) for e in pool.entries()] == [("pref0000", 0), ("mid00000", 1), ("fall0000", 2)]
+    pool.select()
+    assert [(e.id, e.priority) for e in pool.entries()] != [("pref0000", 0), ("mid00000", 1), ("fall0000", 2)]
+
+
+def test_round_robin_rotation_never_arms_a_revert(monkeypatch):
+    """A round-robin pool has no preferred entry, so nothing may pin the session back to one.
+
+    The rank guard reads ``priority`` after ``mark_exhausted_and_rotate``. Under ``round_robin``
+    that read happens *after* select() renumbered the pool, so a session that rotated UP off the
+    lowest-numbered entry was seen as having rotated DOWN: the revert armed and
+    ``restore_primary_runtime`` later dragged the session back onto the credential it had just
+    been rate-limited off.
+    """
+    real_time = time.time
+    pool = _round_robin_pool(monkeypatch)
+    agent = _SessionOnEntry(pool, "fall0000")
+
+    recover_with_credential_pool(agent, status_code=429, has_retried_429=False, error_context={"message": "Error"})
+    recovered, _ = recover_with_credential_pool(agent, status_code=429, has_retried_429=True, error_context={"message": "Error"})
+
+    assert recovered and agent._credential_pool_entry_id != "fall0000"
+    assert getattr(agent, "_credential_pool_revert_id", None) is None
+    rotated_to = agent._credential_pool_entry_id
+    _expire_cooldowns(monkeypatch, real_time, 2)
+    assert restore_primary_runtime(agent) is False
+    assert agent._credential_pool_entry_id == rotated_to  # not dragged back to the benched entry
+
+
 def test_auth_bench_does_not_arm_a_revert(monkeypatch):
     """A 401 bench is not a quota window: the session keeps the credential it rotated to."""
     pool = CredentialPool(provider="anthropic", entries=[

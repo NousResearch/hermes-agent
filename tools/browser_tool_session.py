@@ -64,6 +64,26 @@ def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
         browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
+def windows_headless_browser_options(browser_env: Dict[str, str],
+                                     is_windows: Optional[bool] = None) -> Dict[str, str]:
+    """(#64867) Pin local Chromium headless on Windows.
+
+    Local mode is documented as zero-cost headless Chromium, but the agent-browser
+    daemon inherits this env, and anything that resolves its ``--headed`` setting
+    to a window (``--headed`` is agent-browser's documented boolean flag; this env
+    var is its documented equivalent) turns a browser-tool turn into a blank
+    top-level window over the Windows Desktop chat. Pure in ``(options, is_windows)``
+    so the invariant is testable on any host; call sites pass nothing (they resolve
+    ``os.name``) and skip non-Windows hosts entirely. Never overrides an explicit
+    ``AGENT_BROWSER_HEADED`` — the opt-out stays the user's.
+    """
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows or "AGENT_BROWSER_HEADED" in browser_env:
+        return browser_env
+    return {**browser_env, "AGENT_BROWSER_HEADED": "false"}
+
+
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
     """Best-effort read of agent-browser stdout/stderr temp files."""
     out = []
@@ -735,6 +755,10 @@ def _spawn_and_collect(
                              command)
     else:
         _apply_chromium_sandbox_args(browser_env)
+        # #64867: a local Chromium launch (no --cdp attach) must stay headless on
+        # Windows; headed mode is the intentional opt-out (dispatch adds --headed).
+        if not session_info.get("cdp_url") and not _cloud._is_headed_mode():
+            browser_env = windows_headless_browser_options(browser_env)
 
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")

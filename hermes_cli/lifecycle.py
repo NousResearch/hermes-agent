@@ -53,6 +53,19 @@ def has_hook(hook_name: str) -> bool:
     return plugins.has_hook(hook_name)
 
 
+def session_end_messages(results: Any) -> List[str]:
+    """User-facing text from ``on_session_finalize`` results: a non-empty ``str`` or ``{"message": str}``.
+
+    Surfaces show these out-of-band (CLI print, TUI system line, gateway chat send) — never as a model
+    turn. ``on_session_end`` is per-turn and stays observer-only."""
+    messages: List[str] = []
+    for result in results or ():
+        text = result.get("message") if isinstance(result, dict) else result
+        if isinstance(text, str) and text.strip():
+            messages.append(text.strip())
+    return messages
+
+
 def finalize_session(**kwargs: Any) -> List[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
     _observe("on_session_finalize", **kwargs)

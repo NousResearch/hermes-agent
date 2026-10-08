@@ -967,6 +967,18 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#     # local_override:       # Optional: route compaction elsewhere ONLY while the main chat
+#     #                       # model is one of the listed local/LAN endpoints — every other
+#     #                       # main model keeps the base route above. A local chat model has
+#     #                       # no business summarizing its own long context: use a cheap,
+#     #                       # long-context cloud route instead.
+#     #   provider: openrouter
+#     #   model: "google/gemini-2.5-flash"
+#     #   base_urls:                          # Gate: exact match (trailing "/" ignored), so
+#     #     - "http://myhost:8000/v1"         # list every spelling your runtime may report
+#     #     - "http://myhost:8000"            # (".../v1" and the bare host:port).
+#     # The gate needs BOTH: main provider is custom/ollama/lmstudio/vllm/custom:* AND its
+#     # live base_url is in base_urls. Checked per call, so /model switches route correctly.
 #     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
 #                                 # substantive event before it fails fast (default: 60).
 #                                 # Independent of "timeout" above (the overall request

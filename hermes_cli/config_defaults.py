@@ -1739,6 +1739,9 @@ DEFAULT_CONFIG = {
             "launcher": [],
         },
     },
+    # Maximum seconds a profile's shell hook may request. Per-entry `timeout` values above this
+    # cap are clamped; raise it for trusted long-running verification hooks.
+    "hooks_max_timeout": 300,
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
     # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:

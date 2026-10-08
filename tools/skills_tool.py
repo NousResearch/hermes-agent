@@ -127,6 +127,17 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
+def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+    """Extract conditional activation fields from parsed frontmatter.
+
+    Delegates to ``agent.skill_utils.extract_skill_conditions`` — the same
+    helper the system-prompt builder uses — so listing and prompt always
+    parse conditions identically.
+    """
+    from agent.skill_utils import extract_skill_conditions
+    return extract_skill_conditions(frontmatter)
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
     (respects test monkeypatching), then skills.external_dirs."""
@@ -213,10 +224,14 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
+                # Conditional-activation fields ride along so callers (e.g.
+                # `skills list --enabled-only`) can apply the same gate the
+                # system-prompt builder uses.
                 scanned.append({
                     "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                     "description": _truncate_description(description),
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
+                    "conditions": _extract_conditions(frontmatter),
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
                                                       and skill_matches_apps(frontmatter))})
@@ -236,7 +251,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
+    return [{"name": s["load_name"], "description": s["description"], "category": s["category"],
+             "conditions": s.get("conditions") or {}}
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 

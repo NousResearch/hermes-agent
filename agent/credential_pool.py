@@ -2639,13 +2639,12 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
 
 def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     state, source_path = _load_provider_state_with_source(auth_store, "nous")
-    from hermes_cli.anon_auth import guest_without_free_tier
-    if guest_without_free_tier(state) or owned_profile_reads_root_state(auth_store, "nous", source_path):
-        return  # a guest kept for connectors only; an agent_key-only row surviving a fork strip/heal
-    has_runtime_material = bool(
-        isinstance(state, dict)
-        and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())
-    )
+    if owned_profile_reads_root_state(auth_store, "nous", source_path):
+        # e.g. an agent_key-only row surviving a fork strip/heal
+        return
+    from hermes_cli.anon_auth import guest_without_free_tier  # kept for connectors only: no inference rows
+    has_runtime_material = not guest_without_free_tier(state) and bool(isinstance(state, dict) and (
+        str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip()))
     if state and not has_runtime_material:
         seed.changed |= _retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
     if not (state and has_runtime_material):

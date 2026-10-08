@@ -633,8 +633,16 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False) -> 
             if failure and not force and time.monotonic() < failure.not_before:
                 return None
             verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=None)
-            with _nous_http_client(timeout_seconds, verify) as client:
-                return _mint_locked(client, portal, auth_store)
+            try:
+                with _nous_http_client(timeout_seconds, verify) as client:
+                    return _mint_locked(client, portal, auth_store)
+            except Exception as exc:
+                # Noted before the locks are released, so a caller queued on them sees the cooldown.
+                err = classify_mint_exception(exc)
+                err.mint_failure = _note_mint_failure(err)
+                if err is exc:
+                    raise
+                raise err from exc
 
 
 def ensure_portal_identity(
@@ -673,7 +681,7 @@ def ensure_portal_identity(
         state = _reconcile_and_provision(timeout_seconds=timeout_seconds, force=force)
     except Exception as exc:
         err = classify_mint_exception(exc)
-        noted = _note_mint_failure(err)
+        noted = getattr(err, "mint_failure", None) or _note_mint_failure(err)
         logger.info("Nous free tier not set up (%s, attempt %d%s)", noted.code, noted.attempts,
                     f", next try in {noted.retry_after:.0f}s" if noted.retryable else ", not retried")
         if err is exc:

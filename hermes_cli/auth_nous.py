@@ -442,7 +442,7 @@ def _nous_shared_shape(src: dict[str, Any]) -> dict[str, Any]:
         "inference_base_url": src.get("inference_base_url") or (
             DEFAULT_NOUS_WELCOME_URL if src.get("auth_method") == "anonymous" else DEFAULT_NOUS_INFERENCE_URL),
         "obtained_at": src.get("obtained_at"), "expires_at": src.get("expires_at"),
-        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id")
+        **{k: src[k] for k in ("auth_method", "account_tier", "anon_token", "user_id", "org_id", "connectors_token")
            if src.get(k) not in (None, "")}}
 
 

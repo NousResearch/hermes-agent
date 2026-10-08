@@ -195,6 +195,28 @@ class TestTransformToolResultHook:
         assert isinstance(result, str)
         assert "eval_injection" in result
 
+    def test_v4a_patch_is_scanned_against_each_files_own_path(self):
+        """A V4A patch has no top-level ``path``; path-gated rules must still see the edited file."""
+        mod = _load_plugin_init()
+        patch = ("*** Begin Patch\n*** Update File: tools/run.py\n@@\n-    subprocess.run(argv)\n"
+                 "+    os.system(cmd)\n*** End Patch")
+        result = mod._on_transform_tool_result(
+            tool_name="patch", args={"mode": "patch", "patch": patch}, result='{"success": true}'
+        )
+        assert isinstance(result, str)
+        assert "os_system_injection" in result
+
+    def test_v4a_patch_ignores_removed_lines_and_doc_files(self):
+        """Removing a dangerous call, or writing ``eval(`` into a Markdown doc, is not a finding;
+        in block mode it would refuse the corrective write."""
+        mod = _load_plugin_init()
+        patch = ("*** Begin Patch\n*** Update File: loader.py\n@@\n-    data = pickle.loads(blob)\n"
+                 "+    data = json.loads(blob)\n*** Add File: docs/notes.md\n+Never call eval( on user input.\n"
+                 "*** End Patch")
+        assert mod._on_transform_tool_result(
+            tool_name="patch", args={"mode": "patch", "patch": patch}, result='{"success": true}'
+        ) is None
+
     def test_untargeted_tool_skipped(self):
         mod = _load_plugin_init()
         # The plugin only scans write_file/patch/skill_manage. terminal output

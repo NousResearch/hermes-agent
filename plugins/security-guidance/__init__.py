@@ -20,10 +20,11 @@ from . import patterns as _patterns
 logger = logging.getLogger(__name__)
 
 # tool name -> (path_arg_name, content_arg_names). Every populated content field is scanned
-# (patch's new_string vs raw patch text; skill_manage's file_path is the path inside the skill dir).
+# (skill_manage's file_path is the path inside the skill dir). patch's V4A ``patch`` text names its
+# own files and is scanned per file by _scan_v4a_patch.
 _TARGET_TOOLS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "write_file": ("path", ("content",)),
-    "patch": ("path", ("new_string", "patch")),
+    "patch": ("path", ("new_string",)),
     "skill_manage": ("file_path", ("file_content", "new_string")),
 }
 
@@ -77,6 +78,23 @@ def _scan_content(path: str, content: str) -> List[Tuple[str, str]]:
     return [(e["ruleName"], e["reminder"]) for e in _COMPILED if _rule_matches(e, path, content)]
 
 
+def _scan_v4a_patch(patch: str) -> List[Tuple[str, str]]:
+    """A V4A patch carries no top-level ``path``: scan each file's ADDED lines against that file's own
+    path, so path-gated rules (Python-only, not-docs, workflow files) see the real file type and a line
+    the patch removes is not reported. Unparseable text is scanned whole, as before."""
+    from tools.patch_parser import parse_v4a_patch
+
+    operations, error = parse_v4a_patch(patch)
+    if error:
+        return _scan_content("", patch)
+    findings: Dict[str, str] = {}
+    for op in operations:
+        added = "\n".join(line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+")
+        for name, reminder in _scan_content(op.new_path or op.file_path, added):
+            findings.setdefault(name, reminder)
+    return list(findings.items())
+
+
 def _scan_args(tool_name: str, args: Any) -> List[Tuple[str, str]]:
     """Shared scan for both hooks (block mode via pre_tool_call, warn mode via transform)."""
     spec = _TARGET_TOOLS.get(tool_name)
@@ -84,7 +102,10 @@ def _scan_args(tool_name: str, args: Any) -> List[Tuple[str, str]]:
         return []
     path_key, content_keys = spec
     path = raw_path if isinstance(raw_path := args.get(path_key), str) else ""
-    return [finding for val in (args.get(ck) for ck in content_keys) if isinstance(val, str) and val for finding in _scan_content(path, val)]
+    findings = [finding for val in (args.get(ck) for ck in content_keys) if isinstance(val, str) and val for finding in _scan_content(path, val)]
+    if tool_name == "patch" and isinstance(v4a := args.get("patch"), str) and v4a:
+        findings += _scan_v4a_patch(v4a)
+    return findings
 
 
 def _format_warning_block(findings: List[Tuple[str, str]]) -> str:

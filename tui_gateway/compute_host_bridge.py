@@ -65,6 +65,13 @@ def _compute_host_turn_frame(
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        # A model switch queued while the session was busy (config.set model ->
+        # pending_model_switch) must cross the process boundary — the live agent is in
+        # the compute host, and the server-side _apply_pending_model_switch would
+        # pop-and-drop it against agent=None. COPIED (not popped): the stash is
+        # cleared only after a successful isolated turn (_on_compute_host_turn_done),
+        # so the fail-open in-process path can still apply it if the host dispatch fails.
+        "pending_model_switch": session.get("pending_model_switch"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
@@ -187,7 +194,7 @@ def _relay_compute_host_response(frame: dict) -> bool:
     return True
 
 
-def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
     located = _compute_host_request_session(request_id)
@@ -241,6 +248,11 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
+    # The isolated turn carried the queued model switch to the compute host, whose
+    # turn thread applied it. Clear the server-side stash so it isn't re-forwarded
+    # (kept on error so the fail-open in-process path can still apply it).
+    if frame.get("type") != "turn.error":
+        session.pop("pending_model_switch", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -302,6 +314,13 @@ def _send_compute_host_control(
     return _get_compute_host_supervisor().control(
         sid, route_name=route_name, payload=frame, wait=wait, timeout=timeout,
         on_late_ack=on_late_ack)
+
+
+def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
+    """``_err`` for a ``control.error``/``error`` ack, else None."""
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, code, str(ack.get("message") or default))
+    return None
 
 
 def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:

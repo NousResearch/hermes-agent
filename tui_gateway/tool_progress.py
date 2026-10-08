@@ -70,7 +70,7 @@ def _fmt_tool_duration(seconds: float | None) -> str:
         return f"{seconds:.1f}s"
     if seconds < 60:
         return f"{round(seconds)}s"
-    mins, secs = divmod(int(round(seconds)), 60)
+    mins, secs = divmod(round(seconds), 60)
     return f"{mins}m {secs}s" if secs else f"{mins}m"
 
 

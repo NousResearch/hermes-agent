@@ -11,7 +11,8 @@ import time
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
-from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
+from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
@@ -57,12 +58,26 @@ def escape_like(text: str) -> str:
 
 
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
-_PREVIEW_SCAFFOLDED_SQL = f"m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+# User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
+# the typed request sits at the tail (auto-load) or behind the instruction marker.
+# No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
+_PREVIEW_SCAFFOLDED_SQL = (
+    f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+    f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
 _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+# ``display_metadata`` flag stamped on the user row a busy-queue accept writes (#111868/#121374
+# accept-time durability). The in-memory queue drain re-places an unmarked row at the transcript
+# end and deactivates this one; a backend restart discards the queue with nothing left to retire
+# the accept-time row, so ``reopen_session`` deactivates still-marked rows (#125577) — the marker
+# is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
+# turn's row (which #123532 deliberately keeps active).
+QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
 def _sql_json_extract(expression: str, path: str) -> str:
@@ -141,10 +156,13 @@ def _shape_preview(raw: Any) -> str:
     return text[:_PREVIEW_MAX_CHARS] + "..." if len(text) > _PREVIEW_MAX_CHARS else text
 
 
-# Correlated ``_preview_raw`` column for a ``sessions s`` row.
-_PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m"
-    f" WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL AND {_PREVIEW_ELIGIBLE_SQL}"
-    f" ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
+def _sql_preview_raw(session_id_expr: str = "s.id") -> str:
+    """Correlated ``_preview_raw`` column: the first eligible user message of *session_id_expr*.
+    ``INDEXED BY`` walks the session in timestamp order and stops at the first eligible row; with planner
+    stats older than idx_messages_session_id, SQLite otherwise reads and sorts the whole session (#119403)."""
+    return (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
+        f" WHERE m.session_id = {session_id_expr} AND m.role = 'user' AND m.content IS NOT NULL"
+        f" AND {_PREVIEW_ELIGIBLE_SQL} ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
@@ -242,7 +260,9 @@ def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
     skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
     session with no trusted cell at all is NULL."""
-    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+    # Pinned for the same reason as _sql_preview_raw (#119403).
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m INDEXED BY idx_messages_session"
+        f" WHERE _act_m.session_id = {session_id_expr}"
         f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
     return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
         f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
@@ -417,6 +437,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    auto_archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
@@ -700,6 +721,9 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+-- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
+CREATE INDEX IF NOT EXISTS idx_messages_session_uid
+    ON messages(session_id, message_uid) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
@@ -1104,9 +1128,11 @@ def _write_lock_holder_record(handle) -> None:
     from a live wedged one.
 
     Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
+    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.  ``pidns``: see
+    ``hermes_state_pidns``.
     """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
     _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
 
 
@@ -1117,13 +1143,16 @@ def _clear_lock_holder_record(handle) -> None:
 
 def _lock_holder_provably_dead(record) -> bool:
     """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
+    (no/malformed record, PID owned by another user, /proc unavailable, foreign PID namespace)
+    is False: FAIL CLOSED and defer.  Unstamped records keep probing: see ``hermes_state_pidns``."""
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    if not persistent_record_pidns_checkable(record.get("pidns")):
+        return False  # foreign namespace: a local reading is not proof — defer
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

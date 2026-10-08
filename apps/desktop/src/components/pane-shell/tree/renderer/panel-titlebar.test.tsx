@@ -56,6 +56,10 @@ describe('usePanelTitlebar', () => {
 
     renderHook(() => usePanelTitlebar(ref, true, false))
     expect(element.style.getPropertyValue('--panel-titlebar-left')).toBe('172px')
+    // Right reservation is the cluster's left edge to the panel's right edge —
+    // no extra pad. A +24 here was a dead (no app-region) gutter against Settings
+    // (#131729); the 48px data-window-drag-handle is the clearance.
+    expect(element.style.getPropertyValue('--panel-titlebar-right')).toBe('100px')
 
     // Fullscreen: the traffic lights vanish and the cluster pins to the edge —
     // a pure translate. No ResizeObserver callback, no `resize` event.

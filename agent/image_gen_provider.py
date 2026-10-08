@@ -23,7 +23,7 @@ from agent.provider_base import CatalogProviderBase
 logger = logging.getLogger(__name__)
 
 
-VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
+VALID_ASPECT_RATIOS: tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
 
 
@@ -32,10 +32,13 @@ class ImageGenProvider(CatalogProviderBase):
     :attr:`name` and :meth:`generate`; ``list_models`` entries may add
     ``speed`` / ``strengths`` / ``price`` for the picker."""
 
-    def capabilities(self) -> Dict[str, Any]:
-        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``.
-        Surfaced in the dynamic tool schema so the model knows when ``image_url`` is
-        honored; the text-only default keeps non-overriding providers backward compatible."""
+    def capabilities(self) -> dict[str, Any]:
+        """``modalities`` (``"text"`` and/or ``"image"``) and ``max_reference_images``; optionally
+        ``supports_upscale`` (bool) and ``creative_controls`` (names from the tool's creative-control
+        vocabulary: ``creativity``, ``intensity``, ``complexity``, ``movement``). Surfaced in the
+        dynamic tool schema so the model knows when ``image_url`` / ``upscale`` / each control is
+        honored, and only declared controls are passed to :meth:`generate`; the text-only default
+        keeps non-overriding providers backward compatible."""
         return {"modalities": ["text"], "max_reference_images": 0}
 
     @abc.abstractmethod
@@ -45,9 +48,9 @@ class ImageGenProvider(CatalogProviderBase):
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         *,
         image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
+        reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate an image, or edit ``image_url`` (``reference_image_urls`` are extra
         style/composition refs, clamped to ``max_reference_images``); any source image
         routes to the edit endpoint. Return :func:`success_response` / :func:`error_response`.
@@ -62,7 +65,7 @@ def resolve_aspect_ratio(value: Optional[str]) -> str:
     return v if v in VALID_ASPECT_RATIOS else DEFAULT_ASPECT_RATIO
 
 
-def normalize_reference_images(value: Any) -> Optional[List[str]]:
+def normalize_reference_images(value: Any) -> Optional[list[str]]:
     """Coerce a str or list into a clean list of non-blank strings; ``None`` when
     nothing usable remains so providers treat "no refs" as one sentinel."""
     if isinstance(value, str):
@@ -72,9 +75,12 @@ def normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
+_GENERATED_IMAGE_KIND = f"{provider_media.GENERATED_SUBDIR}/images"
+
+
 def save_b64_image(b64_data: str, *, prefix: str = "image", extension: str = "png") -> Path:
-    """Decode base64 image data into ``$HERMES_HOME/cache/images/``; return the path."""
-    return provider_media.save_b64("images", b64_data, prefix=prefix, extension=extension)
+    """Decode base64 image data into ``$HERMES_HOME/cache/generated/images/``; return the path."""
+    return provider_media.save_b64(_GENERATED_IMAGE_KIND, b64_data, prefix=prefix, extension=extension)
 
 
 _URL_IMAGE_CONTENT_TYPES = {
@@ -85,10 +91,10 @@ _URL_IMAGE_CONTENT_TYPES = {
 def save_url_image(
     url: str, *, prefix: str = "image", timeout: float = 60.0, max_bytes: int = 25 * 1024 * 1024,
 ) -> Path:
-    """Download an (often ephemeral) image URL into ``$HERMES_HOME/cache/images/``. Raises on
+    """Download an (often ephemeral) image URL into ``$HERMES_HOME/cache/generated/images/``. Raises on
     network / HTTP / oversize / empty errors so callers can fall back to the bare URL."""
     return provider_media.save_url(
-        "images", url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
+        _GENERATED_IMAGE_KIND, url, prefix=prefix, timeout=timeout, max_bytes=max_bytes,
         chunk_size=64 * 1024, content_types=_URL_IMAGE_CONTENT_TYPES,
         url_extensions=("png", "jpg", "jpeg", "webp", "gif"), default_extension="png",
         label="Image", empty_error="Image at {url} returned 0 bytes; refusing to cache.",
@@ -103,10 +109,10 @@ def success_response(
     aspect_ratio: str,
     provider: str,
     modality: str = "text",
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Uniform success dict; ``extra`` keys are added without overriding standard ones."""
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True, "image": image, "model": model, "prompt": prompt,
         "aspect_ratio": aspect_ratio, "modality": modality, "provider": provider,
     }
@@ -123,7 +129,7 @@ def error_response(
     model: str = "",
     prompt: str = "",
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a uniform error response dict."""
     return {
         "success": False, "image": None, "error": error, "error_type": error_type,

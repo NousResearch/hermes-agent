@@ -519,7 +519,7 @@ hermes dump [--show-keys]
 | **Features** | 已启用的 toolset、MCP 服务器数量、memory provider |
 | **Services** | Gateway 状态、已配置的消息平台 |
 | **Workload** | Cron 任务数量、已安装 skill 数量 |
-| **Config overrides** | 与默认值不同的所有 config 值 |
+| **Config overrides** | 与默认值不同的所有 config 值。其中的凭据会被脱敏：`fallback_providers` 条目的 `api_key`，以及其 `base_url` 中的凭据（userinfo、`key`/token 查询参数、签名 URL 的签名）。 |
 
 ### 示例输出
 
@@ -584,7 +584,7 @@ hermes debug share [options]
 | `--expire <days>` | 粘贴过期天数（默认：7）。 |
 | `--local` | 在本地打印报告而非上传。 |
 
-报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥。
+报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥；这也涵盖系统 dump（包括 `fallback_providers` 条目及其 URL 中的凭据）和 gateway 的 `/debug` 报告。
 
 依次尝试的粘贴服务：paste.rs、dpaste.com。
 

@@ -68,7 +68,7 @@ the gallery. There is no separate listing to maintain.
 
 ## Admission rules
 
-<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/plugin_catalog keeps them identical) -->
+<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/website/test_catalog_rules_mirror.py keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
    `hermes-agent` repository, reviewed and merged by a maintainer. There is
    no self-serve registry, no automated ingestion.
@@ -163,6 +163,13 @@ the gallery. There is no separate listing to maintain.
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
    PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins
    are not listed under Nous branding.
+16. **One listing per plugin lineage.** A fork of a listed community plugin is
+   listed only when it is materially different from the original: a different
+   transport or architecture, or capability the original lacks and its author
+   declined or has not answered a PR for 30 days. Improvements to a listed plugin
+   go upstream as a PR to its author. A fork that renames, rebrands or adds small
+   changes is declined in favour of the original. A listed fork names its origin
+   in its disclosure line (`Derived from <entry>`).
 <!-- admission-rules:end -->
 
 ## Updating your entry

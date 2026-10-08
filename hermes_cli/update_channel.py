@@ -340,6 +340,6 @@ def stale_channel_records(config: Optional[dict]) -> list[tuple[str, dict, str]]
         try:
             if not (installs_root() / sha16 / "install.json").is_file():
                 stale.append((sha16, record, "unclaimed"))
-        except Exception as exc:  # noqa: BLE001 — doctor sweep must not raise
+        except Exception as exc:
             logger.debug("installs root unavailable: %s", exc)
     return stale

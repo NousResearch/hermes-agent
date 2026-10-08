@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Chain registry
 # ---------------------------------------------------------------------------
 
-CHAINS: Dict[str, Dict[str, Any]] = {
+CHAINS: dict[str, dict[str, Any]] = {
     "ethereum": {
         "chain_id": 1,
         "rpc": "https://ethereum-rpc.publicnode.com",
@@ -90,7 +90,7 @@ DEFAULT_CHAIN = "ethereum"
 # Known ERC-20 token registry  {chain -> {symbol -> address}}
 # ---------------------------------------------------------------------------
 
-KNOWN_TOKENS: Dict[str, Dict[str, str]] = {
+KNOWN_TOKENS: dict[str, dict[str, str]] = {
     "ethereum": {
         "USDT":  "0xdAC17F958D2ee523a2206206994597C13D831ec7",
         "USDC":  "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -190,7 +190,7 @@ GAS_ESTIMATES = {
 }
 
 # CoinGecko symbol -> id map for common tokens
-COINGECKO_IDS: Dict[str, str] = {
+COINGECKO_IDS: dict[str, str] = {
     "ETH":   "ethereum",
     "BTC":   "bitcoin",
     "BNB":   "binancecoin",
@@ -394,7 +394,7 @@ def get_rpc_url(chain: str) -> str:
         raise ValueError(f"Unknown chain '{chain}'. Available: {', '.join(CHAINS)}")
     return cfg["rpc"]
 
-def rpc_call(chain: str, method: str, params: List[Any], req_id: int = 1) -> Any:
+def rpc_call(chain: str, method: str, params: list[Any], req_id: int = 1) -> Any:
     url = get_rpc_url(chain)
     payload = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
     resp = _http_post(url, payload)
@@ -402,7 +402,7 @@ def rpc_call(chain: str, method: str, params: List[Any], req_id: int = 1) -> Any
         raise RuntimeError(f"RPC error: {resp['error']}")
     return resp.get("result")
 
-def rpc_batch(chain: str, calls: List[Tuple[str, List[Any]]], batch_limit: int = 10) -> List[Any]:
+def rpc_batch(chain: str, calls: list[tuple[str, list[Any]]], batch_limit: int = 10) -> list[Any]:
     """Send a batch of JSON-RPC calls; returns list of results in same order.
 
     Auto-chunks at `batch_limit` (default 10) so we stay under per-RPC limits.
@@ -417,7 +417,7 @@ def rpc_batch(chain: str, calls: List[Tuple[str, List[Any]]], batch_limit: int =
         for i, (m, p) in enumerate(calls)
     ]
 
-    out: List[Any] = [None] * len(items)
+    out: list[Any] = [None] * len(items)
     for start in range(0, len(items), batch_limit):
         chunk = items[start:start + batch_limit]
         resp = _http_post(url, chunk)
@@ -495,7 +495,7 @@ def _selector(sig: str) -> str:
     return "0x" + _keccak256(sig.encode()).hex()[:8]
 
 # Precomputed selectors for ERC-20 functions
-ERC20_SELECTORS: Dict[str, str] = {
+ERC20_SELECTORS: dict[str, str] = {
     "name()":                  "0x06fdde03",
     "symbol()":                "0x95d89b41",
     "decimals()":              "0x313ce567",
@@ -552,7 +552,7 @@ def cg_price_by_id(cg_id: str) -> Optional[float]:
     except Exception:
         return None
 
-def cg_price_by_ids(cg_ids: List[str]) -> Dict[str, float]:
+def cg_price_by_ids(cg_ids: list[str]) -> dict[str, float]:
     """Fetch multiple prices in one request."""
     if not cg_ids:
         return {}
@@ -840,7 +840,7 @@ def cmd_activity(args: argparse.Namespace) -> None:
     block_hex = rpc_call(chain, "eth_blockNumber", [])
     latest    = hex_to_int(block_hex or "0x0")
 
-    txs_out: List[Dict[str, Any]] = []
+    txs_out: list[dict[str, Any]] = []
     scan_range = min(200, latest)
     blocks_checked = 0
 
@@ -896,7 +896,7 @@ def cmd_gas(args: argparse.Namespace) -> None:
 
     native_price  = get_native_price(chain)
 
-    estimates: Dict[str, Any] = {}
+    estimates: dict[str, Any] = {}
     for op, gas_units in GAS_ESTIMATES.items():
         cost_wei   = gas_wei * gas_units
         cost_native = wei_to_native(cost_wei, cfg["decimals"])
@@ -955,7 +955,7 @@ def cmd_price(args: argparse.Namespace) -> None:
     })
 
 
-def _fetch_chain_stats(chain: str) -> Dict[str, Any]:
+def _fetch_chain_stats(chain: str) -> dict[str, Any]:
     """Fetch gas price + native price for a single chain (used in compare)."""
     try:
         gas_hex = rpc_call(chain, "eth_gasPrice", [])
@@ -987,8 +987,8 @@ def cmd_compare(_args: argparse.Namespace) -> None:
     """Compare gas prices and native token prices across all chains simultaneously."""
     import threading
 
-    results: Dict[str, Any] = {}
-    errors:  Dict[str, str] = {}
+    results: dict[str, Any] = {}
+    errors:  dict[str, str] = {}
     lock = threading.Lock()
 
     def fetch(chain: str) -> None:
@@ -1033,7 +1033,7 @@ def cmd_whale(args: argparse.Namespace) -> None:
     block_hex = rpc_call(chain, "eth_blockNumber", [])
     latest    = hex_to_int(block_hex or "0x0")
 
-    whales: List[Dict[str, Any]] = []
+    whales: list[dict[str, Any]] = []
     blocks_scanned = 0
 
     for bn in range(latest, max(0, latest - blocks), -1):
@@ -1088,7 +1088,7 @@ def cmd_multichain(args: argparse.Namespace) -> None:
     import threading
 
     address = require_address(args.address)
-    results: Dict[str, Any] = {}
+    results: dict[str, Any] = {}
     lock = threading.Lock()
 
     def scan_chain(chain: str) -> None:
@@ -1098,7 +1098,7 @@ def cmd_multichain(args: argparse.Namespace) -> None:
             native_bal = int(bal_hex, 16) / 1e18 if bal_hex else 0.0
             native_price = get_native_price(chain)
             native_usd = round(native_bal * native_price, 2) if native_price else None
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "native_symbol": cfg["native"],
                 "native_balance": round(native_bal, 8),
                 "native_price_usd": native_price,
@@ -1244,7 +1244,7 @@ def cmd_decode(args: argparse.Namespace) -> None:
         signatures = [r["text_signature"] for r in data["results"]]
 
     # Decode known transfer(address,uint256) manually as fallback
-    decoded_args: Optional[Dict] = None
+    decoded_args: Optional[dict] = None
     if signatures and len(input_data) >= 74:
         sig = signatures[0]
         if sig == "transfer(address,uint256)" and len(input_data) == 138:

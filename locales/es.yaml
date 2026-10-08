@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "Planificando: {task}"
     ack_conversation: "Planificando a partir del contexto de esta conversación…"
+  initiate_setup:
+    ack: "Iniciando la configuración…"
   init:
     start_failed: "No se pudo iniciar /init — inténtalo de nuevo."
     ack_update: "Actualizando AGENTS.md a partir de un análisis del proyecto…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ La base de datos de sesiones informó un error de corrupción limitado al índice de búsqueda (FTS5); las tablas de mensajes no están dañadas. Es posible que los mensajes no se guarden hasta repararlo: ejecuta `hermes {profile_arg}doctor --fix` y luego reinicia el gateway. No ejecutes herramientas de recuperación ni restaures una copia de seguridad a menos que `hermes {profile_arg}doctor` confirme daños."
     db_then_restart: "{action} Luego ejecuta `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Base de datos de sesiones no disponible — es posible que los mensajes no se guarden y /resume estará vacío. Causa: {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ El almacén de cron {store} no admite escritura ({error}) desde {since}. Las tareas programadas se omiten hasta que vuelva a aceptar escrituras. Solución: {fix}."
+    recovered: "✅ El almacén de cron {store} vuelve a admitir escritura; {skipped} ejecución(es) omitida(s), cada tarea se recupera una vez."
   whoami:
     scope_dm: "MD"
     scope_group: "grupo/canal"
@@ -1448,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent se está apagando"
     standalone_quit: "entregado"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Aprobar una vez"
     confirm_always_approve: "Aprobar siempre"
@@ -1555,6 +1558,8 @@ slash:
     description: "Volver a ejecutar un prompt a intervalos recurrentes en esta sesión"
   plan:
     description: "Escribir un plan de implementación en markdown en .hermes/plans/ sin ejecutar nada"
+  initiate-setup:
+    description: "Ejecutar la configuración inicial: conocerte y ajustar Hermes a ti"
   moa:
     description: "Ejecutar un prompt con el preset predeterminado de Mixture of Agents y luego restaurar tu modelo"
   subgoal:
@@ -2355,6 +2360,7 @@ cli:
     removed: "Se eliminó el elemento {index} de la cola: {preview}"
     item_not_found: "No se encontró el elemento {index} de la cola. Tamaño actual: {size}"
     usage_edit: "Uso: /queue edit <número> <nuevo prompt>"
+    usage_remove: "Uso: /queue rm <número>"
     updated: "Se actualizó el elemento {index} de la cola: {preview}"
     usage_move: "Uso: /queue move <desde> <hasta>"
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
@@ -2393,6 +2399,7 @@ cli:
     session_not_found: "Sesión no encontrada: {session_id}"
     compressed_into: "La sesión {session_id} se comprimió en {descendant}; reanudando la descendiente con tu transcripción."
     cannot_resume: "No se puede reanudar la sesión: {error}"
+    kanban_owned: "⛔ La sesión {session_id} es una transcripción de un worker de Kanban. Reanudarla aquí crearía un escritor que el tablero Kanban no puede observar ni supervisar — reintenta o desbloquea la tarjeta en el tablero para que el dispatcher sea dueño de la siguiente ejecución."
     cannot_resume_prefix: "No se puede reanudar la sesión:"
     resumed_session: "↻ Sesión reanudada"
     counts_one: "({count} mensaje del usuario, {total} mensajes en total)"
@@ -2427,7 +2434,6 @@ cli:
     run_model_to_retry: "Ejecuta 'hermes model' para intentarlo de nuevo."
     provider_configured: "✓ Proveedor configurado — ya puedes chatear."
     provider_setup_incomplete: "La configuración del proveedor no se completó. Ejecuta 'hermes model' para reintentar."
-    tirith_unavailable: "⚠ El escáner de seguridad tirith está activado pero no disponible — el análisis de comandos usará solo coincidencia de patrones"
     unknown_toolsets: "Aviso: conjuntos de herramientas desconocidos: {names}"
     stdin_unusable: "\nError: stdin no se puede usar ({error}).\nEsto puede ocurrir con ciertas instalaciones de Python (p. ej., cPython gestionado por uv en macOS)\ndonde kqueue no puede registrar el fd 0.\nPrueba a reinstalar Python con pyenv o Homebrew y luego vuelve a ejecutar: hermes setup"
     warning: "Advertencia: {warning}"
@@ -2720,6 +2726,7 @@ cli:
       restored: "Estado restaurado desde: {snapshot_id}"
       restart_recommended: "Se recomienda reiniciar los procesos del gateway/dashboard para que apliquen los cambios de state.db."
       not_found: "Instantánea no encontrada: {snapshot_id}"
+      restore_incomplete: "La instantánea {snapshot_id} no se restauró por completo; algunos archivos fueron rechazados (consulta los registros)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Se eliminaron {deleted} instantánea(s) antigua(s) (conservando {keep})."
     export:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 Planificando: {task}"
       from_conversation: "📋 Planificando a partir del contexto de esta conversación..."
+    initiate_setup:
+      starting: "🧭 Iniciando la configuración..."
     init:
       updating: "⚡ Actualizando AGENTS.md a partir de un análisis del proyecto..."
       generating: "⚡ Generando AGENTS.md a partir de un análisis del proyecto..."
@@ -3644,7 +3653,7 @@ tips:
   t167: "La aprobación de comandos peligrosos tiene 4 niveles: once, session, always (lista de permitidos permanente) y deny."
   t168: "El modo de aprobación inteligente usa un LLM para aprobar automáticamente los comandos seguros y marcar los peligrosos."
   t169: "La protección SSRF bloquea redes privadas, loopback, direcciones link-local y direcciones de metadatos de la nube."
-  t170: "El escaneo previo a la ejecución de Tirith detecta URLs falsificadas con homógrafos y patrones de tubería a intérprete."
+  t170: "Los IDs de sesión llevan la marca de tiempo como prefijo (20250305_091523_abcd), así que ordenar con ls y jq funciona de forma natural."
   t171: "Los subprocesos MCP reciben un entorno filtrado: solo pasan las variables seguras del sistema."
   t172: "Los archivos de contexto (.hermes.md, AGENTS.md) se escanean en busca de inyección de prompts antes de cargarse."
   t173: "command_allowlist en config.yaml aprueba de forma permanente patrones concretos de comandos de shell."
@@ -3674,7 +3683,7 @@ tips:
   t197: "El guardado de trayectorias (--save-trajectories) captura trazas completas de uso de herramientas para entrenar modelos."
   t198: "Tres tipos de plugin: generales (herramientas/hooks), proveedores de memoria y motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins directamente desde GitHub."
-  t200: "Proveedores de memoria externos: OpenViking y Mem0 vienen incluidos; Honcho, Hindsight y otros vía hermes plugins install."
+  t200: "Proveedores de memoria externos: Honcho, Hindsight, Mem0, OpenViking y otros vía hermes plugins install."
   t201: "Los hooks de plugin incluyen pre/post_tool_call, pre/post_llm_call y transform_terminal_output para canonicalizar la salida."
   t202: "El caché de prompts (Anthropic) reduce costos reutilizando prefijos del prompt del sistema ya cacheados."
   t203: "El agente genera los títulos de sesión automáticamente en un hilo en segundo plano: sin impacto en la latencia."
@@ -3849,12 +3858,9 @@ tips:
   t372: "image_gen.model en config.yaml elige el modelo de FAL: flux-2/klein, gpt-image-2, nano-banana-pro y más."
   t373: "image_gen.provider enruta la generación de imágenes a través de un plugin (OpenAI Images, Codex, FAL) en lugar del predeterminado."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY apuntan el análisis de visión a cualquier endpoint compatible con OpenAI."
-  t375: "security.tirith_fail_open: false hace que Hermes bloquee los comandos cuando el propio escáner tirith falla."
-  t376: "La variable de entorno TIRITH_FAIL_OPEN anula la configuración tirith_fail_open — un interruptor rápido sin editar config.yaml."
+  t375: "API_SERVER_MODEL_NAME personaliza el nombre del modelo en /v1/models — esencial en configuraciones de Open WebUI con varios perfiles."
+  t376: "Los plugins del dashboard se sirven desde /dashboard-plugins/<name>/ — copia los archivos en ~/.hermes/dashboard-plugins/."
   t377: "Los chats con --source tool quedan excluidos de hermes sessions list por defecto — indica --source explícitamente para verlos."
-  t378: "Los IDs de sesión llevan la marca de tiempo como prefijo (20250305_091523_abcd), así que ordenar con ls y jq funciona de forma natural."
-  t379: "API_SERVER_MODEL_NAME personaliza el nombre del modelo en /v1/models — esencial en configuraciones de Open WebUI con varios perfiles."
-  t380: "Los plugins del dashboard se sirven desde /dashboard-plugins/<name>/ — copia los archivos en ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Pregunta lo que quieras, o escribe / para ver los comandos…"
     p02: "Resume el contenido de esta carpeta"

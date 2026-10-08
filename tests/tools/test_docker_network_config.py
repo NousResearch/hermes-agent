@@ -8,7 +8,7 @@ config.yaml.
 
 import os
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 from tools.environments import docker as docker_env
 
 
@@ -25,8 +25,8 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     the SAME container_config keys. Each used to keep a private (key, default) table and drifted:
     the probe lost ``docker_network`` (bridge-networked probe under lockdown, #46358/#76906/#87995),
     execute_code lost ``docker_extra_args``/``docker_forward_env``/``docker_env`` (#84027/#100019)."""
-    import agent.prompt_builder as prompt_builder
-    import tools.code_execution_tool as code_execution_tool
+    from agent import prompt_builder
+    from tools import code_execution_tool
     import tools.terminal_tool_backends as backends
 
     config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "docker_network": False,

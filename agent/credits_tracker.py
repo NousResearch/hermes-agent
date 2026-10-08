@@ -362,7 +362,7 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         sub = getattr(info, "subscription", None)
 
         def _money(dollars) -> tuple[int, str]:  # (micros, display usd); (0, "") when absent
-            return (int(round(dollars * 1_000_000)), f"{dollars:.2f}") if isinstance(dollars, (int, float)) else (0, "")
+            return (round(dollars * 1_000_000), f"{dollars:.2f}") if isinstance(dollars, (int, float)) else (0, "")
         fields: dict[str, Any] = {}
         for prefix, attr in (("remaining", "total_usable_credits"), ("subscription", "subscription_credits_remaining"),
                              ("purchased", "purchased_credits_remaining")):

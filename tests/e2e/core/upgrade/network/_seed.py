@@ -10,7 +10,7 @@ a real fetch, checkout and rebuild, never the "already current" branch.
 After the seed the sandbox loses the ``insteadOf`` rewrite: the checkout's origin is the official
 ``https://github.com/NousResearch/hermes-agent.git`` again, and inside the namespace the only way
 to reach it is the test's proxy, which routes ``github.com`` to a git smart-HTTP server over the
-same bare origin. The partial clone (``--filter=tree:0``) makes every lazy tree/blob fetch of the
+same bare origin. The partial clone (``--filter=blob:none``) makes every lazy blob fetch of the
 checkout cross that proxy too.
 
 ``Installed.run(..., edge=...)`` runs one command under ``bwrap --unshare-net``: no route, no
@@ -279,7 +279,7 @@ def prefetch(url: str, sha256: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == sha256:
         return dest
-    with urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310 - pinned URL + digest
+    with urllib.request.urlopen(url, timeout=120) as resp:
         data = resp.read()
     got = hashlib.sha256(data).hexdigest()
     assert got == sha256, f"prefetched {url} has sha256 {got}, pinned {sha256}"

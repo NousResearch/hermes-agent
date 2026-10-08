@@ -13,7 +13,7 @@ def _isolate_venv_holders(monkeypatch):
     """The update flow's venv-holder guard sees the live gateway processes on
     a dev machine and aborts with SystemExit 2 before reaching the branch
     logic under test.  Isolate it so the test exercises the intended path."""
-    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
 
 
 class TestGitTrampolineSelfHeal:

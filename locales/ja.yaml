@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "計画中: {task}"
     ack_conversation: "この会話のコンテキストから計画を作成しています…"
+  initiate_setup:
+    ack: "セットアップを開始しています…"
   init:
     start_failed: "/init を開始できませんでした — もう一度お試しください。"
     ack_update: "プロジェクトスキャンから AGENTS.md を更新しています…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ セッションデータベースが検索インデックス (FTS5) に限定された破損エラーを報告しました。メッセージテーブルは損傷していません。修復されるまでメッセージが永続化されない可能性があります: `hermes {profile_arg}doctor --fix` を実行し、ゲートウェイを再起動してください。`hermes {profile_arg}doctor` が損傷を確認しない限り、復旧ツールの実行やバックアップからの復元は行わないでください。"
     db_then_restart: "{action} その後 `hermes {profile_arg}gateway restart` を実行してください。"
     db_unavailable: "⚠️ セッションデータベースが利用できません — メッセージが保存されず、/resume が空になる可能性があります。原因: {cause}。{action}"
+  cron_store:
+    unwritable: "⚠️ cron ストア {store} は {since} から書き込みできません（{error}）。書き込みが可能になるまで、スケジュール済みジョブはスキップされます。対処: {fix}。"
+    recovered: "✅ cron ストア {store} は再び書き込み可能になりました。スキップされた実行 {skipped} 件、各ジョブは 1 回だけ追いつき実行されます。"
   whoami:
     scope_dm: "DM"
     scope_group: "グループ/チャンネル"
@@ -1448,8 +1453,6 @@ platform:
   irc:
     quit_message: "Hermes Agent をシャットダウンしています"
     standalone_quit: "配信済み"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "一度だけ承認"
     confirm_always_approve: "常に承認"
@@ -1555,6 +1558,8 @@ slash:
     description: "このセッションでプロンプトを一定間隔で繰り返し実行"
   plan:
     description: "何も実行せずに markdown の実装計画を .hermes/plans/ に書き出す"
+  initiate-setup:
+    description: "初回セットアップを実行: あなたについて知り、Hermes をあなたに合わせて設定します"
   moa:
     description: "デフォルトの Mixture of Agents プリセットでプロンプトを 1 回実行し、元のモデルに戻す"
   subgoal:
@@ -2355,6 +2360,7 @@ cli:
     removed: "キュー項目 {index} を削除しました: {preview}"
     item_not_found: "キュー項目 {index} が見つかりません。現在のサイズ: {size}"
     usage_edit: "使い方: /queue edit <number> <new prompt>"
+    usage_remove: "使い方: /queue rm <number>"
     updated: "キュー項目 {index} を更新しました: {preview}"
     usage_move: "使い方: /queue move <from> <to>"
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
@@ -2393,6 +2399,7 @@ cli:
     session_not_found: "セッションが見つかりません: {session_id}"
     compressed_into: "セッション {session_id} は {descendant} に圧縮されました。トランスクリプトを引き継いで後続セッションを再開します。"
     cannot_resume: "セッションを再開できません: {error}"
+    kanban_owned: "⛔ セッション {session_id} は Kanban ワーカーのトランスクリプトです。ここで再開すると、Kanban ボードが観察・監督できない書き込みプロセスが生じます。代わりにボード上でカードを再試行するかブロック解除し、次の実行はディスパッチャーに所有させてください。"
     cannot_resume_prefix: "セッションを再開できません:"
     resumed_session: "↻ セッションを再開しました"
     counts_one: "（ユーザーメッセージ {count} 件、合計 {total} 件）"
@@ -2427,7 +2434,6 @@ cli:
     run_model_to_retry: "'hermes model' を実行して再試行してください。"
     provider_configured: "✓ プロバイダーを設定しました — チャットを開始できます。"
     provider_setup_incomplete: "プロバイダーのセットアップが完了しませんでした。'hermes model' を実行して再試行してください。"
-    tirith_unavailable: "⚠ tirith セキュリティスキャナーは有効ですが利用できません — コマンドのスキャンはパターンマッチのみで行います"
     unknown_toolsets: "警告: 不明なツールセット: {names}"
     stdin_unusable: "\nエラー: stdin が使用できません（{error}）。\n特定の Python 環境（例: macOS 上の uv 管理の cPython）で、\nkqueue が fd 0 を登録できない場合に発生することがあります。\npyenv または Homebrew で Python を再インストールしてから、再度実行してください: hermes setup"
     warning: "警告: {warning}"
@@ -2720,6 +2726,7 @@ cli:
       restored: "状態を復元しました: {snapshot_id}"
       restart_recommended: "state.db の変更を反映するため、ゲートウェイ/ダッシュボードのプロセスを再起動することをおすすめします。"
       not_found: "スナップショットが見つかりません: {snapshot_id}"
+      restore_incomplete: "スナップショット {snapshot_id} は完全には復元されませんでした: 一部のファイルが拒否されました（ログを参照）"
       usage_prune: "使い方: /snapshot prune [keep-count]"
       pruned: "古いスナップショット {deleted} 件を削除しました（{keep} 件を保持）。"
     export:
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 計画中: {task}"
       from_conversation: "📋 この会話のコンテキストから計画を作成しています..."
+    initiate_setup:
+      starting: "🧭 セットアップを開始しています..."
     init:
       updating: "⚡ プロジェクトのスキャン結果から AGENTS.md を更新しています..."
       generating: "⚡ プロジェクトのスキャン結果から AGENTS.md を生成しています..."
@@ -3644,7 +3653,7 @@ tips:
   t167: "危険なコマンドの承認には 4 段階あります: once、session、always（恒久的な許可リスト）、deny。"
   t168: "スマート承認モードは LLM を使って安全なコマンドを自動承認し、危険なコマンドにフラグを立てます。"
   t169: "SSRF 保護はプライベートネットワーク、ループバック、リンクローカル、クラウドメタデータのアドレスをブロックします。"
-  t170: "Tirith の実行前スキャンは、ホモグラフによる URL 偽装やパイプからインタープリターへ渡すパターンを検出します。"
+  t170: "セッション ID はタイムスタンプで始まる（20250305_091523_abcd）ため、ls や jq で自然に並べ替えられます。"
   t171: "MCP のサブプロセスにはフィルタリングされた環境変数が渡されます。安全なシステム変数だけが通過します。"
   t172: "コンテキストファイル（.hermes.md、AGENTS.md）は読み込み前にプロンプトインジェクションのセキュリティスキャンを受けます。"
   t173: "config.yaml の command_allowlist は特定のシェルコマンドパターンを恒久的に承認します。"
@@ -3674,7 +3683,7 @@ tips:
   t197: "トラジェクトリ保存（--save-trajectories）は、モデル学習用にツール使用の完全なトレースを記録します。"
   t198: "プラグインには 3 種類あります。汎用（ツール/フック）、メモリプロバイダー、コンテキストエンジンです。"
   t199: "hermes plugins install owner/repo で GitHub から直接プラグインをインストールできます。"
-  t200: "外部メモリプロバイダーとして OpenViking、Mem0 が同梱されており、Honcho、Hindsight などは hermes plugins install で追加できます。"
+  t200: "外部メモリプロバイダー（Honcho、Hindsight、Mem0、OpenViking など）は hermes plugins install で追加できます。"
   t201: "プラグインフックには pre/post_tool_call、pre/post_llm_call、出力の正規化用の transform_terminal_output などがあります。"
   t202: "プロンプトキャッシュ（Anthropic）は、キャッシュ済みのシステムプロンプトのプレフィックスを再利用してコストを削減します。"
   t203: "エージェントはセッションタイトルをバックグラウンドスレッドで自動生成するため、レイテンシへの影響はゼロです。"
@@ -3849,12 +3858,9 @@ tips:
   t372: "config.yaml の image_gen.model で FAL のモデルを選べます。flux-2/klein、gpt-image-2、nano-banana-pro などです。"
   t373: "image_gen.provider は、デフォルトの代わりにプラグイン（OpenAI Images、Codex、FAL）経由で画像生成をルーティングします。"
   t374: "AUXILIARY_VISION_BASE_URL と AUXILIARY_VISION_API_KEY で、画像解析を任意の OpenAI 互換エンドポイントに向けられます。"
-  t375: "security.tirith_fail_open: false にすると、tirith スキャナー自体がエラーになった場合に Hermes はコマンドをブロックします。"
-  t376: "環境変数 TIRITH_FAIL_OPEN は tirith_fail_open の設定を上書きします。config.yaml を編集せずに素早く切り替えられます。"
+  t375: "API_SERVER_MODEL_NAME は /v1/models に表示されるモデル名をカスタマイズします。複数プロファイルの Open WebUI 構成では必須です。"
+  t376: "ダッシュボードプラグインは /dashboard-plugins/<name>/ から配信されます。ファイルを ~/.hermes/dashboard-plugins/ に置いてください。"
   t377: "--source tool のチャットはデフォルトで hermes sessions list から除外されます。表示するには --source を明示的に指定してください。"
-  t378: "セッション ID はタイムスタンプで始まる（20250305_091523_abcd）ため、ls や jq で自然に並べ替えられます。"
-  t379: "API_SERVER_MODEL_NAME は /v1/models に表示されるモデル名をカスタマイズします。複数プロファイルの Open WebUI 構成では必須です。"
-  t380: "ダッシュボードプラグインは /dashboard-plugins/<name>/ から配信されます。ファイルを ~/.hermes/dashboard-plugins/ に置いてください。"
   placeholder:
     p01: "何でも質問するか、/ を入力してコマンドを表示…"
     p02: "このフォルダーの内容を要約して"

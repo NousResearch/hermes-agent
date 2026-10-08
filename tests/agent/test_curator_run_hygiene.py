@@ -5,7 +5,10 @@ six minutes; two CLIs launched 12 s apart both ran it.
 """
 
 import importlib
+import json
+import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -62,10 +65,13 @@ def test_only_one_process_claims_a_due_pass(env, monkeypatch):
     runs = []
 
     def _slow_review(**kw):
-        runs.append(kw)
-        started.set()
-        release.wait(10)
-        return {}
+        try:
+            runs.append(kw)
+            started.set()
+            release.wait(10)
+            return {}
+        finally:
+            kw["_on_complete"]()
 
     monkeypatch.setattr(curator, "run_curator_review", _slow_review)
     holder = threading.Thread(target=curator.maybe_run_curator, daemon=True)
@@ -79,3 +85,80 @@ def test_only_one_process_claims_a_due_pass(env, monkeypatch):
         holder.join(5)
     assert not curator._run_claim_path().exists(), "claim released after the pass"
     assert curator.maybe_run_curator() is not None, "and the next due pass can claim again"
+
+
+def test_async_review_keeps_claim_until_worker_finishes(env, monkeypatch):
+    """A due tick cannot launch another mutating review while the worker runs."""
+    curator, home = env["curator"], env["home"]
+    skill_dir = home / "skills" / "alpha"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: alpha\n---\n", encoding="utf-8")
+    from tools import skill_usage
+    skill_usage.mark_agent_created("alpha")
+    monkeypatch.setattr(curator, "should_run_now", lambda now=None: True)
+    monkeypatch.setattr(curator, "get_consolidate", lambda: True)
+    started, release = threading.Event(), threading.Event()
+
+    def _blocking_review(prompt):
+        started.set()
+        release.wait(10)
+        return {"summary": "llm-stub", "tool_calls": [], "final": "", "error": None}
+
+    monkeypatch.setattr(curator, "_run_llm_review", _blocking_review)
+    try:
+        assert curator.maybe_run_curator() is not None
+        assert started.wait(5)
+        assert curator._run_claim_path().exists()
+        assert curator.maybe_run_curator() is None
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "curator-review":
+                thread.join(timeout=5)
+    assert not curator._run_claim_path().exists()
+
+
+def test_failed_async_thread_start_releases_claim(env, monkeypatch):
+    curator = env["curator"]
+    monkeypatch.setattr(curator, "should_run_now", lambda now=None: True)
+
+    def _fail_start(self):
+        raise RuntimeError("simulated thread start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", _fail_start)
+    assert curator.maybe_run_curator() is None
+    assert not curator._run_claim_path().exists()
+
+
+def test_live_curator_owner_is_not_reclaimed_just_because_its_lock_is_old(env):
+    curator = env["curator"]
+    claim = curator._claim_run()
+    assert claim is not None
+    lock = curator._run_claim_path()
+    os.utime(lock, (time.time() - 7200, time.time() - 7200))
+
+    assert curator._claim_run() is None
+    assert lock.exists()
+
+    curator._release_run_claim(claim)
+    assert not lock.exists()
+
+
+def test_stale_dead_claim_is_recovered_and_old_owner_cannot_release_successor(env):
+    curator = env["curator"]
+    first = curator._claim_run()
+    assert first is not None
+    lock = curator._run_claim_path()
+    (lock / "owner.json").write_text(
+        json.dumps({"pid": 999_999_999, "started_at": 0, "token": first.token}), encoding="utf-8"
+    )
+    os.utime(lock, (time.time() - 7200, time.time() - 7200))
+
+    second = curator._claim_run()
+    assert second is not None and second.token != first.token
+
+    curator._release_run_claim(first)
+    assert lock.exists(), "a late callback must not remove a newer generation"
+
+    curator._release_run_claim(second)
+    assert not lock.exists()

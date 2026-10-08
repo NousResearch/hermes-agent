@@ -499,11 +499,16 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
         if parsed is not None:
             logger.info("Job '%s': using per-job reasoning_effort '%s'", job.get("id", "?"), pinned)
             return parsed
+        # The remedy below names the CLI lane on purpose: reasoning_effort is
+        # deliberately absent from the model-facing `cronjob` schema and its
+        # dispatch (models don't pick their own spend), so the old hint
+        # (`cronjob action=update ... reasoning_effort=`) pointed the reader —
+        # human or agent — at a lane that silently drops the field.
         logger.warning(
             "Job '%s': invalid stored reasoning_effort %r — ignoring the pin "
-            "and falling back to config resolution. Fix with `cronjob "
-            "action=update job_id=%s reasoning_effort=<level>` (valid: none, "
-            "minimal, low, medium, high, xhigh, max, ultra).",
+            "and falling back to config resolution. Fix with `hermes cron "
+            "edit %s --reasoning-effort <level>` (valid: none, minimal, low, "
+            "medium, high, xhigh, max, ultra).",
             job.get("id", "?"),
             pinned,
             job.get("id", "?"))

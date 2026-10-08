@@ -41,6 +41,7 @@ def _emit_compression_attempt_telemetry(
             telemetry = {}
         payload = dict(telemetry)
         payload.setdefault("event", "compression_attempt")
+        payload.setdefault("route", "hermes")
         payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
         payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
         payload.update(
@@ -75,4 +76,50 @@ def _emit_compression_attempt_telemetry(
 def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class: str | None) -> None:
     _emit_compression_attempt_telemetry(
         agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class
+    )
+
+
+def _emit_bypassed_attempt_telemetry(
+    agent: Any, started_at: float, *, commit_status: str, failure_class: str | None, approx_tokens: Any,
+    route: str = "hermes", method: str = "none",
+) -> None:
+    """Log one attempt that never reached the local compressor: an automatic gate blocked it, Codex owns the
+    thread, or the session lease showed another path already owns the work. The compressor's telemetry still
+    describes an earlier attempt, so this record starts from the attempt seed. Shared metrics have never
+    counted these exits and still do not."""
+    try:
+        compressor = getattr(agent, "context_compressor", None)
+        seed = getattr(compressor, "_compression_telemetry_seed", None)
+        seed = seed if isinstance(seed, dict) else {}
+        payload = {
+            "event": "compression_attempt", "route": route, "method": method, "failure_class": failure_class,
+            "attempt_id": getattr(agent, "_compression_attempt_id", "") or seed.get("attempt_id") or uuid.uuid4().hex,
+            "session_id": getattr(agent, "session_id", "") or "", "trigger_source": seed.get("trigger_source") or "unknown",
+            "main_provider": getattr(agent, "provider", "") or "", "main_model": getattr(agent, "model", "") or "",
+            # Private caches only: the public properties can trigger a synchronous context-length probe.
+            "main_context_limit": getattr(compressor, "_resolved_context_length", None),
+            "effective_threshold": getattr(compressor, "_threshold_tokens", None),
+            "current_estimated_tokens": approx_tokens if isinstance(approx_tokens, int) else None,
+            "total_duration_ms": int((time.monotonic() - started_at) * 1000), "commit_status": commit_status,
+            "split_status": "not_applicable", "fallback_used": False,
+        }
+        logger.info(
+            "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        )
+    except Exception as exc:
+        logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
+
+
+def _emit_blocked_attempt_telemetry(agent: Any, started_at: float, approx_tokens: Any) -> None:
+    """Record an automatic attempt the breaker gate refused. The class keeps only the guard's name
+    (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds."""
+    reason = None
+    try:
+        reason_fn = getattr(getattr(agent, "context_compressor", None), "_compression_block_reason", None)
+        reason = reason_fn() if callable(reason_fn) else None
+    except Exception:
+        logger.debug("compression block-reason read failed", exc_info=True)
+    guard = reason.split(":", 1)[0] if isinstance(reason, str) and reason else "unknown"
+    _emit_bypassed_attempt_telemetry(
+        agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens
     )

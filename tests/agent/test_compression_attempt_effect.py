@@ -219,3 +219,61 @@ def test_blocked_record_never_carries_the_cooldown_seconds(caplog):
     [record] = _attempt_records(caplog)
     assert record["failure_class"] == "blocked:structural_backoff"
     assert "917" not in json.dumps(record)
+
+
+def _abort_on_stale_snapshot(agent):
+    compress_context(
+        agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool",
+        snapshot_is_current=lambda: False,
+    )
+
+
+def _abort_at_the_commit_fence(agent):
+    # The fence refuses the commit after the summary ran: the attempt restores the compressor's pre-attempt
+    # state, which puts the PREVIOUS attempt's telemetry dict back before the record is written.
+    from agent.conversation_compression import CompressionCommitFence
+
+    fence = CompressionCommitFence()
+    with patch.object(fence, "begin_commit", return_value=False):
+        compress_context(
+            agent, _messages(), "system prompt", approx_tokens=80_000, trigger="post_tool", commit_fence=fence,
+        )
+
+
+def _refuse_on_a_saturated_pool(agent):
+    from agent.conversation_compression import run_compress_context_with_progress_timeout
+
+    with patch("agent.conversation_compression._try_admit_compression_job", return_value=False):
+        run_compress_context_with_progress_timeout(
+            worker=lambda _fence: pytest.fail("a refused job must not run"), messages=_messages(),
+            system_prompt_fallback="system prompt", idle_timeout_seconds=5.0, total_ceiling_seconds=5.0,
+            telemetry_agent=agent,
+        )
+
+
+@pytest.mark.parametrize(
+    ("abort", "trigger", "failure_class"),
+    [
+        (_abort_on_stale_snapshot, "post_tool", "snapshot_stale"),
+        (_abort_at_the_commit_fence, "post_tool", "commit_fence_cancelled"),
+        # Refused before any attempt begins: a fresh id, and the host does not know the trigger.
+        (_refuse_on_a_saturated_pool, "unknown", "pool_saturated"),
+    ],
+)
+def test_aborted_record_after_a_commit_describes_its_own_attempt(caplog, abort, trigger, failure_class):
+    agent = _Agent(_compressor())
+
+    with patch.object(agent.context_compressor, "_generate_summary", return_value="SUMMARY"):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+            abort(agent)
+
+    committed, aborted = _attempt_records(caplog)
+    assert committed["commit_status"] == "committed" and committed["tokens_reclaimed"] > 0
+    assert aborted["attempt_id"] != committed["attempt_id"]
+    assert (aborted["commit_status"], aborted["failure_class"]) == ("aborted", failure_class)
+    assert (aborted["trigger_source"], aborted["session_id"]) == (trigger, agent.session_id)
+    # No rewrite happened in this attempt, so it claims none.
+    assert aborted["method"] == "none" and not aborted["fallback_used"]
+    assert [aborted.get(key) for key in ("tokens_before", "tokens_after", "tokens_reclaimed")] == [None] * 3
+

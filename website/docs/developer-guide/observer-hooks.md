@@ -118,7 +118,9 @@ These hooks frame the user turn, not individual provider API attempts:
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
-and `sender_id`.
+`sender_id`, and `system_prompt` (the system prompt this turn sends; a
+continuing session reuses its stored one, so a plugin can see whether a pinned
+`skills.auto_load` skill is already in it).
 
 Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and

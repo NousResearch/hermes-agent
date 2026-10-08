@@ -913,9 +913,9 @@ def _restart_macos_launchd_gateways(
     """
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
-        _graceful_restart_via_sigusr1, _launchd_kickstart,
-        _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
+        _locate_launchd_gateway_service,
     )
+    from hermes_cli.gateway_launchd import restart_launchd_gateway_runtime
     if require_supervision:
         listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if listing.returncode != 0:
@@ -954,35 +954,10 @@ def _restart_macos_launchd_gateways(
                 if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
-            graceful_ok = False
-            if old_pid is not None and old_pid > 0:
-                print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
-                from hermes_cli.update_cmd_drain_report import drain_progress_reporter
-                graceful_ok = _graceful_restart_via_sigusr1(
-                    old_pid, drain_timeout=drain_budget,
-                    on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
-            if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
-                # KeepAlive already respawned it on new code — a kickstart would kill it.
-                restarted_services.append(label)
-                continue
-            try:
-                _launchd_kickstart(label, domain)
-            except subprocess.CalledProcessError as e:
-                stderr = (getattr(e, "stderr", "") or "").strip()
-                failed_or_stale_units.append(label)
-                print(
-                    f"  ⚠ Failed to restart {label}: {stderr}\n"
-                    f"    Recover manually: launchctl kickstart -k {domain}/{label}"
-                )
-                continue
-            if _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=15.0, domain=domain):
+            if restart_launchd_gateway_runtime(label, domain, old_pid, drain_budget):
                 restarted_services.append(label)
             else:
                 failed_or_stale_units.append(label)
-                print(
-                    f"  ✗ {label} failed to come back after restart.\n"
-                    f"    Check logs, then: launchctl kickstart -k {domain}/{label}"
-                )
         except subprocess.TimeoutExpired:
             failed_or_stale_units.append(label)
             print(f"  ⚠ launchctl timed out restarting {label}; continuing with remaining gateways")

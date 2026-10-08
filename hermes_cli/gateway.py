@@ -123,13 +123,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     ``all_profiles`` widens the current profile's unit/label to the whole ``hermes-gateway*`` /
     ``ai.hermes.gateway*`` fleet so update/reaper never kill a sibling's service gateway as "manual".
 
-    ``all_profiles`` widens the launchd branch to every installed ``ai.hermes.gateway*`` LaunchAgent — the
-    update path needs the whole fleet excluded from its sweep (#41403, #73626): sibling-profile launchd
-    gateways found by the (BSD-fixed) ps scan must not be misclassified as manual processes and killed.
-    Default-scope callers (``gateway status``, cron checks) keep seeing only the current profile's service;
-    the orphan reaper passes all_profiles=True for the same friendly-fire reason. The systemd branch mirrors
-    this: default scope filters to the current profile's exact unit name; ``all_profiles=True`` widens to
-    the ``hermes-gateway*`` fleet glob.
+    Default-scope callers keep seeing only the current profile's service.
     """
     pids: set = set()
 
@@ -203,7 +197,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-    return pids
+    return expand_launchd_gateway_service_pids(pids)
 
 
 def _get_parent_pid(pid: int) -> int | None:
@@ -3995,6 +3989,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 
 from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
+    expand_launchd_gateway_service_pids,
     get_launchd_label,
     _probe_launchd_domain_for_label,
     _launchd_domain,

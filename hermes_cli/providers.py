@@ -412,6 +412,10 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
     entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
     if not isinstance(entry, dict):
         return None
+    from hermes_cli.config import is_provider_enabled
+
+    if not is_provider_enabled(entry):
+        return None
     base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
     if not base_url:
         return None

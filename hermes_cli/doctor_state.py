@@ -33,6 +33,31 @@ def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
 
 
+def _sessions_auto_prune_effective(hermes_home: Path | None = None) -> bool:
+    """Effective value of ``sessions.auto_prune`` for the *active* profile, defaults to True.
+
+    ``load_config_readonly`` merges DEFAULT_CONFIG so an absent ``sessions`` block resolves to the
+    upstream default (True since #54189). A False means the operator has *explicitly* disabled it —
+    that matters for the ``state.db is large`` warning: when auto_prune is already on, re-suggesting
+    "consider enabling sessions.auto_prune in config.yaml" is misleading and loops forever. The
+    check is best-effort: any read failure falls back to ``True`` so the warning stays conservative
+    (off is the rare, actionable case) and a bad config never silences the size warning."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        if hermes_home is not None and (hermes_home / "config.yaml").exists():
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(hermes_home / "config.yaml")
+        else:
+            cfg = load_config_readonly()
+        sessions = cfg.get("sessions") or {}
+        if not isinstance(sessions, dict):
+            return True
+        val = sessions.get("auto_prune", True)
+        return bool(val)
+    except Exception:
+        return True
+
+
 def _bits(*pairs) -> list:
     """``[fmt() for value, fmt in pairs if value is not None]`` — present-only stat fragments."""
     return [fmt() for value, fmt in pairs if value is not None]
@@ -51,11 +76,15 @@ def host_gateway_note() -> str:
     return f" ({topology.describe()})" if topology is not None else ""
 
 
-def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> list:
+def _render_state_db_stats(stats: dict, holders=None, host_note: str = "",
+                           auto_prune_on: bool = True) -> list:
     """Turn a collect_state_db_stats() dict into ``(kind, text, detail)`` rows, kind 'info' / 'warn'.
 
     Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every field.
     ``host_note`` names the shared host gateway among the holders (see :func:`host_gateway_note`).
+    ``auto_prune_on`` is the effective ``sessions.auto_prune`` for the active profile; when True the
+    size-warning detail must NOT re-suggest "consider enabling sessions.auto_prune" — that is the exact
+    mislead that makes the ``state.db is large`` line loop forever. Off is the rare, actionable case.
     """
     lines: list = []
     stats = stats or {}
@@ -93,14 +122,22 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
                           f"by PID(s) {pids}",
                           "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
-    # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
-    # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
+    # Oversized DB: when auto_prune is off, suggest enabling it (the fix is real and actionable);
+    # when it is already on, do NOT re-suggest the same line (#54189 loop) — route straight to the
+    # offline compact pass. FTS reclaim is the remaining lever when pruning cannot shrink the file.
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
         stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
                          and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
-        if stats.get("fts_rebuild_pending") or stale_trigram:
+        optimize_suggested = bool(stats.get("fts_rebuild_pending") or stale_trigram)
+        if auto_prune_on:
+            detail = "sessions.auto_prune is already on; the remaining reclaim lever is " \
+                    "compaction, not pruning"
+        else:
+            detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        if optimize_suggested:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
+        elif not auto_prune_on:
+            detail += "; lowering sessions.retention_days frees space faster"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.
     return lines
@@ -404,16 +441,26 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
-        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
-                                      host_note=host_gateway_note())
+        auto_prune_on = _sessions_auto_prune_effective(state_db_path.parent)
+        rows = _render_state_db_stats(collect_state_db_stats(state_db_path),
+                                     holders=count_db_holders(state_db_path),
+                                     host_note=host_gateway_note(),
+                                     auto_prune_on=auto_prune_on)
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
                 continue
             check_warn(_text, _detail)
-            if "auto_prune" in _detail:
+            # Only surface as a top-level issue when the fix is real (auto_prune off). When auto_prune
+            # is already on, the line is a compaction suggestion, not an "enable" fix, so it must not
+            # loop the "state.db is large — enable sessions.auto_prune" issue (#54189).
+            if "consider enabling sessions.auto_prune" in _detail:
                 issues.append("state.db is large — enable sessions.auto_prune in config.yaml"
-                              + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)" if "optimize-storage" in _detail else ""))
+                              + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)"
+                                 if "optimize-storage" in _detail else ""))
+            elif "optimize-storage" in _detail:
+                issues.append("state.db is large — run 'hermes sessions optimize-storage' offline "
+                              "(gateway stopped) to compact FTS storage")
 
 
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:

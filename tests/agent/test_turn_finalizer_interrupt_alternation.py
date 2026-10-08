@@ -30,6 +30,8 @@ class _StubCompressor:
 class _StubAgent:
     """Minimal agent surface that ``finalize_turn`` reads from."""
 
+    _last_persistence_error_cause: str | None
+
     def __init__(self):
         self.max_iterations = 90
         self.iteration_budget = _StubBudget()

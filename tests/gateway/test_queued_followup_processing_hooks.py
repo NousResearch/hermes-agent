@@ -93,6 +93,28 @@ class _RaisingSecondTurnAgent:
         }
 
 
+class _FailedSecondTurnAgent:
+    calls: list = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        type(self).calls.append(message)
+        if len(type(self).calls) >= 2:
+            return {
+                "final_response": "sanitized failure reply",
+                "messages": [],
+                "api_calls": 1,
+                "failed": True,
+            }
+        return {
+            "final_response": "done-1",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
@@ -174,12 +196,13 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
 
-    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+    event = MessageEvent(
         text="the follow-up",
         message_type=MessageType.TEXT,
         source=_source(),
         message_id="queued-1",
     )
+    adapter._pending_messages[SESSION_KEY] = event
 
     result = await runner._run_agent(
         message="the first turn",
@@ -197,6 +220,7 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
     # ...and it was acknowledged through the lifecycle hooks.
     assert adapter.started == ["queued-1"]
     assert adapter.completed == [("queued-1", ProcessingOutcome.SUCCESS)]
+    assert event.agent_turn_failed is False
 
 
 @pytest.mark.asyncio
@@ -228,6 +252,35 @@ async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path)
 
     assert adapter.started == ["queued-2"]
     assert adapter.completed == [("queued-2", ProcessingOutcome.FAILURE)]
+
+
+@pytest.mark.asyncio
+async def test_queued_delivered_failure_exposes_semantic_failure(monkeypatch, tmp_path):
+    """A drained failure keeps delivery SUCCESS but marks the queued event."""
+    _FailedSecondTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _FailedSecondTurnAgent)
+
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    event = MessageEvent(
+        text="the failed follow-up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="queued-failed",
+    )
+    adapter._pending_messages[SESSION_KEY] = event
+
+    await runner._run_agent(
+        message="the first turn",
+        context_prompt="",
+        history=[],
+        source=_source(),
+        session_id="sess-hooks-semantic-failure",
+        session_key=SESSION_KEY,
+    )
+
+    assert adapter.completed == [("queued-failed", ProcessingOutcome.SUCCESS)]
+    assert event.agent_turn_failed is True
 
 
 @pytest.mark.asyncio

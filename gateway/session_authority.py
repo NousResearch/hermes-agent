@@ -122,7 +122,8 @@ class SessionAuthority:
         return SessionRef(self.profile_id, sid)
 
     def agent(self, ref):
-        return self.runner._cached_agent_for(self.sessions[ref.session_id].route)
+        lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
+        return lookup(self.sessions[ref.session_id].route)
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)

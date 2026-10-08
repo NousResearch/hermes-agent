@@ -449,7 +449,7 @@ class GatewayStartupMixin:
         # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
         # not due yet, and those still need their timer armed below.
         try:
-            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
+            from gateway.delivery_ledger import mark_delivered, mark_failed, recovered_marker
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -464,7 +464,7 @@ class GatewayStartupMixin:
                 continue
             content = row["content"]
             if row.get("needs_marker"):
-                content = row.get("marker", RECOVERED_MARKER) + content
+                content = recovered_marker(row.get("marker_cause", "restart")) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)

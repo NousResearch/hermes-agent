@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} 分鐘"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+  elicitation:
+    mcp_untrusted_command: "不受信任的伺服器 '{server}' 上的 MCP 工具 '{tool}' 要求執行。此工具具備寫入能力（沒有 readOnlyHint=true 註記），可能會修改外部狀態。"
+    mcp_untrusted_description: "伺服器 '{server}' 設定為 'trust: untrusted'。批准即執行 '{tool}' 一次，拒絕則封鎖它。"
+    mcp_untrusted_title: "MCP 伺服器 '{server}' 正在詢問"
+    payment_fill_command: "在 {origin} 上填入付款卡片 '{label}'"
+    payment_fill_description: "代理想將你儲存的卡片資料填入此結帳頁面。卡號和 CVC 絕不會進入對話。只有在你確定要在此付款時才批准。"
+    payment_fill_title: "確認填入付款卡片？"
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining: "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"
   resume:
     db_unavailable: "工作階段資料庫無法使用。"
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ 無法解析 `/resume` 參數：{error}。\n含空格的標題請加上引號，例如：`/resume \"Project A Plan\"`。"
+    matrix_no_named_sessions: "此 Matrix 聊天室中沒有已命名的工作階段。\n使用 `/title 我的工作階段` 為目前聊天室的工作階段命名，`/resume --all` 列出所有 Matrix 工作階段，或 `/resume --cross-room <工作階段名稱>` 明確跨越聊天室邊界。"
     matrix_blocked_no_origin: "⚠️ Matrix /resume 已封鎖：此已命名的工作階段沒有記錄來源聊天室，因此 Hermes 預設不會在目前聊天室中恢復它。若你確實想跨越聊天室界線，請使用 `/resume --cross-room {name}`。"
     matrix_blocked_other_room: "⚠️ Matrix /resume 已封鎖：該工作階段屬於另一個 Matrix 聊天室（{room}）。若你確實想在此處恢復它，請使用 `/resume --cross-room {name}`。"
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ 跨聊天室恢復：已在 Matrix 聊天室 **{room}** 中恢復 **{title}**。\n在 `/reset` 或另一個 `/resume` 之前，此聊天室的後續訊息將使用該對話紀錄。{msg_part}"
     blocked_not_owner: "⚠️ /resume 已封鎖：'**{name}**' 屬於其他使用者或聊天。你只能恢復來自此聊天的工作階段。"
     no_named_sessions: "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
     all_requires_admin: "_注意：`--all`（跨聊天清單）需要已設定的管理員；僅顯示本聊天的工作階段。_"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
     failed_deletes: "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "此目錄沒有任何檢查點"
+    err_not_found: "找不到檢查點 '{hash}'"
+    err_changed_files: "無法計算已變更的檔案：{err}"
+    err_diff_failed: "無法產生差異"
+    err_inspect_checkpoint: "無法讀取檢查點：{err}"
+    err_inspect_selection: "無法解析要還原的內容：{err}"
+    err_selection_empty: "要還原的內容在檢查點中沒有符合任何檔案：{path}"
+    err_nested_repos: "檢查點包含未被擷取的巢狀 git 儲存庫（{paths}）；未執行回復"
+    err_safe_plan_failed: "安全還原計畫失敗"
+    err_restore_failed: "還原失敗：{err}"
   diff:
     not_enabled: "檢查點未啟用，因此沒有工作階段基準線。\n在 config.yaml 中啟用:\n```\ncheckpoints:\n  enabled: true\n```\n一般 /diff 仍然可用 — 它直接使用 git。"
     no_changes: "沒有變更。"
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "將該 ID 加入 {home}/.env 中的 {env_var}，然後重新啟動閘道"
     owner_hint_generic: "將該 ID 加入此平台的允許使用者清單，然後重新啟動閘道"
     owner_notice: "已捨棄來自未識別 {platform} 使用者 {who} 的訊息。如果那是你或你信任的人，請{allowlist}；或在 {home}/config.yaml 中為 {platform} 設定 `unauthorized_dm_behavior: pair`，讓未知傳送者收到配對碼，你再以 `hermes pairing approve {platform} <code>` 批准。"
+    decline_default: "嗨！我是私人助理，只能和我的主人聊天，所以沒辦法直接幫你。抱歉！"
   picker:
     page_info: " （第 {start}–{end} 項，共 {total} 項）"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "這會開始新的工作階段，並捨棄目前的對話記錄。"
     detail_undo_one: "這會從記錄中移除最後一組使用者／助理的往返訊息。"
     detail_undo_many: "這會從記錄中移除最後 {count} 輪使用者訊息。"
+    handler_error: "❌ 處理確認時發生錯誤：{error}"
   hooks:
     command_blocked: "指令 `/{command}` 已被 hook 攔截。"
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ 上下文：{tokens} tokens（{source}）"
     info_acting_model: "◆ 實際執行模型（本次執行的計費對象）：{provider}:{model}"
     info_endpoint: "◆ 端點：{url}"
+    context_source_config: "設定"
+    context_source_default: "預設 — 可在設定中指定 model.context_length 加以覆寫"
+    context_source_detected: "自動偵測"
   proxy:
     requires_aiohttp: "⚠️ Proxy 模式需要 aiohttp。請執行：{hint}"
     url_missing: "⚠️ 尚未設定 Proxy URL（GATEWAY_PROXY_URL 或 gateway.proxy_url）"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "錯誤"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes 正在處理"
+    stall_notice: "⚠️ 我似乎卡住了（已 {minutes} 分鐘沒有活動）。傳送 /stop 取消目前的任務，或用 /new 開始新的對話。"
   pairing:
     validity_hour: "{hours} 小時"
     validity_hours: "{hours} 小時"
@@ -947,6 +970,42 @@ gateway:
     hint: "請在瀏覽器中儲值並管理帳務 — 完成後你的餘額會在此更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免費方案；請在那些聊天中使用 /model 切換。"
+  cron:
+    failure:
+      provider: "⚠️ 排程任務 '{job_name}' 失敗：{cause}。{action} 執行記錄：`hermes cron runs {job_id}`。"
+      action_transient: "{backup_phrase}它會在下一個排定時間再次執行；執行 `hermes cron run {job_id}` 可立即重試。"
+      action_billing: "請儲值或等待額度重設，或使用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_auth: "請使用 /login 重新登入（或在終端機執行 `{relogin}`），或使用 `hermes cron edit {job_id} --provider <name>` 指定可正常運作的提供方，然後執行 `hermes cron run {job_id}` 重試。"
+      action_model_not_found: "請使用 `hermes cron edit {job_id} --model <name>` 選擇其他模型。"
+      action_upstream_blocked: "提供方前端的防火牆擋下了這個請求（不是你的金鑰問題）：請在該提供方的 custom_providers 項目中透過 `extra_headers` 設定 User-Agent，或使用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_context_overflow: "請使用 `hermes cron edit {job_id} --prompt <text>` 縮短此任務的提示。"
+      action_content_policy: "請使用 `hermes cron edit {job_id} --prompt <text>` 改寫此任務的提示，或使用 `hermes cron edit {job_id} --model <name>` 選擇其他模型。"
+      action_provider_policy: "重試也沒有用：請向提供方確認帳戶狀態及資料／隱私設定，或使用 `hermes cron edit {job_id} --model <name>` 指定其他模型。"
+      action_default: "可使用 `hermes cron run {job_id}` 再次執行，或使用 `hermes cron edit {job_id}` 編輯它。"
+      generic: "⚠️ 排程任務 '{job_name}' 失敗：{error}。使用 `hermes cron runs {job_id}` 查看完整執行記錄（輸出儲存在 {output_dir}）；使用 `hermes cron run {job_id}` 再次執行、`hermes cron edit {job_id}` 編輯，或 `hermes cron pause {job_id}` 暫停。"
+      script_timeout: "⚠️ 排程任務 '{job_name}' 失敗：腳本執行逾時。未呼叫任何模型。請查看 {output_dir} 下的腳本輸出或 `hermes cron runs {job_id}`，然後使用 `hermes cron run {job_id}` 再次執行。"
+      inactivity: "⚠️ 排程任務 '{job_name}' 失敗：任務停滯 — 太久沒有任何動作，已被中止。請在 {output_dir} 下儲存的輸出中查看它當時在做什麼（`hermes cron runs {job_id}`），然後使用 `hermes cron run {job_id}` 再次執行。"
+      blocked_config: "⛔ 排程任務 '{job_name}' 未執行：{reason} 未產生任何費用。Hermes 會在下一個排定時間再試一次，且不會重複發送此警示；可使用 `hermes cron doctor` 檢查。"
+      backup_pinned: "此任務固定使用自己的提供方／模型，因此不會改用 `fallback_providers`；執行 `hermes cron edit {job_id} --unpin` 可讓它跟隨主要模型及其備援鏈。"
+      backup_failed: "備援提供方也都沒有成功。"
+      backup_none: "尚未設定備援提供方 — 可使用 `hermes fallback add` 新增，或在 config.yaml 中透過 `cron.model` + `cron.model_provider` 為所有排程任務設定預設值。"
+      streak_nudge: "\n此任務已連續失敗 {streak} 次 — 建議檢查一下。請修正它的提示／設定，或使用 `hermes cron pause {job_ref}` 暫停它（也可使用 resume/remove），避免持續打擾。"
+      stale_code_hint: " 可能原因：閘道正在執行過時的程式碼（啟動時為 {boot_rev}，磁碟上為 {disk_rev}）— 執行 `hermes gateway restart` 即可修正。"
+      quota_hold: "\n提供方的用量時段已關閉，約 {hours} 小時後重新開放。此任務將暫停至 {until}，之後在第一個安全時機恢復；提供方無法使用期間不會再發送警示。"
+    registration_pending: "已儲存排程任務 '{label}'，但暫時無法向外部排程器註冊。任務已保留 — 請勿重新建立；可暫停／恢復或編輯它（例如透過 /cron）來重試註冊。"
+    output_truncated: "\n\n...（已截斷，完整輸出已儲存至 {path}）"
+  recovered_reply:
+    restart: "♻️ 已復原的回覆 — 傳送期間閘道重新啟動，因此這則可能重複："
+    reconnect: "♻️ 已復原的回覆 — 原本的傳送失敗後通訊平台已重新連線，因此這則可能重複："
+    flood: "♻️ 已復原的回覆 — 原始訊息被通訊平台的速率限制擋下，因此其中部分內容可能已在上方送達："
+  subagent:
+    goal: " 「{goal}」"
+    after: " 執行 {elapsed}後"
+    duration_min: "{n} 分鐘"
+    duration_sec: "{n} 秒"
+    reason: "：{reason}"
+    timed_out: "⚠️ 子代理{goal}{after}逾時，未能完成。我會在沒有它的情況下繼續；你可以請我重試，若這類任務確實需要更久，請在 config.yaml 中調高 delegation.child_timeout_seconds。"
+    failed: "⚠️ 子代理{goal}{after}失敗{reason}。詳細資訊：/agents，或請我以較小的任務重試。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "取消"
     prompt_other: "✏️ 其他（輸入答案）"
     prompt_expired: ⌛ 該提示已不再等待回答。請以一般訊息傳送您的回覆。
+    approval:
+      resolved_once: "✅ 已批准一次"
+      resolved_session: "✅ 已批准（本次工作階段）"
+      resolved_always: "✅ 已永久批准"
+      resolved_deny: "❌ 已拒絕"
+      expired: "⌛ 批准已逾期 — 沒有等待中的指令。"
+    slash_confirm:
+      resolved_once: "✅ 已批准一次"
+      resolved_always: "🔒 永遠批准"
+      resolved_cancel: "❌ 已取消"
+    clarify_type_answer: "✏️ 請輸入你的答案："
+    command:
+      model:
+        arg_name: "模型名稱。留空可查看目前模型。"
+      reasoning:
+        arg_effort: "等級、reset 或 show/hide。留空可查看目前設定。"
+      personality:
+        arg_name: "人格名稱。留空可列出可用人格。"
+      steer:
+        arg_text: "要告訴代理的內容"
+      title:
+        arg_text: "新標題。留空可顯示目前標題。"
+      resume:
+        arg_name: "工作階段標題或 ID"
+      reload_skills:
+        description: "重新掃描技能，找出新增或移除的項目"
+      approve:
+        arg_scope: "批准範圍"
+      deny:
+        arg_reason: "原因（會轉達給代理）"
+      bg:
+        arg_text: "要執行的提示"
+      btw:
+        arg_text: "要回答的問題"
+  qqbot:
+    approval:
+      title: "要執行此指令嗎？"
+      smart_deny_suffix: " 擁有者的覆寫批准僅適用於這一次操作。"
+    update_prompt: "☤ **更新需要你的輸入**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "批准待處理的危險指令"

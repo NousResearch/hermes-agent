@@ -63,14 +63,13 @@ _FALSY = {"0", "false", "no", "off"}
 
 _SLACK = Platform.SLACK.value
 
-# Prompt option id -> in-channel ack label (the option set doubles as the choice allowlist).
+# Prompt option id -> in-channel ack label catalog key, resolved per ack (the option set doubles as the choice allowlist).
 _EXEC_APPROVAL_LABELS = {
-    "once": "✅ Approved once",
-    "session": "✅ Approved for session",
-    "always": "✅ Approved permanently",
-    "deny": "❌ Denied",
+    "once": "platform.relay.approval.resolved_once", "session": "platform.relay.approval.resolved_session",
+    "always": "platform.relay.approval.resolved_always", "deny": "platform.relay.approval.resolved_deny",
 }
-_SLASH_CONFIRM_LABELS = {"once": "✅ Approved once", "always": "🔒 Always approve", "cancel": "❌ Cancelled"}
+_SLASH_CONFIRM_LABELS = {"once": "platform.relay.slash_confirm.resolved_once", "always": "platform.relay.slash_confirm.resolved_always",
+                         "cancel": "platform.relay.slash_confirm.resolved_cancel"}
 
 
 def _utf16_len(text: str) -> int:
@@ -2159,7 +2158,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
         count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
+        label = t(_EXEC_APPROVAL_LABELS[choice] if count else "platform.relay.approval.expired")
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).
         self._send_lifecycle_ack(chat_id, label, ack_meta)
@@ -2173,7 +2172,7 @@ class RelayAdapter(BasePlatformAdapter):
         result_text = await slash_confirm_mod.resolve(
             str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice
         )
-        self._send_lifecycle_ack(chat_id, _SLASH_CONFIRM_LABELS[choice], ack_meta)
+        self._send_lifecycle_ack(chat_id, t(_SLASH_CONFIRM_LABELS[choice]), ack_meta)
         if result_text:
             self._send_lifecycle_ack(chat_id, str(result_text), ack_meta)
 
@@ -2183,7 +2182,7 @@ class RelayAdapter(BasePlatformAdapter):
         clarify_id = str(state.get("clarify_id") or "")
         if option_id == "other":
             mark_awaiting_text(clarify_id)
-            self._send_lifecycle_ack(chat_id, "✏️ Type your answer:", ack_meta)
+            self._send_lifecycle_ack(chat_id, t("platform.relay.clarify_type_answer"), ack_meta)
             return
         choices = state.get("choices") or []
         try:

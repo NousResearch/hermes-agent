@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} хвилин"
     second_one: "{count} секунда"
     second_other: "{count} секунд"
+  elicitation:
+    mcp_untrusted_command: "Інструмент MCP '{tool}' на НЕДОВІРЕНОМУ сервері '{server}' запитує запуск. Цей інструмент може виконувати запис (немає анотації readOnlyHint=true) і здатен змінити зовнішній стан."
+    mcp_untrusted_description: "Сервер '{server}' налаштовано як 'trust: untrusted'. Схваліть, щоб запустити '{tool}' один раз, або відхиліть, щоб заблокувати запуск."
+    mcp_untrusted_title: "MCP-сервер '{server}' запитує дозвіл"
+    payment_fill_command: "Заповнити дані платіжної картки '{label}' на {origin}"
+    payment_fill_description: "Агент хоче ввести дані вашої збереженої картки на цій сторінці оплати. Номер картки та CVC ніколи не потрапляють у розмову. Схвалюйте, лише якщо справді збираєтеся платити тут."
+    payment_fill_title: "Підтвердити заповнення платіжної картки?"
 gateway:
   approval_expired: "⚠️ Час схвалення минув (агент більше не очікує). Попросіть агента спробувати ще раз."
   draining: "⏳ Очікування завершення {count} активних агент(ів) перед перезапуском..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ Перезапуск гейтвея. Якщо ви не отримаєте сповіщення протягом 60 секунд, перезапустіть із консолі командою `hermes gateway restart`."
   resume:
     db_unavailable: "База даних сеансів недоступна."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Не вдалося розібрати аргументи `/resume`: {error}.\nБеріть назви з пробілами в лапки, наприклад: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Для цієї кімнати Matrix не знайдено іменованих сеансів.\nВикористайте `/title Мій сеанс`, щоб назвати сеанс поточної кімнати, `/resume --all`, щоб показати всі сеанси Matrix, або `/resume --cross-room <назва сеансу>`, щоб свідомо вийти за межі кімнати."
     matrix_blocked_no_origin: "⚠️ Matrix /resume заблоковано: для цього іменованого сеансу не записано кімнату походження, тому Hermes за замовчуванням не відновить його в поточній кімнаті. Використайте `/resume --cross-room {name}`, якщо ви навмисно хочете перейти межі кімнат."
     matrix_blocked_other_room: "⚠️ Matrix /resume заблоковано: цей сеанс належить іншій кімнаті Matrix ({room}). Використайте `/resume --cross-room {name}`, якщо ви навмисно хочете відновити його тут."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Відновлення з іншої кімнати: сеанс **{title}** відновлено в кімнаті Matrix **{room}**.\nНаступні повідомлення в цій кімнаті використовуватимуть цю стенограму до `/reset` або іншого `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume заблоковано: '**{name}**' належить іншому користувачу або чату. Відновлювати можна лише сеанси з цього чату."
     no_named_sessions: "Іменованих сеансів не знайдено.\nВикористайте `/title Мій сеанс`, щоб назвати поточний сеанс, потім `/resume Мій сеанс`, щоб повернутися до нього."
     all_requires_admin: "_Примітка: `--all` (список між чатами) потребує налаштованого адміністратора; показано лише сеанси цього чату._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Збережено (завеликий для контрольних точок, немає збереженої копії для відкату): {files}"
     failed_deletes: "⚠️ Не вдалося видалити (залишено на місці): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Для цього каталогу немає контрольних точок"
+    err_not_found: "Контрольну точку '{hash}' не знайдено"
+    err_changed_files: "Не вдалося визначити змінені файли: {err}"
+    err_diff_failed: "Не вдалося сформувати diff"
+    err_inspect_checkpoint: "Не вдалося перевірити контрольну точку: {err}"
+    err_inspect_selection: "Не вдалося перевірити вибір файлів для відновлення: {err}"
+    err_selection_empty: "Вибір для відновлення не збігся з жодним файлом у контрольній точці: {path}"
+    err_nested_repos: "Контрольна точка містить вкладені git-репозиторії, які не було збережено ({paths}); відкат не виконано"
+    err_safe_plan_failed: "Не вдалося скласти план безпечного відновлення"
+    err_restore_failed: "Відновлення не вдалося: {err}"
   diff:
     not_enabled: "Контрольні точки не ввімкнено, тому базової лінії сесії немає.\nУвімкніть у config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nЗвичайний /diff все одно працює — він використовує git напряму."
     no_changes: "Змін немає."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "додайте ID до {env_var} у {home}/.env і перезапустіть шлюз"
     owner_hint_generic: "додайте ID до списку дозволених користувачів цієї платформи і перезапустіть шлюз"
     owner_notice: "Відхилено повідомлення від нерозпізнаного користувача {platform} {who}. Якщо це ви або хтось, кому ви довіряєте, {allowlist}; або задайте `unauthorized_dm_behavior: pair` для {platform} у {home}/config.yaml, щоб невідомі відправники отримували код зв'язування, який ви зможете схвалити командою `hermes pairing approve {platform} <code>`."
+    decline_default: "Вітаю! Я особистий асистент і можу спілкуватися лише зі своїм власником, тож не зможу допомогти вам напряму. Вибачте!"
   picker:
     page_info: " ({start}–{end} з {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Це почне новий сеанс і відкине поточну історію розмови."
     detail_undo_one: "Це видалить з історії останній обмін репліками (ваше повідомлення та відповідь асистента)."
     detail_undo_many: "Це видалить з історії останні {count} ходів користувача."
+    handler_error: "❌ Помилка обробки підтвердження: {error}"
   hooks:
     command_blocked: "Команду `/{command}` заблокував хук."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Контекст: {tokens} токенів ({source})"
     info_acting_model: "◆ Робоча модель (оплачується за цей запуск): {provider}:{model}"
     info_endpoint: "◆ Кінцева точка: {url}"
+    context_source_config: "з конфігурації"
+    context_source_default: "типово — задайте model.context_length у конфігурації, щоб перевизначити"
+    context_source_detected: "визначено автоматично"
   proxy:
     requires_aiohttp: "⚠️ Режим проксі потребує aiohttp. Виконайте: {hint}"
     url_missing: "⚠️ URL проксі не налаштовано (GATEWAY_PROXY_URL або gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "помилка"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes працює"
+    stall_notice: "⚠️ Здається, я застряг (немає активності {minutes} хв). Надішліть /stop, щоб скасувати поточне завдання, або /new, щоб почати нову розмову."
   pairing:
     validity_hour: "{hours} година"
     validity_hours: "{hours} годин"
@@ -947,6 +970,42 @@ gateway:
     hint: "Поповніть баланс і керуйте оплатою у браузері — після цього баланс тут оновиться."
   login:
     free_tier_remaining: "\nДеякі чати все ще на безкоштовному тарифі; використайте /model у тих чатах, щоб перемкнутися."
+  cron:
+    failure:
+      provider: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: {cause}. {action} Журнал запусків: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Завдання знову запуститься в наступний запланований час; `hermes cron run {job_id}` запустить його просто зараз."
+      action_billing: "Поповніть баланс або дочекайтеся скидання ліміту, або закріпіть за завданням іншого провайдера командою `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Увійдіть знову через /login (або `{relogin}` у терміналі) чи закріпіть робочого провайдера командою `hermes cron edit {job_id} --provider <name>`, а потім повторіть запуск командою `hermes cron run {job_id}`."
+      action_model_not_found: "Виберіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Запит заблокував файрвол перед провайдером (справа не у вашому ключі): задайте User-Agent через `extra_headers` у записі цього провайдера в custom_providers або закріпіть іншого провайдера командою `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Скоротіть промпт завдання командою `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Переформулюйте промпт завдання командою `hermes cron edit {job_id} --prompt <text>` або виберіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Повторний запуск не допоможе: перевірте в провайдера статус облікового запису та налаштування даних і конфіденційності або закріпіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_default: "Запустіть його знову командою `hermes cron run {job_id}` або змініть командою `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: {error}. Подробиці запуску: `hermes cron runs {job_id}` (вивід збережено в {output_dir}); запустити знову — `hermes cron run {job_id}`, змінити — `hermes cron edit {job_id}`, призупинити — `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: його скрипт перевищив ліміт часу. Модель не викликалася. Перевірте вивід скрипта в {output_dir} або через `hermes cron runs {job_id}`, а потім запустіть завдання знову командою `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: завдання зависло — надто довго нічого не робило й було перерване. Подивіться, чим воно займалося, у збереженому виводі в {output_dir} (`hermes cron runs {job_id}`), а потім запустіть його знову командою `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron-завдання '{job_name}' не запущено: {reason} Нічого не списано. Hermes спробує знову в наступний запланований час і не повторюватиме це сповіщення; перевірте налаштування командою `hermes cron doctor`."
+      backup_pinned: "Це завдання закріплено за власним провайдером/моделлю, тому воно не перемикається на `fallback_providers`; команда `hermes cron edit {job_id} --unpin` дозволить йому використовувати основну модель та її ланцюжок резервних провайдерів."
+      backup_failed: "Резервні провайдери теж не спрацювали."
+      backup_none: "Резервного провайдера не налаштовано — додайте його командою `hermes fallback add` або задайте типову модель для всіх cron-завдань через `cron.model` + `cron.model_provider` у config.yaml."
+      streak_nudge: "\nНевдалих запусків цього завдання поспіль: {streak} — варто розібратися. Виправте його промпт/конфігурацію або призупиніть його командою `hermes cron pause {job_ref}` (також доступні resume/remove), щоб припинити сповіщення."
+      stale_code_hint: " Імовірна причина: шлюз виконує застарілий код (запущено на ревізії {boot_rev}, на диску вже {disk_rev}) — виконайте `hermes gateway restart`, щоб це виправити."
+      quota_hold: "\nЛіміт провайдера вичерпано, вікно використання відкриється приблизно через {hours} год. Завдання відкладено до {until}, після чого воно відновиться за першої безпечної нагоди; поки провайдер недоступний, нових сповіщень не буде."
+    registration_pending: "Cron-завдання '{label}' збережено, але зареєструвати його в зовнішньому планувальнику поки не вдалося. Завдання не втрачено — не створюйте його заново; призупиніть і відновіть його або змініть (наприклад, через /cron), щоб повторити реєстрацію."
+    output_truncated: "\n\n... [обрізано, повний вивід збережено в {path}]"
+  recovered_reply:
+    restart: "♻️ Відновлена відповідь — шлюз перезапустився під час доставки, тож це повідомлення може виявитися дублікатом:"
+    reconnect: "♻️ Відновлена відповідь — платформа обміну повідомленнями перепідключилася після збою початкової доставки, тож це повідомлення може виявитися дублікатом:"
+    flood: "♻️ Відновлена відповідь — обмеження частоти на платформі обміну повідомленнями відхилило початкове повідомлення, тож частина його, можливо, вже надійшла вище:"
+  subagent:
+    goal: " — «{goal}»"
+    after: " (через {elapsed})"
+    duration_min: "{n} хв"
+    duration_sec: "{n} с"
+    reason: ": {reason}"
+    timed_out: "⚠️ Субагента зупинено через тайм-аут{goal}{after}, він так і не завершив роботу. Я продовжу без нього; попросіть мене повторити спробу або збільште delegation.child_timeout_seconds у config.yaml, якщо такі завдання справді потребують більше часу."
+    failed: "⚠️ Субагент завершився з помилкою{goal}{after}{reason}. Подробиці: /agents; також можна попросити мене повторити спробу з меншим завданням."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Інше"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Скасувати"
     prompt_other: "✏️ Інше (ввести відповідь)"
     prompt_expired: ⌛ Цей запит більше не очікує відповіді. Надішліть відповідь звичайним повідомленням.
+    approval:
+      resolved_once: "✅ Схвалено один раз"
+      resolved_session: "✅ Схвалено для сеансу"
+      resolved_always: "✅ Схвалено назавжди"
+      resolved_deny: "❌ Відхилено"
+      expired: "⌛ Схвалення застаріло — жодна команда на нього не очікувала."
+    slash_confirm:
+      resolved_once: "✅ Схвалено один раз"
+      resolved_always: "🔒 Завжди схвалювати"
+      resolved_cancel: "❌ Скасовано"
+    clarify_type_answer: "✏️ Введіть відповідь:"
+    command:
+      model:
+        arg_name: "Назва моделі. Залиште порожнім, щоб побачити поточну."
+      reasoning:
+        arg_effort: "Рівень, reset або show/hide. Залиште порожнім, щоб побачити поточне значення."
+      personality:
+        arg_name: "Назва особистості. Залиште порожнім, щоб побачити список."
+      steer:
+        arg_text: "Що передати агентові"
+      title:
+        arg_text: "Нова назва. Залиште порожнім, щоб показати поточну."
+      resume:
+        arg_name: "Назва або ID сеансу"
+      reload_skills:
+        description: "Пересканувати навички на нові чи видалені"
+      approve:
+        arg_scope: "Область дії схвалення"
+      deny:
+        arg_reason: "Причина (буде передано агентові)"
+      bg:
+        arg_text: "Запит, який потрібно виконати"
+      btw:
+        arg_text: "Питання, на яке потрібно відповісти"
+  qqbot:
+    approval:
+      title: "Виконати цю команду?"
+      smart_deny_suffix: " Дозвіл власника в обхід заборони діє лише для цієї операції."
+    update_prompt: "☤ **Оновлення потребує вашої відповіді**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Схвалити небезпечну команду, що очікує"

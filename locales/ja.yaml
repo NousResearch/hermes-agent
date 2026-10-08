@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} 分"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+  elicitation:
+    mcp_untrusted_command: "信頼されていないサーバー '{server}' の MCP ツール '{tool}' が実行を求めています。このツールは書き込みが可能で (readOnlyHint=true アノテーションなし)、外部の状態を変更する可能性があります。"
+    mcp_untrusted_description: "サーバー '{server}' は 'trust: untrusted' に設定されています。承認すると '{tool}' を一度だけ実行し、拒否するとブロックします。"
+    mcp_untrusted_title: "MCP サーバー '{server}' からの確認"
+    payment_fill_command: "{origin} で支払いカード '{label}' を入力"
+    payment_fill_description: "エージェントが、保存済みのカード情報をこの決済ページに入力しようとしています。カード番号と CVC が会話に含まれることはありません。ここで支払うつもりの場合のみ承認してください。"
+    payment_fill_title: "支払いカードを入力しますか？"
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining: "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
   resume:
     db_unavailable: "セッションデータベースは利用できません。"
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ `/resume` の引数を解析できませんでした: {error}。\nスペースを含むタイトルは引用符で囲んでください。例: `/resume \"Project A Plan\"`"
+    matrix_no_named_sessions: "この Matrix ルームには名前付きセッションがありません。\n`/title 私のセッション` で現在のルームのセッションに名前を付けるか、`/resume --all` ですべての Matrix セッションを一覧表示するか、`/resume --cross-room <セッション名>` で明示的にルームの境界を越えてください。"
     matrix_blocked_no_origin: "⚠️ Matrix での /resume をブロックしました: この名前付きセッションには元のルームが記録されていないため、Hermes はデフォルトでは現在のルーム内で再開しません。意図的にルームの境界を越えて再開する場合は `/resume --cross-room {name}` を使用してください。"
     matrix_blocked_other_room: "⚠️ Matrix での /resume をブロックしました: そのセッションは別の Matrix ルーム ({room}) のものです。意図的にここで再開する場合は `/resume --cross-room {name}` を使用してください。"
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ ルーム間の再開: Matrix ルーム **{room}** で **{title}** を再開しました。\n`/reset` または別の `/resume` を実行するまで、このルームの以降のメッセージはそのトランスクリプトを使用します。{msg_part}"
     blocked_not_owner: "⚠️ /resume をブロックしました: '**{name}**' は別のユーザーまたはチャットのセッションです。再開できるのはこのチャットのセッションのみです。"
     no_named_sessions: "名前付きセッションが見つかりません。\n`/title セッション名` で現在のセッションに名前を付けると、後で `/resume セッション名` で戻れます。"
     all_requires_admin: "_注: `--all`（チャット横断の一覧）には設定済みの管理者権限が必要です。このチャットのセッションのみ表示しています。_"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ 保持しました（チェックポイントには大きすぎるため、戻せる保存コピーがありません）: {files}"
     failed_deletes: "⚠️ 削除できませんでした（そのまま残っています）: {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "このディレクトリにはチェックポイントがありません"
+    err_not_found: "チェックポイント '{hash}' が見つかりません"
+    err_changed_files: "変更されたファイルを算出できませんでした: {err}"
+    err_diff_failed: "差分を生成できませんでした"
+    err_inspect_checkpoint: "チェックポイントを読み取れませんでした: {err}"
+    err_inspect_selection: "復元対象を解析できませんでした: {err}"
+    err_selection_empty: "復元対象に一致するファイルがチェックポイント内にありません: {path}"
+    err_nested_repos: "チェックポイントに記録されていないネストされた git リポジトリが含まれています ({paths})。ロールバックは実行されませんでした"
+    err_safe_plan_failed: "安全な復元計画の作成に失敗しました"
+    err_restore_failed: "復元に失敗しました: {err}"
   diff:
     not_enabled: "チェックポイントが有効になっていないため、セッションのベースラインがありません。\nconfig.yaml で有効にしてください:\n```\ncheckpoints:\n  enabled: true\n```\n通常の /diff は引き続き使えます — git を直接使用します。"
     no_changes: "変更はありません。"
@@ -470,7 +487,7 @@ gateway:
     untitled_session: "無題のセッション"
     restore_step_1: "1. トピックを作成または開きます。新規作成するには、All Messages を開いてそこに何かメッセージを送信してください。"
     restore_step_2: "2. そのトピック内で /topic <session-id> を送信してください。"
-    default_title: "Hermes Chat"
+    default_title: "Hermes チャット"
     root_lobby: "このメインチャットはシステムコマンド専用です。\n\n新しい Hermes チャットを始めるには、このボット画面の上部にある All Messages トピックを開き、そこに何かメッセージを送信してください。Telegram がそのメッセージ用の新しいトピックを作成します。各トピックは独立した Hermes セッションとして動作します。"
     root_new: "新しい Hermes チャットを並行して始めるには、このボット画面の上部にある All Messages トピックを開き、そこに何かメッセージを送信してください。Telegram が新しいトピックを作成します。\n\n各トピックは独立した Hermes セッションです。既存トピック内の /new は、そのトピックの現在のセッションを置き換えたい場合にのみ使ってください。"
     new_header: "このトピックで新しい Hermes セッションを開始しました。\n\nヒント: 並行作業には、ここで /new を使う代わりに All Messages を開いてメッセージを送信し、別のトピックを作成してください。/new は現在のトピックに紐づくセッションを置き換えます。"
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "{home}/.env の {env_var} に ID を追加してゲートウェイを再起動してください"
     owner_hint_generic: "このプラットフォームの許可ユーザーリストに ID を追加してゲートウェイを再起動してください"
     owner_notice: "未承認の {platform} ユーザー {who} からのメッセージを破棄しました。本人または信頼できる相手であれば、{allowlist}。あるいは {home}/config.yaml で {platform} に `unauthorized_dm_behavior: pair` を設定すると、不明な送信者にペアリングコードが発行され、`hermes pairing approve {platform} <code>` で承認できます。"
+    decline_default: "こんにちは！私はパーソナルアシスタントで、オーナーとしか会話できないため、直接お手伝いすることはできません。ごめんなさい！"
   picker:
     page_info: " ({total} 件中 {start}–{end})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "新しいセッションを開始し、現在の会話履歴を破棄します。"
     detail_undo_one: "履歴から最後のユーザー/アシスタントのやり取りを削除します。"
     detail_undo_many: "履歴から最後の {count} 件のユーザーターンを削除します。"
+    handler_error: "❌ 確認の処理中にエラーが発生しました: {error}"
   hooks:
     command_blocked: "コマンド `/{command}` はフックによってブロックされました。"
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ コンテキスト: {tokens} トークン ({source})"
     info_acting_model: "◆ 実行モデル (この実行の請求対象): {provider}:{model}"
     info_endpoint: "◆ エンドポイント: {url}"
+    context_source_config: "設定"
+    context_source_default: "デフォルト — 上書きするには設定で model.context_length を指定"
+    context_source_detected: "自動検出"
   proxy:
     requires_aiohttp: "⚠️ プロキシモードには aiohttp が必要です。実行してください: {hint}"
     url_missing: "⚠️ プロキシ URL が設定されていません (GATEWAY_PROXY_URL または gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "エラー"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes が作業中です"
+    stall_notice: "⚠️ 処理が停止しているようです ({minutes} 分間アクティビティなし)。/stop で現在のタスクをキャンセルするか、/new で新しい会話を始めてください。"
   pairing:
     validity_hour: "{hours} 時間"
     validity_hours: "{hours} 時間"
@@ -947,6 +970,42 @@ gateway:
     hint: "チャージと請求の管理はブラウザで行ってください — 完了後、ここの残高が更新されます。"
   login:
     free_tier_remaining: "\n一部のチャットはまだ無料プランのままです。それらのチャットでは /model で切り替えてください。"
+  cron:
+    failure:
+      provider: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: {cause}。{action} 実行ログ: `hermes cron runs {job_id}`。"
+      action_transient: "{backup_phrase}次回のスケジュール時刻に再実行されます。今すぐ試すには `hermes cron run {job_id}` を実行してください。"
+      action_billing: "チャージするか上限のリセットを待つか、`hermes cron edit {job_id} --provider <name>` で別のプロバイダーを固定してください。"
+      action_auth: "/login で再ログインする (またはターミナルで `{relogin}` を実行する) か、`hermes cron edit {job_id} --provider <name>` で動作するプロバイダーを固定し、`hermes cron run {job_id}` で再試行してください。"
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>` で別のモデルを選んでください。"
+      action_upstream_blocked: "プロバイダーの手前にあるファイアウォールがリクエストをブロックしました (キーの問題ではありません)。プロバイダーの custom_providers エントリで `extra_headers` を使って User-Agent を設定するか、`hermes cron edit {job_id} --provider <name>` で別のプロバイダーを固定してください。"
+      action_context_overflow: "`hermes cron edit {job_id} --prompt <text>` でジョブのプロンプトを短くしてください。"
+      action_content_policy: "`hermes cron edit {job_id} --prompt <text>` でジョブのプロンプトを言い換えるか、`hermes cron edit {job_id} --model <name>` で別のモデルを選んでください。"
+      action_provider_policy: "再試行しても解決しません。プロバイダー側でアカウントの状態とデータ/プライバシー設定を確認するか、`hermes cron edit {job_id} --model <name>` で別のモデルを固定してください。"
+      action_default: "`hermes cron run {job_id}` で再実行するか、`hermes cron edit {job_id}` で編集してください。"
+      generic: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: {error}。実行の詳細は `hermes cron runs {job_id}` で確認できます (出力は {output_dir} に保存されています)。`hermes cron run {job_id}` で再実行、`hermes cron edit {job_id}` で編集、`hermes cron pause {job_id}` で一時停止できます。"
+      script_timeout: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: スクリプトがタイムアウトしました。モデルは呼び出されていません。{output_dir} にあるスクリプトの出力または `hermes cron runs {job_id}` を確認してから、`hermes cron run {job_id}` で再実行してください。"
+      inactivity: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: ジョブが停止しました — 長時間何も動作しなかったため打ち切られました。{output_dir} に保存された出力 (`hermes cron runs {job_id}`) で何をしていたかを確認してから、`hermes cron run {job_id}` で再実行してください。"
+      blocked_config: "⛔ スケジュールジョブ '{job_name}' は実行されませんでした: {reason} 料金は発生していません。Hermes は次回のスケジュール時刻に再試行し、このアラートを繰り返し送ることはありません。`hermes cron doctor` で確認してください。"
+      backup_pinned: "このジョブは独自のプロバイダー/モデルに固定されているため、`fallback_providers` にはフォールバックしません。`hermes cron edit {job_id} --unpin` を実行すると、メインモデルとそのフォールバックチェーンに従うようになります。"
+      backup_failed: "バックアッププロバイダーもすべて失敗しました。"
+      backup_none: "バックアッププロバイダーが設定されていません — `hermes fallback add` で追加するか、config.yaml の `cron.model` + `cron.model_provider` で cron 全体のデフォルトを設定してください。"
+      streak_nudge: "\nこのジョブは {streak} 回連続で失敗しています — 見直しをおすすめします。プロンプト/設定を修正するか、`hermes cron pause {job_ref}` で一時停止して (resume/remove も使えます) 通知を止めてください。"
+      stale_code_hint: " 考えられる原因: ゲートウェイが古いコードで動作しています (起動時 {boot_rev}、ディスク上 {disk_rev})。`hermes gateway restart` を実行すると解消します。"
+      quota_hold: "\nプロバイダーの利用枠は約 {hours} 時間閉じています。このジョブは {until} まで保留され、その後最初の安全なタイミングで再開します。プロバイダーが利用できない間、追加のアラートは送信されません。"
+    registration_pending: "スケジュールジョブ '{label}' を保存しましたが、外部スケジューラーへの登録はまだできていません。ジョブは保持されているので作り直さないでください。登録を再試行するには、一時停止/再開するか編集してください (例: /cron から)。"
+    output_truncated: "\n\n... [省略されました。完全な出力は {path} に保存されています]"
+  recovered_reply:
+    restart: "♻️ 復元された返信 — 配信中にゲートウェイが再起動したため、重複している可能性があります:"
+    reconnect: "♻️ 復元された返信 — 元の配信が失敗した後にメッセージングプラットフォームが再接続したため、重複している可能性があります:"
+    flood: "♻️ 復元された返信 — 元のメッセージがメッセージングプラットフォームのレート制限で拒否されたため、一部はすでに上に届いている可能性があります:"
+  subagent:
+    goal: " 「{goal}」"
+    after: " {elapsed}後に"
+    duration_min: "{n} 分"
+    duration_sec: "{n} 秒"
+    reason: ": {reason}"
+    timed_out: "⚠️ サブエージェント{goal}が{after}タイムアウトし、完了しませんでした。このまま続行します。再試行を依頼するか、この種のタスクに本当に時間がかかる場合は config.yaml の delegation.child_timeout_seconds を引き上げてください。"
+    failed: "⚠️ サブエージェント{goal}が{after}失敗しました{reason}。詳細: /agents。または、より小さなタスクでの再試行を依頼してください。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "キャンセル"
     prompt_other: "✏️ その他（回答を入力）"
     prompt_expired: ⌛ このプロンプトはもう回答を待っていません。通常のメッセージとして返信を送ってください。
+    approval:
+      resolved_once: "✅ 一度だけ承認"
+      resolved_session: "✅ セッション中は承認"
+      resolved_always: "✅ 永続的に承認"
+      resolved_deny: "❌ 拒否"
+      expired: "⌛ 承認の有効期限切れ — 待機中のコマンドはありませんでした。"
+    slash_confirm:
+      resolved_once: "✅ 一度だけ承認"
+      resolved_always: "🔒 常に承認"
+      resolved_cancel: "❌ キャンセル済み"
+    clarify_type_answer: "✏️ 回答を入力してください:"
+    command:
+      model:
+        arg_name: "モデル名。空欄で現在のモデルを表示します。"
+      reasoning:
+        arg_effort: "レベル、reset、または show/hide。空欄で現在の設定を表示します。"
+      personality:
+        arg_name: "パーソナリティ名。空欄で一覧を表示します。"
+      steer:
+        arg_text: "エージェントに伝える内容"
+      title:
+        arg_text: "新しいタイトル。空欄で現在のタイトルを表示します。"
+      resume:
+        arg_name: "セッションのタイトルまたは ID"
+      reload_skills:
+        description: "スキルを再スキャンして追加・削除を反映します"
+      approve:
+        arg_scope: "承認の範囲"
+      deny:
+        arg_reason: "理由 (エージェントに伝えられます)"
+      bg:
+        arg_text: "実行するプロンプト"
+      btw:
+        arg_text: "答えてほしい質問"
+  qqbot:
+    approval:
+      title: "このコマンドを実行しますか？"
+      smart_deny_suffix: " オーナーによる上書き承認は、この 1 回の操作にのみ適用されます。"
+    update_prompt: "☤ **アップデートに入力が必要です**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "保留中の危険なコマンドを承認"

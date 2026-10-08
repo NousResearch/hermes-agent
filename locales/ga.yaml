@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} nóiméad"
     second_one: "{count} soicind"
     second_other: "{count} soicind"
+  elicitation:
+    mcp_untrusted_command: "Tá an uirlis MCP '{tool}' ar an bhfreastalaí NEAMHIONTAOFA '{server}' ag iarraidh rith. Is féidir leis an uirlis seo scríobh (níl an nóta readOnlyHint=true aici) agus d'fhéadfadh sí staid sheachtrach a athrú."
+    mcp_untrusted_description: "Tá an freastalaí '{server}' cumraithe le 'trust: untrusted'. Ceadaigh chun '{tool}' a rith uair amháin, nó diúltaigh chun cosc a chur air."
+    mcp_untrusted_title: "Tá an freastalaí MCP '{server}' ag iarraidh ceada"
+    payment_fill_command: "Líon an cárta íocaíochta '{label}' ar {origin}"
+    payment_fill_description: "Tá an gníomhaire ag iarraidh sonraí do chárta sábháilte a chur isteach ar an leathanach íocaíochta seo. Ní théann uimhir an chárta ná an CVC isteach sa chomhrá riamh. Ná ceadaigh ach más mian leat íoc anseo."
+    payment_fill_title: "An cárta íocaíochta a líonadh?"
 gateway:
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining: "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
   resume:
     db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Níorbh fhéidir argóintí `/resume` a pharsáil: {error}.\nCuir comharthaí athfhriotail timpeall ar theidil a bhfuil spásanna iontu, mar shampla: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Níor aimsíodh aon seisiún ainmnithe don seomra Matrix seo.\nÚsáid `/title Mo Sheisiún` chun seisiún an tseomra reatha a ainmniú, `/resume --all` chun gach seisiún Matrix a liostú, nó `/resume --cross-room <ainm an tseisiúin>` chun teorainneacha seomra a thrasnú d'aon ghnó."
     matrix_blocked_no_origin: "⚠️ Cuireadh cosc ar /resume Matrix: níl aon bhunús seomra taifeadta ag an seisiún ainmnithe seo, mar sin ní atosóidh Hermes é laistigh den seomra reatha de réir réamhshocraithe. Úsáid `/resume --cross-room {name}` más mian leat d'aon ghnó teorainneacha seomraí a thrasnú."
     matrix_blocked_other_room: "⚠️ Cuireadh cosc ar /resume Matrix: baineann an seisiún sin le seomra Matrix eile ({room}). Úsáid `/resume --cross-room {name}` más mian leat d'aon ghnó é a atosú anseo."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Atosú trasseomra: atosaíodh **{title}** laistigh den seomra Matrix **{room}**.\nÚsáidfidh teachtaireachtaí amach anseo sa seomra seo an tras-scríbhinn sin go dtí `/reset` nó `/resume` eile.{msg_part}"
     blocked_not_owner: "⚠️ Cuireadh cosc ar /resume: baineann '**{name}**' le húsáideoir nó comhrá eile. Ní féidir leat ach seisiúin ón gcomhrá seo a atosú."
     no_named_sessions: "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     all_requires_admin: "_Nóta: teastaíonn riarthóir cumraithe le `--all` (liostú traschomhrá); ní thaispeántar ach seisiúin an chomhrá seo._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Coinnithe (ró-mhór do sheicphointí, níl aon chóip stóráilte le filleadh uirthi): {files}"
     failed_deletes: "⚠️ Níorbh fhéidir a bhaint (fágtha ina áit): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Níl aon seicphointe ann don eolaire seo"
+    err_not_found: "Níor aimsíodh an seicphointe '{hash}'"
+    err_changed_files: "Níorbh fhéidir na comhaid athraithe a ríomh: {err}"
+    err_diff_failed: "Níorbh fhéidir an diff a ghiniúint"
+    err_inspect_checkpoint: "Níorbh fhéidir an seicphointe a iniúchadh: {err}"
+    err_inspect_selection: "Níorbh fhéidir an rogha aischurtha a iniúchadh: {err}"
+    err_selection_empty: "Níor mheaitseáil an rogha aischurtha aon chomhad sa seicphointe: {path}"
+    err_nested_repos: "Tá stórtha git neadaithe sa seicphointe nár gabhadh ({paths}); níor rinneadh an rollback"
+    err_safe_plan_failed: "Theip ar an bplean aischurtha sábháilte"
+    err_restore_failed: "Theip ar an aischur: {err}"
   diff:
     not_enabled: "Níl seicphointí cumasaithe, mar sin níl aon bhonnlíne seisiúin ann.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nOibríonn /diff simplí fós — úsáideann sé git go díreach."
     no_changes: "Gan athruithe."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "cuir an ID le {env_var} i {home}/.env agus atosaigh an gateway"
     owner_hint_generic: "cuir an ID le liosta úsáideoirí ceadaithe an ardáin seo agus atosaigh an gateway"
     owner_notice: "Caitheadh i dtraipisí teachtaireacht ó úsáideoir {platform} anaithnid {who}. Más tú féin é nó duine a bhfuil muinín agat as, {allowlist}; nó socraigh `unauthorized_dm_behavior: pair` do {platform} i {home}/config.yaml sa chaoi go bhfaighidh seoltóirí anaithnide cód péireála ar féidir leat é a cheadú le `hermes pairing approve {platform} <code>`."
+    decline_default: "Dia duit! Is cúntóir pearsanta mé agus ní féidir liom comhrá a dhéanamh ach le m'úinéir, mar sin ní féidir liom cabhrú leat go díreach. Tá brón orm!"
   picker:
     page_info: " ({start}–{end} as {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Tosaíonn sé seo seisiún úr agus caitheann sé stair an chomhrá reatha i dtraipisí."
     detail_undo_one: "Baineann sé seo an malartú úsáideora/cúntóra is déanaí den stair."
     detail_undo_many: "Baineann sé seo na {count} seal úsáideora is déanaí den stair."
+    handler_error: "❌ Earráid agus an dearbhú á láimhseáil: {error}"
   hooks:
     command_blocked: "Cuireadh bac ar an ordú `/{command}` le crúca."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Comhthéacs: {tokens} comhartha ({source})"
     info_acting_model: "◆ Samhail ghníomhach (billeáilte don rith): {provider}:{model}"
     info_endpoint: "◆ Críochphointe: {url}"
+    context_source_config: "cumraíocht"
+    context_source_default: "réamhshocrú — socraigh model.context_length sa chumraíocht chun é a shárú"
+    context_source_detected: "braite"
   proxy:
     requires_aiohttp: "⚠️ Teastaíonn aiohttp le mód seachfhreastalaí. Rith: {hint}"
     url_missing: "⚠️ Níl URL an tseachfhreastalaí cumraithe (GATEWAY_PROXY_URL nó gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "earráid"
     task_line: "- {title} - {status}"
     task_card_title: "Tá Hermes ag obair"
+    stall_notice: "⚠️ Is cosúil go bhfuil mé i bhfostú (gan aon ghníomhaíocht le {minutes} nóim). Seol /stop chun an tasc reatha a chealú, nó /new chun comhrá úr a thosú."
   pairing:
     validity_hour: "{hours} uair an chloig"
     validity_hours: "{hours} uair an chloig"
@@ -947,6 +970,42 @@ gateway:
     hint: "Cuir breis leis agus bainistigh billeáil sa bhrabhsálaí — nuashonrófar d'iarmhéid anseo ina dhiaidh sin."
   login:
     free_tier_remaining: "\nTá roinnt comhráite fós ar an bplean saor in aisce; úsáid /model sna comhráite sin chun athrú."
+  cron:
+    failure:
+      provider: "⚠️ Theip ar an tasc cron '{job_name}': {cause}. {action} Loga na rití: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Rithfidh sé arís ag an gcéad am sceidealta eile; le `hermes cron run {job_id}` déantar iarracht anois."
+      action_billing: "Cuir creidmheas leis nó fan go n-athshocrófar an teorainn, nó ceangail soláthraí eile leis le `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Sínigh isteach arís le /login (nó `{relogin}` i dteirminéal), nó ceangail soláthraí a oibríonn leis le `hermes cron edit {job_id} --provider <name>`, ansin rith `hermes cron run {job_id}` chun triail eile a bhaint as."
+      action_model_not_found: "Roghnaigh samhail eile le `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Chuir balla dóiteáin os comhair an tsoláthraí bac ar an iarratas (ní le d'eochair atá an fhadhb): socraigh User-Agent trí `extra_headers` in iontráil custom_providers an tsoláthraí, nó ceangail soláthraí eile leis le `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Giorraigh leid an taisc le `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Athfhoclaigh leid an taisc le `hermes cron edit {job_id} --prompt <text>`, nó roghnaigh samhail eile le `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Ní chabhróidh triail eile: seiceáil stádas an chuntais agus na socruithe sonraí/príobháideachais leis an soláthraí, nó ceangail samhail eile leis le `hermes cron edit {job_id} --model <name>`."
+      action_default: "Rith arís é le `hermes cron run {job_id}`, nó cuir in eagar é le `hermes cron edit {job_id}`."
+      generic: "⚠️ Theip ar an tasc cron '{job_name}': {error}. Féach an rith iomlán le `hermes cron runs {job_id}` (aschur sábháilte faoi {output_dir}); rith arís é le `hermes cron run {job_id}`, cuir in eagar é le `hermes cron edit {job_id}`, nó cuir ar sos é le `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Theip ar an tasc cron '{job_name}': chuaigh a script thar am. Níor glaodh ar aon samhail. Seiceáil aschur na scripte faoi {output_dir} nó `hermes cron runs {job_id}`, ansin rith arís é le `hermes cron run {job_id}`."
+      inactivity: "⚠️ Theip ar an tasc cron '{job_name}': chuaigh an tasc i bhfostú — ní dhearna sé faic ar feadh rófhada agus gearradh é. Seiceáil cad a bhí ar siúl aige san aschur sábháilte faoi {output_dir} (`hermes cron runs {job_id}`), ansin rith arís é le `hermes cron run {job_id}`."
+      blocked_config: "⛔ Níor ritheadh an tasc cron '{job_name}': {reason} Níor gearradh aon táille. Déanfaidh Hermes iarracht arís ag an gcéad am sceidealta eile agus ní athdhéanfaidh sé an rabhadh seo; seiceáil le `hermes cron doctor`."
+      backup_pinned: "Tá an tasc seo ceangailte dá sholáthraí/shamhail féin, mar sin ní théann sé ar ais ar `fallback_providers`; le `hermes cron edit {job_id} --unpin` leanfaidh sé an phríomhshamhail agus a slabhra cúltaca."
+      backup_failed: "Níor éirigh le haon soláthraí cúltaca ach oiread."
+      backup_none: "Níl aon soláthraí cúltaca cumraithe — cuir ceann leis le `hermes fallback add`, nó socraigh réamhshocrú do gach tasc cron trí `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nTá teipthe ar an tasc seo {streak} rith as a chéile — is fiú féachaint air. Ceartaigh a leid/chumraíocht, nó cuir ar sos é le `hermes cron pause {job_ref}` (is féidir é a atosú nó a bhaint freisin) chun deireadh a chur leis an torann."
+      stale_code_hint: " Cúis dhóchúil: tá an gateway ag rith cód as dáta (tosaithe ar {boot_rev}, tá an diosca ag {disk_rev}) — rith `hermes gateway restart` chun é a réiteach."
+      quota_hold: "\nTá fuinneog úsáide an tsoláthraí dúnta ar feadh thart ar {hours} uair an chloig. Coinnítear an tasc seo siar go dtí {until} agus atosóidh sé ag an gcéad deis shábháilte ina dhiaidh sin; ní sheolfar a thuilleadh rabhadh fad nach bhfuil an soláthraí ar fáil."
+    registration_pending: "Sábháladh an tasc cron '{label}', ach níorbh fhéidir é a chlárú leis an sceidealóir seachtrach fós. Coinníodh an tasc — ná cruthaigh arís é; cuir ar sos/atosaigh nó cuir in eagar é (m.sh. trí /cron) chun an clárú a thriail arís."
+    output_truncated: "\n\n... [giorraithe, aschur iomlán sábháilte i {path}]"
+  recovered_reply:
+    restart: "♻️ Freagra aisghafa — atosaíodh an gateway le linn an tseachadta, mar sin d'fhéadfadh gur dúblach é seo:"
+    reconnect: "♻️ Freagra aisghafa — d'athcheangail an t-ardán teachtaireachtaí tar éis don seachadadh bunaidh teip, mar sin d'fhéadfadh gur dúblach é seo:"
+    flood: "♻️ Freagra aisghafa — dhiúltaigh teorainn ráta an ardáin teachtaireachtaí don bhunleagan, mar sin d'fhéadfadh go bhfuil cuid de tagtha thuas cheana féin:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " tar éis {elapsed}"
+    duration_min: "{n} nóim"
+    duration_sec: "{n} soic"
+    reason: ": {reason}"
+    timed_out: "⚠️ Chuaigh an fo-ghníomhaire thar am{goal}{after} gan críochnú. Leanfaidh mé ar aghaidh gan é; iarr orm é a thriail arís, nó ardaigh delegation.child_timeout_seconds in config.yaml más gá níos mó ama go dlisteanach do na tascanna seo."
+    failed: "⚠️ Theip ar an bhfo-ghníomhaire{goal}{after}{reason}. Sonraí: /agents, nó iarr orm triail eile a bhaint as le tasc níos lú."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Cealaigh"
     prompt_other: "✏️ Eile (clóscríobh freagra)"
     prompt_expired: ⌛ Níl an leid sin ag fanacht le freagra a thuilleadh. Seol do fhreagra mar ghnáth-theachtaireacht.
+    approval:
+      resolved_once: "✅ Ceadaithe uair amháin"
+      resolved_session: "✅ Ceadaithe don seisiún"
+      resolved_always: "✅ Ceadaithe go buan"
+      resolved_deny: "❌ Diúltaithe"
+      expired: "⌛ Chuaigh an cead in éag — ní raibh aon ordú ag fanacht."
+    slash_confirm:
+      resolved_once: "✅ Ceadaithe uair amháin"
+      resolved_always: "🔒 Ceadaigh i gcónaí"
+      resolved_cancel: "❌ Cealaithe"
+    clarify_type_answer: "✏️ Clóscríobh do fhreagra:"
+    command:
+      model:
+        arg_name: "Ainm na samhla. Fág folamh é chun an tsamhail reatha a fheiceáil."
+      reasoning:
+        arg_effort: "Leibhéal, reset, nó show/hide. Fág folamh é chun an leibhéal reatha a fheiceáil."
+      personality:
+        arg_name: "Ainm na pearsantachta. Fág folamh é chun an liosta a fheiceáil."
+      steer:
+        arg_text: "Cad ba cheart a rá leis an ngníomhaire"
+      title:
+        arg_text: "Teideal nua. Fág folamh é chun an teideal reatha a thaispeáint."
+      resume:
+        arg_name: "Teideal nó ID an tseisiúin"
+      reload_skills:
+        description: "Athscan na scileanna le haghaidh iontrálacha nua nó bainte"
+      approve:
+        arg_scope: "Raon an cheada"
+      deny:
+        arg_reason: "Cén fáth (curtha ar aghaidh chuig an ngníomhaire)"
+      bg:
+        arg_text: "An leid le rith"
+      btw:
+        arg_text: "An cheist le freagairt"
+  qqbot:
+    approval:
+      title: "An t-ordú seo a rith?"
+      smart_deny_suffix: " Ní bhaineann sárú an úinéara ach leis an oibríocht amháin seo."
+    update_prompt: "☤ **Teastaíonn d'ionchur ón nuashonrú**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Ceadaigh ordú contúirteach atá ag fanacht"

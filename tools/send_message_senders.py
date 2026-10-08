@@ -8,6 +8,7 @@ import os
 import re
 import time
 
+from agent.i18n import t
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger("tools.send_message_tool")
@@ -494,8 +495,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             if n > 0 and (estimated := scheduler.estimate_wait(n)) >= rl.SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
                 # Best-effort one-shot RPC for a user-facing pacing notice.
                 try:
-                    await _rpc_send(f"(More images coming — pausing ~{rl._format_wait(estimated)} "
-                                    f"for Signal rate limit, batch {idx + 1}/{n_batches}.)", id_prefix="notice", timeout=30.0)
+                    await _rpc_send(t("platform.signal.batch_pacing_notice", wait=rl._format_wait(estimated),
+                                      batch=idx + 1, total=n_batches), id_prefix="notice", timeout=30.0)
                 except Exception as _e:
                     logger.warning("Signal: inline notice failed: %s", _e)
             outcome = await _signal_send_batch(_post, scheduler, rl, idx, n_batches, att_batch,

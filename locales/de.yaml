@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} Minuten"
     second_one: "{count} Sekunde"
     second_other: "{count} Sekunden"
+  elicitation:
+    mcp_untrusted_command: "Das MCP-Tool '{tool}' auf dem NICHT VERTRAUENSWÜRDIGEN Server '{server}' möchte ausgeführt werden. Dieses Tool kann schreiben (keine Annotation readOnlyHint=true) und externen Zustand verändern."
+    mcp_untrusted_description: "Server '{server}' ist mit 'trust: untrusted' konfiguriert. Genehmigen Sie, um '{tool}' einmal auszuführen, oder lehnen Sie ab, um es zu blockieren."
+    mcp_untrusted_title: "MCP-Server '{server}' bittet um Erlaubnis"
+    payment_fill_command: "Zahlungskarte '{label}' auf {origin} ausfüllen"
+    payment_fill_description: "Der Agent möchte Ihre gespeicherten Kartendaten auf dieser Bezahlseite eingeben. Kartennummer und CVC gelangen nie in die Konversation. Genehmigen Sie nur, wenn Sie hier tatsächlich bezahlen möchten."
+    payment_fill_title: "Ausfüllen der Zahlungskarte bestätigen?"
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining: "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."
   resume:
     db_unavailable: "Sitzungsdatenbank nicht verfügbar."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Die Argumente für `/resume` konnten nicht verarbeitet werden: {error}.\nSetze Titel mit Leerzeichen in Anführungszeichen, zum Beispiel: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Für diesen Matrix-Raum wurden keine benannten Sitzungen gefunden.\nBenenne die aktuelle Raumsitzung mit `/title Meine Sitzung`, liste mit `/resume --all` alle Matrix-Sitzungen auf oder überschreite mit `/resume --cross-room <Sitzungsname>` bewusst Raumgrenzen."
     matrix_blocked_no_origin: "⚠️ Matrix /resume blockiert: Diese benannte Sitzung hat keinen aufgezeichneten Ursprungsraum, daher setzt Hermes sie standardmäßig nicht im aktuellen Raum fort. Verwenden Sie `/resume --cross-room {name}`, wenn Sie Raumgrenzen bewusst überschreiten möchten."
     matrix_blocked_other_room: "⚠️ Matrix /resume blockiert: Diese Sitzung gehört zu einem anderen Matrix-Raum ({room}). Verwenden Sie `/resume --cross-room {name}`, wenn Sie sie bewusst hier fortsetzen möchten."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Raumübergreifende Fortsetzung: **{title}** wurde im Matrix-Raum **{room}** fortgesetzt.\nKünftige Nachrichten in diesem Raum verwenden dieses Transkript bis `/reset` oder zu einem weiteren `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume blockiert: '**{name}**' gehört zu einem anderen Benutzer oder Chat. Sie können nur Sitzungen aus diesem Chat fortsetzen."
     no_named_sessions: "Keine benannten Sitzungen gefunden.\nVerwenden Sie `/title Meine Sitzung`, um die aktuelle Sitzung zu benennen, dann `/resume Meine Sitzung`, um später dorthin zurückzukehren."
     all_requires_admin: "_Hinweis: `--all` (chatübergreifende Liste) erfordert einen konfigurierten Administrator; es werden nur die Sitzungen dieses Chats angezeigt._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Behalten (zu groß für Checkpoints, keine gespeicherte Kopie zum Zurücksetzen): {files}"
     failed_deletes: "⚠️ Konnte nicht entfernt werden (an Ort und Stelle belassen): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Für dieses Verzeichnis gibt es keine Checkpoints"
+    err_not_found: "Checkpoint '{hash}' nicht gefunden"
+    err_changed_files: "Geänderte Dateien konnten nicht ermittelt werden: {err}"
+    err_diff_failed: "Diff konnte nicht erstellt werden"
+    err_inspect_checkpoint: "Checkpoint konnte nicht untersucht werden: {err}"
+    err_inspect_selection: "Wiederherstellungsauswahl konnte nicht untersucht werden: {err}"
+    err_selection_empty: "Die Wiederherstellungsauswahl passt auf keine Datei im Checkpoint: {path}"
+    err_nested_repos: "Der Checkpoint enthält verschachtelte Git-Repositorys, die nicht erfasst wurden ({paths}); es wurde kein Rollback durchgeführt"
+    err_safe_plan_failed: "Plan für die sichere Wiederherstellung fehlgeschlagen"
+    err_restore_failed: "Wiederherstellung fehlgeschlagen: {err}"
   diff:
     not_enabled: "Checkpoints sind nicht aktiviert, daher gibt es keine Sitzungs-Baseline.\nIn config.yaml aktivieren:\n```\ncheckpoints:\n  enabled: true\n```\nEin einfaches /diff funktioniert weiterhin — es nutzt git direkt."
     no_changes: "Keine Änderungen."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "fügen Sie die ID zu {env_var} in {home}/.env hinzu und starten Sie das Gateway neu"
     owner_hint_generic: "fügen Sie die ID zur Liste erlaubter Benutzer dieser Plattform hinzu und starten Sie das Gateway neu"
     owner_notice: "Eine Nachricht des unbekannten {platform}-Benutzers {who} wurde verworfen. Falls das Sie oder jemand sind, dem Sie vertrauen, {allowlist}; oder setzen Sie `unauthorized_dm_behavior: pair` für {platform} in {home}/config.yaml, damit unbekannte Absender einen Kopplungscode erhalten, den Sie mit `hermes pairing approve {platform} <code>` genehmigen können."
+    decline_default: "Hallo! Ich bin ein persönlicher Assistent und darf nur mit meinem Besitzer chatten, daher kann ich Ihnen nicht direkt helfen. Tut mir leid!"
   picker:
     page_info: " ({start}–{end} von {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Dies startet eine neue Sitzung und verwirft den aktuellen Konversationsverlauf."
     detail_undo_one: "Dies entfernt den letzten Austausch zwischen Nutzer und Assistent aus dem Verlauf."
     detail_undo_many: "Dies entfernt die letzten {count} Nutzer-Züge aus dem Verlauf."
+    handler_error: "❌ Fehler bei der Verarbeitung der Bestätigung: {error}"
   hooks:
     command_blocked: "Befehl `/{command}` wurde durch einen Hook blockiert."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Kontext: {tokens} Tokens ({source})"
     info_acting_model: "◆ Aktives Modell (für den Lauf abgerechnet): {provider}:{model}"
     info_endpoint: "◆ Endpunkt: {url}"
+    context_source_config: "aus der Konfiguration"
+    context_source_default: "Standard — zum Überschreiben model.context_length in der Konfiguration setzen"
+    context_source_detected: "automatisch erkannt"
   proxy:
     requires_aiohttp: "⚠️ Der Proxy-Modus benötigt aiohttp. Führen Sie aus: {hint}"
     url_missing: "⚠️ Proxy-URL nicht konfiguriert (GATEWAY_PROXY_URL oder gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "Fehler"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes arbeitet"
+    stall_notice: "⚠️ Ich scheine festzuhängen (keine Aktivität seit {minutes} Min.). Senden Sie /stop, um die aktuelle Aufgabe abzubrechen, oder /new, um eine neue Konversation zu starten."
   pairing:
     validity_hour: "{hours} Stunde"
     validity_hours: "{hours} Stunden"
@@ -947,6 +970,42 @@ gateway:
     hint: "Laden Sie Guthaben auf und verwalten Sie die Abrechnung im Browser — Ihr Guthaben wird hier anschließend aktualisiert."
   login:
     free_tier_remaining: "\nEinige Chats sind noch auf der kostenlosen Stufe; verwenden Sie /model in diesen Chats zum Wechseln."
+  cron:
+    failure:
+      provider: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: {cause}. {action} Lauf-Protokoll: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Der Job läuft zum nächsten geplanten Zeitpunkt erneut; `hermes cron run {job_id}` startet ihn sofort."
+      action_billing: "Laden Sie Guthaben auf oder warten Sie, bis das Limit zurückgesetzt wird, oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen anderen Anbieter fest."
+      action_auth: "Melden Sie sich mit /login erneut an (oder im Terminal mit `{relogin}`) oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen funktionierenden Anbieter fest; anschließend versucht `hermes cron run {job_id}` es erneut."
+      action_model_not_found: "Wählen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell."
+      action_upstream_blocked: "Eine Firewall vor dem Anbieter hat die Anfrage blockiert (nicht Ihr Schlüssel): Setzen Sie über `extra_headers` im custom_providers-Eintrag des Anbieters einen User-Agent oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen anderen Anbieter fest."
+      action_context_overflow: "Kürzen Sie den Prompt des Jobs mit `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Formulieren Sie den Prompt des Jobs mit `hermes cron edit {job_id} --prompt <text>` um oder wählen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell."
+      action_provider_policy: "Ein erneuter Versuch hilft nicht: Prüfen Sie beim Anbieter den Kontostatus und die Daten-/Datenschutzeinstellungen oder legen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell fest."
+      action_default: "Starten Sie ihn mit `hermes cron run {job_id}` erneut oder bearbeiten Sie ihn mit `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: {error}. Den vollständigen Lauf zeigt `hermes cron runs {job_id}` (Ausgabe gespeichert unter {output_dir}); erneut starten mit `hermes cron run {job_id}`, bearbeiten mit `hermes cron edit {job_id}` oder pausieren mit `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: Sein Skript hat das Zeitlimit überschritten. Es wurde kein Modell aufgerufen. Prüfen Sie die Ausgabe des Skripts unter {output_dir} oder mit `hermes cron runs {job_id}` und starten Sie den Job dann mit `hermes cron run {job_id}` erneut."
+      inactivity: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: Der Job ist hängen geblieben — er hat zu lange nichts getan und wurde abgebrochen. Was er zuletzt getan hat, sehen Sie in der gespeicherten Ausgabe unter {output_dir} (`hermes cron runs {job_id}`); starten Sie ihn dann mit `hermes cron run {job_id}` erneut."
+      blocked_config: "⛔ Cron-Job '{job_name}' wurde nicht ausgeführt: {reason} Es wurde nichts berechnet. Hermes versucht es zum nächsten geplanten Zeitpunkt erneut und wiederholt diese Meldung nicht; prüfen Sie die Einrichtung mit `hermes cron doctor`."
+      backup_pinned: "Dieser Job ist fest an einen eigenen Anbieter bzw. ein eigenes Modell gebunden und weicht daher nicht auf `fallback_providers` aus; mit `hermes cron edit {job_id} --unpin` folgt er dem Hauptmodell und dessen Fallback-Kette."
+      backup_failed: "Auch kein Ausweichanbieter war erfolgreich."
+      backup_none: "Es ist kein Ausweichanbieter konfiguriert — fügen Sie mit `hermes fallback add` einen hinzu oder legen Sie über `cron.model` + `cron.model_provider` in config.yaml einen Standard für alle Cron-Jobs fest."
+      streak_nudge: "\nDieser Job ist {streak}-mal in Folge fehlgeschlagen — ein Blick darauf lohnt sich. Korrigieren Sie Prompt/Konfiguration oder pausieren Sie ihn mit `hermes cron pause {job_ref}` (resume/remove gibt es ebenfalls), um die Meldungen zu stoppen."
+      stale_code_hint: " Wahrscheinliche Ursache: Das Gateway führt veralteten Code aus (gestartet mit {boot_rev}, auf der Festplatte liegt {disk_rev}) — führen Sie `hermes gateway restart` aus, um das zu beheben."
+      quota_hold: "\nDas Nutzungsfenster des Anbieters ist für etwa {hours} h geschlossen. Dieser Job wird bis {until} zurückgehalten und danach bei der ersten sicheren Gelegenheit fortgesetzt; solange der Anbieter nicht verfügbar ist, werden keine weiteren Meldungen gesendet."
+    registration_pending: "Cron-Job '{label}' gespeichert, konnte aber noch nicht beim externen Scheduler registriert werden. Der Job bleibt erhalten — legen Sie ihn nicht neu an; pausieren und fortsetzen oder bearbeiten Sie ihn (z. B. über /cron), um die Registrierung erneut zu versuchen."
+    output_truncated: "\n\n... [gekürzt, vollständige Ausgabe gespeichert unter {path}]"
+  recovered_reply:
+    restart: "♻️ Wiederhergestellte Antwort — das Gateway wurde während der Zustellung neu gestartet, daher könnte dies ein Duplikat sein:"
+    reconnect: "♻️ Wiederhergestellte Antwort — die Messaging-Plattform hat sich nach der fehlgeschlagenen ursprünglichen Zustellung neu verbunden, daher könnte dies ein Duplikat sein:"
+    flood: "♻️ Wiederhergestellte Antwort — das Ratenlimit der Messaging-Plattform hat das Original abgewiesen, daher ist ein Teil davon möglicherweise schon weiter oben angekommen:"
+  subagent:
+    goal: " — „{goal}“"
+    after: " (nach {elapsed})"
+    duration_min: "{n} Min."
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ Subagent wegen Zeitüberschreitung abgebrochen{goal}{after}, bevor er fertig wurde. Ich mache ohne ihn weiter; bitten Sie mich, es erneut zu versuchen, oder erhöhen Sie delegation.child_timeout_seconds in config.yaml, wenn solche Aufgaben tatsächlich länger dauern."
+    failed: "⚠️ Subagent fehlgeschlagen{goal}{after}{reason}. Details: /agents, oder bitten Sie mich, es mit einer kleineren Aufgabe erneut zu versuchen."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Sonstiges"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Abbrechen"
     prompt_other: "✏️ Eigene Antwort"
     prompt_expired: ⌛ Diese Abfrage wartet nicht mehr auf eine Antwort. Senden Sie Ihre Antwort als normale Nachricht.
+    approval:
+      resolved_once: "✅ Einmalig genehmigt"
+      resolved_session: "✅ Für diese Sitzung genehmigt"
+      resolved_always: "✅ Dauerhaft genehmigt"
+      resolved_deny: "❌ Abgelehnt"
+      expired: "⌛ Genehmigung abgelaufen — es wartete kein Befehl darauf."
+    slash_confirm:
+      resolved_once: "✅ Einmalig genehmigt"
+      resolved_always: "🔒 Immer genehmigen"
+      resolved_cancel: "❌ Abgebrochen"
+    clarify_type_answer: "✏️ Geben Sie Ihre Antwort ein:"
+    command:
+      model:
+        arg_name: "Modellname. Leer lassen, um das aktuelle anzuzeigen."
+      reasoning:
+        arg_effort: "Stufe, reset oder show/hide. Leer lassen, um den aktuellen Wert anzuzeigen."
+      personality:
+        arg_name: "Name der Persönlichkeit. Leer lassen, um alle aufzulisten."
+      steer:
+        arg_text: "Was dem Agenten mitgeteilt werden soll"
+      title:
+        arg_text: "Neuer Titel. Leer lassen, um den aktuellen anzuzeigen."
+      resume:
+        arg_name: "Sitzungstitel oder -ID"
+      reload_skills:
+        description: "Skills erneut nach neuen oder entfernten Einträgen durchsuchen"
+      approve:
+        arg_scope: "Geltungsbereich der Genehmigung"
+      deny:
+        arg_reason: "Begründung (wird an den Agenten weitergeleitet)"
+      bg:
+        arg_text: "Der auszuführende Prompt"
+      btw:
+        arg_text: "Die zu beantwortende Frage"
+  qqbot:
+    approval:
+      title: "Diesen Befehl ausführen?"
+      smart_deny_suffix: " Eine Freigabe durch den Besitzer gilt nur für diesen einen Vorgang."
+    update_prompt: "☤ **Update benötigt Ihre Eingabe**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Einen ausstehenden gefährlichen Befehl genehmigen"

@@ -43,6 +43,13 @@ approval:
     minute_other: "{count} minutes"
     second_one: "{count} second"
     second_other: "{count} seconds"
+  elicitation:
+    mcp_untrusted_command: "MCP tool '{tool}' on UNTRUSTED server '{server}' wants to run. This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
+    mcp_untrusted_description: "Server '{server}' is configured 'trust: untrusted'. Approve to run '{tool}' once, or deny to block it."
+    mcp_untrusted_title: "MCP server '{server}' is asking"
+    payment_fill_command: "Fill payment card '{label}' on {origin}"
+    payment_fill_description: "The agent wants to enter your saved card details into this checkout page. The card number and CVC never enter the conversation. Approve only if you intend to pay here."
+    payment_fill_title: "Confirm payment card fill?"
 
 gateway:
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
@@ -368,6 +375,16 @@ gateway:
     kept_oversize: "↷ Kept (too large for checkpoints, no stored copy to revert to): {files}"
     failed_deletes: "⚠️ Could not remove (left in place): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "No checkpoints exist for this directory"
+    err_not_found: "Checkpoint '{hash}' not found"
+    err_changed_files: "Could not compute changed files: {err}"
+    err_diff_failed: "Could not generate diff"
+    err_inspect_checkpoint: "Could not inspect checkpoint: {err}"
+    err_inspect_selection: "Could not inspect restore selection: {err}"
+    err_selection_empty: "Restore selection matched no files in checkpoint: {path}"
+    err_nested_repos: "Checkpoint contains nested git repositories that were not captured ({paths}); rollback was not performed"
+    err_safe_plan_failed: "Safe-restore plan failed"
+    err_restore_failed: "Restore failed: {err}"
   diff:
     not_enabled: "Checkpoints are not enabled, so there's no session baseline.\nEnable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nPlain /diff still works — it uses git directly."
     no_changes: "No changes."
@@ -649,6 +666,7 @@ gateway:
     owner_hint_env: "add the ID to {env_var} in {home}/.env and restart the gateway"
     owner_hint_generic: "add the ID to this platform's allowed-users list and restart the gateway"
     owner_notice: "Dropped a message from unrecognized {platform} user {who}. If that is you or someone you trust, {allowlist}; or set `unauthorized_dm_behavior: pair` for {platform} in {home}/config.yaml so unknown senders receive a pairing code you can approve with `hermes pairing approve {platform} <code>`."
+    decline_default: "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
 
   picker:
     page_info: " ({start}–{end} of {total})"
@@ -783,6 +801,7 @@ gateway:
     detail_new: "This starts a fresh session and discards the current conversation history."
     detail_undo_one: "This removes the last user/assistant exchange from history."
     detail_undo_many: "This removes the last {count} user turns from history."
+    handler_error: "❌ Error handling confirmation: {error}"
 
   hooks:
     command_blocked: "Command `/{command}` was blocked by a hook."
@@ -825,6 +844,9 @@ gateway:
     info_context: "◆ Context: {tokens} tokens ({source})"
     info_acting_model: "◆ Acting model (billed for the run): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
+    context_source_config: "config"
+    context_source_default: "default — set model.context_length in config to override"
+    context_source_detected: "detected"
 
   proxy:
     requires_aiohttp: "⚠️ Proxy mode requires aiohttp. Run: {hint}"
@@ -853,6 +875,7 @@ gateway:
     task_status_error: "error"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes is working"
+    stall_notice: "⚠️ I seem to be stuck (no activity for {minutes} min). Send /stop to cancel the current task, or /new to start a fresh conversation."
 
   pairing:
     validity_hour: "{hours} hour"
@@ -991,6 +1014,42 @@ gateway:
 
   login:
     free_tier_remaining: "\nSome chats are still on the free tier; use /model in those chats to switch."
+  cron:
+    failure:
+      provider: "⚠️ Cron '{job_name}' failed: {cause}. {action} Run log: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} It will run again at its next scheduled time; `hermes cron run {job_id}` tries now."
+      action_billing: "Top up or wait for the limit to reset, or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Sign in again with /login (or `{relogin}` in a terminal), or pin a working provider with `hermes cron edit {job_id} --provider <name>`, then `hermes cron run {job_id}` to retry."
+      action_model_not_found: "Pick another model with `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "A firewall in front of the provider blocked the request (not your key): set a User-Agent via `extra_headers` on the provider's custom_providers entry, or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another model with `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Retrying won't help: check the account's status and data/privacy settings with the provider, or pin another model with `hermes cron edit {job_id} --model <name>`."
+      action_default: "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron '{job_name}' failed: {error}. See the full run with `hermes cron runs {job_id}` (output saved under {output_dir}); run it again with `hermes cron run {job_id}`, edit it with `hermes cron edit {job_id}`, or pause it with `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron '{job_name}' failed: its script timed out. No model was invoked. Check the script's output under {output_dir} or `hermes cron runs {job_id}`, then run it again with `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron '{job_name}' failed: the job stalled — it stopped doing anything for too long and was cut off. Check what it was doing in the saved output under {output_dir} (`hermes cron runs {job_id}`), then run it again with `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at the next scheduled time and will not repeat this alert; check with `hermes cron doctor`."
+      backup_pinned: "This job is pinned to its own provider/model, so it does not fall back to `fallback_providers`; `hermes cron edit {job_id} --unpin` lets it follow the main model and its fallback chain."
+      backup_failed: "No backup provider succeeded either."
+      backup_none: "No backup provider is configured — add one with `hermes fallback add`, or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nThis job has failed {streak} runs in a row — worth a review. Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` (resume/remove also available) to stop the noise."
+      stale_code_hint: " Likely cause: the gateway is running stale code (booted on {boot_rev}, disk is at {disk_rev}) — run `hermes gateway restart` to fix it."
+      quota_hold: "\nThe provider's usage window is closed for about {hours}h. This job is held through {until} and resumes at the first safe opportunity afterwards; no further alerts are sent while the provider is unavailable."
+    registration_pending: "Saved cron job '{label}', but couldn't register it with the external scheduler yet. The job is kept — don't re-create it; pause/resume or edit it (e.g. via /cron) to retry registration."
+    output_truncated: "\n\n... [truncated, full output saved to {path}]"
+  recovered_reply:
+    restart: "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:"
+    reconnect: "♻️ Recovered reply — the messaging platform reconnected after the original delivery failed, so this may be a duplicate:"
+    flood: "♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of it may already have arrived above:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " after {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n}s"
+    reason: ": {reason}"
+    timed_out: "⚠️ Subagent timed out{goal}{after} without finishing. I will carry on without it; ask me to retry it, or raise delegation.child_timeout_seconds in config.yaml if these tasks legitimately take longer."
+    failed: "⚠️ Subagent failed{goal}{after}{reason}. Details: /agents, or ask me to retry with a smaller task."
 
 platform:
   whatsapp:
@@ -1531,6 +1590,45 @@ platform:
     confirm_cancel: "Cancel"
     prompt_other: "✏️ Other (type answer)"
     prompt_expired: "⌛ That prompt is no longer waiting for an answer. Send your reply as a normal message."
+    approval:
+      resolved_once: "✅ Approved once"
+      resolved_session: "✅ Approved for session"
+      resolved_always: "✅ Approved permanently"
+      resolved_deny: "❌ Denied"
+      expired: "⌛ Approval expired — no command was waiting."
+    slash_confirm:
+      resolved_once: "✅ Approved once"
+      resolved_always: "🔒 Always approve"
+      resolved_cancel: "❌ Cancelled"
+    clarify_type_answer: "✏️ Type your answer:"
+    command:
+      model:
+        arg_name: "Model name. Leave empty to see current."
+      reasoning:
+        arg_effort: "Level, reset, or show/hide. Leave empty to see current."
+      personality:
+        arg_name: "Personality name. Leave empty to list."
+      steer:
+        arg_text: "What to tell the agent"
+      title:
+        arg_text: "New title. Leave empty to show."
+      resume:
+        arg_name: "Session title or id"
+      reload_skills:
+        description: "Re-scan skills for new or removed entries"
+      approve:
+        arg_scope: "Approval scope"
+      deny:
+        arg_reason: "Why (relayed to the agent)"
+      bg:
+        arg_text: "The prompt to run"
+      btw:
+        arg_text: "The question to answer"
+  qqbot:
+    approval:
+      title: "Execute this command?"
+      smart_deny_suffix: " Owner override applies to this one operation only."
+    update_prompt: "☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Approve a pending dangerous command"

@@ -41,6 +41,13 @@ approval:
     minute_other: "{count}분"
     second_one: "{count}초"
     second_other: "{count}초"
+  elicitation:
+    mcp_untrusted_command: "신뢰하지 않는 서버 '{server}'의 MCP 도구 '{tool}'이(가) 실행하려고 해요. 이 도구는 쓰기가 가능하며 (readOnlyHint=true 주석 없음) 외부 상태를 변경할 수 있어요."
+    mcp_untrusted_description: "서버 '{server}'은(는) 'trust: untrusted'로 설정되어 있어요. 승인하면 '{tool}'을(를) 한 번 실행하고, 거부하면 차단해요."
+    mcp_untrusted_title: "MCP 서버 '{server}'의 요청"
+    payment_fill_command: "{origin}에 결제 카드 '{label}' 입력"
+    payment_fill_description: "에이전트가 저장된 카드 정보를 이 결제 페이지에 입력하려고 해요. 카드 번호와 CVC는 대화에 절대 포함되지 않아요. 여기서 결제할 생각일 때만 승인하세요."
+    payment_fill_title: "결제 카드를 입력할까요?"
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining: "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
   resume:
     db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ `/resume` 인수를 해석할 수 없습니다: {error}.\n공백이 있는 제목은 따옴표로 감싸세요. 예: `/resume \"Project A Plan\"`"
+    matrix_no_named_sessions: "이 Matrix 방에서 이름이 지정된 세션을 찾을 수 없습니다.\n`/title 내 세션`으로 현재 방 세션의 이름을 지정하거나, `/resume --all`로 모든 Matrix 세션을 나열하거나, `/resume --cross-room <세션 이름>`으로 방 경계를 명시적으로 넘으세요."
     matrix_blocked_no_origin: "⚠️ Matrix /resume 차단됨: 이 이름이 지정된 세션에는 기록된 원본 방이 없어 Hermes가 기본적으로 현재 방에서 재개하지 않습니다. 의도적으로 방 경계를 넘어 재개하려면 `/resume --cross-room {name}`을 사용하세요."
     matrix_blocked_other_room: "⚠️ Matrix /resume 차단됨: 해당 세션은 다른 Matrix 방({room})에 속합니다. 의도적으로 여기서 재개하려면 `/resume --cross-room {name}`을 사용하세요."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ 방 간 재개: Matrix 방 **{room}**에서 **{title}** 세션을 재개했습니다.\n`/reset` 또는 다른 `/resume`을 실행할 때까지 이 방의 이후 메시지는 해당 대화 기록을 사용합니다.{msg_part}"
     blocked_not_owner: "⚠️ /resume 차단됨: '**{name}**'은(는) 다른 사용자 또는 채팅에 속합니다. 이 채팅의 세션만 재개할 수 있습니다."
     no_named_sessions: "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
     all_requires_admin: "_참고: `--all`(채팅 간 목록)은 구성된 관리자가 필요합니다. 이 채팅의 세션만 표시합니다._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ 유지됨 (체크포인트에 저장하기엔 너무 커서 되돌릴 저장본이 없습니다): {files}"
     failed_deletes: "⚠️ 제거할 수 없었습니다 (그대로 남아 있음): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "이 디렉터리에는 체크포인트가 없습니다"
+    err_not_found: "체크포인트 '{hash}'을(를) 찾을 수 없습니다"
+    err_changed_files: "변경된 파일을 계산할 수 없습니다: {err}"
+    err_diff_failed: "diff를 생성할 수 없습니다"
+    err_inspect_checkpoint: "체크포인트를 읽을 수 없습니다: {err}"
+    err_inspect_selection: "복원 대상을 분석할 수 없습니다: {err}"
+    err_selection_empty: "복원 대상과 일치하는 파일이 체크포인트에 없습니다: {path}"
+    err_nested_repos: "체크포인트에 캡처되지 않은 중첩 git 저장소가 포함되어 있습니다 ({paths}). 롤백을 수행하지 않았습니다"
+    err_safe_plan_failed: "안전 복원 계획을 세우지 못했습니다"
+    err_restore_failed: "복원 실패: {err}"
   diff:
     not_enabled: "체크포인트가 활성화되지 않아 세션 기준선이 없습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```\n일반 /diff는 여전히 작동합니다 — git을 직접 사용합니다."
     no_changes: "변경 사항이 없습니다."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "{home}/.env의 {env_var}에 ID를 추가하고 게이트웨이를 재시작하세요"
     owner_hint_generic: "이 플랫폼의 허용 사용자 목록에 ID를 추가하고 게이트웨이를 재시작하세요"
     owner_notice: "인식되지 않은 {platform} 사용자 {who}의 메시지를 버렸어요. 본인이거나 신뢰하는 사람이라면 {allowlist}. 또는 {home}/config.yaml에서 {platform}에 `unauthorized_dm_behavior: pair`를 설정하면 알 수 없는 발신자가 페어링 코드를 받고, `hermes pairing approve {platform} <code>`로 승인할 수 있어요."
+    decline_default: "안녕하세요! 저는 개인 비서라서 주인하고만 대화할 수 있어요. 직접 도와드리지 못해 죄송해요!"
   picker:
     page_info: " ({start}–{end} / {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "새 세션을 시작하고 현재 대화 기록을 버려요."
     detail_undo_one: "기록에서 마지막 사용자/어시스턴트 교환을 제거해요."
     detail_undo_many: "기록에서 마지막 사용자 턴 {count}개를 제거해요."
+    handler_error: "❌ 확인을 처리하는 중 오류가 발생했어요: {error}"
   hooks:
     command_blocked: "`/{command}` 명령이 훅에 의해 차단되었어요."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ 컨텍스트: {tokens} 토큰 ({source})"
     info_acting_model: "◆ 실행 모델 (이 실행의 비용이 청구되는 모델): {provider}:{model}"
     info_endpoint: "◆ 엔드포인트: {url}"
+    context_source_config: "설정"
+    context_source_default: "기본값 — 바꾸려면 설정에서 model.context_length를 지정하세요"
+    context_source_detected: "자동 감지"
   proxy:
     requires_aiohttp: "⚠️ 프록시 모드에는 aiohttp가 필요해요. 실행: {hint}"
     url_missing: "⚠️ 프록시 URL이 설정되지 않았어요 (GATEWAY_PROXY_URL 또는 gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "오류"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes가 작업 중이에요"
+    stall_notice: "⚠️ 멈춘 것 같아요 ({minutes}분 동안 활동 없음). /stop으로 현재 작업을 취소하거나, /new로 새 대화를 시작하세요."
   pairing:
     validity_hour: "{hours}시간"
     validity_hours: "{hours}시간"
@@ -947,6 +970,42 @@ gateway:
     hint: "브라우저에서 충전과 결제 관리를 하면 잔액이 여기에도 곧 반영돼요."
   login:
     free_tier_remaining: "\n일부 채팅은 아직 무료 등급을 사용 중이에요. 해당 채팅에서 /model로 전환하세요."
+  cron:
+    failure:
+      provider: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: {cause}. {action} 실행 로그: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} 다음 예약 시간에 다시 실행돼요. 지금 바로 시도하려면 `hermes cron run {job_id}`를 실행하세요."
+      action_billing: "충전하거나 한도가 초기화될 때까지 기다리세요. 또는 `hermes cron edit {job_id} --provider <name>`로 다른 제공자를 고정하세요."
+      action_auth: "/login으로 다시 로그인하거나(터미널에서는 `{relogin}`) `hermes cron edit {job_id} --provider <name>`로 정상 작동하는 제공자를 고정한 뒤, `hermes cron run {job_id}`로 다시 시도하세요."
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>`로 다른 모델을 선택하세요."
+      action_upstream_blocked: "제공자 앞단의 방화벽이 요청을 차단했어요 (키 문제가 아니에요). 제공자의 custom_providers 항목에서 `extra_headers`로 User-Agent를 설정하거나, `hermes cron edit {job_id} --provider <name>`로 다른 제공자를 고정하세요."
+      action_context_overflow: "`hermes cron edit {job_id} --prompt <text>`로 작업 프롬프트를 줄이세요."
+      action_content_policy: "`hermes cron edit {job_id} --prompt <text>`로 작업 프롬프트를 바꿔 쓰거나, `hermes cron edit {job_id} --model <name>`로 다른 모델을 선택하세요."
+      action_provider_policy: "다시 시도해도 해결되지 않아요. 제공자 쪽에서 계정 상태와 데이터/개인정보 설정을 확인하거나, `hermes cron edit {job_id} --model <name>`로 다른 모델을 고정하세요."
+      action_default: "`hermes cron run {job_id}`로 다시 실행하거나 `hermes cron edit {job_id}`로 편집하세요."
+      generic: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: {error}. 전체 실행 내역은 `hermes cron runs {job_id}`에서 볼 수 있어요 (출력은 {output_dir}에 저장됨). `hermes cron run {job_id}`로 다시 실행하거나, `hermes cron edit {job_id}`로 편집하거나, `hermes cron pause {job_id}`로 일시 중지하세요."
+      script_timeout: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: 스크립트 시간이 초과되었어요. 모델은 호출되지 않았어요. {output_dir}의 스크립트 출력이나 `hermes cron runs {job_id}`를 확인한 뒤 `hermes cron run {job_id}`로 다시 실행하세요."
+      inactivity: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: 작업이 멈췄어요 — 너무 오랫동안 아무 활동이 없어서 중단되었어요. {output_dir}에 저장된 출력(`hermes cron runs {job_id}`)에서 무엇을 하고 있었는지 확인한 뒤 `hermes cron run {job_id}`로 다시 실행하세요."
+      blocked_config: "⛔ 예약 작업 '{job_name}'이(가) 실행되지 않았어요: {reason} 요금은 청구되지 않았어요. Hermes는 다음 예약 시간에 다시 시도하며 이 알림을 반복해서 보내지 않아요. `hermes cron doctor`로 확인하세요."
+      backup_pinned: "이 작업은 자체 제공자/모델에 고정되어 있어서 `fallback_providers`로 폴백하지 않아요. `hermes cron edit {job_id} --unpin`을 실행하면 기본 모델과 그 폴백 체인을 따르게 돼요."
+      backup_failed: "백업 제공자도 모두 실패했어요."
+      backup_none: "백업 제공자가 설정되어 있지 않아요 — `hermes fallback add`로 추가하거나, config.yaml에서 `cron.model` + `cron.model_provider`로 예약 작업 전체의 기본값을 설정하세요."
+      streak_nudge: "\n이 작업이 {streak}회 연속으로 실패했어요 — 한번 점검해 보세요. 프롬프트/설정을 고치거나, 알림이 계속 오지 않도록 `hermes cron pause {job_ref}`로 일시 중지하세요 (resume/remove도 사용할 수 있어요)."
+      stale_code_hint: " 가능한 원인: 게이트웨이가 오래된 코드로 실행 중이에요 (부팅 시 {boot_rev}, 디스크는 {disk_rev}) — `hermes gateway restart`를 실행하면 해결돼요."
+      quota_hold: "\n제공자의 사용량 창이 약 {hours}시간 동안 닫혀 있어요. 이 작업은 {until}까지 보류되었다가 그 이후 처음으로 안전한 시점에 재개돼요. 제공자를 사용할 수 없는 동안에는 추가 알림을 보내지 않아요."
+    registration_pending: "예약 작업 '{label}'을(를) 저장했지만, 아직 외부 스케줄러에 등록하지 못했어요. 작업은 유지되니 다시 만들지 마세요. 등록을 다시 시도하려면 일시 중지/재개하거나 편집하세요 (예: /cron 사용)."
+    output_truncated: "\n\n... [잘림, 전체 출력은 {path}에 저장됨]"
+  recovered_reply:
+    restart: "♻️ 복구된 답장 — 전송 중에 게이트웨이가 재시작되어 중복된 메시지일 수 있어요:"
+    reconnect: "♻️ 복구된 답장 — 원래 전송이 실패한 뒤 메시징 플랫폼이 다시 연결되어 중복된 메시지일 수 있어요:"
+    flood: "♻️ 복구된 답장 — 메시징 플랫폼의 전송 속도 제한으로 원래 메시지가 거부되어, 일부는 이미 위에 도착했을 수 있어요:"
+  subagent:
+    goal: " \"{goal}\""
+    after: " {elapsed} 후"
+    duration_min: "{n}분"
+    duration_sec: "{n}초"
+    reason: ": {reason}"
+    timed_out: "⚠️ 서브에이전트{goal}의 작업이{after} 시간 초과로 끝나지 못했어요. 이 작업 없이 계속 진행할게요. 다시 시도해 달라고 요청하거나, 이런 작업이 원래 더 오래 걸린다면 config.yaml에서 delegation.child_timeout_seconds를 늘리세요."
+    failed: "⚠️ 서브에이전트{goal}의 작업이{after} 실패했어요{reason}. 자세한 내용: /agents. 또는 더 작은 작업으로 다시 시도해 달라고 요청하세요."
 platform:
   whatsapp:
     clarify_other_title: "✏️ 기타"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "취소"
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
+    approval:
+      resolved_once: "✅ 한 번 승인됨"
+      resolved_session: "✅ 세션 동안 승인됨"
+      resolved_always: "✅ 영구 승인됨"
+      resolved_deny: "❌ 거부됨"
+      expired: "⌛ 승인 만료됨 — 대기 중인 명령이 없었어요."
+    slash_confirm:
+      resolved_once: "✅ 한 번 승인됨"
+      resolved_always: "🔒 항상 승인"
+      resolved_cancel: "❌ 취소됨"
+    clarify_type_answer: "✏️ 답변을 입력해 주세요:"
+    command:
+      model:
+        arg_name: "모델 이름. 비워 두면 현재 모델을 보여줘요."
+      reasoning:
+        arg_effort: "수준, reset 또는 show/hide. 비워 두면 현재 설정을 보여줘요."
+      personality:
+        arg_name: "성격 이름. 비워 두면 목록을 보여줘요."
+      steer:
+        arg_text: "에이전트에게 전할 내용"
+      title:
+        arg_text: "새 제목. 비워 두면 현재 제목을 보여줘요."
+      resume:
+        arg_name: "세션 제목 또는 ID"
+      reload_skills:
+        description: "스킬을 다시 스캔해 새로 추가되거나 삭제된 항목 반영"
+      approve:
+        arg_scope: "승인 범위"
+      deny:
+        arg_reason: "이유 (에이전트에게 전달됨)"
+      bg:
+        arg_text: "실행할 프롬프트"
+      btw:
+        arg_text: "답변받을 질문"
+  qqbot:
+    approval:
+      title: "이 명령을 실행할까요?"
+      smart_deny_suffix: " 소유자 재정의 승인은 이번 한 번의 작업에만 적용돼요."
+    update_prompt: "☤ **업데이트에 입력이 필요해요**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "대기 중인 위험 명령 승인"

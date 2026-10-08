@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} dakika"
     second_one: "{count} saniye"
     second_other: "{count} saniye"
+  elicitation:
+    mcp_untrusted_command: "GÜVENİLMEYEN '{server}' sunucusundaki '{tool}' MCP aracı çalışmak istiyor. Bu araç yazma yeteneğine sahip (readOnlyHint=true ek açıklaması yok) ve harici durumu değiştirebilir."
+    mcp_untrusted_description: "'{server}' sunucusu 'trust: untrusted' olarak yapılandırılmış. '{tool}' aracını bir kez çalıştırmak için onaylayın veya engellemek için reddedin."
+    mcp_untrusted_title: "'{server}' MCP sunucusu onay istiyor"
+    payment_fill_command: "{origin} üzerinde '{label}' ödeme kartını doldur"
+    payment_fill_description: "Ajan, kayıtlı kart bilgilerinizi bu ödeme sayfasına girmek istiyor. Kart numarası ve CVC hiçbir zaman konuşmaya girmez. Yalnızca burada ödeme yapmak istiyorsanız onaylayın."
+    payment_fill_title: "Ödeme kartı doldurulsun mu?"
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining: "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."
   resume:
     db_unavailable: "Oturum veritabanı kullanılamıyor."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ `/resume` argümanları ayrıştırılamadı: {error}.\nBoşluk içeren başlıkları tırnak içine alın, örneğin: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Bu Matrix odası için adlandırılmış oturum bulunamadı.\nGeçerli oda oturumunu adlandırmak için `/title Oturumum`, tüm Matrix oturumlarını listelemek için `/resume --all` veya oda sınırlarını bilerek aşmak için `/resume --cross-room <oturum adı>` kullanın."
     matrix_blocked_no_origin: "⚠️ Matrix /resume engellendi: bu adlandırılmış oturumun kayıtlı bir oda kökeni yok, bu yüzden Hermes onu varsayılan olarak mevcut odada sürdürmez. Oda sınırlarını bilerek aşmak istiyorsanız `/resume --cross-room {name}` kullanın."
     matrix_blocked_other_room: "⚠️ Matrix /resume engellendi: bu oturum farklı bir Matrix odasına ({room}) ait. Onu bilerek burada sürdürmek istiyorsanız `/resume --cross-room {name}` kullanın."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Odalar arası devam: **{title}**, **{room}** Matrix odasında sürdürüldü.\nBu odadaki sonraki mesajlar `/reset` veya başka bir `/resume` komutuna kadar bu dökümü kullanacak.{msg_part}"
     blocked_not_owner: "⚠️ /resume engellendi: '**{name}**' farklı bir kullanıcıya veya sohbete ait. Yalnızca bu sohbetin oturumlarını sürdürebilirsiniz."
     no_named_sessions: "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
     all_requires_admin: "_Not: `--all` (sohbetler arası listeleme) yapılandırılmış bir yönetici gerektirir; yalnızca bu sohbetin oturumları gösteriliyor._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Korundu (denetim noktaları için çok büyük, geri dönülecek kayıtlı kopya yok): {files}"
     failed_deletes: "⚠️ Kaldırılamadı (yerinde bırakıldı): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Bu dizin için hiç kontrol noktası yok"
+    err_not_found: "'{hash}' kontrol noktası bulunamadı"
+    err_changed_files: "Değişen dosyalar hesaplanamadı: {err}"
+    err_diff_failed: "Fark (diff) oluşturulamadı"
+    err_inspect_checkpoint: "Kontrol noktası incelenemedi: {err}"
+    err_inspect_selection: "Geri yükleme seçimi incelenemedi: {err}"
+    err_selection_empty: "Geri yükleme seçimi kontrol noktasındaki hiçbir dosyayla eşleşmedi: {path}"
+    err_nested_repos: "Kontrol noktası, yakalanmamış iç içe git depoları içeriyor ({paths}); geri alma yapılmadı"
+    err_safe_plan_failed: "Güvenli geri yükleme planı başarısız oldu"
+    err_restore_failed: "Geri yükleme başarısız oldu: {err}"
   diff:
     not_enabled: "Kontrol noktaları etkin değil, bu yüzden oturum temel çizgisi yok.\nconfig.yaml içinde etkinleştirin:\n```\ncheckpoints:\n  enabled: true\n```\nDüz /diff yine de çalışır — doğrudan git kullanır."
     no_changes: "Değişiklik yok."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "kimliği {home}/.env içindeki {env_var} değişkenine ekleyip gateway'i yeniden başlatın"
     owner_hint_generic: "kimliği bu platformun izinli kullanıcılar listesine ekleyip gateway'i yeniden başlatın"
     owner_notice: "Tanınmayan {platform} kullanıcısı {who} tarafından gönderilen bir mesaj yoksayıldı. Bu sizseniz veya güvendiğiniz biriyse {allowlist}; ya da bilinmeyen göndericilerin `hermes pairing approve {platform} <code>` ile onaylayabileceğiniz bir eşleştirme kodu alması için {home}/config.yaml içinde {platform} için `unauthorized_dm_behavior: pair` ayarlayın."
+    decline_default: "Merhaba! Ben kişisel bir asistanım ve yalnızca sahibimle sohbet edebiliyorum, bu yüzden size doğrudan yardımcı olamam. Kusura bakmayın!"
   picker:
     page_info: " ({start}–{end} / {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Bu, yeni bir oturum başlatır ve geçerli konuşma geçmişini siler."
     detail_undo_one: "Bu, son kullanıcı/asistan alışverişini geçmişten kaldırır."
     detail_undo_many: "Bu, son {count} kullanıcı turunu geçmişten kaldırır."
+    handler_error: "❌ Onay işlenirken hata oluştu: {error}"
   hooks:
     command_blocked: "`/{command}` komutu bir hook tarafından engellendi."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Bağlam: {tokens} token ({source})"
     info_acting_model: "◆ Etkin model (çalıştırma için faturalandırılan): {provider}:{model}"
     info_endpoint: "◆ Uç nokta: {url}"
+    context_source_config: "yapılandırma"
+    context_source_default: "varsayılan — geçersiz kılmak için yapılandırmada model.context_length ayarlayın"
+    context_source_detected: "algılandı"
   proxy:
     requires_aiohttp: "⚠️ Proxy modu aiohttp gerektirir. Çalıştırın: {hint}"
     url_missing: "⚠️ Proxy URL'si yapılandırılmamış (GATEWAY_PROXY_URL veya gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "hata"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes çalışıyor"
+    stall_notice: "⚠️ Takılmış gibiyim ({minutes} dakikadır etkinlik yok). Geçerli görevi iptal etmek için /stop, yeni bir konuşma başlatmak için /new gönderin."
   pairing:
     validity_hour: "{hours} saat"
     validity_hours: "{hours} saat"
@@ -947,6 +970,42 @@ gateway:
     hint: "Bakiye yükleme ve faturalandırma işlemlerini tarayıcıda yapın — bakiyeniz ardından burada güncellenir."
   login:
     free_tier_remaining: "\nBazı sohbetler hâlâ ücretsiz katmanda; o sohbetlerde geçiş yapmak için /model kullanın."
+  cron:
+    failure:
+      provider: "⚠️ '{job_name}' cron işi başarısız oldu: {cause}. {action} Çalıştırma günlüğü: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Bir sonraki planlanan zamanında yeniden çalışacak; hemen denemek için `hermes cron run {job_id}` kullanın."
+      action_billing: "Bakiye yükleyin veya limitin sıfırlanmasını bekleyin ya da `hermes cron edit {job_id} --provider <name>` ile başka bir sağlayıcı sabitleyin."
+      action_auth: "/login ile (veya bir terminalde `{relogin}` ile) yeniden oturum açın ya da `hermes cron edit {job_id} --provider <name>` ile çalışan bir sağlayıcı sabitleyin, ardından yeniden denemek için `hermes cron run {job_id}` çalıştırın."
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>` ile başka bir model seçin."
+      action_upstream_blocked: "Sağlayıcının önündeki bir güvenlik duvarı isteği engelledi (sorun anahtarınızda değil): sağlayıcının custom_providers girdisinde `extra_headers` ile bir User-Agent ayarlayın ya da `hermes cron edit {job_id} --provider <name>` ile başka bir sağlayıcı sabitleyin."
+      action_context_overflow: "İşin istemini `hermes cron edit {job_id} --prompt <text>` ile kısaltın."
+      action_content_policy: "İşin istemini `hermes cron edit {job_id} --prompt <text>` ile yeniden ifade edin ya da `hermes cron edit {job_id} --model <name>` ile başka bir model seçin."
+      action_provider_policy: "Yeniden denemek işe yaramaz: hesabın durumunu ve veri/gizlilik ayarlarını sağlayıcı tarafında kontrol edin ya da `hermes cron edit {job_id} --model <name>` ile başka bir model sabitleyin."
+      action_default: "`hermes cron run {job_id}` ile yeniden çalıştırın veya `hermes cron edit {job_id}` ile düzenleyin."
+      generic: "⚠️ '{job_name}' cron işi başarısız oldu: {error}. Çalıştırmanın tamamını `hermes cron runs {job_id}` ile görün (çıktı {output_dir} altına kaydedildi); `hermes cron run {job_id}` ile yeniden çalıştırın, `hermes cron edit {job_id}` ile düzenleyin veya `hermes cron pause {job_id}` ile duraklatın."
+      script_timeout: "⚠️ '{job_name}' cron işi başarısız oldu: betiği zaman aşımına uğradı. Hiçbir model çağrılmadı. Betiğin {output_dir} altındaki çıktısını veya `hermes cron runs {job_id}` sonucunu kontrol edin, ardından `hermes cron run {job_id}` ile yeniden çalıştırın."
+      inactivity: "⚠️ '{job_name}' cron işi başarısız oldu: iş takıldı — çok uzun süre hiçbir şey yapmadı ve durduruldu. Ne yaptığını {output_dir} altındaki kayıtlı çıktıda (`hermes cron runs {job_id}`) kontrol edin, ardından `hermes cron run {job_id}` ile yeniden çalıştırın."
+      blocked_config: "⛔ '{job_name}' cron işi çalışmadı: {reason} Herhangi bir ücret alınmadı. Hermes bir sonraki planlanan zamanda yeniden deneyecek ve bu uyarıyı tekrarlamayacak; `hermes cron doctor` ile kontrol edin."
+      backup_pinned: "Bu iş kendi sağlayıcısına/modeline sabitlendiği için `fallback_providers` listesine geçmez; `hermes cron edit {job_id} --unpin` ile ana modeli ve onun yedek zincirini izlemesini sağlayabilirsiniz."
+      backup_failed: "Hiçbir yedek sağlayıcı da başarılı olmadı."
+      backup_none: "Yapılandırılmış yedek sağlayıcı yok — `hermes fallback add` ile bir tane ekleyin veya config.yaml içinde `cron.model` + `cron.model_provider` ile tüm cron işleri için bir varsayılan ayarlayın."
+      streak_nudge: "\nBu iş art arda {streak} çalıştırmada başarısız oldu — gözden geçirmeye değer. İstemini/yapılandırmasını düzeltin ya da gürültüyü kesmek için `hermes cron pause {job_ref}` ile duraklatın (resume/remove da kullanılabilir)."
+      stale_code_hint: " Olası neden: gateway eski kodu çalıştırıyor ({boot_rev} ile başlatıldı, diskte {disk_rev} var) — düzeltmek için `hermes gateway restart` çalıştırın."
+      quota_hold: "\nSağlayıcının kullanım penceresi yaklaşık {hours} saat boyunca kapalı. Bu iş {until} zamanına kadar bekletiliyor ve sonrasındaki ilk güvenli fırsatta devam ediyor; sağlayıcı kullanılamadığı sürece başka uyarı gönderilmez."
+    registration_pending: "'{label}' cron işi kaydedildi, ancak henüz harici zamanlayıcıya kaydettirilemedi. İş korunuyor — yeniden oluşturmayın; kaydı yeniden denemek için duraklatıp sürdürün veya düzenleyin (ör. /cron ile)."
+    output_truncated: "\n\n... [kısaltıldı, tam çıktı {path} konumuna kaydedildi]"
+  recovered_reply:
+    restart: "♻️ Kurtarılan yanıt — gateway teslimat sırasında yeniden başladı, bu yüzden bu bir kopya olabilir:"
+    reconnect: "♻️ Kurtarılan yanıt — ilk teslimat başarısız olduktan sonra mesajlaşma platformu yeniden bağlandı, bu yüzden bu bir kopya olabilir:"
+    flood: "♻️ Kurtarılan yanıt — mesajlaşma platformunun hız sınırı orijinal mesajı reddetti, bu yüzden bir kısmı yukarıda zaten gelmiş olabilir:"
+  subagent:
+    goal: " (\"{goal}\")"
+    after: " {elapsed} sonra"
+    duration_min: "{n} dk"
+    duration_sec: "{n} sn"
+    reason: ": {reason}"
+    timed_out: "⚠️ Alt ajan{goal}{after} işini bitiremeden zaman aşımına uğradı. Onsuz devam edeceğim; yeniden denememi isteyin veya bu görevler gerçekten daha uzun sürüyorsa config.yaml içinde delegation.child_timeout_seconds değerini yükseltin."
+    failed: "⚠️ Alt ajan{goal}{after} başarısız oldu{reason}. Ayrıntılar: /agents; ya da daha küçük bir görevle yeniden denememi isteyin."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "İptal"
     prompt_other: "✏️ Diğer (yanıt yazın)"
     prompt_expired: ⌛ Bu istem artık yanıt beklemiyor. Yanıtınızı normal bir mesaj olarak gönderin.
+    approval:
+      resolved_once: "✅ Bir kez onaylandı"
+      resolved_session: "✅ Oturum için onaylandı"
+      resolved_always: "✅ Kalıcı olarak onaylandı"
+      resolved_deny: "❌ Reddedildi"
+      expired: "⌛ Onay süresi doldu — bekleyen komut yoktu."
+    slash_confirm:
+      resolved_once: "✅ Bir kez onaylandı"
+      resolved_always: "🔒 Her zaman onayla"
+      resolved_cancel: "❌ İptal edildi"
+    clarify_type_answer: "✏️ Yanıtınızı yazın:"
+    command:
+      model:
+        arg_name: "Model adı. Geçerli olanı görmek için boş bırakın."
+      reasoning:
+        arg_effort: "Düzey, reset veya show/hide. Geçerli olanı görmek için boş bırakın."
+      personality:
+        arg_name: "Kişilik adı. Listelemek için boş bırakın."
+      steer:
+        arg_text: "Ajana ne söyleneceği"
+      title:
+        arg_text: "Yeni başlık. Göstermek için boş bırakın."
+      resume:
+        arg_name: "Oturum başlığı veya kimliği"
+      reload_skills:
+        description: "Yeni veya kaldırılmış girdiler için skill'leri yeniden tara"
+      approve:
+        arg_scope: "Onay kapsamı"
+      deny:
+        arg_reason: "Neden (ajana iletilir)"
+      bg:
+        arg_text: "Çalıştırılacak istem"
+      btw:
+        arg_text: "Yanıtlanacak soru"
+  qqbot:
+    approval:
+      title: "Bu komut çalıştırılsın mı?"
+      smart_deny_suffix: " Sahip geçersiz kılması yalnızca bu tek işlem için geçerlidir."
+    update_prompt: "☤ **Güncelleme Girdinizi Bekliyor**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Bekleyen tehlikeli bir komutu onayla"

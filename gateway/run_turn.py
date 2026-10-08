@@ -1541,10 +1541,10 @@ class GatewayTurnMixin:
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
         # reads the same words on every surface.
         if response == "(empty)" and not _intentional_silence:
-            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+            from agent.turn_explainers import empty_response_explanation
 
             _model = str(agent_result.get("model") or "").strip() or t("gateway.errors.empty_response_model_label")
-            response = t("gateway.shared.warn_passthrough", error=EMPTY_RESPONSE_EXPLANATION.format(model=_model))
+            response = t("gateway.shared.warn_passthrough", error=empty_response_explanation(_model))
         agent_messages = agent_result.get("messages", [])
         logger.info(
             "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
@@ -2348,10 +2348,10 @@ class GatewayTurnMixin:
         from gateway.run import _resolve_gateway_model_context
         resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
-        ctx_source = {
-            "config": "config",
-            "default": "default — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
+        ctx_source = t({
+            "config": "gateway.session.context_source_config",
+            "default": "gateway.session.context_source_default",
+        }.get(resolved.context_source, "gateway.session.context_source_detected"))
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
             else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)

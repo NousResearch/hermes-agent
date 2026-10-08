@@ -8,6 +8,7 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -58,7 +59,9 @@ def describe_subagent_failure(failure_reason: Any, error: Any, max_chars: int = 
 def _format_duration(seconds: Any) -> str:
     if not isinstance(seconds, (int, float)) or seconds <= 0:
         return ""
-    return f"{round(seconds / 60)} min" if seconds >= 120 else f"{round(seconds)}s"
+    if seconds >= 120:
+        return t("gateway.subagent.duration_min", n=round(seconds / 60))
+    return t("gateway.subagent.duration_sec", n=round(seconds))
 
 
 def format_subagent_failure_line(
@@ -73,24 +76,16 @@ def format_subagent_failure_line(
     goal_label = (goal or "").strip().replace("\n", " ")
     if len(goal_label) > 60:
         goal_label = goal_label[:57] + "..."
-    goal_part = f' — "{goal_label}"' if goal_label else ""
+    goal_part = t("gateway.subagent.goal", goal=goal_label) if goal_label else ""
     elapsed = _format_duration(duration_seconds)
+    after = t("gateway.subagent.after", elapsed=elapsed) if elapsed else ""
     if status == "timeout":
         # The child's own timeout text repeats the duration and names mechanisms (API/tool calls); the
         # user needs the outcome and the knob.
-        after = f" after {elapsed}" if elapsed else ""
-        return (
-            f"⚠️ Subagent timed out{goal_part}{after} without finishing. I will carry on without it; ask me to "
-            "retry it, or raise delegation.child_timeout_seconds in config.yaml if these tasks legitimately "
-            "take longer."
-        )
-    line = f"⚠️ Subagent failed{goal_part}"
-    if elapsed:
-        line += f" after {elapsed}"
+        return t("gateway.subagent.timed_out", goal=goal_part, after=after)
     reason = describe_subagent_failure(failure_reason, error)
-    if reason:
-        line += f": {reason.rstrip('.')}"
-    return line + ". Details: /agents, or ask me to retry with a smaller task."
+    reason_part = t("gateway.subagent.reason", reason=reason.rstrip(".")) if reason else ""
+    return t("gateway.subagent.failed", goal=goal_part, after=after, reason=reason_part)
 
 
 class DelegateEvent(str, enum.Enum):

@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} minutos"
     second_one: "{count} segundo"
     second_other: "{count} segundos"
+  elicitation:
+    mcp_untrusted_command: "La herramienta MCP '{tool}' del servidor NO CONFIABLE '{server}' quiere ejecutarse. Esta herramienta puede escribir (no tiene la anotación readOnlyHint=true) y podría modificar el estado externo."
+    mcp_untrusted_description: "El servidor '{server}' está configurado como 'trust: untrusted'. Aprueba para ejecutar '{tool}' una vez, o deniega para bloquearla."
+    mcp_untrusted_title: "El servidor MCP '{server}' solicita permiso"
+    payment_fill_command: "Rellenar la tarjeta de pago '{label}' en {origin}"
+    payment_fill_description: "El agente quiere introducir los datos de tu tarjeta guardada en esta página de pago. El número de la tarjeta y el CVC nunca entran en la conversación. Aprueba solo si tienes intención de pagar aquí."
+    payment_fill_title: "¿Confirmar el rellenado de la tarjeta de pago?"
 gateway:
   approval_expired: "⚠️ La aprobación ha caducado (el agente ya no está esperando). Pida al agente que lo intente de nuevo."
   draining: "⏳ Esperando a que terminen {count} agente(s) activo(s) antes de reiniciar..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Conservado (demasiado grande para los checkpoints, no hay copia guardada a la que revertir): {files}"
     failed_deletes: "⚠️ No se pudo eliminar (se dejó en su lugar): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "No existen checkpoints para este directorio"
+    err_not_found: "No se encontró el checkpoint '{hash}'"
+    err_changed_files: "No se pudieron calcular los archivos modificados: {err}"
+    err_diff_failed: "No se pudo generar el diff"
+    err_inspect_checkpoint: "No se pudo inspeccionar el checkpoint: {err}"
+    err_inspect_selection: "No se pudo inspeccionar la selección de restauración: {err}"
+    err_selection_empty: "La selección de restauración no coincidió con ningún archivo del checkpoint: {path}"
+    err_nested_repos: "El checkpoint contiene repositorios git anidados que no se capturaron ({paths}); no se realizó el rollback"
+    err_safe_plan_failed: "Falló el plan de restauración segura"
+    err_restore_failed: "La restauración falló: {err}"
   diff:
     not_enabled: "Los checkpoints no están activados, así que no hay línea base de sesión.\nActívalos en config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nEl /diff normal sigue funcionando — usa git directamente."
     no_changes: "Sin cambios."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "agrega el ID a {env_var} en {home}/.env y reinicia el gateway"
     owner_hint_generic: "agrega el ID a la lista de usuarios permitidos de esta plataforma y reinicia el gateway"
     owner_notice: "Se descartó un mensaje del usuario no reconocido {who} de {platform}. Si eres tú o alguien de confianza, {allowlist}; o configura `unauthorized_dm_behavior: pair` para {platform} en {home}/config.yaml para que los remitentes desconocidos reciban un código de vinculación que puedes aprobar con `hermes pairing approve {platform} <code>`."
+    decline_default: "¡Hola! Soy un asistente personal y solo puedo chatear con mi propietario, así que no puedo ayudarte directamente. ¡Lo siento!"
   picker:
     page_info: " ({start}–{end} de {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Esto inicia una sesión nueva y descarta el historial de la conversación actual."
     detail_undo_one: "Esto elimina del historial el último intercambio usuario/asistente."
     detail_undo_many: "Esto elimina del historial los últimos {count} turnos del usuario."
+    handler_error: "❌ Error al procesar la confirmación: {error}"
   hooks:
     command_blocked: "Un hook bloqueó el comando `/{command}`."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Contexto: {tokens} tokens ({source})"
     info_acting_model: "◆ Modelo en uso (se factura en esta ejecución): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
+    context_source_config: "configuración"
+    context_source_default: "predeterminado — define model.context_length en la configuración para cambiarlo"
+    context_source_detected: "detectado"
   proxy:
     requires_aiohttp: "⚠️ El modo proxy requiere aiohttp. Ejecuta: {hint}"
     url_missing: "⚠️ URL del proxy no configurada (GATEWAY_PROXY_URL o gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "error"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes está trabajando"
+    stall_notice: "⚠️ Parece que me he atascado (sin actividad desde hace {minutes} min). Envía /stop para cancelar la tarea actual o /new para empezar una conversación nueva."
   pairing:
     validity_hour: "{hours} hora"
     validity_hours: "{hours} horas"
@@ -947,6 +970,42 @@ gateway:
     hint: "Recarga y gestiona la facturación en el navegador — tu saldo se actualizará aquí después."
   login:
     free_tier_remaining: "\nAlgunos chats siguen en el nivel gratuito; usa /model en esos chats para cambiar."
+  cron:
+    failure:
+      provider: "⚠️ La tarea cron '{job_name}' falló: {cause}. {action} Registro de ejecuciones: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Volverá a ejecutarse en su próxima hora programada; `hermes cron run {job_id}` la ejecuta ahora."
+      action_billing: "Recarga saldo o espera a que se restablezca el límite, o fija otro proveedor con `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Vuelve a iniciar sesión con /login (o `{relogin}` en una terminal), o fija un proveedor que funcione con `hermes cron edit {job_id} --provider <name>`, y luego ejecuta `hermes cron run {job_id}` para reintentar."
+      action_model_not_found: "Elige otro modelo con `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Un firewall delante del proveedor bloqueó la solicitud (no es cosa de tu clave): define un User-Agent mediante `extra_headers` en la entrada custom_providers del proveedor, o fija otro proveedor con `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Acorta el prompt de la tarea con `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reformula el prompt de la tarea con `hermes cron edit {job_id} --prompt <text>`, o elige otro modelo con `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Reintentar no servirá: revisa con el proveedor el estado de la cuenta y la configuración de datos/privacidad, o fija otro modelo con `hermes cron edit {job_id} --model <name>`."
+      action_default: "Vuelve a ejecutarla con `hermes cron run {job_id}` o edítala con `hermes cron edit {job_id}`."
+      generic: "⚠️ La tarea cron '{job_name}' falló: {error}. Consulta la ejecución completa con `hermes cron runs {job_id}` (salida guardada en {output_dir}); vuelve a ejecutarla con `hermes cron run {job_id}`, edítala con `hermes cron edit {job_id}` o ponla en pausa con `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ La tarea cron '{job_name}' falló: su script agotó el tiempo de espera. No se invocó ningún modelo. Revisa la salida del script en {output_dir} o `hermes cron runs {job_id}` y luego vuelve a ejecutarla con `hermes cron run {job_id}`."
+      inactivity: "⚠️ La tarea cron '{job_name}' falló: la tarea se atascó — pasó demasiado tiempo sin hacer nada y se interrumpió. Revisa qué estaba haciendo en la salida guardada en {output_dir} (`hermes cron runs {job_id}`) y luego vuelve a ejecutarla con `hermes cron run {job_id}`."
+      blocked_config: "⛔ La tarea cron '{job_name}' no se ejecutó: {reason} No se cobró nada. Hermes lo intentará de nuevo en la próxima hora programada y no repetirá este aviso; compruébalo con `hermes cron doctor`."
+      backup_pinned: "Esta tarea está fijada a su propio proveedor/modelo, así que no recurre a `fallback_providers`; `hermes cron edit {job_id} --unpin` hace que siga el modelo principal y su cadena de respaldo."
+      backup_failed: "Tampoco funcionó ningún proveedor de respaldo."
+      backup_none: "No hay ningún proveedor de respaldo configurado — añade uno con `hermes fallback add` o define un valor predeterminado para todo cron mediante `cron.model` + `cron.model_provider` en config.yaml."
+      streak_nudge: "\nEsta tarea ha fallado {streak} ejecuciones seguidas — conviene revisarla. Corrige su prompt/configuración o ponla en pausa con `hermes cron pause {job_ref}` (también puedes reanudarla o eliminarla) para cortar el ruido."
+      stale_code_hint: " Causa probable: el gateway está ejecutando código desactualizado (arrancó en {boot_rev}, el disco está en {disk_rev}) — ejecuta `hermes gateway restart` para solucionarlo."
+      quota_hold: "\nLa ventana de uso del proveedor está cerrada durante unas {hours} h. Esta tarea queda retenida hasta {until} y se reanudará en la primera oportunidad segura después; no se enviarán más avisos mientras el proveedor no esté disponible."
+    registration_pending: "Se guardó la tarea cron '{label}', pero aún no se pudo registrar en el programador externo. La tarea se conserva — no la vuelvas a crear; páusala/reanúdala o edítala (p. ej., con /cron) para reintentar el registro."
+    output_truncated: "\n\n... [truncado, salida completa guardada en {path}]"
+  recovered_reply:
+    restart: "♻️ Respuesta recuperada — el gateway se reinició durante la entrega, así que puede ser un duplicado:"
+    reconnect: "♻️ Respuesta recuperada — la plataforma de mensajería se reconectó después de que fallara la entrega original, así que puede ser un duplicado:"
+    flood: "♻️ Respuesta recuperada — el límite de tasa de la plataforma de mensajería rechazó el original, así que parte de él puede haber llegado ya más arriba:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " tras {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ El subagente se quedó sin tiempo{goal}{after} sin terminar. Seguiré sin él; pídeme que lo reintente o aumenta delegation.child_timeout_seconds en config.yaml si estas tareas necesitan legítimamente más tiempo."
+    failed: "⚠️ El subagente falló{goal}{after}{reason}. Detalles: /agents, o pídeme que lo reintente con una tarea más pequeña."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Otra"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Cancelar"
     prompt_other: "✏️ Otra (escribir respuesta)"
     prompt_expired: ⌛ Esa solicitud ya no espera respuesta. Envía tu respuesta como un mensaje normal.
+    approval:
+      resolved_once: "✅ Aprobado una vez"
+      resolved_session: "✅ Aprobado para la sesión"
+      resolved_always: "✅ Aprobado permanentemente"
+      resolved_deny: "❌ Denegado"
+      expired: "⌛ La aprobación expiró — no había ningún comando esperando."
+    slash_confirm:
+      resolved_once: "✅ Aprobado una vez"
+      resolved_always: "🔒 Aprobar siempre"
+      resolved_cancel: "❌ Cancelado"
+    clarify_type_answer: "✏️ Escribe tu respuesta:"
+    command:
+      model:
+        arg_name: "Nombre del modelo. Déjalo vacío para ver el actual."
+      reasoning:
+        arg_effort: "Nivel, reset o show/hide. Déjalo vacío para ver el actual."
+      personality:
+        arg_name: "Nombre de la personalidad. Déjalo vacío para ver la lista."
+      steer:
+        arg_text: "Qué decirle al agente"
+      title:
+        arg_text: "Título nuevo. Déjalo vacío para ver el actual."
+      resume:
+        arg_name: "Título o id de la sesión"
+      reload_skills:
+        description: "Vuelve a escanear las skills en busca de entradas nuevas o eliminadas"
+      approve:
+        arg_scope: "Alcance de la aprobación"
+      deny:
+        arg_reason: "Motivo (se transmite al agente)"
+      bg:
+        arg_text: "El prompt que se ejecutará"
+      btw:
+        arg_text: "La pregunta que hay que responder"
+  qqbot:
+    approval:
+      title: "¿Ejecutar este comando?"
+      smart_deny_suffix: " La anulación del propietario aplica solo a esta operación."
+    update_prompt: "☤ **La actualización necesita tu respuesta**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Aprobar un comando peligroso pendiente"

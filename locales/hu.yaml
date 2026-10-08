@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} perc"
     second_one: "{count} másodperc"
     second_other: "{count} másodperc"
+  elicitation:
+    mcp_untrusted_command: "A(z) '{tool}' MCP-eszköz a NEM MEGBÍZHATÓ '{server}' szerveren futni szeretne. Ez az eszköz írni is képes (nincs readOnlyHint=true annotációja), és módosíthatja a külső állapotot."
+    mcp_untrusted_description: "A(z) '{server}' szerver 'trust: untrusted' beállítással van konfigurálva. Hagyd jóvá a(z) '{tool}' egyszeri futtatásához, vagy utasítsd el a blokkolásához."
+    mcp_untrusted_title: "A(z) '{server}' MCP-szerver kérdez"
+    payment_fill_command: "A(z) '{label}' bankkártya kitöltése itt: {origin}"
+    payment_fill_description: "Az ügynök be szeretné írni a mentett kártyaadataidat erre a fizetési oldalra. A kártyaszám és a CVC soha nem kerül a beszélgetésbe. Csak akkor hagyd jóvá, ha itt szándékozol fizetni."
+    payment_fill_title: "Jóváhagyod a bankkártya kitöltését?"
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining: "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
@@ -330,11 +337,11 @@ gateway:
     restarting: "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."
   resume:
     db_unavailable: "A munkamenet-adatbázis nem érhető el."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Nem sikerült értelmezni a `/resume` argumentumait: {error}.\nA szóközt tartalmazó címeket tedd idézőjelbe, például: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Ehhez a Matrix-szobához nem található elnevezett munkamenet.\nA `/title Saját munkamenet` paranccsal elnevezheted a jelenlegi szoba munkamenetét, a `/resume --all` kilistázza az összes Matrix-munkamenetet, a `/resume --cross-room <munkamenet neve>` pedig szándékosan átlépi a szobahatárokat."
     matrix_blocked_no_origin: "⚠️ A Matrix /resume blokkolva: ennek a nevesített munkamenetnek nincs rögzített forrásszobája, ezért a Hermes alapból nem folytatja az aktuális szobában. Ha szándékosan akarsz szobahatárt átlépni, használd: `/resume --cross-room {name}`."
     matrix_blocked_other_room: "⚠️ A Matrix /resume blokkolva: az a munkamenet egy másik Matrix-szobához tartozik ({room}). Ha szándékosan itt akarod folytatni, használd: `/resume --cross-room {name}`."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Szobák közötti folytatás: **{title}** folytatva a(z) **{room}** Matrix-szobában.\nA szoba további üzenetei ezt az átiratot használják a következő `/reset` vagy `/resume` parancsig.{msg_part}"
     blocked_not_owner: "⚠️ A /resume blokkolva: a '**{name}**' munkamenet másik felhasználóhoz vagy csevegéshez tartozik. Csak ebből a csevegésből származó munkameneteket folytathatsz."
     no_named_sessions: "Nem található elnevezett munkamenet.\nHasználd a `/title Saját munkamenet` parancsot a jelenlegi munkamenet elnevezéséhez, majd a `/resume Saját munkamenet` paranccsal térhetsz vissza hozzá."
     all_requires_admin: "_Megjegyzés: az `--all` (csevegések közötti listázás) beállított adminisztrátort igényel; csak ennek a csevegésnek a munkamenetei jelennek meg._"
@@ -367,6 +374,16 @@ gateway:
     kept_oversize: "↷ Megtartva (túl nagy az ellenőrzőpontokhoz, nincs tárolt másolat, amire vissza lehetne állni): {files}"
     failed_deletes: "⚠️ Nem sikerült eltávolítani (a helyén maradt): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Ehhez a könyvtárhoz nem létezik ellenőrzőpont"
+    err_not_found: "A(z) '{hash}' ellenőrzőpont nem található"
+    err_changed_files: "Nem sikerült kiszámítani a módosult fájlokat: {err}"
+    err_diff_failed: "Nem sikerült diffet készíteni"
+    err_inspect_checkpoint: "Nem sikerült megvizsgálni az ellenőrzőpontot: {err}"
+    err_inspect_selection: "Nem sikerült megvizsgálni a visszaállítási kijelölést: {err}"
+    err_selection_empty: "A visszaállítási kijelölés egyetlen fájlra sem illeszkedett az ellenőrzőpontban: {path}"
+    err_nested_repos: "Az ellenőrzőpont nem rögzített, beágyazott git-tárolókat tartalmaz ({paths}); a visszaállítás nem történt meg"
+    err_safe_plan_failed: "A biztonságos visszaállítási terv sikertelen"
+    err_restore_failed: "A visszaállítás sikertelen: {err}"
   diff:
     not_enabled: "A checkpointok nincsenek engedélyezve, így nincs munkamenet-alapvonal.\nEngedélyezd a config.yaml-ban:\n```\ncheckpoints:\n  enabled: true\n```\nA sima /diff továbbra is működik — közvetlenül a gitet használja."
     no_changes: "Nincs változás."
@@ -473,7 +490,7 @@ gateway:
     untitled_session: "Cím nélküli munkamenet"
     restore_step_1: "1. Hozz létre vagy nyiss meg egy topicot. Újat úgy hozhatsz létre, hogy megnyitod az All Messages részt, és küldesz oda egy tetszőleges üzenetet."
     restore_step_2: "2. Küldd el a /topic <session-id> parancsot abban a topicban."
-    default_title: "Hermes Chat"
+    default_title: "Hermes-csevegés"
     root_lobby: "Ez a fő csevegés a rendszerparancsoknak van fenntartva.\n\nÚj Hermes-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre az üzenethez; minden topic önálló Hermes-munkamenetként működik."
     root_new: "Új párhuzamos Hermes-csevegéshez nyisd meg az All Messages topicot a bot felületének tetején, és küldj oda egy tetszőleges üzenetet. A Telegram új topicot hoz létre hozzá.\n\nMinden topic önálló Hermes-munkamenet. A /new parancsot csak akkor használd egy meglévő topicban, ha le akarod cserélni annak a topicnak a jelenlegi munkamenetét."
     new_header: "Új Hermes-munkamenet indult ebben a topicban.\n\nTipp: párhuzamos munkához nyisd meg az All Messages részt, és küldj oda egy üzenetet — így külön topic jön létre, nem kell itt a /new. A /new az aktuális topichoz kötött munkamenetet cseréli le."
@@ -654,6 +671,7 @@ gateway:
     owner_hint_env: "add hozzá az azonosítót a {env_var} változóhoz a {home}/.env fájlban, és indítsd újra az átjárót"
     owner_hint_generic: "add hozzá az azonosítót a platform engedélyezett felhasználóinak listájához, és indítsd újra az átjárót"
     owner_notice: "Eldobtam egy ismeretlen {platform} felhasználó ({who}) üzenetét. Ha te vagy az, vagy valaki, akiben megbízol, {allowlist}; vagy állítsd be az `unauthorized_dm_behavior: pair` értéket a(z) {platform} platformhoz a {home}/config.yaml fájlban, hogy az ismeretlen feladók párosítókódot kapjanak, amit a `hermes pairing approve {platform} <code>` paranccsal hagyhatsz jóvá."
+    decline_default: "Szia! Személyes asszisztens vagyok, és csak a tulajdonosommal beszélgethetek, ezért közvetlenül nem tudok segíteni neked. Bocsi!"
   picker:
     page_info: " ({start}–{end} / {total})"
   clarify:
@@ -779,6 +797,7 @@ gateway:
     detail_new: "Ez új munkamenetet indít, és eldobja a jelenlegi beszélgetési előzményeket."
     detail_undo_one: "Ez eltávolítja az utolsó felhasználó/asszisztens üzenetváltást az előzményekből."
     detail_undo_many: "Ez eltávolítja az utolsó {count} felhasználói kört az előzményekből."
+    handler_error: "❌ Hiba a megerősítés feldolgozásakor: {error}"
   hooks:
     command_blocked: "A `/{command}` parancsot egy hook blokkolta."
   prompt_command:
@@ -815,6 +834,9 @@ gateway:
     info_context: "◆ Kontextus: {tokens} token ({source})"
     info_acting_model: "◆ Végrehajtó modell (a futást ez alapján számlázzák): {provider}:{model}"
     info_endpoint: "◆ Végpont: {url}"
+    context_source_config: "konfiguráció"
+    context_source_default: "alapértelmezett — felülíráshoz állítsd be a model.context_length értéket a konfigurációban"
+    context_source_detected: "észlelt"
   proxy:
     requires_aiohttp: "⚠️ A proxy módhoz aiohttp szükséges. Futtasd: {hint}"
     url_missing: "⚠️ A proxy URL nincs beállítva (GATEWAY_PROXY_URL vagy gateway.proxy_url)"
@@ -841,6 +863,7 @@ gateway:
     task_status_error: "hiba"
     task_line: "- {title} - {status}"
     task_card_title: "A Hermes dolgozik"
+    stall_notice: "⚠️ Úgy tűnik, elakadtam ({minutes} perce nincs aktivitás). Küldd a /stop parancsot az aktuális feladat megszakításához, vagy a /new parancsot új beszélgetés indításához."
   pairing:
     validity_hour: "{hours} óra"
     validity_hours: "{hours} óra"
@@ -961,6 +984,42 @@ gateway:
     hint: "Feltöltés és számlázás a böngészőben — az egyenleged utána itt is frissül."
   login:
     free_tier_remaining: "\nNéhány csevegés még az ingyenes szinten van; ott a /model paranccsal válthatsz."
+  cron:
+    failure:
+      provider: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: {cause}. {action} Futási napló: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} A következő ütemezett időpontban újra lefut; a `hermes cron run {job_id}` azonnal megpróbálja."
+      action_billing: "Töltsd fel az egyenleget, vagy várd meg, amíg a limit visszaáll, esetleg rögzíts egy másik szolgáltatót: `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Jelentkezz be újra a /login paranccsal (vagy terminálban: `{relogin}`), vagy rögzíts egy működő szolgáltatót: `hermes cron edit {job_id} --provider <name>`, majd próbáld újra: `hermes cron run {job_id}`."
+      action_model_not_found: "Válassz másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "A szolgáltató előtti tűzfal blokkolta a kérést (nem a kulcsoddal van baj): állíts be User-Agentet az `extra_headers` segítségével a szolgáltató custom_providers bejegyzésében, vagy rögzíts egy másik szolgáltatót: `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Rövidítsd le a feladat promptját: `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Fogalmazd át a feladat promptját: `hermes cron edit {job_id} --prompt <text>`, vagy válassz másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Az újrapróbálás nem segít: ellenőrizd a fiók állapotát és az adat-/adatvédelmi beállításokat a szolgáltatónál, vagy rögzíts egy másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_default: "Futtasd újra: `hermes cron run {job_id}`, vagy szerkeszd: `hermes cron edit {job_id}`."
+      generic: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: {error}. A teljes futást a `hermes cron runs {job_id}` mutatja meg (a kimenet ide mentve: {output_dir}); futtasd újra: `hermes cron run {job_id}`, szerkeszd: `hermes cron edit {job_id}`, vagy szüneteltesd: `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: a szkriptje túllépte az időkorlátot. Egyetlen modell sem lett meghívva. Nézd meg a szkript kimenetét itt: {output_dir}, vagy: `hermes cron runs {job_id}`, majd futtasd újra: `hermes cron run {job_id}`."
+      inactivity: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: a feladat elakadt — túl sokáig nem csinált semmit, ezért leállítottuk. Nézd meg, mit csinált, a mentett kimenetben itt: {output_dir} (`hermes cron runs {job_id}`), majd futtasd újra: `hermes cron run {job_id}`."
+      blocked_config: "⛔ A(z) '{job_name}' cron-feladat nem futott le: {reason} Semmilyen terhelés nem történt. A Hermes a következő ütemezett időpontban újra próbálkozik, és ezt a figyelmeztetést nem ismétli meg; ellenőrzés: `hermes cron doctor`."
+      backup_pinned: "Ez a feladat saját szolgáltatóhoz/modellhez van rögzítve, ezért nem vált át a `fallback_providers` listára; a `hermes cron edit {job_id} --unpin` után a fő modellt és annak tartalékláncát követi."
+      backup_failed: "Egyik tartalék szolgáltató sem járt sikerrel."
+      backup_none: "Nincs tartalék szolgáltató beállítva — adj hozzá egyet a `hermes fallback add` paranccsal, vagy állíts be minden cron-feladatra érvényes alapértelmezést a config.yaml `cron.model` + `cron.model_provider` kulcsaival."
+      streak_nudge: "\nEz a feladat {streak} egymást követő futás során hibázott — érdemes átnézni. Javítsd a promptját/konfigurációját, vagy a zaj megszüntetéséhez szüneteltesd: `hermes cron pause {job_ref}` (resume/remove is elérhető)."
+      stale_code_hint: " Valószínű ok: az átjáró elavult kódot futtat (indításkor: {boot_rev}, a lemezen: {disk_rev}) — a javításhoz futtasd: `hermes gateway restart`."
+      quota_hold: "\nA szolgáltató használati ablaka nagyjából {hours} órára lezárult. Ez a feladat eddig várakozik: {until}, utána az első biztonságos alkalommal folytatódik; amíg a szolgáltató nem érhető el, további figyelmeztetést nem küldünk."
+    registration_pending: "A(z) '{label}' cron-feladat mentve, de a külső ütemezőnél még nem sikerült regisztrálni. A feladat megmarad — ne hozd létre újra; a regisztráció újrapróbálásához szüneteltesd és folytasd, vagy szerkeszd (pl. a /cron paranccsal)."
+    output_truncated: "\n\n... [csonkolva, a teljes kimenet ide mentve: {path}]"
+  recovered_reply:
+    restart: "♻️ Helyreállított válasz — az átjáró kézbesítés közben újraindult, így ez duplikátum lehet:"
+    reconnect: "♻️ Helyreállított válasz — az üzenetküldő platform újracsatlakozott, miután az eredeti kézbesítés sikertelen volt, így ez duplikátum lehet:"
+    flood: "♻️ Helyreállított válasz — az üzenetküldő platform sebességkorlátja elutasította az eredetit, így egy része már fentebb megérkezhetett:"
+  subagent:
+    goal: " („{goal}”)"
+    after: " {elapsed} után"
+    duration_min: "{n} perc"
+    duration_sec: "{n} mp"
+    reason: ": {reason}"
+    timed_out: "⚠️ Az alügynök{goal}{after} időtúllépés miatt befejezés nélkül leállt. Nélküle folytatom; kérd, hogy próbáljam újra, vagy növeld a delegation.child_timeout_seconds értékét a config.yaml-ben, ha ezek a feladatok jogosan tartanak tovább."
+    failed: "⚠️ Az alügynök{goal}{after} hibával leállt{reason}. Részletek: /agents, vagy kérd, hogy egy kisebb feladattal próbáljam újra."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"
@@ -1476,6 +1535,45 @@ platform:
     confirm_cancel: "Mégse"
     prompt_other: "✏️ Egyéb (írd be a választ)"
     prompt_expired: ⌛ Ez a kérdés már nem vár válaszra. Küldd el a válaszodat normál üzenetként.
+    approval:
+      resolved_once: "✅ Egyszer jóváhagyva"
+      resolved_session: "✅ Munkamenetre jóváhagyva"
+      resolved_always: "✅ Véglegesen jóváhagyva"
+      resolved_deny: "❌ Elutasítva"
+      expired: "⌛ A jóváhagyás lejárt — nem várakozott parancs."
+    slash_confirm:
+      resolved_once: "✅ Egyszer jóváhagyva"
+      resolved_always: "🔒 Mindig jóváhagy"
+      resolved_cancel: "❌ Megszakítva"
+    clarify_type_answer: "✏️ Írd be a válaszod:"
+    command:
+      model:
+        arg_name: "Modellnév. Hagyd üresen az aktuális megtekintéséhez."
+      reasoning:
+        arg_effort: "Szint, reset vagy show/hide. Hagyd üresen az aktuális megtekintéséhez."
+      personality:
+        arg_name: "Személyiség neve. Hagyd üresen a listázáshoz."
+      steer:
+        arg_text: "Mit mondjunk az ügynöknek"
+      title:
+        arg_text: "Új cím. Hagyd üresen a megjelenítéshez."
+      resume:
+        arg_name: "Munkamenet címe vagy azonosítója"
+      reload_skills:
+        description: "Skillek újrakeresése új vagy eltávolított bejegyzésekért"
+      approve:
+        arg_scope: "Jóváhagyás hatóköre"
+      deny:
+        arg_reason: "Indok (továbbítva az ügynöknek)"
+      bg:
+        arg_text: "A futtatandó prompt"
+      btw:
+        arg_text: "A megválaszolandó kérdés"
+  qqbot:
+    approval:
+      title: "Végrehajtod ezt a parancsot?"
+      smart_deny_suffix: " A tulajdonosi felülbírálás csak erre az egy műveletre vonatkozik."
+    update_prompt: "☤ **A frissítéshez a döntésed kell**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Függőben lévő veszélyes parancs jóváhagyása"

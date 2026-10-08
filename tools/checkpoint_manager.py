@@ -58,6 +58,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
+from agent.i18n import t
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
@@ -866,7 +867,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
         store = _store_path()
         if not (store / "HEAD").exists():
-            return {"success": False, "error": "No checkpoints exist for this directory"}
+            return {"success": False, "error": t("gateway.rollback.err_no_checkpoints")}
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -882,7 +883,7 @@ class CheckpointManager:
         _run_git(["read-tree", _ref_name(dir_hash)], store, abs_dir,
                  index_file=index_file, allowed_returncodes={128})
         if not ok:
-            return {"success": False, "error": f"Could not compute changed files: {err}"}
+            return {"success": False, "error": t("gateway.rollback.err_changed_files", err=err)}
 
         # Read the same marker-walked project key as record_agent_write.
         ledger = _load_ledger(store, self._ledger_key(abs_dir))
@@ -1041,13 +1042,13 @@ class CheckpointManager:
         store = _store_path()
 
         if not (store / "HEAD").exists():
-            return {"success": False, "error": "No checkpoints exist for this directory"}
+            return {"success": False, "error": t("gateway.rollback.err_no_checkpoints")}
 
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], store, abs_dir,
         )
         if not ok:
-            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
+            return {"success": False, "error": t("gateway.rollback.err_not_found", hash=commit_hash)}
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -1073,7 +1074,7 @@ class CheckpointManager:
                  allowed_returncodes={128})
 
         if not ok_stat and not ok_diff:
-            return {"success": False, "error": "Could not generate diff"}
+            return {"success": False, "error": t("gateway.rollback.err_diff_failed")}
 
         return {
             "success": True,
@@ -1153,20 +1154,20 @@ class CheckpointManager:
         store = _store_path()
 
         if not (store / "HEAD").exists():
-            return {"success": False, "error": "No checkpoints exist for this directory"}
+            return {"success": False, "error": t("gateway.rollback.err_no_checkpoints")}
 
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], store, abs_dir,
         )
         if not ok:
-            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
+            return {"success": False, "error": t("gateway.rollback.err_not_found", hash=commit_hash),
                     "debug": err or None}
 
         ok, tree_out, err = _run_git(
             ["ls-tree", "-r", "-z", commit_hash], store, abs_dir,
         )
         if not ok:
-            return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
+            return {"success": False, "error": t("gateway.rollback.err_inspect_checkpoint", err=err)}
         nested_repos = _gitlink_paths(tree_out)
         selected_paths: Optional[List[str]] = None
         if nested_repos:
@@ -1215,7 +1216,7 @@ class CheckpointManager:
                                 store, abs_dir, index_file=inspect_index,
                             )
                         if not ok:
-                            return {"success": False, "error": f"Could not inspect restore selection: {err}"}
+                            return {"success": False, "error": t("gateway.rollback.err_inspect_selection", err=err)}
                     blocked_repos = [
                         record.split("\t", 1)[1]
                         for record in selected.split("\x00")
@@ -1232,17 +1233,14 @@ class CheckpointManager:
                         # of restoring files, so refuse before the snapshot.
                         return {
                             "success": False,
-                            "error": f"Restore selection matched no files in checkpoint: {file_path}",
+                            "error": t("gateway.rollback.err_selection_empty", path=file_path),
                         }
 
             if blocked_repos:
                 paths = ", ".join(blocked_repos)
                 return {
                     "success": False,
-                    "error": (
-                        "Checkpoint contains nested git repositories that were not captured "
-                        f"({paths}); rollback was not performed"
-                    ),
+                    "error": t("gateway.rollback.err_nested_repos", paths=paths),
                     "nested_repositories": blocked_repos,
                 }
 
@@ -1253,7 +1251,7 @@ class CheckpointManager:
         if safe and not file_path:
             plan = self._safe_restore_plan(abs_dir, commit_hash)
             if not plan.get("success"):
-                return {"success": False, "error": plan.get("error", "Safe-restore plan failed")}
+                return {"success": False, "error": plan.get("error") or t("gateway.rollback.err_safe_plan_failed")}
             if plan.get("ledger_empty"):
                 # No agent-write history to compare against — fall back to
                 # the classic full restore rather than restoring nothing.
@@ -1344,7 +1342,7 @@ class CheckpointManager:
             )
 
         if not ok:
-            return {"success": False, "error": f"Restore failed: {err}",
+            return {"success": False, "error": t("gateway.rollback.err_restore_failed", err=err),
                     "debug": err or None}
 
         ok2, reason_out, _ = _run_git(

@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} minutos"
     second_one: "{count} segundo"
     second_other: "{count} segundos"
+  elicitation:
+    mcp_untrusted_command: "A ferramenta MCP '{tool}' do servidor NÃO CONFIÁVEL '{server}' quer ser executada. Esta ferramenta pode gravar (não tem a anotação readOnlyHint=true) e pode modificar o estado externo."
+    mcp_untrusted_description: "O servidor '{server}' está configurado como 'trust: untrusted'. Aprove para executar '{tool}' uma vez ou negue para bloqueá-la."
+    mcp_untrusted_title: "O servidor MCP '{server}' está pedindo permissão"
+    payment_fill_command: "Preencher o cartão de pagamento '{label}' em {origin}"
+    payment_fill_description: "O agente quer inserir os dados do seu cartão salvo nesta página de pagamento. O número do cartão e o CVC nunca entram na conversa. Aprove apenas se você pretende pagar aqui."
+    payment_fill_title: "Confirmar o preenchimento do cartão de pagamento?"
 gateway:
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining: "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."
   resume:
     db_unavailable: "Base de dados de sessões indisponível."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Não foi possível interpretar os argumentos de `/resume`: {error}.\nColoque entre aspas os títulos com espaços, por exemplo: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Nenhuma sessão nomeada encontrada para esta sala do Matrix.\nUse `/title Minha sessão` para nomear a sessão da sala atual, `/resume --all` para listar todas as sessões do Matrix ou `/resume --cross-room <nome da sessão>` para cruzar explicitamente os limites da sala."
     matrix_blocked_no_origin: "⚠️ /resume do Matrix bloqueado: esta sessão com nome não tem uma sala de origem registada, por isso o Hermes não a retoma dentro da sala atual por padrão. Usa `/resume --cross-room {name}` se quiseres mesmo atravessar os limites da sala."
     matrix_blocked_other_room: "⚠️ /resume do Matrix bloqueado: essa sessão pertence a outra sala do Matrix ({room}). Usa `/resume --cross-room {name}` se quiseres mesmo retomá-la aqui."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Retomada entre salas: **{title}** retomada na sala do Matrix **{room}**.\nAs próximas mensagens nesta sala usarão essa transcrição até `/reset` ou outro `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume bloqueado: '**{name}**' pertence a outro utilizador ou chat. Só podes retomar sessões deste chat."
     no_named_sessions: "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
     all_requires_admin: "_Nota: `--all` (listagem entre conversas) requer um administrador configurado; mostram-se apenas as sessões desta conversa._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Mantido (grande demais para os checkpoints, sem cópia guardada para reverter): {files}"
     failed_deletes: "⚠️ Não foi possível remover (mantido no lugar): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Não existem checkpoints para este diretório"
+    err_not_found: "Checkpoint '{hash}' não encontrado"
+    err_changed_files: "Não foi possível calcular os arquivos alterados: {err}"
+    err_diff_failed: "Não foi possível gerar o diff"
+    err_inspect_checkpoint: "Não foi possível inspecionar o checkpoint: {err}"
+    err_inspect_selection: "Não foi possível inspecionar a seleção de restauração: {err}"
+    err_selection_empty: "A seleção de restauração não correspondeu a nenhum arquivo do checkpoint: {path}"
+    err_nested_repos: "O checkpoint contém repositórios git aninhados que não foram capturados ({paths}); o rollback não foi realizado"
+    err_safe_plan_failed: "O plano de restauração segura falhou"
+    err_restore_failed: "Falha na restauração: {err}"
   diff:
     not_enabled: "Os checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nO /diff simples continua funcionando — ele usa git diretamente."
     no_changes: "Sem alterações."
@@ -470,7 +487,7 @@ gateway:
     untitled_session: "Sessão sem título"
     restore_step_1: "1. Crie ou abra um tópico. Para criar um novo, abra All Messages e envie qualquer mensagem lá."
     restore_step_2: "2. Envie /topic <session-id> dentro desse tópico."
-    default_title: "Hermes Chat"
+    default_title: "Chat do Hermes"
     root_lobby: "Este chat principal é reservado para comandos do sistema.\n\nPara iniciar um novo chat do Hermes, abra o tópico All Messages no topo desta interface do bot e envie qualquer mensagem lá. O Telegram criará um novo tópico para essa mensagem; cada tópico funciona como uma sessão independente do Hermes."
     root_new: "Para iniciar um novo chat paralelo do Hermes, abra o tópico All Messages no topo desta interface do bot e envie qualquer mensagem lá. O Telegram criará um novo tópico para ela.\n\nCada tópico é uma sessão independente do Hermes. Use /new dentro de um tópico existente apenas se quiser substituir a sessão atual daquele tópico."
     new_header: "Nova sessão do Hermes iniciada neste tópico.\n\nDica: para trabalho paralelo, abra All Messages e envie uma mensagem lá para criar um tópico separado, em vez de usar /new aqui. /new substitui a sessão vinculada ao tópico atual."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "adicione o ID a {env_var} em {home}/.env e reinicie o gateway"
     owner_hint_generic: "adicione o ID à lista de usuários permitidos desta plataforma e reinicie o gateway"
     owner_notice: "Mensagem descartada do usuário {platform} não reconhecido {who}. Se for você ou alguém de confiança, {allowlist}; ou defina `unauthorized_dm_behavior: pair` para {platform} em {home}/config.yaml para que remetentes desconhecidos recebam um código de pareamento que você pode aprovar com `hermes pairing approve {platform} <code>`."
+    decline_default: "Olá! Sou um assistente pessoal e só posso conversar com o meu dono, por isso não posso ajudar você diretamente. Desculpe!"
   picker:
     page_info: " ({start}–{end} de {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Isso inicia uma nova sessão e descarta o histórico da conversa atual."
     detail_undo_one: "Isso remove do histórico a última troca entre usuário e assistente."
     detail_undo_many: "Isso remove do histórico os últimos {count} turnos do usuário."
+    handler_error: "❌ Erro ao processar a confirmação: {error}"
   hooks:
     command_blocked: "O comando `/{command}` foi bloqueado por um hook."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Contexto: {tokens} tokens ({source})"
     info_acting_model: "◆ Modelo em ação (cobrado pela execução): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
+    context_source_config: "configuração"
+    context_source_default: "padrão — defina model.context_length na configuração para substituir"
+    context_source_detected: "detectado"
   proxy:
     requires_aiohttp: "⚠️ O modo proxy requer aiohttp. Execute: {hint}"
     url_missing: "⚠️ URL do proxy não configurada (GATEWAY_PROXY_URL ou gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "erro"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes está trabalhando"
+    stall_notice: "⚠️ Parece que estou travado (sem atividade há {minutes} min). Envie /stop para cancelar a tarefa atual ou /new para iniciar uma nova conversa."
   pairing:
     validity_hour: "{hours} hora"
     validity_hours: "{hours} horas"
@@ -947,6 +970,42 @@ gateway:
     hint: "Recarregue e gerencie o faturamento no navegador — seu saldo é atualizado aqui depois."
   login:
     free_tier_remaining: "\nAlguns chats ainda estão no nível gratuito; use /model nesses chats para trocar."
+  cron:
+    failure:
+      provider: "⚠️ A tarefa cron '{job_name}' falhou: {cause}. {action} Log de execuções: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Ela será executada novamente no próximo horário agendado; `hermes cron run {job_id}` tenta agora."
+      action_billing: "Recarregue o saldo ou aguarde a redefinição do limite, ou fixe outro fornecedor com `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Faça login novamente com /login (ou `{relogin}` em um terminal), ou fixe um fornecedor que funcione com `hermes cron edit {job_id} --provider <name>` e depois execute `hermes cron run {job_id}` para tentar de novo."
+      action_model_not_found: "Escolha outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Um firewall na frente do fornecedor bloqueou a solicitação (o problema não é a sua chave): defina um User-Agent via `extra_headers` na entrada custom_providers do fornecedor, ou fixe outro fornecedor com `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Encurte o prompt da tarefa com `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reformule o prompt da tarefa com `hermes cron edit {job_id} --prompt <text>`, ou escolha outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Tentar de novo não vai adiantar: verifique com o fornecedor o status da conta e as configurações de dados/privacidade, ou fixe outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_default: "Execute-a novamente com `hermes cron run {job_id}` ou edite-a com `hermes cron edit {job_id}`."
+      generic: "⚠️ A tarefa cron '{job_name}' falhou: {error}. Veja a execução completa com `hermes cron runs {job_id}` (saída salva em {output_dir}); execute-a novamente com `hermes cron run {job_id}`, edite-a com `hermes cron edit {job_id}` ou pause-a com `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ A tarefa cron '{job_name}' falhou: o script dela excedeu o tempo limite. Nenhum modelo foi invocado. Verifique a saída do script em {output_dir} ou `hermes cron runs {job_id}` e depois execute-a novamente com `hermes cron run {job_id}`."
+      inactivity: "⚠️ A tarefa cron '{job_name}' falhou: a tarefa travou — ficou tempo demais sem fazer nada e foi interrompida. Veja o que ela estava fazendo na saída salva em {output_dir} (`hermes cron runs {job_id}`) e depois execute-a novamente com `hermes cron run {job_id}`."
+      blocked_config: "⛔ A tarefa cron '{job_name}' não foi executada: {reason} Nada foi cobrado. O Hermes tentará novamente no próximo horário agendado e não repetirá este alerta; verifique com `hermes cron doctor`."
+      backup_pinned: "Esta tarefa está fixada no próprio fornecedor/modelo, por isso não recorre a `fallback_providers`; `hermes cron edit {job_id} --unpin` faz com que ela siga o modelo principal e a sua cadeia de reserva."
+      backup_failed: "Nenhum fornecedor de reserva funcionou também."
+      backup_none: "Nenhum fornecedor de reserva está configurado — adicione um com `hermes fallback add` ou defina um padrão para todo o cron via `cron.model` + `cron.model_provider` em config.yaml."
+      streak_nudge: "\nEsta tarefa falhou {streak} execuções seguidas — vale a pena revisá-la. Corrija o prompt/configuração dela ou pause-a com `hermes cron pause {job_ref}` (também é possível retomá-la ou removê-la) para acabar com o ruído."
+      stale_code_hint: " Causa provável: o gateway está executando código desatualizado (iniciado em {boot_rev}, o disco está em {disk_rev}) — execute `hermes gateway restart` para corrigir."
+      quota_hold: "\nA janela de uso do fornecedor está fechada por cerca de {hours} h. Esta tarefa fica retida até {until} e será retomada na primeira oportunidade segura depois disso; nenhum outro alerta será enviado enquanto o fornecedor estiver indisponível."
+    registration_pending: "A tarefa cron '{label}' foi salva, mas ainda não foi possível registrá-la no agendador externo. A tarefa foi mantida — não a recrie; pause/retome ou edite-a (por exemplo, via /cron) para tentar o registro novamente."
+    output_truncated: "\n\n... [truncado, saída completa salva em {path}]"
+  recovered_reply:
+    restart: "♻️ Resposta recuperada — o gateway reiniciou durante a entrega, então esta pode ser uma duplicata:"
+    reconnect: "♻️ Resposta recuperada — a plataforma de mensagens reconectou depois que a entrega original falhou, então esta pode ser uma duplicata:"
+    flood: "♻️ Resposta recuperada — o limite de taxa da plataforma de mensagens recusou o original, então parte dela pode já ter chegado acima:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " após {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ O subagente esgotou o tempo{goal}{after} sem terminar. Vou continuar sem ele; peça para eu tentar de novo ou aumente delegation.child_timeout_seconds em config.yaml se essas tarefas realmente precisam de mais tempo."
+    failed: "⚠️ O subagente falhou{goal}{after}{reason}. Detalhes: /agents, ou peça para eu tentar de novo com uma tarefa menor."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Outro"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Cancelar"
     prompt_other: "✏️ Outro (digitar resposta)"
     prompt_expired: ⌛ Essa solicitação não está mais aguardando resposta. Envie sua resposta como uma mensagem normal.
+    approval:
+      resolved_once: "✅ Aprovado uma vez"
+      resolved_session: "✅ Aprovado para a sessão"
+      resolved_always: "✅ Aprovado permanentemente"
+      resolved_deny: "❌ Negado"
+      expired: "⌛ A aprovação expirou — nenhum comando estava aguardando."
+    slash_confirm:
+      resolved_once: "✅ Aprovado uma vez"
+      resolved_always: "🔒 Aprovar sempre"
+      resolved_cancel: "❌ Cancelado"
+    clarify_type_answer: "✏️ Digite sua resposta:"
+    command:
+      model:
+        arg_name: "Nome do modelo. Deixe vazio para ver o atual."
+      reasoning:
+        arg_effort: "Nível, reset ou show/hide. Deixe vazio para ver o atual."
+      personality:
+        arg_name: "Nome da personalidade. Deixe vazio para listar."
+      steer:
+        arg_text: "O que dizer ao agente"
+      title:
+        arg_text: "Novo título. Deixe vazio para mostrar o atual."
+      resume:
+        arg_name: "Título ou id da sessão"
+      reload_skills:
+        description: "Verifica as skills de novo em busca de entradas novas ou removidas"
+      approve:
+        arg_scope: "Escopo da aprovação"
+      deny:
+        arg_reason: "Motivo (repassado ao agente)"
+      bg:
+        arg_text: "O prompt a executar"
+      btw:
+        arg_text: "A pergunta a responder"
+  qqbot:
+    approval:
+      title: "Executar este comando?"
+      smart_deny_suffix: " A exceção do proprietário vale apenas para esta operação."
+    update_prompt: "☤ **A atualização precisa da sua resposta**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Aprovar um comando perigoso pendente"

@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} minute"
     second_one: "{count} sekonde"
     second_other: "{count} sekondes"
+  elicitation:
+    mcp_untrusted_command: "MCP-gereedskap '{tool}' op ONVERTROUDE bediener '{server}' wil loop. Hierdie gereedskap kan skryf (geen readOnlyHint=true-annotasie nie) en kan eksterne toestand verander."
+    mcp_untrusted_description: "Bediener '{server}' is opgestel as 'trust: untrusted'. Keur goed om '{tool}' eenmalig te laat loop, of weier om dit te blokkeer."
+    mcp_untrusted_title: "MCP-bediener '{server}' vra toestemming"
+    payment_fill_command: "Vul betaalkaart '{label}' in op {origin}"
+    payment_fill_description: "Die agent wil jou gestoorde kaartbesonderhede op hierdie betaalbladsy invoer. Die kaartnommer en CVC kom nooit in die gesprek nie. Keur slegs goed as jy van plan is om hier te betaal."
+    payment_fill_title: "Bevestig invul van betaalkaart?"
 gateway:
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining: "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
@@ -327,11 +334,11 @@ gateway:
     restarting: "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
   resume:
     db_unavailable: "Sessie-databasis is nie beskikbaar nie."
-    parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
-    matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    parse_error: "⚠️ Kon nie die `/resume`-argumente ontleed nie: {error}.\nGebruik aanhalingstekens om titels met spasies, byvoorbeeld: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Geen benoemde sessies vir hierdie Matrix-kamer gevind nie.\nGebruik `/title My Sessie` om die huidige kamersessie te benoem, `/resume --all` om alle Matrix-sessies te lys, of `/resume --cross-room <sessienaam>` om doelbewus kamergrense oor te steek."
     matrix_blocked_no_origin: "⚠️ Matrix /resume geblokkeer: hierdie benoemde sessie het geen aangetekende kamer-oorsprong nie, so Hermes sal dit nie by verstek binne die huidige kamer hervat nie. Gebruik `/resume --cross-room {name}` as jy doelbewus kamergrense wil oorsteek."
     matrix_blocked_other_room: "⚠️ Matrix /resume geblokkeer: daardie sessie behoort aan 'n ander Matrix-kamer ({room}). Gebruik `/resume --cross-room {name}` as jy dit doelbewus hier wil hervat."
-    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    matrix_cross_room_success: "⚠️ Kruiskamer-hervatting: **{title}** hervat binne Matrix-kamer **{room}**.\nToekomstige boodskappe in hierdie kamer sal daardie transkripsie gebruik tot `/reset` of 'n ander `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume geblokkeer: '**{name}**' behoort aan 'n ander gebruiker of geselsie. Jy kan slegs sessies vanaf hierdie geselsie hervat."
     no_named_sessions: "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
     all_requires_admin: "_Let wel: `--all` (kruis-geselslys) vereis 'n opgestelde administrateur; slegs hierdie geselsie se sessies word gewys._"
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Behou (te groot vir kontrolepunte, geen gestoorde kopie om na terug te keer nie): {files}"
     failed_deletes: "⚠️ Kon nie verwyder nie (in plek gelaat): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Geen kontrolepunte bestaan vir hierdie gids nie"
+    err_not_found: "Kontrolepunt '{hash}' nie gevind nie"
+    err_changed_files: "Kon nie veranderde lêers bereken nie: {err}"
+    err_diff_failed: "Kon nie diff genereer nie"
+    err_inspect_checkpoint: "Kon nie kontrolepunt inspekteer nie: {err}"
+    err_inspect_selection: "Kon nie herstelkeuse inspekteer nie: {err}"
+    err_selection_empty: "Herstelkeuse het met geen lêers in die kontrolepunt ooreengestem nie: {path}"
+    err_nested_repos: "Kontrolepunt bevat geneste git-bewaarplekke wat nie vasgevang is nie ({paths}); terugrol is nie uitgevoer nie"
+    err_safe_plan_failed: "Veilige-herstelplan het misluk"
+    err_restore_failed: "Herstel het misluk: {err}"
   diff:
     not_enabled: "Kontrolepunte is nie geaktiveer nie, dus is daar geen sessie-basislyn nie.\nAktiveer in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nGewone /diff werk steeds — dit gebruik git direk."
     no_changes: "Geen veranderinge nie."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "voeg die ID by {env_var} in {home}/.env en herbegin die gateway"
     owner_hint_generic: "voeg die ID by hierdie platform se toegelate-gebruikerslys en herbegin die gateway"
     owner_notice: "'n Boodskap van onbekende {platform}-gebruiker {who} is laat val. As dit jy is of iemand wat jy vertrou, {allowlist}; of stel `unauthorized_dm_behavior: pair` vir {platform} in {home}/config.yaml sodat onbekende senders 'n koppelkode ontvang wat jy met `hermes pairing approve {platform} <code>` kan goedkeur."
+    decline_default: "Hallo! Ek is 'n persoonlike assistent en kan net met my eienaar gesels, so ek kan jou nie direk help nie. Jammer!"
   picker:
     page_info: " ({start}–{end} van {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Dit begin 'n vars sessie en gooi die huidige gesprekgeskiedenis weg."
     detail_undo_one: "Dit verwyder die laaste gebruiker/assistent-uitruiling uit die geskiedenis."
     detail_undo_many: "Dit verwyder die laaste {count} gebruikersbeurte uit die geskiedenis."
+    handler_error: "❌ Fout met die hantering van bevestiging: {error}"
   hooks:
     command_blocked: "Opdrag `/{command}` is deur 'n hook geblokkeer."
   prompt_command:
@@ -803,6 +822,9 @@ gateway:
     info_context: "◆ Konteks: {tokens} tokens ({source})"
     info_acting_model: "◆ Handelende model (gefaktureer vir die lopie): {provider}:{model}"
     info_endpoint: "◆ Eindpunt: {url}"
+    context_source_config: "konfigurasie"
+    context_source_default: "verstek — stel model.context_length in die konfigurasie om te oorskryf"
+    context_source_detected: "bespeur"
   proxy:
     requires_aiohttp: "⚠️ Instaanmodus vereis aiohttp. Voer uit: {hint}"
     url_missing: "⚠️ Instaan-URL nie opgestel nie (GATEWAY_PROXY_URL of gateway.proxy_url)"
@@ -829,6 +851,7 @@ gateway:
     task_status_error: "fout"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes werk"
+    stall_notice: "⚠️ Dit lyk of ek vasgeval het (geen aktiwiteit vir {minutes} min nie). Stuur /stop om die huidige taak te kanselleer, of /new om 'n vars gesprek te begin."
   pairing:
     validity_hour: "{hours} uur"
     validity_hours: "{hours} uur"
@@ -947,6 +970,42 @@ gateway:
     hint: "Laai op en bestuur fakturering in die blaaier — jou saldo word daarna hier opgedateer."
   login:
     free_tier_remaining: "\nSommige geselsies is nog op die gratis vlak; gebruik /model in daardie geselsies om oor te skakel."
+  cron:
+    failure:
+      provider: "⚠️ Cron '{job_name}' het misluk: {cause}. {action} Lopielog: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Dit sal weer op sy volgende geskeduleerde tyd loop; `hermes cron run {job_id}` probeer dit nou."
+      action_billing: "Laai jou saldo aan of wag dat die limiet herstel, of pen 'n ander verskaffer vas met `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Meld weer aan met /login (of `{relogin}` in 'n terminaal), of pen 'n werkende verskaffer vas met `hermes cron edit {job_id} --provider <name>`, en gebruik dan `hermes cron run {job_id}` om weer te probeer."
+      action_model_not_found: "Kies 'n ander model met `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "'n Brandmuur voor die verskaffer het die versoek geblokkeer (nie jou sleutel nie): stel 'n User-Agent via `extra_headers` in die verskaffer se custom_providers-inskrywing, of pen 'n ander verskaffer vas met `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Verkort die taak se prompt met `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Herformuleer die taak se prompt met `hermes cron edit {job_id} --prompt <text>`, of kies 'n ander model met `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Weer probeer sal nie help nie: kontroleer die rekening se status en data-/privaatheidsinstellings by die verskaffer, of pen 'n ander model vas met `hermes cron edit {job_id} --model <name>`."
+      action_default: "Voer dit weer uit met `hermes cron run {job_id}`, of wysig dit met `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron '{job_name}' het misluk: {error}. Sien die volledige lopie met `hermes cron runs {job_id}` (uitvoer gestoor onder {output_dir}); voer dit weer uit met `hermes cron run {job_id}`, wysig dit met `hermes cron edit {job_id}`, of pouseer dit met `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron '{job_name}' het misluk: sy skrip het uitgetel. Geen model is aangeroep nie. Kontroleer die skrip se uitvoer onder {output_dir} of `hermes cron runs {job_id}`, en voer dit dan weer uit met `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron '{job_name}' het misluk: die taak het vasgehaak — dit het te lank niks gedoen nie en is afgesny. Kyk wat dit gedoen het in die gestoorde uitvoer onder {output_dir} (`hermes cron runs {job_id}`), en voer dit dan weer uit met `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron '{job_name}' het nie geloop nie: {reason} Niks is gehef nie. Hermes sal by die volgende geskeduleerde tyd weer probeer en sal nie hierdie waarskuwing herhaal nie; kontroleer met `hermes cron doctor`."
+      backup_pinned: "Hierdie taak is aan sy eie verskaffer/model vasgepen, so dit val nie terug op `fallback_providers` nie; met `hermes cron edit {job_id} --unpin` volg dit die hoofmodel en sy terugvalketting."
+      backup_failed: "Geen terugvalverskaffer het ook geslaag nie."
+      backup_none: "Geen terugvalverskaffer is opgestel nie — voeg een by met `hermes fallback add`, of stel 'n cron-wye verstek via `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nHierdie taak het {streak} lopies agtereenvolgens misluk — die moeite werd om na te gaan. Herstel sy prompt/konfigurasie, of pouseer dit met `hermes cron pause {job_ref}` (resume/remove is ook beskikbaar) om die geraas te stop."
+      stale_code_hint: " Waarskynlike oorsaak: die gateway loop verouderde kode (begin op {boot_rev}, skyf is op {disk_rev}) — voer `hermes gateway restart` uit om dit reg te stel."
+      quota_hold: "\nDie verskaffer se gebruiksvenster is vir ongeveer {hours} uur gesluit. Hierdie taak word tot {until} teruggehou en hervat by die eerste veilige geleentheid daarna; geen verdere waarskuwings word gestuur terwyl die verskaffer onbeskikbaar is nie."
+    registration_pending: "Cron-taak '{label}' is gestoor, maar kon nog nie by die eksterne skeduleerder geregistreer word nie. Die taak word behou — moenie dit weer skep nie; pouseer/hervat of wysig dit (bv. via /cron) om registrasie weer te probeer."
+    output_truncated: "\n\n... [afgekap, volledige uitvoer gestoor na {path}]"
+  recovered_reply:
+    restart: "♻️ Herwonne antwoord — die gateway het tydens aflewering herbegin, so dit kan 'n duplikaat wees:"
+    reconnect: "♻️ Herwonne antwoord — die boodskapplatform het herkoppel nadat die oorspronklike aflewering misluk het, so dit kan 'n duplikaat wees:"
+    flood: "♻️ Herwonne antwoord — die boodskapplatform se tempobeperking het die oorspronklike geweier, so 'n deel daarvan het dalk reeds hierbo aangekom:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " ná {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ Subagent{goal} het{after} uitgetel sonder om klaar te maak. Ek gaan sonder dit voort; vra my om dit weer te probeer, of verhoog delegation.child_timeout_seconds in config.yaml as hierdie take regtig langer neem."
+    failed: "⚠️ Subagent{goal} het{after} misluk{reason}. Besonderhede: /agents, of vra my om dit met 'n kleiner taak weer te probeer."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Ander"
@@ -1459,6 +1518,45 @@ platform:
     confirm_cancel: "Kanselleer"
     prompt_other: "✏️ Ander (tik antwoord)"
     prompt_expired: ⌛ Daardie navraag wag nie meer op 'n antwoord nie. Stuur jou antwoord as 'n gewone boodskap.
+    approval:
+      resolved_once: "✅ Eenmalig goedgekeur"
+      resolved_session: "✅ Vir sessie goedgekeur"
+      resolved_always: "✅ Permanent goedgekeur"
+      resolved_deny: "❌ Geweier"
+      expired: "⌛ Goedkeuring het verval — geen opdrag het gewag nie."
+    slash_confirm:
+      resolved_once: "✅ Eenmalig goedgekeur"
+      resolved_always: "🔒 Altyd goedkeur"
+      resolved_cancel: "❌ Gekanselleer"
+    clarify_type_answer: "✏️ Tik jou antwoord:"
+    command:
+      model:
+        arg_name: "Modelnaam. Laat leeg om die huidige te sien."
+      reasoning:
+        arg_effort: "Vlak, reset, of show/hide. Laat leeg om die huidige te sien."
+      personality:
+        arg_name: "Persoonlikheidsnaam. Laat leeg om te lys."
+      steer:
+        arg_text: "Wat om vir die agent te sê"
+      title:
+        arg_text: "Nuwe titel. Laat leeg om te wys."
+      resume:
+        arg_name: "Sessietitel of -ID"
+      reload_skills:
+        description: "Herskandeer vaardighede vir nuwe of verwyderde inskrywings"
+      approve:
+        arg_scope: "Goedkeuringsomvang"
+      deny:
+        arg_reason: "Waarom (aan die agent oorgedra)"
+      bg:
+        arg_text: "Die prompt om uit te voer"
+      btw:
+        arg_text: "Die vraag om te beantwoord"
+  qqbot:
+    approval:
+      title: "Voer hierdie opdrag uit?"
+      smart_deny_suffix: " Eienaar-oorskrywing geld slegs vir hierdie een bewerking."
+    update_prompt: "☤ **Opdatering benodig jou insette**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Keur 'n hangende gevaarlike opdrag goed"

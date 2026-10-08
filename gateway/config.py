@@ -163,9 +163,6 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
 # "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
 # silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
 UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
-DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
-    "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
-)
 
 
 def _normalize_choice(value: Any, choices: set, default: str) -> str:
@@ -636,7 +633,7 @@ class GatewayConfig:
     # Retryable failures are recoverable in both modes; non-retryable adapter loss always exits.
     on_all_adapters_down: str = "exit"  # "exit" | "stay_alive"; GATEWAY_ON_ALL_ADAPTERS_DOWN overrides
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
-    unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+    unauthorized_dm_decline_message: str = ""  # "decline" reply text, sent verbatim; empty → gateway.unauthorized.decline_default
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90

@@ -1,0 +1,25 @@
+name: hermes-muse
+repo: https://github.com/xiaohei-info/hermes-muse
+sha: c79c2b4bafee5430f323a140ad97e4f387726181
+version: "0.1.0"
+description: >-
+  Provider-neutral companion assembly: goals and expiring interests, evidence-based
+  reminders, memory/relationship upkeep, nightly reflection, silent Feed and bounded
+  research. One Skill, one state tool and four script-gated native Cron jobs.
+  Disclosure: first load creates profile-local muse files/SQLite state and owned
+  scripts/Cron jobs; conversation hooks retain short real-user excerpts for upkeep;
+  scheduled work uses the user's configured model/tools and may incur their normal
+  costs. No telemetry, required external service, self-updater, core patch or SOUL
+  replacement. Native remove leaves owned tasks for the documented assistant cleanup;
+  residual launchers are silent after removal. No phone/read-receipt guarantee.
+maintainer: xiaohei-info
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/c79c2b4bafee5430f323a140ad97e4f387726181/README.md
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [muse_manage]
+  provides_hooks: [pre_llm_call, post_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

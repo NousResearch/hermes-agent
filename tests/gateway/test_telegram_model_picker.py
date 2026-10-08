@@ -47,24 +47,31 @@ class TestTelegramModelPicker:
     @pytest.mark.asyncio
     async def test_back_button_escapes_dynamic_provider_label(self):
         adapter = _make_adapter()
-        adapter._model_picker_state["12345"] = {
-            "providers": [{"slug": "provider_one", "name": "Provider One", "total_models": 1, "is_current": True}],
-            "current_model": "model_1",
-            "current_provider": "provider_one",
-            "session_key": "s",
-            "on_model_selected": AsyncMock(),
-            "msg_id": 42,
-        }
+        adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+        adapter._bot.send_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=42, message_thread_id=None)
+        )
+        await adapter.send_model_picker(
+            chat_id="12345",
+            providers=[{"slug": "provider_one", "name": "Provider One", "total_models": 1, "is_current": True}],
+            current_model="model_1", current_provider="provider_one", session_key="s",
+            on_model_selected=AsyncMock(), metadata={"requester_user_id": "12345"},
+        )
+        token = next(reversed(adapter._callback_capabilities))
 
         query = AsyncMock()
-        query.data = "mb"
+        query.data = adapter._callback_data(token, "b")
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 42
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
+        query.from_user.id = 12345
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
-        await adapter._handle_model_picker_callback(query, "mb", "12345")
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query), MagicMock())
 
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
@@ -103,20 +110,23 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
 
     adapter = _gateway_wired_adapter()
     on_model_selected = AsyncMock(return_value="Switched to `other-model`")
-    adapter._model_picker_state["-100777"] = {
-        "providers": [{"slug": "openai", "name": "OpenAI", "total_models": 1}],
-        "current_model": "owner-model",
-        "current_provider": "openai",
-        "session_key": "s",
-        "on_model_selected": on_model_selected,
-        "selected_provider": "openai",
-        "model_list": ["other-model"],
-        "msg_id": 42,
-    }
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=42, message_thread_id=None)
+    )
+    await adapter.send_model_picker(
+        chat_id="-100777",
+        providers=[{"slug": "openai", "name": "OpenAI", "total_models": 1, "models": ["other-model"]}],
+        current_model="owner-model", current_provider="openai", session_key="s",
+        on_model_selected=on_model_selected, metadata={"requester_user_id": "111"},
+    )
+    token = next(reversed(adapter._callback_capabilities))
+    capability = adapter._callback_capabilities[token]
+    capability.state.update(selected_provider="openai", model_list=["other-model"])
     query = SimpleNamespace(
-        data="mm:0",
+        data=adapter._callback_data(token, "m0"),
         message=SimpleNamespace(
-            chat_id=-100777, chat=SimpleNamespace(type="supergroup"), message_thread_id=None
+            chat_id=-100777, chat=SimpleNamespace(type="supergroup"), message_thread_id=None,
+            message_id=42,
         ),
         from_user=SimpleNamespace(id=int(tapper_id), first_name="Tapper"),
         answer=AsyncMock(),

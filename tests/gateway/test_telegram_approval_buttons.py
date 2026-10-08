@@ -32,6 +32,32 @@ def _make_adapter(extra=None):
     return adapter
 
 
+async def _mint_approval_callback(adapter, *, message_id: int, actor_id: str) -> str:
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=message_id, message_thread_id=None)
+    )
+    result = await adapter.send_exec_approval(
+        chat_id="12345", command="echo ok", session_key="session",
+        metadata={"requester_user_id": actor_id},
+    )
+    assert result.success is True
+    token = next(reversed(adapter._callback_capabilities))
+    return adapter._callback_data(token, "once")
+
+
+async def _mint_update_callback(adapter, *, message_id: int, actor_id: str, answer: str = "y") -> str:
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=message_id, message_thread_id=None)
+    )
+    result = await adapter.send_update_prompt(
+        chat_id="12345", prompt="Update?", session_key="session",
+        metadata={"requester_user_id": actor_id},
+    )
+    assert result.success is True
+    token = next(reversed(adapter._callback_capabilities))
+    return adapter._callback_data(token, answer)
+
+
 class _AuthRunner:
     """Minimal runner shim for callback auth tests."""
 
@@ -212,14 +238,17 @@ class TestTelegramApprovalCallback:
         rest of a long-running turn after a button click.
         """
         adapter = _make_adapter()
-        adapter._approval_state[5] = "agent:main:telegram:group:12345:99"
+        callback_data = await _mint_approval_callback(adapter, message_id=5, actor_id="12345")
         adapter.pause_typing_for_chat("12345")
         assert "12345" in adapter._typing_paused
 
         query = AsyncMock()
-        query.data = "ea:once:5"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 5
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.from_user.first_name = "Norbert"
         query.from_user.id = "12345"
@@ -240,12 +269,15 @@ class TestTelegramApprovalCallback:
     @pytest.mark.asyncio
     async def test_approval_callback_escapes_dynamic_user_name(self):
         adapter = _make_adapter()
-        adapter._approval_state[3] = "agent:main:telegram:group:12345:99"
+        callback_data = await _mint_approval_callback(adapter, message_id=3, actor_id="12345")
 
         query = AsyncMock()
-        query.data = "ea:once:3"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 3
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.from_user.first_name = "Alice_Bob"
         query.answer = AsyncMock()
@@ -269,11 +301,15 @@ class TestTelegramApprovalCallback:
     async def test_update_prompt_callback_not_affected(self, tmp_path):
         """Ensure update prompt callbacks still work."""
         adapter = _make_adapter()
+        callback_data = await _mint_update_callback(adapter, message_id=301, actor_id="123")
 
         query = AsyncMock()
-        query.data = "update_prompt:y"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 301
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.from_user.id = 123
         query.answer = AsyncMock()
@@ -300,11 +336,15 @@ class TestTelegramApprovalCallback:
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
         """Update prompt buttons should honor TELEGRAM_ALLOWED_USERS."""
         adapter = _make_adapter()
+        callback_data = await _mint_update_callback(adapter, message_id=302, actor_id="222")
 
         query = AsyncMock()
-        query.data = "update_prompt:y"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 302
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.from_user.id = 222
         query.answer = AsyncMock()
@@ -328,12 +368,15 @@ class TestTelegramApprovalCallback:
         adapter = _make_adapter()
         runner = _AuthRunner(authorized=False)
         adapter._message_handler = runner._handle_message
+        callback_data = await _mint_update_callback(adapter, message_id=303, actor_id="222")
 
         query = AsyncMock()
-        query.data = "update_prompt:y"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.message.chat.type = "private"
+        query.message.message_id = 303
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.from_user.id = 222
         query.from_user.first_name = "Mallory"

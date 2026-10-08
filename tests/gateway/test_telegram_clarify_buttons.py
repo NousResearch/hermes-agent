@@ -7,6 +7,7 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +36,22 @@ def _make_adapter(extra=None):
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
     return adapter
+
+
+async def _mint_clarify_callback(
+    adapter, *, clarify_id: str, session_key: str, actor_id: str, message_id: int, action: str,
+) -> str:
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=message_id, message_thread_id=None)
+    )
+    result = await adapter.send_clarify(
+        chat_id="12345", question="Pick", choices=["red", "green", "blue"],
+        clarify_id=clarify_id, session_key=session_key,
+        metadata={"requester_user_id": actor_id},
+    )
+    assert result.success is True
+    token = next(reversed(adapter._callback_capabilities))
+    return adapter._callback_data(token, action)
 
 
 def _clear_clarify_state():
@@ -130,12 +147,17 @@ class TestTelegramClarifyCallback:
         adapter = _make_adapter()
         # Pre-register a clarify entry so the callback can look up the choice text
         cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
-        adapter._clarify_state["cidA"] = "sk-cb"
+        callback_data = await _mint_clarify_callback(
+            adapter, clarify_id="cidA", session_key="sk-cb", actor_id="777", message_id=200, action="1",
+        )
 
         query = AsyncMock()
-        query.data = "cl:cidA:1"  # green
+        query.data = callback_data  # green
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.message.message_id = 200
+        query.message.message_thread_id = None
         query.message.text = "Pick"
         query.from_user = MagicMock()
         query.from_user.id = "777"
@@ -172,7 +194,9 @@ class TestTelegramClarifyCallback:
 
         adapter = _make_adapter()
         cm.register("cidC", "sk-auth", "Pick", ["a", "b"])
-        adapter._clarify_state["cidC"] = "sk-auth"
+        callback_data = await _mint_clarify_callback(
+            adapter, clarify_id="cidC", session_key="sk-auth", actor_id="999", message_id=201, action="0",
+        )
 
         # Hook up a runner that says NOT authorized
         class _DenyRunner:
@@ -184,10 +208,12 @@ class TestTelegramClarifyCallback:
         adapter._message_handler = _DenyRunner()._handle_message
 
         query = AsyncMock()
-        query.data = "cl:cidC:0"
+        query.data = callback_data
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.message.chat.type = "private"
+        query.message.message_id = 201
+        query.message.message_thread_id = None
         query.message.text = "Pick"
         query.from_user = MagicMock()
         query.from_user.id = "999"

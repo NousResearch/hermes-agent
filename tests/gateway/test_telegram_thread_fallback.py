@@ -133,6 +133,7 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._slash_confirm_state = {}
     adapter.platform = Platform.TELEGRAM
     return adapter
 
@@ -357,6 +358,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "463",
+        "requester_user_id": "user-1",
     }
 
 
@@ -620,13 +622,12 @@ async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch
 @pytest.mark.asyncio
 async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behavior(monkeypatch):
     adapter = _make_adapter()
-    adapter._slash_confirm_state = {"confirm-1": "session-1"}
     adapter._is_callback_user_authorized = lambda *args, **kwargs: True
     call_log = []
 
     async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=9001)
+        return SimpleNamespace(message_id=462, message_thread_id=kwargs.get("message_thread_id"))
 
     async def resolve(_session_key, _confirm_id, _choice):
         return "done"
@@ -635,9 +636,17 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
 
     monkeypatch.setattr(slash_confirm, "resolve", resolve)
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send_slash_confirm(
+        chat_id="-100123", title="Confirm", message="Proceed?", session_key="session-1",
+        confirm_id="confirm-1", metadata={"thread_id": "20197", "requester_user_id": "42"},
+    )
+    assert result.success is True
+    token = next(reversed(adapter._callback_capabilities))
+    callback_data = adapter._callback_data(token, "once")
+    call_log.clear()
 
     class Query:
-        data = "sc:once:confirm-1"
+        data = callback_data
         from_user = SimpleNamespace(id=42, first_name="Alice")
         message = SimpleNamespace(
             chat_id=-100123,

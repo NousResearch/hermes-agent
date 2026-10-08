@@ -9,6 +9,7 @@ import logging
 import os
 import html as _html
 import re
+import secrets
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -160,6 +161,20 @@ def _unauthorized() -> str:
 def _toast(key: str, **kwargs: Any) -> str:
     """``t()`` for ``query.answer(text=...)`` payloads, cut at Telegram's 200-char toast cap."""
     return t(key, **kwargs)[:_TOAST_LIMIT]
+
+
+@dataclasses.dataclass
+class _CallbackCapability:
+    """One Telegram button request, bound to the exact surface that rendered it."""
+
+    kind: str
+    actor_id: str
+    chat_id: str
+    thread_id: Optional[str]
+    message_id: str
+    generation: int
+    lane: tuple
+    state: Dict[str, Any]
 
 
 def _bold_label_html(line: str) -> str:
@@ -698,11 +713,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
         # getFile cap: 20MB on the public Bot API, 2GB on a local telegram-bot-api (base_url).
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
-        self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
+        self._model_picker_state: Dict[str, dict] = {}  # current per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
-        self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_state: Dict[str, str] = {}  # callback capability → session_key
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
+        self._callback_capabilities: Dict[str, _CallbackCapability] = {}
+        self._callback_generations: Dict[tuple, int] = {}
+        self._callback_latest: Dict[tuple, str] = {}
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -4180,16 +4198,130 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """2-per-row layout keeps labels readable on mobile (a 4-button row truncates)."""
         return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
+    _CALLBACK_CAPABILITY_LIMIT = 512
+
+    @staticmethod
+    def _callback_id(value: Any) -> Optional[str]:
+        """Canonical scalar Telegram identifiers; mocks/compound values never become authority."""
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            text = str(value).strip()
+            return text or None
+        return None
+
+    @classmethod
+    def _callback_requester(cls, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        requester = cls._callback_id((metadata or {}).get("requester_user_id"))
+        if requester:
+            return requester
+        # Telegram private-chat ids equal the peer's user id. Group/channel ids are negative, so
+        # they must carry the initiating actor explicitly from the gateway source metadata.
+        normalized = cls._callback_id(normalize_telegram_chat_id(chat_id))
+        try:
+            return normalized if normalized is not None and int(normalized) > 0 else None
+        except ValueError:
+            return None
+
+    def _new_callback_token(self) -> str:
+        capabilities = getattr(self, "_callback_capabilities", None)
+        if capabilities is None:
+            capabilities = self._callback_capabilities = {}
+        while True:
+            token = secrets.token_urlsafe(12)
+            if token not in capabilities:
+                return token
+
+    @staticmethod
+    def _callback_data(token: str, action: str) -> str:
+        data = f"rq:{token}:{action}"
+        if len(data.encode("utf-8")) > 64:
+            raise ValueError("Telegram callback capability exceeds 64 bytes")
+        return data
+
+    def _activate_callback_capability(
+        self, kind: str, token: str, chat_id: str, metadata: Optional[Dict[str, Any]], message: Any,
+        state: Dict[str, Any],
+    ) -> bool:
+        """Bind an opaque request token after Telegram assigns the prompt's message id."""
+        actor_id = self._callback_requester(chat_id, metadata)
+        message_id = self._callback_id(getattr(message, "message_id", None))
+        if actor_id is None or message_id is None:
+            logger.warning("[%s] Refusing to activate unbound Telegram %s callback", self.name, kind)
+            return False
+        bound_chat_id = self._callback_id(normalize_telegram_chat_id(chat_id))
+        if bound_chat_id is None:
+            return False
+        if hasattr(message, "message_thread_id"):
+            thread_id = self._callback_id(getattr(message, "message_thread_id", None))
+        else:
+            thread_id = self._callback_id(self._metadata_thread_id(metadata))
+        lane = (kind, actor_id, bound_chat_id, thread_id)
+        generations = getattr(self, "_callback_generations", None)
+        if generations is None:
+            generations = self._callback_generations = {}
+        generation = generations.get(lane, 0) + 1
+        generations[lane] = generation
+        capabilities = getattr(self, "_callback_capabilities", None)
+        if capabilities is None:
+            capabilities = self._callback_capabilities = {}
+        latest = getattr(self, "_callback_latest", None)
+        if latest is None:
+            latest = self._callback_latest = {}
+        previous_token = latest.get(lane)
+        if previous_token:
+            previous = capabilities.pop(previous_token, None)
+            if previous is not None:
+                if previous.kind == "approval":
+                    self._approval_state.pop(previous_token, None)
+                elif previous.kind == "slash":
+                    confirm_id = previous.state.get("confirm_id")
+                    if confirm_id is not None:
+                        self._slash_confirm_state.pop(str(confirm_id), None)
+                elif previous.kind == "clarify":
+                    clarify_id = previous.state.get("clarify_id")
+                    if clarify_id is not None:
+                        self._clarify_state.pop(str(clarify_id), None)
+        capabilities[token] = _CallbackCapability(
+            kind=kind, actor_id=actor_id, chat_id=bound_chat_id, thread_id=thread_id,
+            message_id=message_id, generation=generation, lane=lane, state=state,
+        )
+        latest[lane] = token
+        while len(capabilities) > self._CALLBACK_CAPABILITY_LIMIT:
+            oldest = next(iter(capabilities))
+            old = capabilities.pop(oldest)
+            if latest.get(old.lane) == oldest:
+                latest.pop(old.lane, None)
+                generations.pop(old.lane, None)
+        return True
+
+    def _consume_callback_capability(self, token: str, capability: _CallbackCapability) -> bool:
+        capabilities = getattr(self, "_callback_capabilities", {})
+        generations = getattr(self, "_callback_generations", {})
+        if capabilities.get(token) is not capability or generations.get(capability.lane) != capability.generation:
+            return False
+        capabilities.pop(token, None)
+        latest = getattr(self, "_callback_latest", {})
+        if latest.get(capability.lane) == token:
+            latest.pop(capability.lane, None)
+            generations.pop(capability.lane, None)
+        return True
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
+        token = self._new_callback_token()
+        state = {"session_key": session_key}
+
         def build():
+            if self._callback_requester(chat_id, metadata) is None:
+                return SendResult(success=False, error="Missing Telegram callback requester")
             default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
             text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
-                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
-            return text, keyboard, None
+                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data=self._callback_data(token, "y")),
+                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data=self._callback_data(token, "n"))]])
+            return text, keyboard, lambda msg: self._activate_callback_capability(
+                "update", token, chat_id, metadata, msg, state,
+            )
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
@@ -4233,16 +4365,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
+        token = self._new_callback_token()
+        state = {"session_key": prompt.session_key, "actions": {choice for _, choice, _ in prompt.actions}}
+
         def build():
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
+            if self._callback_requester(prompt.chat_id, prompt.metadata) is None:
+                return SendResult(success=False, error="Missing Telegram callback requester")
+            buttons = [InlineKeyboardButton(label, callback_data=self._callback_data(token, choice))
                        for label, choice, _ in prompt.actions]
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+            def _remember(msg):
+                if self._activate_callback_capability(
+                    "approval", token, prompt.chat_id, prompt.metadata, msg, state,
+                ):
+                    self._approval_state[token] = prompt.session_key
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), _remember
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4251,17 +4387,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Render a three-button slash-command confirmation prompt."""
+        token = self._new_callback_token()
+        state = {"session_key": session_key, "confirm_id": confirm_id}
+
         def build():
+            if self._callback_requester(chat_id, metadata) is None:
+                return SendResult(success=False, error="Missing Telegram callback requester")
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")],
-                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")],
+                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=self._callback_data(token, "once")),
+                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=self._callback_data(token, "always"))],
+                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=self._callback_data(token, "cancel"))],
            ])
             # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
             preview = self.format_message(self._ea_fit(
                 message, self.MAX_MESSAGE_LENGTH - utf16_len(self.format_message("...")), escape=self.format_message))
-            return preview, keyboard, lambda msg: self._slash_confirm_state.__setitem__(confirm_id, session_key)
+            def _remember(msg):
+                if self._activate_callback_capability("slash", token, chat_id, metadata, msg, state):
+                    self._slash_confirm_state[confirm_id] = session_key
+            return preview, keyboard, _remember
         return await self._send_prompt(
             "send_slash_confirm", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
@@ -4270,17 +4414,29 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
+        token = self._new_callback_token()
+        state = {"session_key": session_key, "clarify_id": clarify_id}
+
         def build():
             text = f"❓ {_html.escape(question)}"
             keyboard = None
             if choices:
+                if self._callback_requester(chat_id, metadata) is None:
+                    return SendResult(success=False, error="Missing Telegram callback requester")
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
+                rows = [[InlineKeyboardButton(
+                    str(idx + 1), callback_data=self._callback_data(token, str(idx)),
+                )] for idx in range(len(choices))]
+                rows.append([InlineKeyboardButton(
+                    t("platform.telegram.prompt.other"), callback_data=self._callback_data(token, "other"),
+                )])
                 keyboard = InlineKeyboardMarkup(rows)
-            return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
+            def _remember(msg):
+                self._clarify_state[clarify_id] = session_key
+                if choices:
+                    self._activate_callback_capability("clarify", token, chat_id, metadata, msg, state)
+            return text, keyboard, _remember
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
@@ -4297,16 +4453,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
         on_model_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard model picker: provider → model drill-down, edited in place."""
+        token = self._new_callback_token()
+        state = {
+            "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
+            "current_model": current_model, "current_provider": current_provider, "provider_page": 0,
+        }
+
         def build():
-            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
+            if self._callback_requester(chat_id, metadata) is None:
+                return SendResult(success=False, error="Missing Telegram callback requester")
+            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0, token)
             text = self.format_message(
                 self._provider_list_text(current_model, self._provider_get_label()(current_provider), provider_page_info)
             )
 
             def _remember(msg):
-                self._model_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
-                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0}
+                state["msg_id"] = msg.message_id
+                if self._activate_callback_capability("model", token, chat_id, metadata, msg, state):
+                    self._model_picker_state[str(chat_id)] = state
             return text, keyboard, _remember
         return await self._send_prompt(
             "send_model_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -4319,20 +4483,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Flat inline-keyboard picker (one tap → one value) for /reasoning, /fast, etc. Each choice dict:
         ``{"value": str, "label": str, "is_current": bool}``."""
+        token = self._new_callback_token()
+        state = {"choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
+
         def build():
+            if self._callback_requester(chat_id, metadata) is None:
+                return SendResult(success=False, error="Missing Telegram callback requester")
             buttons = []
             for i, choice in enumerate(choices):
                 label = str(choice.get("label") or choice.get("value") or "")
                 if choice.get("is_current"):
                     label = f"✓ {label}"
-                buttons.append(InlineKeyboardButton(label, callback_data=f"cp:{i}"))
+                buttons.append(InlineKeyboardButton(label, callback_data=self._callback_data(token, str(i))))
             if not buttons:
                 return SendResult(success=False, error="No choices")
             keyboard = InlineKeyboardMarkup(self._rows_of_two(buttons))
 
             def _remember(msg):
-                self._choice_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "choices": choices, "session_key": session_key, "on_choice_selected": on_choice_selected}
+                state["msg_id"] = msg.message_id
+                if self._activate_callback_capability("choice", token, chat_id, metadata, msg, state):
+                    self._choice_picker_state[str(chat_id)] = state
             return self.format_message(title), keyboard, _remember
         return await self._send_prompt(
             "send_choice_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -4346,19 +4516,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             with contextlib.suppress(Exception):
                 await query.edit_message_text(text=result_text, parse_mode=None, reply_markup=None)
 
-    async def _handle_choice_picker_callback(self, query, data: str, chat_id: str) -> None:
-        """Handle choice picker button taps (cp:<index>)."""
-        state = self._choice_picker_state.get(chat_id)
-        if not state:
-            await query.answer(text=_toast("platform.telegram.picker.expired_rerun"))
-            return
+    async def _handle_choice_picker_callback(
+        self, query, action: str, chat_id: str, token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Resolve one capability-bound choice picker selection."""
+        state = capability.state
         try:
-            choice = state["choices"][int(data[3:])]
-        except (ValueError, IndexError):
+            idx = int(action)
+            if idx < 0:
+                raise IndexError
+            choice = state["choices"][idx]
+        except (ValueError, IndexError, TypeError):
             await query.answer(text=_toast("platform.telegram.picker.invalid_selection"))
             return
         callback = state.get("on_choice_selected")
         if not callback:
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
+            return
+        if not self._consume_callback_capability(token, capability):
             await query.answer(text=_toast("platform.telegram.picker.expired"))
             return
         try:
@@ -4368,48 +4543,62 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             result_text = t("platform.telegram.picker.apply_error", error=str(exc))
         await self._edit_result_text(query, result_text)
         await query.answer()
-        self._choice_picker_state.pop(chat_id, None)
+        if self._choice_picker_state.get(chat_id) is state:
+            self._choice_picker_state.pop(chat_id, None)
 
     _MODEL_PAGE_SIZE = 8
 
-    @staticmethod
-    def _provider_button(p: dict) -> "InlineKeyboardButton":
+    def _provider_button(self, p: dict, index: int, token: str) -> "InlineKeyboardButton":
         count = p.get("total_models", len(p.get("models", [])))
         label = f"{p['name']} ({count})"
         if p.get("is_current"):
             label = f"✓ {label}"
-        return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+        return InlineKeyboardButton(label, callback_data=self._callback_data(token, f"p{index}"))
 
-    @staticmethod
-    def _picker_nav_row(page: int, total_pages: int, prefix: str) -> list:
-        """``◀ Prev | n/N | Next ▶`` row (``prefix`` = ``mpv``/``mg`` page callback)."""
+    def _picker_nav_row(self, page: int, total_pages: int, token: str, action_prefix: str) -> list:
+        """``◀ Prev | n/N | Next ▶`` row for a capability-bound picker page."""
         nav: list = []
         if page > 0:
-            nav.append(InlineKeyboardButton(t("platform.telegram.picker.prev"), callback_data=f"{prefix}:{page - 1}"))
-        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            nav.append(InlineKeyboardButton(
+                t("platform.telegram.picker.prev"),
+                callback_data=self._callback_data(token, f"{action_prefix}{page - 1}"),
+            ))
+        nav.append(InlineKeyboardButton(
+            f"{page + 1}/{total_pages}", callback_data=self._callback_data(token, "n"),
+        ))
         if page < total_pages - 1:
-            nav.append(InlineKeyboardButton(t("platform.telegram.picker.next"), callback_data=f"{prefix}:{page + 1}"))
+            nav.append(InlineKeyboardButton(
+                t("platform.telegram.picker.next"),
+                callback_data=self._callback_data(token, f"{action_prefix}{page + 1}"),
+            ))
         return nav
 
-    @staticmethod
-    def _picker_back_cancel_row() -> list:
-        return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
+    def _picker_back_cancel_row(self, token: str) -> list:
+        return [
+            InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data=self._callback_data(token, "b")),
+            InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data=self._callback_data(token, "x")),
+        ]
 
-    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
+    def _paged_keyboard(
+        self, buttons: list, page_meta: dict, token: str, nav_action: str, tail_row: list,
+    ) -> tuple:
         rows = self._rows_of_two(buttons)
         if page_meta["total_pages"] > 1:
-            rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
+            rows.append(self._picker_nav_row(
+                page_meta["page"], page_meta["total_pages"], token, nav_action,
+            ))
         rows.append(tail_row)
         return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
-    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+    def _build_provider_keyboard(self, providers: list, page: int, token: str) -> tuple:
         """Paginated top-level provider keyboard folding provider families (Kimi/Moonshot, MiniMax, xAI…)
-        into one ``mpg:<gid>`` button via the shared ``group_providers`` fold; singles are ``mp:<slug>``."""
+        into one family button via the shared ``group_providers`` fold."""
         try:
             from hermes_cli.models_catalog_static import group_providers
         except Exception:
             group_providers = None
         by_slug = {p.get("slug"): p for p in providers}
+        index_by_slug = {p.get("slug"): i for i, p in enumerate(providers)}
         buttons: list = []
         if group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
@@ -4419,17 +4608,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     label = f"{row['label']} ▸ ({count})"
                     if any(m.get("is_current") for m in members):
                         label = f"✓ {label}"
-                    buttons.append(InlineKeyboardButton(label, callback_data=f"mpg:{row['group_id']}"))
+                    buttons.append(InlineKeyboardButton(
+                        label, callback_data=self._callback_data(token, f"f{row['group_id']}"),
+                    ))
                 else:
                     p = by_slug.get(row["slug"])
                     if p is not None:
-                        buttons.append(self._provider_button(p))
+                        buttons.append(self._provider_button(p, index_by_slug[row["slug"]], token))
         else:
-            buttons = [self._provider_button(p) for p in providers]
+            buttons = [self._provider_button(p, i, token) for i, p in enumerate(providers)]
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
-        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
+        return self._paged_keyboard(
+            page_buttons, page_meta, token, "v",
+            [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data=self._callback_data(token, "x"))],
+        )
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, token: str) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
@@ -4438,19 +4632,21 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
             if len(short) > 38:
                 short = short[:35] + "..."
-            buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
-        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+            buttons.append(InlineKeyboardButton(
+                short, callback_data=self._callback_data(token, f"m{start + i}"),
+            ))
+        return self._paged_keyboard(buttons, page_meta, token, "g", self._picker_back_cancel_row(token))
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
         await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
         await query.answer()
 
-    async def _picker_show_models(self, query, state: dict, page: int) -> None:
+    async def _picker_show_models(self, query, state: dict, page: int, token: str) -> None:
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        keyboard, page_info = self._build_model_keyboard(models, page, token)
         pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
@@ -4471,9 +4667,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 f"{t('platform.telegram.picker.provider_label', provider=provider_label)}\n\n"
                 f"{t('platform.telegram.picker.select_provider')}{page_info}")
 
-    async def _picker_show_providers(self, query, state: dict, page: int, get_label) -> None:
+    async def _picker_show_providers(self, query, state: dict, page: int, get_label, token: str) -> None:
         """Render the (folded, paginated) provider list."""
-        keyboard, provider_page_info = self._build_provider_keyboard(state["providers"], page)
+        keyboard, provider_page_info = self._build_provider_keyboard(state["providers"], page, token)
         try:
             provider_label = get_label(state["current_provider"])
         except Exception:
@@ -4497,8 +4693,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return None
         return idx, model_list[idx], state.get("selected_provider", ""), callback
 
-    async def _picker_switch(self, query, chat_id: str, model_id: str, provider_slug: str, callback) -> None:
-        """Perform the model switch, render the result, and drop the picker state."""
+    async def _picker_switch(
+        self, query, chat_id: str, model_id: str, provider_slug: str, callback, state: dict,
+    ) -> None:
+        """Perform the model switch, render the result, and drop this picker's state."""
         switch_failed = False
         try:
             result_text = await callback(chat_id, model_id, provider_slug)
@@ -4508,49 +4706,59 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             switch_failed = True
         await self._edit_result_text(query, result_text)
         await query.answer(text=_toast("platform.telegram.picker.switch_failed" if switch_failed else "platform.telegram.picker.switched"))
-        self._model_picker_state.pop(chat_id, None)
+        if self._model_picker_state.get(chat_id) is state:
+            self._model_picker_state.pop(chat_id, None)
 
     @staticmethod
     async def _parse_page(query, raw: str) -> Optional[int]:
         try:
-            return int(raw)
+            page = int(raw)
+            if page < 0:
+                raise ValueError
+            return page
         except ValueError:
             await query.answer(text=_toast("platform.telegram.picker.invalid_page"))
             return None
 
-    async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
-        """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
-        state = self._model_picker_state.get(chat_id)
-        if not state:
-            await query.answer(text=_toast("platform.telegram.picker.expired_model"))
-            return
+    async def _handle_model_picker_callback(
+        self, query, action: str, chat_id: str, token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Handle one capability-bound model-picker control."""
+        state = capability.state
         get_label = self._provider_get_label()
-        if data.startswith("mp:"):  # provider selected: show model buttons (page 0)
-            provider_slug = data[3:]
-            provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
-            if not provider:
+        if action.startswith("p"):  # provider selected: show model buttons (page 0)
+            try:
+                provider_idx = int(action[1:])
+                if provider_idx < 0:
+                    raise IndexError
+                provider = state["providers"][provider_idx]
+            except (ValueError, IndexError, TypeError):
                 await query.answer(text=_toast("platform.telegram.picker.provider_not_found"))
                 return
+            provider_slug = provider["slug"]
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
             state["model_list"] = provider.get("models", [])
-            await self._picker_show_models(query, state, 0)
-        elif data.startswith("mg:"):  # model page navigation
-            page = await self._parse_page(query, data[3:])
+            await self._picker_show_models(query, state, 0, token)
+        elif action.startswith("g"):  # model page navigation
+            page = await self._parse_page(query, action[1:])
             if page is not None:
-                await self._picker_show_models(query, state, page)
-        elif data.startswith("mpv:"):  # provider page navigation
-            page = await self._parse_page(query, data[4:])
+                await self._picker_show_models(query, state, page, token)
+        elif action.startswith("v"):  # provider page navigation
+            page = await self._parse_page(query, action[1:])
             if page is not None:
                 state["provider_page"] = page
-                await self._picker_show_providers(query, state, page, get_label)
-        elif data.startswith("mc:"):  # expensive model confirmed: perform the switch
-            sel = await self._picker_selection(query, state, data[3:])
+                await self._picker_show_providers(query, state, page, get_label, token)
+        elif action.startswith("c"):  # expensive model confirmed: perform the switch
+            sel = await self._picker_selection(query, state, action[1:])
             if sel is not None:
                 _idx, model_id, provider_slug, callback = sel
-                await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
-        elif data.startswith("mm:"):  # model selected: warn if expensive, else perform the switch
-            sel = await self._picker_selection(query, state, data[3:])
+                if not self._consume_callback_capability(token, capability):
+                    await query.answer(text=_toast("platform.telegram.picker.expired"))
+                    return
+                await self._picker_switch(query, chat_id, model_id, provider_slug, callback, state)
+        elif action.startswith("m"):  # model selected: warn if expensive, else perform the switch
+            sel = await self._picker_selection(query, state, action[1:])
             if sel is None:
                 return
             idx, model_id, provider_slug, callback = sel
@@ -4562,15 +4770,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 warning = None
             if warning is not None:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(t("platform.telegram.picker.switch_anyway"), callback_data=f"mc:{idx}")], self._picker_back_cancel_row()])
+                    [InlineKeyboardButton(
+                        t("platform.telegram.picker.switch_anyway"),
+                        callback_data=self._callback_data(token, f"c{idx}"),
+                    )],
+                    self._picker_back_cancel_row(token),
+                ])
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
                     parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
                 await query.answer(text=_toast("platform.telegram.picker.confirm_selection"))
                 return
-            await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
-        elif data.startswith("mpg:"):  # provider group selected: show member providers
-            group_id = data[4:]
+            if not self._consume_callback_capability(token, capability):
+                await query.answer(text=_toast("platform.telegram.picker.expired"))
+                return
+            await self._picker_switch(query, chat_id, model_id, provider_slug, callback, state)
+        elif action.startswith("f"):  # provider group selected: show member providers
+            group_id = action[1:]
             try:
                 from hermes_cli.models_catalog_static import PROVIDER_GROUPS
                 _label, _desc, member_slugs = PROVIDER_GROUPS.get(group_id, ("", "", []))
@@ -4581,22 +4797,33 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             if not members:
                 await query.answer(text=_toast("platform.telegram.picker.group_not_found"))
                 return
-            rows = self._rows_of_two([self._provider_button(p) for p in members])
-            rows.append(self._picker_back_cancel_row())
+            index_by_slug = {p["slug"]: i for i, p in enumerate(state["providers"])}
+            rows = self._rows_of_two([
+                self._provider_button(p, index_by_slug[p["slug"]], token) for p in members
+            ])
+            rows.append(self._picker_back_cancel_row(token))
             await self._picker_edit(
                 query,
                 f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
                 f"{t('platform.telegram.picker.provider_family', family=f'*{_label or group_id}*')}\n\n"
                 f"{t('platform.telegram.picker.select_provider')}",
                 InlineKeyboardMarkup(rows))
-        elif data == "mb":  # back to provider list (folds groups)
-            await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
-        elif data == "mx":
-            self._model_picker_state.pop(chat_id, None)
+        elif action == "b":  # back to provider list (folds groups)
+            await self._picker_show_providers(
+                query, state, int(state.get("provider_page", 0) or 0), get_label, token,
+            )
+        elif action == "x":
+            if not self._consume_callback_capability(token, capability):
+                await query.answer(text=_toast("platform.telegram.picker.expired"))
+                return
+            if self._model_picker_state.get(chat_id) is state:
+                self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(text=t("platform.telegram.picker.cancelled"), reply_markup=None)
             await query.answer()
+        elif action == "n":
+            await query.answer()
         else:
-            await query.answer()  # e.g. page-counter button "mx:noop"
+            await query.answer(text=_toast("platform.telegram.picker.invalid_selection"))
 
     async def _notify_clarify_expired(self, query, user_display: str) -> None:
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
@@ -4668,9 +4895,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Chat/thread/user context of a button tap, for the callback auth gate."""
         query_message = getattr(query, "message", None)
         query_chat = getattr(query_message, "chat", None)
+        from_user = getattr(query, "from_user", None)
         return {
             "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
-            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
+            "thread_id": getattr(query_message, "message_thread_id", None),
+            "message_id": getattr(query_message, "message_id", None),
+            "actor_id": getattr(from_user, "id", None), "user_name": getattr(from_user, "first_name", None)}
 
     async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
         """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
@@ -4682,6 +4912,31 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await query.answer(text=denial_text)
         return False
 
+    async def _bound_callback_capability(
+        self, query, cb: Dict[str, Any], token: str,
+    ) -> Optional[_CallbackCapability]:
+        """Resolve a request token only for its owner and exact rendered message generation."""
+        capability = getattr(self, "_callback_capabilities", {}).get(token)
+        if capability is None or getattr(self, "_callback_generations", {}).get(capability.lane) != capability.generation:
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
+            return None
+        actor_id = self._callback_id(cb.get("actor_id"))
+        chat_id = self._callback_id(cb.get("chat_id"))
+        thread_id = self._callback_id(cb.get("thread_id"))
+        message_id = self._callback_id(cb.get("message_id"))
+        if (
+            not capability.actor_id
+            or actor_id != capability.actor_id
+            or chat_id != capability.chat_id
+            or thread_id != capability.thread_id
+            or message_id != capability.message_id
+        ):
+            await query.answer(text=_unauthorized())
+            return None
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return None
+        return capability
+
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
         query = update.callback_query
@@ -4690,48 +4945,58 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._accept_update()
         data = query.data
         cb = self._callback_ctx(query)
-        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
-        for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
-            (("cp:",), self._handle_choice_picker_callback)):
-            if data.startswith(prefixes):
-                chat_id = str(query.message.chat_id) if query.message else None
-                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
-                if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
-                    await handler(query, data, chat_id)
+        if data.startswith("rq:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                await query.answer(text=_toast("platform.telegram.picker.expired"))
                 return
-        for prefix, handler in (
-            ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
-            ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
-            ("update_prompt:", self._handle_update_prompt_callback)):
+            token, action = parts[1], parts[2]
+            capability = await self._bound_callback_capability(query, cb, token)
+            if capability is None:
+                return
+            chat_id = capability.chat_id
+            if capability.kind == "choice":
+                await self._handle_choice_picker_callback(query, action, chat_id, token, capability)
+            elif capability.kind == "model":
+                await self._handle_model_picker_callback(query, action, chat_id, token, capability)
+            elif capability.kind == "approval":
+                await self._handle_exec_approval_callback(query, action, cb, token, capability)
+            elif capability.kind == "slash":
+                await self._handle_slash_confirm_callback(query, action, cb, token, capability)
+            elif capability.kind == "clarify":
+                await self._handle_clarify_callback(query, action, cb, token, capability)
+            elif capability.kind == "update":
+                await self._handle_update_prompt_callback(query, action, cb, token, capability)
+            else:
+                await query.answer(text=_toast("platform.telegram.picker.expired"))
+            return
+        # Buttons rendered before request capabilities existed are intentionally not grandfathered:
+        # their reusable ids have no actor/message binding and therefore cannot authorize an action.
+        if data.startswith((
+            "ea:", "sc:", "cl:", "cp:", "mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:",
+            "update_prompt:",
+        )):
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
+            return
+        for prefix, handler in (("gt:", self._handle_gmail_triage_callback),):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
 
-    async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
-        """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
-        if not await self._callback_authorized(query, cb, denial):
-            return None
-        session_key = state.pop(key, None) if pop else state.get(key)
-        if not session_key:
-            await query.answer(text=resolved)
-        return session_key
-
-    async def _handle_exec_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``ea:<choice>:<approval_id>`` — resolve a pending exec approval."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
-            return
-        choice = parts[1]  # once, session, always, deny
-        try:
-            approval_id = int(parts[2])
-        except (ValueError, IndexError):
+    async def _handle_exec_approval_callback(
+        self, query, choice: str, cb: Dict[str, Any], token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Resolve a capability-bound exec approval."""
+        if choice not in capability.state.get("actions", set()):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, _unauthorized(),
-            _toast("platform.telegram.approval.toast_already_resolved"))
+        if not self._consume_callback_capability(token, capability):
+            await query.answer(text=_toast("platform.telegram.approval.toast_already_resolved"))
+            return
+        session_key = capability.state.get("session_key")
+        self._approval_state.pop(token, None)
         if not session_key:
+            await query.answer(text=_toast("platform.telegram.approval.toast_already_resolved"))
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
@@ -4761,17 +5026,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))
 
-    async def _handle_slash_confirm_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
+    async def _handle_slash_confirm_callback(
+        self, query, choice: str, cb: Dict[str, Any], token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Resolve a capability-bound slash-command confirmation."""
+        if choice not in {"once", "always", "cancel"}:
+            await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        choice = parts[1]  # once, always, cancel
-        confirm_id = parts[2]
-        session_key = await self._claim_callback_state(
-            query, cb, self._slash_confirm_state, confirm_id, _unauthorized(),
-            _toast("platform.telegram.slash_confirm.already_resolved"))
-        if not session_key:
+        if not self._consume_callback_capability(token, capability):
+            await query.answer(text=_toast("platform.telegram.slash_confirm.already_resolved"))
+            return
+        session_key = capability.state.get("session_key")
+        confirm_id = capability.state.get("confirm_id")
+        if confirm_id:
+            self._slash_confirm_state.pop(confirm_id, None)
+        if not session_key or not confirm_id:
+            await query.answer(text=_toast("platform.telegram.slash_confirm.already_resolved"))
             return
         label_key = {"once": "slash_confirm.resolved_once", "always": "slash_confirm.resolved_always", "cancel": "slash_confirm.resolved_cancel"}.get(
             choice, "approval.resolved_generic")
@@ -4808,22 +5078,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
 
-    async def _handle_clarify_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``cl:<clarify_id>:<idx|other>`` — resolve a clarify prompt or flip to text capture."""
-        parts = data.split(":", 2)
-        if len(parts) != 3:
-            return
-        clarify_id = parts[1]
-        choice_token = parts[2]
-        session_key = await self._claim_callback_state(
-            query, cb, self._clarify_state, clarify_id, _unauthorized(),
-            _toast("platform.telegram.slash_confirm.already_resolved"), pop=False)
-        if not session_key:
+    async def _handle_clarify_callback(
+        self, query, choice_token: str, cb: Dict[str, Any], token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Resolve a capability-bound clarify choice or flip it to text capture."""
+        clarify_id = capability.state.get("clarify_id")
+        session_key = capability.state.get("session_key")
+        if not clarify_id or not session_key or self._clarify_state.get(clarify_id) != session_key:
+            self._consume_callback_capability(token, capability)
+            await self._notify_clarify_expired(
+                query, getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback"),
+            )
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         if choice_token == "other":
             # Flip to text-capture: the gateway's text-intercept resolves the clarify with the next message.
             # Do NOT pop _clarify_state yet — still needed if the entry gets cleared by something else.
+            if not self._consume_callback_capability(token, capability):
+                await self._notify_clarify_expired(query, user_display)
+                return
             flipped = False
             try:
                 from tools.clarify_gateway import mark_awaiting_text
@@ -4844,6 +5117,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Numeric choice → resolve immediately with the chosen text
         try:
             idx = int(choice_token)
+            if idx < 0:
+                raise ValueError
         except (ValueError, TypeError):
             await query.answer(text=_toast("platform.telegram.prompt.invalid_choice"))
             return
@@ -4856,8 +5131,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception:
             resolved_text = None
         if resolved_text is None:
-            # Race (timeout / session reset): echo the index so the agent sees an intentional response.
-            resolved_text = f"choice {idx + 1}"
+            self._consume_callback_capability(token, capability)
+            self._clarify_state.pop(clarify_id, None)
+            await self._notify_clarify_expired(query, user_display)
+            return
+        if not self._consume_callback_capability(token, capability):
+            await self._notify_clarify_expired(query, user_display)
+            return
         self._clarify_state.pop(clarify_id, None)
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
@@ -4875,10 +5155,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             await self._notify_clarify_expired(query, user_display)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
 
-    async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
-        """``update_prompt:<y|n>`` — forward the answer to the update process."""
-        answer = data.split(":", 1)[1]  # "y" or "n"
-        if not await self._callback_authorized(query, cb, _unauthorized()):
+    async def _handle_update_prompt_callback(
+        self, query, answer: str, cb: Dict[str, Any], token: str, capability: _CallbackCapability,
+    ) -> None:
+        """Forward a capability-bound update answer to the waiting update process."""
+        if answer not in {"y", "n"}:
+            await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
+            return
+        if not self._consume_callback_capability(token, capability):
+            await query.answer(text=_toast("platform.telegram.picker.expired"))
             return
         await query.answer(text=_toast("platform.telegram.prompt.update_sent", answer=answer))
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")

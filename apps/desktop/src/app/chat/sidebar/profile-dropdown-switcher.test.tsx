@@ -16,7 +16,8 @@ const setShowAllProfiles = vi.fn()
 
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
 
-vi.mock('@/i18n', () => ({
+vi.mock('@/i18n', async () => ({
+  ...(await import('@/i18n/runtime')),
   useI18n: () => ({
     t: {
       profiles: {

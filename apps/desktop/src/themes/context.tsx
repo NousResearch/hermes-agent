@@ -357,6 +357,7 @@ function applyTheme(
   }
 
   applyTypographyKnobs(root, typo)
+
   if (transient) {
     return
   }

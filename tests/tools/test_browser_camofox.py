@@ -325,6 +325,16 @@ class TestGatewayMcpRouting:
         monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
         assert _is_gateway_backend() is False
 
+    def test_gateway_detect_sekreto_api_key_lane(self, monkeypatch):
+        """kinyras-style profiles carry only SEKRETO_URL + SEKRETO_API_KEY -
+        the transport must treat that as a gateway backend too."""
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("SEKRETO_URL", "https://api.sekreto.ai")
+        monkeypatch.setenv("SEKRETO_API_KEY", "k_saas")
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        assert _is_gateway_backend() is True
+
     def test_gateway_detect_saas_with_key_is_mcp_yes(self, monkeypatch):
         from tools.browser_mcp_transport import _is_gateway_backend
         monkeypatch.setenv("CAMOFOX_URL", "https://api.sekreto.ai")

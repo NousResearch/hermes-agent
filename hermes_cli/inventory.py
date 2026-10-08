@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import logging
 from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -161,6 +164,9 @@ def build_models_payload(
     if featured:
         _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    # After _apply_custom_aliases: it reads each row's alias set to match a config entry
+    # against every spelling the GUI may have written.
+    _apply_declared_free_labels(rows)
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(rows)
@@ -953,6 +959,131 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             except Exception:  # tier detection failed — fail open (no gating)
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _apply_declared_free_labels(rows: list[dict]) -> None:
+    """Mark models the user declared free in ``config.yaml`` → ``model_free_labels``.
+
+    Pricing reaches the pickers only from a registered fetcher (``_PRICING_FETCHERS``), and
+    that list is deliberately narrow — each entry is a provider whose catalog Hermes knows how
+    to parse. A provider configured under ``providers:`` therefore renders with no price at
+    all, and the pickers' free tag (both keyed on ``pricing[model].free``: ``ModelPrice`` in
+    ``apps/desktop/src/app/shell/model-catalog-menu.tsx`` and
+    ``apps/desktop/src/components/model-picker.tsx``) can never light up for it — even when
+    the endpoint itself reports those models at zero cost.
+
+    Three ways a model ends up free without a fetcher, in decreasing order of authority:
+
+    1. The endpoint's own ``/models`` payload already carries ``pricing`` with zero rates and
+       this provider simply is not read (any OpenAI-compatible gateway that volunteers a
+       pricing block).
+    2. The operator knows the account is on a free tier (a provider console, a promo window,
+       a daily-quota plan) and says so.
+    3. It is genuinely unknown, and guessing would be worse than showing nothing.
+
+    This handles (2) — the case where only the user knows. (1) is left to the provider
+    registry: an endpoint that serves prices should be read like one, and that is a separate
+    change with its own credential and caching questions. (3) is deliberately not covered.
+
+    Declared in its own top-level section rather than under ``providers.<name>.models.<id>``:
+    that mapping accepts only context/capability metadata, and the GUI's model editor
+    rewrites the whole dict, so a per-model key there would not survive a settings edit.
+    One entry per provider, either an explicit model list or ``"*"`` for every model the row
+    currently offers::
+
+        model_free_labels:
+          acme: [some-model, another-model]
+          other-provider: "*"
+
+    Model ids match exactly, then case-insensitively (mirroring ``models_dev``'s lookup), so
+    a label survives a casing change. ``"*"`` keeps newly discovered models labelled without a
+    config edit, which is why it beats enumerating ids for a wholly-free provider.
+
+    A model the provider actually quotes a price for keeps that price — a declaration never
+    overrides a real quote. PURELY COSMETIC otherwise: no routing, rate-limit or billing
+    behaviour reads this, and a provider whose quota is exhausted still 429s.
+
+    An unusable declaration is logged, never raised: a picker open must not fail because a
+    hand-edited config has a typo, but the entry is named so the mistake is findable instead of
+    silently ignored (CONTRIBUTING → fail loud at integration boundaries).
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+    except Exception as exc:
+        logger.warning("model_free_labels: could not read config (%s) — no free labels applied",
+                       exc, exc_info=True)
+        return
+    declared = raw.get("model_free_labels")
+    if declared is None:
+        return
+    if not isinstance(declared, dict):
+        logger.warning(
+            "model_free_labels: expected a mapping of provider -> [model, ...] or \"*\", got %s "
+            "— the section is ignored (see cli-config.yaml.example)",
+            type(declared).__name__,
+        )
+        return
+    if not declared:
+        return
+
+    for row in rows:
+        # A row is addressable by its slug, but the GUI writes custom providers under
+        # ``custom:<key>`` and older configs key them by display name — match the whole
+        # identity set ``_apply_custom_aliases`` attached so one entry covers every spelling.
+        candidates = [
+            str(row.get(field) or "").strip()
+            for field in ("slug", "name")
+            if str(row.get(field) or "").strip()
+        ]
+        candidates.extend(str(alias) for alias in (row.get("aliases") or []))
+        matched_key = next((c for c in candidates if c in declared), None)
+        if matched_key is None:
+            continue
+        entry = declared[matched_key]
+        models = [str(m) for m in (row.get("models") or [])]
+        if not models:
+            continue
+
+        if entry == "*" or entry is True:
+            wanted = set(models)
+        elif isinstance(entry, (list, tuple, set)):
+            if any(not isinstance(m, str) for m in entry):
+                logger.warning(
+                    "model_free_labels.%s: expected a list of model id strings or \"*\", got %r "
+                    "— non-string entries are ignored", matched_key, entry,
+                )
+            wanted = {str(m).strip() for m in entry if str(m).strip()}
+        else:
+            logger.warning(
+                "model_free_labels.%s: expected a list of model id strings or \"*\", got %r "
+                "— this provider is skipped", matched_key, entry,
+            )
+            continue
+        if not wanted:
+            continue
+
+        matched = {m for m in models if m in wanted}
+        if not matched:  # case-insensitive fallback
+            by_lowered = {m.lower(): m for m in models}
+            matched = {by_lowered[m.lower()] for m in wanted if m.lower() in by_lowered}
+        if not matched:
+            logger.warning(
+                "model_free_labels.%s: none of the declared models are offered by this provider "
+                "(declared %s, offered %s)", matched_key, sorted(wanted), sorted(models),
+            )
+            continue
+
+        pricing = row.get("pricing")
+        if not isinstance(pricing, dict):
+            pricing = {}
+        for mid in matched:
+            quoted = pricing.get(mid)
+            if isinstance(quoted, dict) and (quoted.get("input") or quoted.get("output")):
+                continue  # a real quote wins over a declaration
+            pricing[mid] = {"input": "free", "output": "free", "cache": None, "free": True}
+        row["pricing"] = pricing
 
 
 def _local_runtime_row(ctx: "ConfigContext") -> dict | None:

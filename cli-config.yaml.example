@@ -307,6 +307,33 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Free Model Labels (picker badge only)
+# =============================================================================
+# Tags models as free in the model picker so they render with the green
+# "Free" badge instead of showing no price at all. One entry per provider,
+# either an explicit model list or "*" for every model that provider offers.
+#
+# Only needed for providers with NO registered pricing fetcher — the pickers
+# read live prices for a fixed set (Nous Portal, OpenRouter, Vercel AI Gateway,
+# Novita, DeepInfra, Fireworks) and already badge those. A provider configured
+# under `providers:` is not read, so its models show nothing even when your
+# account is on a free tier, a promo window, or a daily-quota plan.
+#
+# This is a DISPLAY LABEL ONLY: it changes no routing, rate limit, or billing,
+# and a provider whose free quota is exhausted still returns 429. A model the
+# provider actually quotes a price for keeps that price — a label never
+# overrides a real quote.
+#
+# Providers are matched by slug, display name, or any alias, so one entry
+# covers however the provider is spelled in your config.
+#
+# model_free_labels:
+#   my-free-gateway: "*"                    # whole provider is free
+#   acme: [some-model, another-model]       # or name the free models
+#
+# =============================================================================
+
+# =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================
 # One place to override Hermes's internal operation deadlines (seconds).

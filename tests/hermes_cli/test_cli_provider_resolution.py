@@ -881,3 +881,170 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
+
+SHARED_URL = "https://opencode.ai/zen/v1"
+
+
+def _round_trip_custom_providers(monkeypatch, tmp_path):
+    """Patch load/save_config onto a real YAML file so repeated saves accumulate."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}), encoding="utf-8")
+
+    def _load():
+        return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+
+    def _save(cfg):
+        cfg_path.write_text(yaml.dump(cfg), encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _load)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+    return _load
+
+
+def test_save_custom_provider_keeps_two_scopes_on_one_url(monkeypatch, tmp_path):
+    """Two credentials for one endpoint must be two entries, not one.
+
+    Deduping on ``base_url`` alone collapsed the second scope into the first
+    (the entry kept its old ``key_env``), so the second key was silently
+    dropped — the CLI could not express "personal + work on one provider"
+    (#40977, #81789, #118285).
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    load = _round_trip_custom_providers(monkeypatch, tmp_path)
+
+    _save_custom_provider(SHARED_URL, api_key="sk-work", name="OpenCode Zen (work)",
+                          key_env="OPENCODE_ZEN_WORK_API_KEY")
+    _save_custom_provider(SHARED_URL, api_key="sk-personal", name="OpenCode Zen (personal)",
+                          key_env="OPENCODE_ZEN_PERSONAL_API_KEY")
+
+    entries = load()["custom_providers"]
+    assert [(e["name"], e["key_env"]) for e in entries] == [
+        ("OpenCode Zen (work)", "OPENCODE_ZEN_WORK_API_KEY"),
+        ("OpenCode Zen (personal)", "OPENCODE_ZEN_PERSONAL_API_KEY"),
+    ]
+
+
+def test_save_custom_provider_refreshes_the_key_of_the_same_scope(monkeypatch, tmp_path):
+    """Re-saving one (name, base_url) updates that entry — including its api_key,
+    which the old code never touched (a rotated key stayed stale) — and adds no row."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    load = _round_trip_custom_providers(monkeypatch, tmp_path)
+
+    _save_custom_provider(SHARED_URL, api_key="sk-old", model="m1", name="OpenCode Zen (work)")
+    _save_custom_provider(SHARED_URL, api_key="sk-new", model="m2", name="OpenCode Zen (work)")
+
+    entries = load()["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "sk-new"
+    assert entries[0]["model"] == "m2"
+
+
+def test_save_custom_provider_updates_a_named_entry_saved_without_a_name(monkeypatch, tmp_path):
+    """An unnamed save has no scope identity, so it must still update the endpoint in place.
+
+    Every unnamed call site (the dashboard's ``_register_custom_endpoint``, the named-custom
+    flow's legacy branch) would otherwise append a duplicate row next to the named entry.
+    """
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    load = _round_trip_custom_providers(monkeypatch, tmp_path)
+
+    _save_custom_provider(SHARED_URL, api_key="sk-1", name="My Endpoint")
+    _save_custom_provider(SHARED_URL, api_key="sk-2")
+
+    entries = load()["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["name"] == "My Endpoint"
+    assert entries[0]["api_key"] == "sk-2"
+
+
+def test_save_custom_provider_updates_an_unnamed_legacy_entry_in_place(monkeypatch, tmp_path):
+    """A hand-written legacy entry with no name has no identity to conflict with: a named save
+    updates it rather than duplicating the same endpoint."""
+    import yaml
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({"custom_providers": [{"base_url": SHARED_URL, "api_key": "sk-1"}]}),
+                        encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    monkeypatch.setattr("hermes_cli.config.save_config",
+                        lambda cfg: cfg_path.write_text(yaml.dump(cfg), encoding="utf-8"))
+
+    _save_custom_provider(SHARED_URL, api_key="sk-2", model="m1", name="Ollama")
+
+    entries = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"]
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "sk-2"
+    assert entries[0]["model"] == "m1"
+
+
+def test_save_custom_provider_rejects_a_nameless_save_when_named_scopes_share_the_url(monkeypatch, tmp_path):
+    """With two named scopes on one endpoint a nameless save has no scope to target.
+
+    Keeping the legacy URL-only match here would mutate whichever entry happens to come first in
+    ``custom_providers`` — i.e. silently bill the wrong subscription — so the save must refuse
+    instead, and touch nothing on its way out.
+    """
+    import pytest
+    import yaml
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({"custom_providers": [
+        {"name": "OpenCode Zen (work)", "base_url": SHARED_URL, "api_key": "sk-work",
+         "key_env": "OPENCODE_ZEN_WORK_API_KEY"},
+        {"name": "OpenCode Zen (personal)", "base_url": SHARED_URL, "api_key": "sk-personal",
+         "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    monkeypatch.setattr("hermes_cli.config.save_config",
+                        lambda cfg: cfg_path.write_text(yaml.dump(cfg), encoding="utf-8"))
+
+    with pytest.raises(ValueError):
+        _save_custom_provider(SHARED_URL, api_key="sk-rotated", model="m2")
+
+    entries = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"]
+    assert [(e["name"], e["api_key"], e.get("model")) for e in entries] == [
+        ("OpenCode Zen (work)", "sk-work", None),
+        ("OpenCode Zen (personal)", "sk-personal", None),
+    ]
+
+
+def test_save_custom_provider_nameless_save_still_updates_ambiguous_free_legacy_rows(monkeypatch, tmp_path):
+    """The ambiguity guard must key on identity, not on the row count alone.
+
+    Two hand-written rows with no name carry no identity either side can disagree about, so the
+    unnamed save keeps working in place — that path is what stops a re-save from appending a
+    duplicate next to the endpoint it means to update (#118293).
+    """
+    import yaml
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({"custom_providers": [
+        {"base_url": SHARED_URL, "api_key": "sk-1"},
+        {"base_url": SHARED_URL, "api_key": "sk-legacy"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    monkeypatch.setattr("hermes_cli.config.save_config",
+                        lambda cfg: cfg_path.write_text(yaml.dump(cfg), encoding="utf-8"))
+
+    _save_custom_provider(SHARED_URL, api_key="sk-2", model="m1")
+
+    entries = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"]
+    assert len(entries) == 2
+    assert entries[0]["api_key"] == "sk-2"
+    assert entries[0]["model"] == "m1"
+    assert entries[1]["api_key"] == "sk-legacy"
+

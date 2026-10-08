@@ -81,6 +81,62 @@ def test_unconfigured_candidate_still_returns_none(keyed_provider_config):
     assert rp.canonical_custom_identity(config_provider="not-a-configured-entry") is None
 
 
+SHARED_URL = "https://opencode.ai/zen/v1"
+
+
+@pytest.fixture
+def two_scopes_one_url(monkeypatch):
+    """Two ``providers:`` scopes of one endpoint — the URL alone cannot tell them apart."""
+    config = {
+        "providers": {
+            "opencode-zen-work": {
+                "name": "OpenCode Zen (work)",
+                "api": SHARED_URL,
+                "key_env": "OPENCODE_ZEN_WORK_API_KEY",
+                "models": [MODEL],
+            },
+            "opencode-zen-personal": {
+                "name": "OpenCode Zen (personal)",
+                "api": SHARED_URL,
+                "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY",
+                "models": [MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    return config
+
+
+def test_named_scope_wins_over_the_shared_url(two_scopes_one_url):
+    """The regression: the URL lookup returned the FIRST entry on that URL, so a session
+    resumed on one scope healed to the other scope's identity — and its key."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="opencode-zen-personal") == "custom:opencode-zen-personal"
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="opencode-zen-work") == "custom:opencode-zen-work"
+
+
+def test_display_name_wins_over_the_shared_url_too(two_scopes_one_url):
+    """Callers pass the entry's display name; it must reach the same scope."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="OpenCode Zen (personal)") == "custom:opencode-zen-personal"
+
+
+def test_url_only_recovery_keeps_its_contract(two_scopes_one_url):
+    """Without a name the URL is all there is: the first configured entry still answers —
+    ambiguous, documented, and unchanged by this fix."""
+    assert rp.canonical_custom_identity(base_url=SHARED_URL) == "custom:opencode-zen-work"
+
+
+def test_unconfigured_candidate_does_not_cancel_the_url_match(two_scopes_one_url):
+    """Fail-closed means "never invent an identity", not "abandon one already recovered from
+    the endpoint" — a stale/unknown name must not blank out a resolvable session."""
+    assert rp.canonical_custom_identity(
+        base_url=SHARED_URL, config_provider="not-a-configured-entry") == "custom:opencode-zen-work"
+
+
 def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     """``custom_providers:`` entries have no key, so the name stays the identity."""
     config = {

@@ -274,7 +274,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
 
     import hermes_cli.runtime_provider as rp
     monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: "custom:myendpoint")
+                        lambda base_url=None, config_provider=None, model=None: "custom:myendpoint")
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] == "custom:myendpoint"
@@ -282,7 +282,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     # Healing fails -> provider dropped (explicit None deletes any stale
     # persisted provider), never persisted bare.
     monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: None)
+                        lambda base_url=None, config_provider=None, model=None: None)
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] is None
@@ -293,7 +293,7 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     """Rows persisted by older builds may carry bare 'custom' — heal or drop."""
     import hermes_cli.runtime_provider as rp
     monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: None)
+                        lambda base_url=None, config_provider=None, model=None: None)
     stub = _make_stub()
     stub._restore_session_model(_row(model_config={
         "gateway_runtime": {"provider": "custom"},

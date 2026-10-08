@@ -93,7 +93,8 @@ def _gws_config_dir() -> Path | None:
     gws caches access tokens in ``<config dir>/token_cache.json`` without keying
     the cache on the credentials file (googleworkspace/cli#572). Two token files
     that share an OAuth client then reuse one cached token, so a call for one
-    account runs as the other. Key the dir on the refresh token.
+    account runs as the other. Key the dir on the refresh token. A re-auth
+    leaves the old dir behind with an expired token in it; that is expected.
     """
     try:
         payload = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))

@@ -117,7 +117,7 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
     return (canonical or "").strip().lower() == requested_norm
 
 
-def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any], *, metadata_only: bool = False) -> Optional[Dict[str, Any]]:
     """Scan ``providers:`` (new-style, keyed) for ``requested_norm``."""
     from hermes_cli.config import is_provider_enabled
     rp = _rp()
@@ -128,12 +128,14 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
         # alias match (scope-aware ``_getenv`` fails closed identically for every entry).
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = rp._getenv(key_env, "").strip() if key_env else ""
+        api_key = rp._getenv(key_env, "").strip() if key_env and not metadata_only else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
         if not base_url:
             continue
+        if metadata_only:
+            return {"name": entry.get("name", ep_name), "base_url": base_url.strip()}
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
@@ -150,7 +152,7 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
     return None
 
 
-def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Optional[Dict[str, Any]]:
+def _match_legacy_custom_provider(requested_norm: str, custom_providers, *, metadata_only: bool = False) -> Optional[Dict[str, Any]]:
     """Scan the legacy ``custom_providers:`` list for ``requested_norm``."""
     for entry in custom_providers:
         name, base_url = (entry.get("name"), entry.get("base_url")) if isinstance(entry, dict) else (None, None)
@@ -159,6 +161,8 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
         provider_key = _clean(entry.get("provider_key", ""))
         if requested_norm not in custom_provider_aliases(name, provider_key):
             continue
+        if metadata_only:
+            return {"name": name.strip(), "base_url": base_url.strip()}
         result = {"name": name.strip(), "base_url": base_url.strip(), "api_key": _clean(entry.get("api_key", ""))}
         model_name = _clean(entry.get("model", ""))
         if model_name:
@@ -169,14 +173,18 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
     return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(requested_provider: str, *, metadata_only: bool = False) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None
     rp = _rp()
-    config = rp.load_config()
+    if metadata_only:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    else:
+        config = rp.load_config()
     providers = config.get("providers")
-    found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
+    found = _match_new_style_provider(requested_norm, providers, metadata_only=metadata_only) if isinstance(providers, dict) else None
     if found:
         return found
     if isinstance(config.get("custom_providers"), dict):
@@ -185,7 +193,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                        "Run 'hermes doctor' for details.")
         return None
     custom_providers = rp.get_compatible_custom_providers(config)
-    return _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+    return _match_legacy_custom_provider(requested_norm, custom_providers, metadata_only=metadata_only) if custom_providers else None
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:

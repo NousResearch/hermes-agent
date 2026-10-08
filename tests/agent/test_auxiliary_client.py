@@ -51,6 +51,83 @@ def _aux_egress_response(content="ok"):
     )
 
 
+
+@pytest.mark.parametrize("remote_provider,has_local", [
+    ("nous", True), ("nous", False),
+    ("screening-remote", True), ("screening-remote", False),
+    ("opencode-free", False),
+])
+def test_blocked_recovery_screens_remote_auth_before_resolving_local(
+    monkeypatch, tmp_path, remote_provider, has_local
+):
+    import yaml
+    import agent.auxiliary_client as auxiliary
+    from agent.auxiliary_egress_recovery import local_fallback_steps
+
+    home = tmp_path / "screening-home"
+    home.mkdir()
+    task = "compression" if remote_provider == "opencode-free" else "title_generation"
+    chain = [{"provider": remote_provider, "model": "remote-model",
+              "base_url": "http://127.0.0.1:11434/v1"}]
+    if remote_provider == "opencode-free":
+        chain[0].update(model="minimax-m2.5-free", api_mode="anthropic_messages", api_key="synthetic-key")
+    if has_local:
+        chain.append({"provider": "custom", "model": "local-model",
+                      "base_url": "http://127.0.0.1:11434/v1", "api_key": "local-test-key"})
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "nous", "default": "main-remote-model"},
+        "auxiliary": {task: {"fallback_chain": chain}},
+        "providers": {"screening-remote": {"base_url": "https://remote.invalid/v1",
+                                                "key_env": "SCREENING_REMOTE_API_KEY"}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    auth_reads = []
+    # Observe the credential I/O boundary; use the real config/router/SDK.
+    def read_remote_auth():
+        auth_reads.append("nous")
+        return None
+    monkeypatch.setattr(auxiliary, "_read_nous_auth", read_remote_auth)
+    import hermes_cli.runtime_provider as runtime_provider
+    import agent.model_metadata as model_metadata
+    key_reads = []
+    original_getenv = runtime_provider._getenv
+    def observe_key(name, default=""):
+        if name == "SCREENING_REMOTE_API_KEY":
+            key_reads.append(name)
+            return "synthetic-key"
+        return original_getenv(name, default)
+    monkeypatch.setattr(runtime_provider, "_getenv", observe_key)
+    context_reads = []
+    original_context = auxiliary.get_model_context_length
+    def observe_context(*args, **kwargs):
+        context_reads.append(kwargs.get("base_url"))
+        return original_context(*args, **kwargs)
+    monkeypatch.setattr(auxiliary, "get_model_context_length", observe_context)
+    remote_catalog = MagicMock(side_effect=RuntimeError("unexpected catalog I/O"))
+    monkeypatch.setattr(model_metadata.requests, "get", remote_catalog)
+    route = SimpleNamespace(task=task, resolved_provider="openai-codex",
+                            final_model="blocked-model", route_info={},
+                            base_info="https://chatgpt.com/backend-api/codex",
+                            main_runtime=None, async_mode=False)
+    ladder = local_fallback_steps(route, lambda kind, args: SimpleNamespace(kind=kind, args=args))
+    if has_local:
+        step = next(ladder)
+        client, model, _ = step.args
+        assert str(client.base_url) == "http://127.0.0.1:11434/v1/"
+        assert model == "local-model"
+        with pytest.raises(StopIteration) as result:
+            ladder.send("local response")
+        assert result.value.value == "local response"
+        client.close()
+    else:
+        assert list(ladder) == []
+    assert auth_reads == []
+    assert key_reads == []
+    remote_catalog.assert_not_called()
+    assert context_reads == []
+
+
 def _run_aux_codex_call(
     monkeypatch,
     tmp_path,

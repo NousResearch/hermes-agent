@@ -188,10 +188,10 @@ export async function ensureLocalGateway(
 // update restart) every ticket mint against the stale control socket fails and
 // the renderer's reconnect backoff would loop on the dead descriptor forever.
 // Forget the cached descriptor exactly once and re-run the canonical ensure;
-// a second failure is a real error and surfaces to the caller. Every control-path
-// refusal mintLocalGatewayTicket raises qualifies: a pointer mid-rewrite or left by
-// an earlier owner, and a profile home moved since the descriptor was cached.
-const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Unsafe gateway control path', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
+// a second failure is a real error and surfaces to the caller. A pointer mid-rewrite
+// or left by an earlier owner, and a profile home moved since caching, may recover.
+// Unsafe path permissions or types require repair, not another ensure of the same home.
+const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
 
 export function isStaleLocalGatewayError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')

@@ -352,7 +352,7 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
     const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
     expect(failure).toBeInstanceOf(Error)
     expect(failure.message).toBe('Unsafe gateway control path')
-    expect(isStaleLocalGatewayError(failure)).toBe(true)
+    expect(isStaleLocalGatewayError(failure)).toBe(false)
     expect(isStaleLocalGatewayError(new Error('EACCES: permission denied'))).toBe(false)
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))

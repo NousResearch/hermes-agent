@@ -20,6 +20,7 @@ import pytest
 
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
+from agent.vault_backends.onepassword import OnePasswordLoginBackend
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
@@ -50,6 +51,37 @@ if argv[:2] == ["get", "password"]:
 sys.exit(2)
 '''
 
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "op.log"), "a")
+argv = sys.argv[1:]
+log.write(json.dumps({"argv": argv, "service": bool(os.environ.get("OP_SERVICE_ACCOUNT_TOKEN")),
+                      "desktop": os.environ.get("OP_LOAD_DESKTOP_APP_SETTINGS")}) + "\n")
+if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+    sys.stderr.write("not signed in\n"); sys.exit(1)
+if argv[:2] == ["vault", "list"]:
+    print(json.dumps([{"id": "vault-j", "name": "j"},
+                      {"id": "vault-shared", "name": "Sara & EA Accessible"}])); sys.exit(0)
+if argv[:2] == ["item", "list"]:
+    if "--vault" not in argv:
+        sys.stderr.write("a vault query must be provided when this command is called by a service account\n"); sys.exit(1)
+    vault = argv[argv.index("--vault") + 1]
+    if vault == "vault-j":
+        print(json.dumps([{"id": "google-id", "title": "Google", "additional_information": "j@pollak.io",
+                           "created_at": "2026-01-01T00:00:00Z",
+                           "urls": [{"href": "accounts.google.com"}]}])); sys.exit(0)
+    print(json.dumps([{"id": "shop-id", "title": "Shop", "additional_information": "j@example.com",
+                       "created_at": "2026-01-01T00:00:00Z",
+                       "urls": [{"href": "https://shop.example.com/login"}]}])); sys.exit(0)
+if argv[:2] == ["item", "get"]:
+    if "--vault" not in argv:
+        sys.stderr.write("a vault query must be provided when this command is called by a service account\n"); sys.exit(1)
+    if "--otp" in argv:
+        print("123456"); sys.exit(0)
+    print("plain sentence nobody would flag 8"); sys.exit(0)
+sys.exit(2)
+'''
+
 
 pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
 
@@ -71,6 +103,53 @@ def _enabled(exe):
     the sibling's own binding — patch both so the fake is the only backend anywhere."""
     backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
     return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
+
+
+def test_onepassword_service_account_never_uses_desktop(monkeypatch):
+    monkeypatch.setenv("OP_BROAD_1PASSWORD_TOKEN", "service-token")
+    monkeypatch.setenv("OP_LOAD_DESKTOP_APP_SETTINGS", "true")
+
+    backend = OnePasswordLoginBackend(
+        {"service_account_token_env": "OP_BROAD_1PASSWORD_TOKEN"}
+    )
+    env = backend._env(None)
+
+    assert backend.is_unlocked()
+    assert env["OP_SERVICE_ACCOUNT_TOKEN"] == "service-token"
+    assert env["OP_LOAD_DESKTOP_APP_SETTINGS"] == "false"
+
+
+def test_onepassword_service_account_scopes_list_and_get_to_each_vault(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "op.log"
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "service-token")
+
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    items = backend.list_items()
+
+    assert [(item.id, item.origin, item.identifier) for item in items] == [
+        ("op:google-id", "https://accounts.google.com", "j@pollak.io"),
+        ("op:shop-id", "https://shop.example.com", "j@example.com"),
+    ]
+    assert backend.resolve_password(items[0].id) == "plain sentence nobody would flag 8"
+    assert backend.resolve_otp(items[0].id) == "123456"
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    item_calls = [call for call in calls if call["argv"][:1] == ["item"]]
+    assert item_calls and all("--vault" in call["argv"] for call in item_calls)
+    assert all(call["service"] and call["desktop"] == "false" for call in calls)
+
+
+def test_onepassword_unscoped_handle_resolves_without_prior_list(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "service-token")
+
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe), "vaults": ["j"]})
+    assert backend.resolve_password("op:google-id") == "plain sentence nobody would flag 8"
 
 
 def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypatch):

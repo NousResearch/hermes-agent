@@ -103,9 +103,21 @@ vault:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
+    vaults: []              # optional vault names/IDs; empty discovers all accessible vaults
   bitwarden:
     enabled: false
 ```
+
+With a service-account token, Hermes enumerates the vaults visible to that token
+and scopes every `op item list` / `op item get` call to one vault. This avoids
+unscoped service-account query errors and large-vault timeouts that can make an
+existing login look absent. Set `vaults` when the token can see many vaults and
+only a subset should be exposed to browser login fills.
+
+1Password login website fields should be absolute origins such as
+`https://accounts.google.com`, not a bare domain. Hermes treats a bare domain as
+HTTPS for compatibility, but still requires an exact origin match at fill time;
+`https://google.com` will not fill on `https://accounts.google.com`.
 
 ## What this does and does not guarantee
 

@@ -11,12 +11,13 @@ from __future__ import annotations
 import contextvars
 import logging
 import queue
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from agent.memory_provider import spawn_context_thread
+from agent.memory_provider import MemoryObservation, spawn_context_thread
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # One bounded FIFO is owned by each (hook, callback) consumer. Producers never
 # wait for plugin code: when full, enqueue drops the oldest pending event.
 _QUEUE_SIZE = 1024
+_MAX_OBSERVER_EVENT_BYTES = 16 * 1024
 _STOP = object()
 _FALLBACK_SCOPE = object()
 
@@ -155,6 +157,33 @@ def _same_callbacks(left: tuple[Callable[..., Any], ...], right: tuple[Callable[
     return len(left) == len(right) and all(a is b for a, b in zip(left, right))
 
 
+def _observer_payload_size(payload: dict[str, Any]) -> int | None:
+    """Approximate the retained size of a JSON-shaped observer payload; None for unsupported values."""
+    size = 0
+    pending = [payload]
+    seen: set[int] = set()
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, MemoryObservation):
+            children = (vars(value),)
+        elif isinstance(value, dict):
+            children = (child for pair in dict.items(value) for child in pair)
+        elif type(value) in (list, tuple, set, frozenset):
+            children = iter(value)
+        elif value is None or type(value) in (bool, int, float, str, bytes):
+            children = ()
+        else:
+            return None
+        size += sys.getsizeof(value)
+        if size > _MAX_OBSERVER_EVENT_BYTES:
+            return size
+        pending.extend(children)
+    return size
+
+
 @contextmanager
 def _registered_dispatch_scope(hook_name: str):
     """Snapshot callbacks before taking the manager lock, then validate while holding it.
@@ -269,12 +298,18 @@ def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
     """Queue an observer hook without running plugin code on the caller.
 
     The shared dispatcher keeps one daemon worker and bounded FIFO per
-    registered callback. ``put_nowait`` makes the producer non-blocking; a
-    full queue drops its oldest pending event so a slow consumer cannot grow
-    memory or delay the agent. Callback exceptions are isolated in the worker.
+    registered callback. Payload graphs over ``_MAX_OBSERVER_EVENT_BYTES``
+    are dropped whole; fields are never truncated. ``put_nowait`` makes the
+    producer non-blocking; a full queue drops its oldest pending event so a
+    slow consumer cannot grow memory or delay the agent. Callback exceptions
+    are isolated in the worker.
     """
-    queued = False
     event_payload = dict(payload)
+    payload_size = _observer_payload_size(event_payload)
+    if payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
+        logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
+        return False
+    queued = False
     event_context = contextvars.copy_context()
     with _registered_dispatch_scope(hook_name) as (scope_key, callbacks, still_current):
         if not still_current:

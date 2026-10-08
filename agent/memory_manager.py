@@ -6,7 +6,6 @@ registered at a time (tool-schema bloat, conflicting backends).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import contextvars
 import hashlib
 import inspect
@@ -15,16 +14,14 @@ import logging
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.memory_manager_prefetch import coerce_prefetch_result, normalize_prefetch_result
 from agent.redact import redact_for_egress
 
 from agent.memory_provider import (
     MAX_MEMORY_OBSERVATION_BATCH_BYTES,
-    MAX_MEMORY_OBSERVATION_BYTES,
-    MAX_MEMORY_OBSERVATION_FIELD_CHARS,
     MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
     MAX_MEMORY_OBSERVATION_OPERATION_NODES,
     MAX_MEMORY_OBSERVATIONS,
@@ -32,9 +29,6 @@ from agent.memory_provider import (
     MemoryPrefetchResult,
     MemoryProvider,
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
-    _freeze_memory_observation_payload,
-    _encoded_json_scalar_size,
-    _thaw_json_value,
     ctx_bound,
     spawn_context_thread,
 )
@@ -81,15 +75,6 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
-
-@dataclass(frozen=True)
-class _NormalizedPrefetchResult:
-    """Validated provider result plus private operation-boundary metadata."""
-
-    result: MemoryPrefetchResult
-    observation_sizes: tuple[int, ...]
-    truncated_reason: Optional[str] = None
-
 
 def normalize_tool_schema(schema: Any) -> Optional[dict[str, Any]]:
     """Return a bare function-tool dict with a resolvable top-level ``name``, else None.
@@ -537,226 +522,6 @@ class MemoryManager:
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
     @staticmethod
-    def _coerce_prefetch_result(raw_result: Any) -> Any:
-        """Restore a structured result's fields after the plugin-host wire codec."""
-        if isinstance(raw_result, Mapping) and "context" in raw_result:
-            return MemoryPrefetchResult(
-                context=raw_result["context"],
-                observations=raw_result.get("observations", ()),
-            )
-        return raw_result
-
-    @staticmethod
-    def _normalize_prefetch_result(
-        provider: MemoryProvider,
-        raw_result: Any,
-        *,
-        remaining_count: int = MAX_MEMORY_OBSERVATIONS,
-        remaining_bytes: int = MAX_MEMORY_OBSERVATION_BATCH_BYTES,
-        inspect_observations: bool = True,
-        traversal_budget: Optional[List[int]] = None,
-        inspected_budget: Optional[List[int]] = None,
-    ) -> _NormalizedPrefetchResult:
-        """Normalize one provider result within the remaining operation budget.
-
-        Observation data is intentionally traversed here, rather than first
-        materializing a fully normalized provider result. A provider controls
-        the size of its returned tuple, so the manager must stop at the
-        operation boundary before validating or encoding more items than can
-        possibly be returned. ``inspect_observations=False`` is used after a
-        previous provider has exhausted the operation budget: the provider's
-        context still gets normalized, but its observation container is never
-        touched.
-
-        ``traversal_budget`` is an optional shared node counter that
-        ``prefetch_all_result`` allocates once per operation and threads
-        through every candidate — valid or malformed — so a provider cannot
-        force a fresh ``MAX_MEMORY_OBSERVATION_NODES`` traversal for each of
-        many malformed payloads. Once the shared budget is exhausted, every
-        subsequent freeze call fails on its first decrement and the malformed
-        tail is dropped without deep recursion.
-
-        ``inspected_budget`` is an additional operation-wide counter that
-        bounds the total number of candidates the manager pulls before
-        validation. Wrong-type or invalid-metadata candidates fail validation
-        before ``_freeze_json_value`` ever runs, so ``traversal_budget`` alone
-        cannot bound them; without a candidate cap an unbounded or infinite
-        malformed iterable would force unbounded ``next()`` calls and per-item
-        warning spam. Every candidate the manager pulls — valid, malformed, or
-        the single count/bytes look-ahead — decrements this counter, and once
-        it hits zero the tail is dropped without another ``next()`` and the
-        caller records a single truncation warning for the whole operation.
-        """
-        if raw_result is None:
-            raw_result = ""
-        raw_result = MemoryManager._coerce_prefetch_result(raw_result)
-        if isinstance(raw_result, str):
-            return _NormalizedPrefetchResult(
-                result=MemoryPrefetchResult(context=raw_result),
-                observation_sizes=(),
-            )
-        if not isinstance(raw_result, MemoryPrefetchResult):
-            raise TypeError(
-                f"Memory provider '{provider.name}' prefetch() must return str "
-                "or MemoryPrefetchResult"
-            )
-        if not isinstance(raw_result.context, str):
-            raise TypeError(
-                f"Memory provider '{provider.name}' returned non-string prefetch context"
-            )
-
-        if not inspect_observations:
-            return _NormalizedPrefetchResult(
-                result=MemoryPrefetchResult(context=raw_result.context),
-                observation_sizes=(),
-            )
-
-        observations: List[MemoryObservation] = []
-        observation_sizes: List[int] = []
-        observation_bytes = 0
-        raw_observations = raw_result.observations
-        if raw_observations is None:
-            raw_observations = ()
-        try:
-            observation_iterator = iter(raw_observations)
-        except Exception as exc:
-            logger.warning(
-                "Memory provider '%s' returned an unreadable observation container; "
-                "dropping it: %s", provider.name, exc,
-            )
-            observation_iterator = iter(())
-        truncated_reason = None
-        while True:
-            # Operation-wide inspected-candidate cap: applied *before* any
-            # further next() so wrong-type or invalid-metadata candidates
-            # (which never reach freeze and cost no node budget) cannot force
-            # unbounded synchronous iteration or per-item log spam.
-            if inspected_budget is not None and inspected_budget[0] <= 0:
-                truncated_reason = "inspected"
-                break
-            # Once the prefix has consumed a budget, inspect at most one more
-            # item to establish that data would be dropped. Do not validate or
-            # encode that item, and never continue into the unbounded tail.
-            if (
-                len(observations) >= remaining_count
-                or observation_bytes >= remaining_bytes
-            ):
-                if inspected_budget is not None:
-                    inspected_budget[0] -= 1
-                try:
-                    next(observation_iterator)
-                except StopIteration:
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        "Memory provider '%s' returned an unreadable observation container; "
-                        "dropping its remaining observations: %s", provider.name, exc,
-                    )
-                    break
-                truncated_reason = (
-                    "count" if len(observations) >= remaining_count else "bytes"
-                )
-                break
-            if inspected_budget is not None:
-                inspected_budget[0] -= 1
-            try:
-                candidate = next(observation_iterator)
-            except StopIteration:
-                break
-            except Exception as exc:
-                logger.warning(
-                    "Memory provider '%s' returned an unreadable observation container; "
-                    "dropping its remaining observations: %s", provider.name, exc,
-                )
-                break
-            try:
-                if isinstance(candidate, Mapping):
-                    # Read the fixed contract fields; never expand arbitrary plugin keys.
-                    raw_candidate: Any = candidate
-                    candidate = MemoryObservation(
-                        source_kind=raw_candidate.get("source_kind"),
-                        schema=raw_candidate.get("schema"),
-                        version=raw_candidate.get("version"),
-                        provider=raw_candidate.get("provider", ""),
-                        payload=raw_candidate.get("payload"),
-                    )
-                if not isinstance(candidate, MemoryObservation):
-                    raise TypeError("observation has the wrong type")
-                for field_name in ("source_kind", "schema"):
-                    field = getattr(candidate, field_name)
-                    if (
-                        not isinstance(field, str)
-                        or not field
-                        or str.__len__(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
-                    ):
-                        raise ValueError(f"observation {field_name} is invalid")
-                if (
-                    isinstance(candidate.version, bool)
-                    or not isinstance(candidate.version, int)
-                    or candidate.version < 1
-                ):
-                    raise ValueError("observation version is invalid")
-                if _encoded_json_scalar_size(candidate.version) > MAX_MEMORY_OBSERVATION_BYTES:
-                    raise ValueError("observation version is too large")
-                if candidate.provider not in ("", provider.name):
-                    raise ValueError("observation provider does not match its source provider")
-                if not isinstance(provider.name, str) or not provider.name:
-                    raise ValueError("provider name is invalid")
-                if str.__len__(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
-                    raise ValueError("provider name is too long")
-
-                frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
-                    candidate.payload, operation_budget=traversal_budget
-                )
-                encoded = json.dumps(
-                    {
-                        "source_kind": candidate.source_kind,
-                        "provider": provider.name,
-                        "schema": candidate.schema,
-                        "version": candidate.version,
-                        "payload": _thaw_json_value(frozen_payload),
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-                if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
-                    raise ValueError("observation envelope is too large")
-                if observation_bytes + len(encoded) > remaining_bytes:
-                    truncated_reason = "bytes"
-                    break
-                observations.append(
-                    MemoryObservation(
-                        source_kind=candidate.source_kind,
-                        provider=provider.name,
-                        schema=candidate.schema,
-                        version=candidate.version,
-                        payload=frozen_payload,
-                    )
-                )
-                observation_sizes.append(len(encoded))
-                observation_bytes += len(encoded)
-            except (TypeError, ValueError, OverflowError) as exc:
-                # Observation data is an optional side channel. A malformed
-                # envelope is dropped, while the provider's formatted context
-                # remains usable. Provider call exceptions retain the older
-                # fail-isolated behavior in prefetch_all_result().
-                logger.warning(
-                    "Memory provider '%s' returned a malformed prefetch observation; "
-                    "dropping it: %s",
-                    provider.name,
-                    exc,
-                )
-
-        return _NormalizedPrefetchResult(
-            result=MemoryPrefetchResult(
-                context=raw_result.context,
-                observations=tuple(observations),
-            ),
-            observation_sizes=tuple(observation_sizes),
-            truncated_reason=truncated_reason,
-        )
-
-    @staticmethod
     def _emit_prefetch_observation(
         result: MemoryPrefetchResult,
         *,
@@ -801,10 +566,10 @@ class MemoryManager:
                 context_sha256=hashlib.sha256(context_bytes).hexdigest(),
                 context_byte_length=len(context_bytes),
             )
-        except Exception as exc:
+        except Exception:  # health: allow BLE001 -- optional observer dispatch must never break memory injection
             # Plugin hook dispatch is best-effort; memory injection must remain
             # independent of an observer's import, discovery, or callback error.
-            logger.debug("memory_prefetch observer dispatch failed: %s", exc)
+            logger.debug("memory_prefetch observer dispatch failed", exc_info=True)
 
     def prefetch_all_result(
         self,
@@ -845,7 +610,7 @@ class MemoryManager:
                 raw_result = self._prefetch_provider(
                     provider, clean_query, session_id=session_id
                 )
-                normalized = self._normalize_prefetch_result(
+                normalized = normalize_prefetch_result(
                     provider,
                     raw_result,
                     remaining_count=MAX_MEMORY_OBSERVATIONS - len(observations),
@@ -893,10 +658,11 @@ class MemoryManager:
                         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
                     )
                     observation_budget_exhausted = True
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- providers are isolated plugin boundaries
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
+                    exc_info=True,
                 )
         result = MemoryPrefetchResult(
             context="\n\n".join(parts),
@@ -969,7 +735,7 @@ class MemoryManager:
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
-        result = self._coerce_prefetch_result(result)
+        result = coerce_prefetch_result(result)
         if isinstance(result, str) and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.

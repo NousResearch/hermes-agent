@@ -411,6 +411,7 @@ def test_unload_profile_manager_does_not_hold_registry_lock_during_teardown(
     import threading
     from types import SimpleNamespace
     from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
 
     home = (tmp_path / "profile").resolve()
     lock_available_during_unload = []
@@ -433,13 +434,14 @@ def test_unload_profile_manager_does_not_hold_registry_lock_during_teardown(
     monkeypatch.setattr(plugins, "_plugin_manager", manager)
     monkeypatch.setattr(plugins, "_clear_plugin_submodules", lambda _manager: None)
 
-    assert plugins.unload_plugin_manager_for_home(home)
+    assert unload_plugin_manager_for_home(home)
     assert lock_available_during_unload == [True]
 
 
 def test_unload_profile_manager_stops_its_plugin_host_after_disposal(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
 
     home = (tmp_path / "profile").resolve()
     order = []
@@ -453,11 +455,13 @@ def test_unload_profile_manager_stops_its_plugin_host_after_disposal(tmp_path, m
     monkeypatch.setattr(plugins, "_plugin_manager", manager)
     monkeypatch.setattr(plugins, "_clear_plugin_submodules", lambda _manager: None)
 
-    assert plugins.unload_plugin_manager_for_home(home)
+    assert unload_plugin_manager_for_home(home)
     assert order == ["manager", "host"]
 
 
 def test_unload_profile_manager_stops_live_plugin_host_process(tmp_path, monkeypatch):
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
     home = _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN})
     manager = PluginManager(scope_key=str(home))
     manager.discover_and_load()
@@ -469,7 +473,7 @@ def test_unload_profile_manager_stops_live_plugin_host_process(tmp_path, monkeyp
     monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
 
     try:
-        assert plugins_mod.unload_plugin_manager_for_home(home)
+        assert unload_plugin_manager_for_home(home)
         assert process.poll() is not None
     finally:
         if process.poll() is None:

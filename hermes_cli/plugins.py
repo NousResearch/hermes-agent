@@ -1710,46 +1710,6 @@ def _attach_published_tui_host(manager: PluginManager) -> None:
         manager._tui_message_injector = host
 
 
-def unload_plugin_manager_for_home(home: Path) -> bool:
-    """Unload and evict a profile's cached manager at profile delete/rename teardown."""
-    global _plugin_manager
-    try:
-        home_key = Path(home).expanduser().resolve()
-    except Exception:
-        home_key = Path(home).expanduser()
-
-    with _plugin_managers_lock:
-        manager = _plugin_managers_by_home.get(home_key)
-        if manager is None and _plugin_manager is not None:
-            manager_home = getattr(_plugin_manager, "home_path", None)
-            if manager_home is not None:
-                try:
-                    matches = Path(manager_home).expanduser().resolve() == home_key
-                except Exception:
-                    matches = Path(manager_home).expanduser() == home_key
-                if matches:
-                    manager = _plugin_manager
-        if manager is None:
-            return False
-        if _plugin_managers_by_home.get(home_key) is manager:
-            _plugin_managers_by_home.pop(home_key, None)
-        if _plugin_manager is manager:
-            _plugin_manager = None
-
-    # Evict atomically above, then run potentially blocking disposal without
-    # serializing lookups for unrelated profiles behind the registry lock.
-    host = getattr(manager, "_plugin_host_instance", None)
-    try:
-        _clear_plugin_submodules(manager)
-    finally:
-        try:
-            manager.unload()
-        finally:
-            if host is not None:
-                host.shutdown()
-    return True
-
-
 def get_plugin_manager() -> PluginManager:
     """Return the plugin manager for the active Hermes profile/home (cached per resolved home; a
     profile switch gets its own manager and plugin submodules)."""
@@ -1809,44 +1769,13 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
-    _join_background_discovery()
+    from hermes_cli.plugins_discovery import join_background_discovery
+    join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
 
 
 _background_discovery_thread: Optional[threading.Thread] = None
 _background_discovery_lock = threading.Lock()
-
-
-def start_background_plugin_discovery() -> None:
-    """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
-    synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
-    registry. No-op when already done or in flight."""
-    global _background_discovery_thread
-    manager = get_plugin_manager()
-    if manager._discovered:
-        return
-    with _background_discovery_lock:
-        if _background_discovery_thread is not None and _background_discovery_thread.is_alive():
-            return
-
-        def _run() -> None:
-            try:
-                manager.discover_and_load()
-                _persist_plugin_toolset_keys()
-            except Exception:
-                logger.warning("background plugin discovery failed", exc_info=True)
-
-        _background_discovery_thread = threading.Thread(target=_run, name="plugin-discovery", daemon=True)
-        _background_discovery_thread.start()
-
-
-def _join_background_discovery(timeout: float = 30.0) -> None:
-    """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
-    spawned — that worker's parent is blocked waiting on it)."""
-    t = _background_discovery_thread
-    if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
-        return
-    t.join(timeout=timeout)
 
 
 def _plugin_toolset_keys_cache_path() -> Path:
@@ -1908,7 +1837,8 @@ def _delivery_manager() -> PluginManager:
     """
     manager = get_plugin_manager()
     if not getattr(manager, "_discovered", True):
-        _join_background_discovery()
+        from hermes_cli.plugins_discovery import join_background_discovery
+        join_background_discovery()
         manager.discover_and_load()
     return manager
 

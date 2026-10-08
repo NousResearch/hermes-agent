@@ -92,7 +92,7 @@ def _succeeded(result: Any) -> bool:
 
 def _launch_profile() -> str:
     """Profile this recovery process was launched as: ``<root>/profiles/<name>`` in ``HERMES_HOME`` names it,
-    anything else is the default profile. Mirrors ``hermes_cli.profiles.profile_root_for_env_home`` without
+    anything else is the default profile. Mirrors ``hermes_cli.profile_env.profile_root_for_env_home`` without
     importing it — this module stays stdlib-only at import time."""
     home = os.environ.get("HERMES_HOME", "").strip()
     if home:

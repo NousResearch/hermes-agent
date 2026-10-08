@@ -1870,10 +1870,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
-    # The live serve process retains profile managers in a strong by-home cache. A deleted profile
-    # has a real teardown boundary here; unload its plugin callbacks/workers before removing files.
+    # Retire plugin callbacks/workers before removing profile files.
     try:
-        from hermes_cli.plugins import unload_plugin_manager_for_home
+        from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
         unload_plugin_manager_for_home(profile_dir)
     except Exception:
         logger.warning("Could not unload plugin manager for deleted profile %s", profile_dir, exc_info=True)
@@ -2490,7 +2489,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(old_dir))
     # Managers are strongly cached by resolved home; retire the old scope before moving its directory.
-    from hermes_cli.plugins import unload_plugin_manager_for_home
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
     unload_plugin_manager_for_home(old_dir)
 
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
@@ -2548,17 +2547,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
 # Profile env resolution (called from _apply_profile_override)
 
-def profile_root_for_env_home(env_home: str, default_root: Path) -> Path:
-    """Hermes root named by an exported ``HERMES_HOME``: the grandparent of a profile-shaped value
-    (``<root>/profiles/<name>``, mirrors ``get_default_hermes_root()``), the value itself otherwise,
-    *default_root* when unset. Pure: callers pass any process's env, not only ``os.environ``."""
-    env_home = env_home.strip()
-    if not env_home:
-        return default_root
-    env_path = Path(env_home)
-    return env_path.parent.parent if env_path.parent.name == "profiles" else env_path
-
-
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a HERMES_HOME path string. Called early in the CLI entry
     point, before hermes modules are imported, to set HERMES_HOME.
@@ -2570,6 +2558,7 @@ def resolve_profile_env(profile_name: str) -> str:
     (junction-transparent); only the spelling is preserved.
     """
     canon = _canon_valid(profile_name)
+    from hermes_cli.profile_env import profile_root_for_env_home
     root = profile_root_for_env_home(os.environ.get("HERMES_HOME", ""), _get_default_hermes_home())
     if canon == "default":
         return str(root)

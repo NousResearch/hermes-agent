@@ -625,14 +625,17 @@ def test_launch_external_worker_degrades_by_default_with_real_helper(
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
 
 
-def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
+def test_launch_external_worker_replays_the_install_runtime_recipe(
     tmp_path, monkeypatch,
 ):
     """#112729: the worker starts in ``cron.scheduler`` (no ``hermes_cli.main`` bootstrap),
-    so its import path must be explicit — a rotted editable mapping or PYTHONSAFEPATH
-    otherwise kills it with "No module named 'cron'" before the ack. The spawn env carries
-    the gateway's own checkout first and keeps the gateway's other PYTHONPATH entries."""
+    so a rotted editable mapping or PYTHONSAFEPATH used to kill it with "No module named
+    'cron'" before the ack. The launch now replays the installation's runtime recipe: an
+    isolated (``-I``) interpreter whose bootstrap puts this checkout first on ``sys.path``
+    itself, binds HERMES_HOME to the firing profile, then runs ``cron.scheduler``. The
+    import path no longer depends on PYTHONPATH at all."""
     import cron.scheduler as scheduler
+    from cron.scheduler_worker_env import installation_runtime_command
     from tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
@@ -641,27 +644,31 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
         "tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "user-libs"))
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
 
     assert scheduler._launch_external_cron_worker(job) is True
     repo_root = Path(scheduler.__file__).resolve().parent.parent
-    entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries[0] == str(repo_root)
-    assert str(tmp_path / "user-libs") in entries
-    assert spawned[0][1]["cwd"] == str(repo_root)
+    command, kwargs = spawned[0]
+    flags = command[command.index("--external-worker-file"):]
+    assert flags[0::2] == ["--external-worker-file", "--ack-file"]
+    assert command == installation_runtime_command(
+        "cron.scheduler", flags, profile_home=tmp_path.resolve()
+    )
+    assert command[1:3] == ["-I", "-c"]
+    bootstrap = command[3]
+    assert bootstrap.index(str(repo_root)) < bootstrap.index("cron.scheduler")
+    assert str(tmp_path.resolve()) in bootstrap
+    assert kwargs["cwd"] == str(repo_root)
 
 
-def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
+def test_launch_external_worker_passes_the_sanitized_env_through(
     tmp_path, monkeypatch,
 ):
-    """The pin prepends the checkout to the PYTHONPATH the shared sanitizer *kept*; it
-    must not rebuild from raw ``os.environ`` (which would resurrect entries
-    ``build_subprocess_env`` stripped). Under a wheel/pipx install the checkout IS
-    purelib, already importable -- pinning it would hoist site-packages above the stdlib,
-    so the pin is skipped there."""
+    """The env is the one the shared sanitizer *kept*: nothing is rebuilt from raw
+    ``os.environ`` (which would resurrect entries ``build_subprocess_env`` stripped) and
+    no Hermes tree is pinned onto PYTHONPATH -- the recipe's bootstrap owns the import
+    path and drops PYTHONPATH for the worker itself."""
     import cron.scheduler as scheduler
-    import cron.scheduler_worker_env as worker_env_mod
     from tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
@@ -677,13 +684,21 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
-    repo_root = Path(scheduler.__file__).resolve().parent.parent
 
     assert scheduler._launch_external_cron_worker(job) is True
-    entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    env = spawned[0][1]["env"]
+    assert env["PYTHONPATH"] == str(tmp_path / "kept-by-sanitizer")
+    assert "os.environ.pop('PYTHONPATH', None)" in spawned[0][0][3]
 
-    # Wheel / pipx layout: repo_root == purelib -> untouched.
+
+def test_pin_hermes_tree_skips_a_wheel_layout(tmp_path, monkeypatch):
+    """``pin_hermes_tree_on_pythonpath`` still serves the kanban worker lane. Under a
+    wheel/pipx install the checkout IS purelib, already importable -- pinning it would
+    hoist site-packages above the stdlib, so the pin is skipped there."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    repo_root = tmp_path / "site-packages"
+    repo_root.mkdir()
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
     untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
     assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched

@@ -19,16 +19,23 @@ function compilerPreset() {
  *  pure function of the module text, its id and the compiler/babel versions, so memoize it on
  *  disk by that content key: an update that touched three components re-runs babel on three
  *  files. A missing or corrupt entry is just a miss. The cache lives under node_modules
- *  (ignored, outside every freshness hash) and is keyed by every input, so it never needs
- *  invalidating. */
-async function cachedCompilerPass() {
+ *  (ignored, outside every freshness hash). Only production builds use it: the compiler emits
+ *  HMR cache-reset code when NODE_ENV is development, and a dev server would grow it one entry
+ *  per save with no build to prune it. */
+async function cachedCompilerPass(command: string) {
   const plugin = await babel({ presets: [compilerPreset()] })
 
-  // The lockfile pins every babel/compiler/plugin version this pass runs, and this config file
-  // holds the preset and its filter: together they are the whole toolchain identity.
+  if (command !== 'build') {
+    return plugin
+  }
+
+  // The lockfile pins every babel/compiler/plugin version this pass runs, this config file holds
+  // the preset and its filter, and NODE_ENV selects the compiler's dev mode: together they are
+  // the whole toolchain identity.
   const toolchain = crypto.createHash('sha256')
     .update(fs.readFileSync(path.resolve(__dirname, '../../package-lock.json')))
     .update(fs.readFileSync(fileURLToPath(import.meta.url)))
+    .update(`\0${process.env.NODE_ENV ?? ''}`)
     .digest('hex')
     .slice(0, 16)
 
@@ -43,7 +50,14 @@ async function cachedCompilerPass() {
     used.add(file)
 
     try {
-      return JSON.parse(fs.readFileSync(file, 'utf8'))
+      const hit = JSON.parse(fs.readFileSync(file, 'utf8'))
+
+      // The stored map drops sourcesContent: it is the module text the key already hashed.
+      if (hit.map) {
+        hit.map.sourcesContent = [code]
+      }
+
+      return hit
     } catch {
       // miss (or a torn entry): compile and store below
     }
@@ -54,7 +68,8 @@ async function cachedCompilerPass() {
       try {
         fs.mkdirSync(dir, { recursive: true })
         const temp = `${file}.${process.pid}.tmp`
-        fs.writeFileSync(temp, JSON.stringify({ code: result.code, map: result.map }))
+        const map = result.map ? { ...result.map, sourcesContent: undefined } : result.map
+        fs.writeFileSync(temp, JSON.stringify({ code: result.code, map }))
         fs.renameSync(temp, file)
       } catch {
         // a read-only or full disk only costs the next build this file's compile
@@ -65,7 +80,7 @@ async function cachedCompilerPass() {
   }
 
   // Keep exactly what this build used: entries for since-edited files and other toolchains would
-  // otherwise accumulate one generation per update. A dev server never prunes (partial graph).
+  // otherwise accumulate one generation per update. A watch build never prunes (partial graph).
   plugin.closeBundle = function () {
     if (this.meta?.watchMode) {
       return
@@ -198,7 +213,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), cachedCompilerPass(), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

@@ -369,7 +369,7 @@ class A2AAdapter(BasePlatformAdapter):
         failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
-            protocol.metrics.tasks_failed += 1
+            protocol.metrics.record_task_outcome(protocol.STATE_FAILED)
         return failed
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
@@ -526,7 +526,7 @@ class A2AAdapter(BasePlatformAdapter):
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
         self.tasks.complete(rec["task_id"], state, stored_reply)
-        protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
+        protocol.metrics.record_task_outcome(state)
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
     def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
@@ -619,12 +619,8 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
         m = protocol.metrics
-        if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
-            m.outbound_total, m.tasks_completed = m.outbound_total + 1, m.tasks_completed + 1
-            if started is not None:
-                m.record_latency(time.time() - started)
-        else:
-            m.tasks_failed += 1
+        m.outbound_total += 1
+        m.record_task_outcome(state, latency=(time.time() - started) if started is not None else None)
         self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
 

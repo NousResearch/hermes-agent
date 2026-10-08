@@ -214,9 +214,14 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
         lines.extend(f"  - {c}" for c in convos[:25])
     m = protocol.metrics.snapshot()
     lines.append("")
-    lines.append(f"Metrics: {m['inbound_total']} in / {m['outbound_total']} out, {m['tasks_completed']} completed, "
-                 f"{m['tasks_failed']} failed, {m['streams_started']} streams, {m['push_sent']} push sent, "
-                 f"{m['anti_loop_triggers']} anti-loop, {m['rate_limit_triggers']} rate-limited, avg {m['avg_latency_ms']}ms")
+    # in/out span both directions (client calls + served tasks); the task buckets are
+    # server-side only — without the label a client-only host reads "0 completed" as failure.
+    lines.append(f"Metrics: {m['inbound_total']} in / {m['outbound_total']} out, "
+                 f"tasks served — {m['tasks_completed']} completed, {m['tasks_failed']} failed, "
+                 f"{m['tasks_suspended']} suspended, {m['tasks_canceled']} canceled, "
+                 f"{m['streams_started']} streams, {m['push_sent']} push sent, "
+                 f"{m['anti_loop_triggers']} anti-loop, {m['rate_limit_triggers']} rate-limited, "
+                 f"avg {m['avg_latency_ms']}ms")
     return "\n".join(lines)
 
 

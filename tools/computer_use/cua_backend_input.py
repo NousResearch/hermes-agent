@@ -15,7 +15,7 @@ _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not 
                                "package version describes the live schema.")
 # (what, extra args) pointer addressing form; ``extra`` is None when the caller did not supply that form and
 # may be a callable when computing it has side effects (capability probes) that must follow the refusal checks.
-_Variant = Tuple[str, Union[None, Dict[str, Any], Callable[[], Dict[str, Any]]]]
+_Variant = tuple[str, Union[None, dict[str, Any], Callable[[], dict[str, Any]]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
@@ -24,13 +24,13 @@ def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
 class _InputMixin:
     """Pointer / keyboard / value-setter actions against the sticky target."""
 
-    def _target_args(self, action: str, *, need_window: bool = False) -> Tuple[Optional[ActionResult], Dict[str, Any]]:
+    def _target_args(self, action: str, *, need_window: bool = False) -> tuple[Optional[ActionResult], dict[str, Any]]:
         """``(refusal, base args)`` for an input action against the sticky target."""
         if self._active_pid is None or (need_window and self._active_window_id is None):
             return _refuse(action, _NO_TARGET_MSG), {}
         return None, {"pid": self._active_pid, **({"window_id": self._active_window_id} if need_window else {})}
 
-    def _pointer_args(self, tool: str, args: Dict[str, Any], variants: Sequence[_Variant],
+    def _pointer_args(self, tool: str, args: dict[str, Any], variants: Sequence[_Variant],
                       missing_msg: Optional[str]) -> Optional[ActionResult]:
         """Fill *args* from the first supplied addressing variant (element or coordinates) plus ``window_id``; refuse
         when the target has a pid but no window_id yet. No variant -> refuse with *missing_msg* (None = bare window)."""
@@ -42,7 +42,7 @@ class _InputMixin:
                 return None
         return _refuse(tool, missing_msg) if missing_msg else None
 
-    def _apply_delivery(self, action: str, args: Dict[str, Any], delivery_mode: Optional[str]) -> Optional[ActionResult]:
+    def _apply_delivery(self, action: str, args: dict[str, Any], delivery_mode: Optional[str]) -> Optional[ActionResult]:
         """Attach delivery_mode to an input-action args dict. Background is the default and needs no flag.
         Foreground is only sent when the live action schema accepts it; on an older driver we refuse with
         ``foreground_unsupported`` instead of silently downgrading to background (which would land input
@@ -61,7 +61,7 @@ class _InputMixin:
         args["delivery_mode"] = "foreground"
         return None
 
-    def _run_input_action(self, action: str, args: Dict[str, Any], delivery_mode: Optional[str],
+    def _run_input_action(self, action: str, args: dict[str, Any], delivery_mode: Optional[str],
                           bring_to_front: bool) -> ActionResult:
         """Apply one delivery rung, optionally focusing via its own tool. ``bring_to_front`` is never an
         input-action property: when requested, the separately approved standalone focus action runs first,
@@ -87,7 +87,7 @@ class _InputMixin:
         return result
 
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
-              button: str = "left", click_count: int = 1, modifiers: Optional[List[str]] = None,
+              button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
               delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("click")
         if refusal is not None:
@@ -111,8 +111,8 @@ class _InputMixin:
         return refusal if refusal is not None else self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
-             from_xy: Optional[Tuple[int, int]] = None, to_xy: Optional[Tuple[int, int]] = None,
-             button: str = "left", modifiers: Optional[List[str]] = None,
+             from_xy: Optional[tuple[int, int]] = None, to_xy: Optional[tuple[int, int]] = None,
+             button: str = "left", modifiers: Optional[list[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
         if refusal is None:
@@ -126,7 +126,7 @@ class _InputMixin:
         return refusal if refusal is not None else self._run_input_action("drag", args, delivery_mode, bring_to_front)
 
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
-               x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None,
+               x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[list[str]] = None,
                delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("scroll")
         if refusal is not None:
@@ -136,7 +136,7 @@ class _InputMixin:
         # to the coordinate form or the bare window. Some driver schemas reject x/y on scroll: only send
         # coordinates when the driver advertises support; otherwise it scrolls the targeted window
         # (window_id is still sent for routing).
-        xy = lambda: ({"x": x, "y": y}  # noqa: E731
+        xy = lambda: ({"x": x, "y": y}
                       if self._session.supports_capability("input.scroll.coordinates", tool="scroll") else {})
         refusal = self._pointer_args("scroll", args, (
             ("element scroll", {"element_index": element}

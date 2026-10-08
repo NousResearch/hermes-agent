@@ -10,10 +10,11 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
-import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
+import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -29,11 +30,12 @@ import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
-import { isCardTool } from '@/lib/tool-render-class'
+import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
+import { $showToolActivity } from '@/store/tool-activity'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -76,11 +78,53 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
+  // Stopped on this question, never answered: history. ClarifyTool reads
+  // the session's live clarify request, so a later turn's question would
+  // otherwise paint onto this row as a second live card.
+  if (settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+      <ClarifyTool {...props} />
+    </>
+  )
+}
+
+const StartChatToolPart: FC<TimelineToolCallProps> = props => {
+  if (props.isError || settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+      <StartChatTool {...props} />
+    </>
+  )
+}
+
+const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
+  mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
+
+const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
+  clarify: ClarifyToolPart,
+  delegate_task: DelegateToolPart,
+  image_generate: ImageGenerateTool,
+  manage_catalog: CatalogInstallTool,
+  manage_connections: ConnectionsToolPart,
+  setup_choose: ClarifyToolPart,
+  start_chat: StartChatToolPart
+}
+
 // A failure the user still has to see. The gateway's tool.complete carries the
 // failure inside `result`, never as the top-level error that sets isError, so
 // this reads the body like the run summary does. A non-zero exit_code counts
 // too, matching the gateway's _tool_result_needs_user, which forwards terminal
-// {output, exit_code: 1, error: null} in answer-only mode.
+// {output, exit_code: 1, error: null} even with display.tool_progress off.
 const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
   const exitCode = parseMaybeObject(part.result).exit_code
 
@@ -88,7 +132,7 @@ const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
-  const showReasoning = useStore($showReasoning)
+  const showToolActivity = useStore($showToolActivity)
 
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
@@ -114,50 +158,20 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return null
   }
 
-  if (props.toolName === 'delegate_task') {
-    return <DelegateToolPart {...props} />
-  }
+  if (isCardToolName(props.toolName)) {
+    const ToolCard = TOOL_CARDS[props.toolName]
 
-  if (props.toolName === 'image_generate') {
-    return <ImageGenerateTool {...props} />
-  }
-
-  if (props.toolName === 'clarify') {
-    // Stopped on this question, never answered: history. ClarifyTool reads
-    // the session's live clarify request, so a later turn's question would
-    // otherwise paint onto this row as a second live card.
-    if (settledWithoutResult(props)) {
-      return <ToolFallback {...props} />
-    }
-
-    return (
-      <>
-        <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-        <ClarifyTool {...props} />
-      </>
-    )
-  }
-
-  if (props.toolName === 'manage_catalog') {
-    return <CatalogInstallTool {...props} />
-  }
-
-  if (mcpTargets(props.toolName, props.args).length > 0) {
-    return <McpSetupTool {...props} />
-  }
-
-  if (props.toolName === 'manage_connections') {
-    return <ConnectorTool {...props} />
+    return <ToolCard {...props} />
   }
 
   if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
   }
 
-  // Answer-only: process chrome (reads, searches, commands) stays off the
-  // transcript. Cards, approvals, and failed calls the user must act on remain.
-  // reasoning_effort is not a display switch.
-  if (!showReasoning && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
+  // The tool feed (reads, searches, commands) follows display.tool_progress,
+  // never show_reasoning. Cards, approvals, and failed calls the user must act
+  // on remain regardless.
+  if (!showToolActivity && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
     return null
   }
 
@@ -340,7 +354,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the tour with ::ask"), and a first-time user reading that alongside the
+  // the layout picker"), and a first-time user reading that alongside the
   // greeting breaks the one conversation the guide is trying to have.
   const guidedChat = useOnboardingChatActive()
 

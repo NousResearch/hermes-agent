@@ -99,7 +99,7 @@ def _set(tree: dict, path: tuple, value: Any) -> None:
 
 
 def _top_level_keys(text: str) -> list[str]:
-    return [m.group(1) for m in re.finditer(r"^([^\s#\-][^:\n]*):", text, re.M)]
+    return [m.group(1) for m in re.finditer(r"^([^\s#\-][^:\n]*):", text, re.MULTILINE)]
 
 
 def _assert_no_duplicate_top_level(text: str, ctx: str) -> None:
@@ -257,7 +257,7 @@ def _value_for(default: Any, rng: random.Random, *, long: bool, env: dict[str, s
 
 def _before_version(text: str, block: str) -> str:
     """Insert ``block`` (newline-terminated) right before the root ``_config_version:`` line."""
-    out, n = re.subn(r"^_config_version:", block + "_config_version:", text, count=1, flags=re.M)
+    out, n = re.subn(r"^_config_version:", block + "_config_version:", text, count=1, flags=re.MULTILINE)
     assert n == 1, text
     return out
 
@@ -492,6 +492,8 @@ _SET_EXCLUDE = {
     ("model", "provider"),            # provider switch drops the old provider's base_url/api_mode
     ("model", "api_base"),            # alias rewritten to model.base_url
     ("_config_version",),
+    ("display", "language"),          # validated against the live language set (bundled ∪ overlay ∪ packs);
+                                      # an unknown id is refused with the list — tests/hermes_cli/test_config_display_language.py
 }
 
 
@@ -871,7 +873,7 @@ def _p3_case(seed: int) -> Case:
 
 
 def _p3_run(op_name: str, ctx: dict, cfg: Path, text: str, version: int | None) -> tuple[str, str]:
-    body = text if version is None else re.sub(r"^_config_version: \d+$", f"_config_version: {version}", text, flags=re.M)
+    body = text if version is None else re.sub(r"^_config_version: \d+$", f"_config_version: {version}", text, flags=re.MULTILINE)
     _write_file(cfg, body)
     _reset_config_caches(keep_lkg=False)
     outcome = "ok"
@@ -1041,7 +1043,7 @@ def test_p4_load_hermes_dotenv_is_idempotent(seed, home, env_restore, monkeypatc
 
 @pytest.mark.parametrize("seed", P4_SEEDS)
 def test_p4_env_parser_sanitizer_and_writer_round_trip(seed, home, env_restore):
-    text, keys, _shell = gen_dotenv(seed)
+    text, _keys, _shell = gen_dotenv(seed)
     env_path = home / ".env"
     env_path.write_text(text, encoding="utf-8")
     C.invalidate_env_cache()
@@ -1163,7 +1165,7 @@ def test_p5_migration_is_idempotent_and_keeps_user_values(version, home, monkeyp
     assert _read(home / ".env") == env_once, f"[{ctx}] a second migrate changed .env"
     # Re-applying every step N→latest to its own output is a no-op (step idempotence).
     if version is not None:
-        rewound = re.sub(r"^_config_version: \d+$", f"_config_version: {version}", once, flags=re.M)
+        rewound = re.sub(r"^_config_version: \d+$", f"_config_version: {version}", once, flags=re.MULTILINE)
         _write_file(cfg, rewound)
         _reset_config_caches()
         with _quiet():

@@ -50,7 +50,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -371,7 +371,7 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
-def _image_part_chars(part: Dict[str, Any], image_cost: int) -> int:
+def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:
     """Char-equivalent of one image content part: the per-image cost learned from provider usage
     (x4 chars/token), never the base64 payload length. A single native screenshot priced as text
     read as ~100K+ tokens and selected the giant-conversation watchdog tiers (#63871, #76411)."""
@@ -466,7 +466,7 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     return None
 
 
-def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
+def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     """Build the validated provider-routing object shared by request paths.
 
     ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
@@ -510,7 +510,7 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
         if nous_profile is not None:
             anthropic_kwargs.setdefault("extra_body", {}).update(
                 nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
-    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
+    except Exception as exc:
         logger.debug("Nous Portal extra_body merge failed: %s", exc)
     return anthropic_kwargs
 
@@ -861,7 +861,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
         return "⚙ processing prompt"
-    except Exception:  # noqa: BLE001 — a status nicety must never break a call
+    except Exception:
         return None
 
 
@@ -1505,6 +1505,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
+        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         qwen_session_metadata=_qwen_meta)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
@@ -1521,14 +1522,12 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
-        is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
         qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         provider_name=agent.provider,
     )
 
@@ -2094,79 +2093,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             continue
 
         try:
-            from agent.auxiliary_client import resolve_provider_client
-            from hermes_cli.fallback_config import resolve_entry_api_key
-            # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
-            # of falling through to OpenRouter defaults.
-            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-            fb_api_key_hint = resolve_entry_api_key(fb)
-            fb_api_mode_explicit, fb_api_mode = _fallback_api_mode_hint(fb, fb_provider, fb_base_url_hint)
-            # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
-            # substring — GHSA-76xc-57q6-vm5m.
-            if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-                from agent.secret_scope import get_secret
-                fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
-            # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-            fb_client, _resolved_fb_model = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
-            if fb_client is None:
+            from agent.route_binding import bind_route_entry
+            bound = bind_route_entry(agent, fb, fb_provider, fb_model)
+            if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
                 continue
-            if fb_provider == "moa":
-                # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
-                # ``/model <preset> --provider moa``. The chokepoint's client is the preset's
-                # aggregator: it only proves the preset resolves and the aggregator has credentials.
-                # Installing it as the acting client with the virtual identity is a hybrid nobody
-                # handles (#112525: preset name sent as model id → 404; #112623: every
-                # ``provider == "moa"`` guard and key misfires and the next rebuild swaps in the
-                # facade anyway). Bind the facade with the same pins every other MoA build site uses.
-                fb_base_url, fb_api_mode = "moa://local", "chat_completions"
-            else:
-                try:
-                    from hermes_cli.model_normalize import normalize_model_for_provider
-                    fb_model = normalize_model_for_provider(fb_model, fb_provider)
-                except Exception as _norm_err:
-                    logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
-
-                fb_base_url = str(fb_client.base_url)
-                from hermes_cli.providers import is_actual_route
-                if is_actual_route(fb_provider, fb_base_url):
-                    fb_api_mode = "chat_completions"
-                elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-                    fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
-
-            old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
-
-            # Clear the per-config context_length override so the fallback model's own context
-            # window is resolved instead of the previous model's stale value.
-            # See #22387.
-            agent._config_context_length = None
-            agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
-            agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
-            if hasattr(agent, "_transport_cache"):
-                agent._transport_cache.clear()
-            agent._fallback_activated = True
-
-            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
-            if fb_provider == "moa":
-                from agent.moa_loop import bind_moa_runtime
-                bind_moa_runtime(agent, fb_model)
-            else:
-                from agent.client_lifecycle import _swap_fallback_clients
-                _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
-
-            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-            sync_credential_pool_entry_id(agent)
-
-            agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-                provider=fb_provider, base_url=fb_base_url, api_mode=fb_api_mode, model=fb_model)
-            agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
-            _update_fallback_context_compressor(agent)
-            _reresolve_fallback_reasoning_config(agent)
-            _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            old_model, old_provider = bound
+            fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (
@@ -2181,6 +2115,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
+            from hermes_cli.observability.shared_metrics_events import record_fallback
+            record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
@@ -3168,6 +3104,13 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
+        # The raw channels, not the callback-delivered text: cron, subagents and callback-less
+        # gateway turns register no stream callback, so nothing else sees a loop mid-stream.
+        content_watch, reasoning_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        # Own watch: the display takes one reasoning representation per chunk, but the plain
+        # field is persisted either way and need not mirror the details.
+        detail_watch = RunawayStreamWatch()
+        runaway = None
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
@@ -3190,18 +3133,20 @@ class _StreamingCall(StreamingWaitMonitor):
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
 
+        def _close_half_read_stream(reason: str) -> None:
+            # A half-read SSE response stays checked out of the httpx pool and the finally
+            # would cache the client WITH the leaked connection: close on the owner first.
+            try:
+                stream.close()
+            except Exception:
+                # Still checked out: poison the slot so the finally really closes the pool.
+                if self._attempt_request_client is not None:
+                    self.agent._abort_request_openai_client(self._attempt_request_client, reason=reason)
+
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
-                # A half-read SSE response stays checked out of the httpx pool and the finally
-                # would cache the client WITH the leaked connection: close on the owner first.
-                try:
-                    stream.close()
-                except Exception:
-                    # Still checked out: poison the slot so the finally really closes the pool.
-                    if self._attempt_request_client is not None:
-                        self.agent._abort_request_openai_client(
-                            self._attempt_request_client, reason="interrupt_stream_close_failed")
+                _close_half_read_stream("interrupt_stream_close_failed")
                 break
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
@@ -3265,6 +3210,9 @@ class _StreamingCall(StreamingWaitMonitor):
             display_reasoning = detail_text or reasoning_text
             if display_reasoning:
                 self._emit_reasoning(display_reasoning)
+                if reasoning_watch.feed(reasoning_text) or detail_watch.feed(detail_text):
+                    runaway = "reasoning"
+                    break
             # Not routed to the live display: the transport promotes a sole-payload
             # refusal to content + ``content_filter`` and the loop surfaces it terminally.
             delta_refusal = getattr(delta, "refusal", None)
@@ -3278,6 +3226,9 @@ class _StreamingCall(StreamingWaitMonitor):
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
+                if content_watch.feed(delta_content):
+                    runaway = "content"
+                    break
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
                 elif (pending_text_parts or _provider_stream_text_may_be_sse(delta_content)
@@ -3303,16 +3254,29 @@ class _StreamingCall(StreamingWaitMonitor):
                         # complete instead of silently discarding the action.
                         self.result["partial_tool_names"].append(name)
 
+        if runaway:
+            _close_half_read_stream("runaway_stream_close_failed")
+            self._log_runaway_cut(runaway)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
-        return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+        response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
+            "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        if runaway:
+            # Cut, not finished: the length path ends the turn on this mark instead of continuing.
+            response._runaway_repetition = True
+        return response
+
+    def _log_runaway_cut(self, channel: str) -> None:
+        logger.warning(
+            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
+            getattr(self.agent, "log_prefix", ""), channel, self.api_kwargs.get("model", "unknown"),
+            getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -3376,7 +3340,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 has_truncated_tool_args = True
             mock_tool_calls.append(SimpleNamespace(
                 id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
-                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments)))
+                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments,
+                                         args_repaired=arguments != tc["function"]["arguments"])))
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
@@ -3478,6 +3443,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self._attempt_request_client = request_client
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
+        text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        runaway = None
 
         from agent import relay_llm
         from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
@@ -3532,10 +3499,16 @@ class _StreamingCall(StreamingWaitMonitor):
                         text = getattr(delta, "text", "")
                         if text and not has_tool_use:
                             self._emit_text(text)
+                        if text_watch.feed(text):
+                            runaway = "content"
+                            break
                     elif delta_type == "thinking_delta" and getattr(delta, "thinking", ""):
                         self._emit_reasoning(delta.thinking)
+                        if thinking_watch.feed(delta.thinking):
+                            runaway = "reasoning"
+                            break
             raw_stream = _stream_context["stream"]
-            if not self.agent._interrupt_requested and raw_stream is not None:
+            if not self.agent._interrupt_requested and raw_stream is not None and not runaway:
                 if not saw_message_stop:
                     raise EmptyStreamError(
                         "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
@@ -3557,6 +3530,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
+        if runaway:
+            self._log_runaway_cut(runaway)
+            # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
+            message = accumulator.response(_stream_context["stream"].current_message_snapshot)
+            message.stop_reason = "max_tokens"
+            message._runaway_repetition = True  # same hand-off as the chat_completions wire
+            return message
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
@@ -3861,22 +3841,13 @@ class _StreamingCall(StreamingWaitMonitor):
         if response is None or response is not self._attempt_stream_response:
             return
         try:
-            from agent.agent_runtime_helpers import (
-                _connection_candidates, _shutdown_socket, _socket_from_candidate,
-            )
-            exts = getattr(response, "extensions", None) or {}
-            direct = exts.get("network_stream") if isinstance(exts, dict) else None
-            for start in (direct, getattr(response, "stream", None)):
-                if start is None:
-                    continue
-                for candidate in _connection_candidates(start):
-                    sock = _socket_from_candidate(candidate)
-                    if sock is None:
-                        continue
-                    _shutdown_socket(sock)
-                    logger.info("Shut down the stale stream's socket to unblock the reader "
-                                "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
-                    return
+            from agent.agent_runtime_helpers import _shutdown_socket, _socket_from_response
+            sock = _socket_from_response(response)
+            if sock is not None:
+                _shutdown_socket(sock)
+                logger.info("Shut down the stale stream's socket to unblock the reader "
+                            "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
+                return
             logger.debug("Stale stream socket shutdown found no socket; pool sweep is the only abort")
         except Exception:
             logger.debug("Stale stream socket shutdown failed", exc_info=True)
@@ -4079,5 +4050,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     return _StreamingCall(agent, api_kwargs, on_first_delta).run()
 
 
-__all__ = ["interruptible_api_call", "build_api_kwargs", "build_assistant_message", "try_activate_fallback",
-    "handle_max_iterations", "cleanup_task_resources", "interruptible_streaming_api_call"]
+__all__ = [
+    "build_api_kwargs",
+    "build_assistant_message",
+    "cleanup_task_resources",
+    "handle_max_iterations",
+    "interruptible_api_call",
+    "interruptible_streaming_api_call",
+    "try_activate_fallback",
+]

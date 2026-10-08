@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
-import agent.secret_scope as secret_scope
+from agent import secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.event import MessageEvent, MessageType
@@ -90,7 +90,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 class _StreamExpiredError(Exception):
@@ -248,6 +248,28 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "C123"
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_id, extra, dispatched", [
+        ("C999", {"allowed_channels": "C123"}, False),   # outside allowed_channels
+        ("G123", {"allowed_channels": "C123"}, False),   # an MPIM obeys channel gating too
+        ("D123", {"allowed_channels": "C123"}, True),    # a 1:1 DM is exempt
+        ("C123", {"allowed_channels": "C123"}, True),
+        ("C123", {"ignored_channels": "C123"}, False),   # ignored channels are never touched
+    ])
+    async def test_slash_command_obeys_message_channel_gates(
+            self, adapter, channel_id, extra, dispatched):
+        """allowed_channels / ignored_channels gate a slash command like a message in the same
+        conversation: every conversation but a 1:1 DM. A gated command gets a bare ack, never a
+        "Running /x" promise."""
+        adapter.config.extra.update(extra)
+        ack = AsyncMock()
+        await adapter._handle_hermes_command(ack, {
+            "command": "/status", "text": "hello", "user_id": "U123", "channel_id": channel_id,
+            "team_id": "T123"})
+
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert ("text" in ack.await_args.kwargs) == dispatched
 
 
 class TestSlackWorkspaceCollisionIsolation:
@@ -739,7 +761,7 @@ class TestSlackSocketWatchdog:
         """A reconnect must not leave the adapter without a watchdog."""
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 0.01
-        factory, instances = self._make_fake_handler_factory()
+        factory, _instances = self._make_fake_handler_factory()
 
         with contextlib.ExitStack() as stack:
             for p in self._patch_stack(factory):
@@ -4270,7 +4292,7 @@ class TestTrackingStructureBounds:
                 "team_id": "T1",
                 "response_url": f"https://hooks.slack.com/commands/{i}",
             }
-            respond = AsyncMock()  # noqa: F841 — kept for shape clarity
+            respond = AsyncMock()
             await adapter._handle_slash_command(command)
         assert len(adapter._slash_command_contexts) <= adapter._SLASH_CTX_MAX
         # Newest stash survives. Keys are workspace-scoped 3-tuples (#20583)
@@ -4577,7 +4599,7 @@ class TestThreadImageContext:
 # Markdown table preprocessing (Slack mrkdwn does not render GFM tables)
 # =========================================================================
 
-from plugins.platforms.slack.adapter import (  # noqa: E402
+from plugins.platforms.slack.adapter import (
     _wrap_markdown_tables,
     _align_table,
     _disp_width,

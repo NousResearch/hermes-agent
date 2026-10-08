@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from contextlib import suppress
 from pathlib import Path
@@ -79,13 +80,19 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, run_turn=None
     if not goal_text:
         return
 
-    def _quiet_turn(prompt: str) -> str:
+    def _quiet_turn(prompt: str) -> dict:
         result = cli.agent.run_conversation(user_message=prompt, conversation_history=cli.conversation_history)
         _sync_cli_session_id_from_agent(cli)
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
         if resp:
             print(resp)
-        return resp or ""
+        # Carry failed/failure_reason so run_kanban_goal_loop can stop on a failed
+        # worker turn instead of grinding out empty continuation turns (#91264).
+        return {
+            "response": resp or "",
+            "failed": result.get("failed", False) if isinstance(result, dict) else False,
+            "failure_reason": result.get("failure_reason") if isinstance(result, dict) else None,
+        }
 
     def _task_status() -> "str | None":
         with _kbc.connect_closing() as c:
@@ -158,13 +165,19 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     (EX_CONFIG): the dispatcher blocks the card at once. The same code applies
     before a turn when credential resolution explicitly requires re-authentication;
     unknown startup failures retain exit 1.
+
+    The worker predicate is the STRIPPED ``kanban_task_id()`` (from
+    ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
+    either — the exit mapping and the recovery gate must agree on what a worker is.
     """
     from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
+    from agent.kanban_turn_recovery import kanban_task_id
+
     if not isinstance(result, dict):
-        if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
+        if credentials_rate_limited and kanban_task_id():
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
-        if credentials_terminal and os.environ.get("HERMES_KANBAN_TASK"):
+        if credentials_terminal and kanban_task_id():
             from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
             return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         return 1
@@ -172,7 +185,7 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if kanban_task_id():
         reason = result.get("failure_reason")
         if reason in _TRANSIENT_PROVIDER_REASONS:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
@@ -219,6 +232,29 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
+        # Kanban worker: a turn that died on a retryable provider failure is retried
+        # IN PLACE (same session, context preserved) instead of ending the run silently.
+        # Authority (typed retryable failure, no interrupt / terminal settlement) and the
+        # live run/claim proof live in agent/kanban_turn_recovery.py. Runs BEFORE the turn
+        # report so everything downstream — report, follow-ups, response, goal gate, exit —
+        # sees the post-recovery disposition.
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
+
+        def _quiet_recover_turn(nudge):
+            nonlocal result
+            _history = result.get("messages") if isinstance(result, dict) else None
+            result = cli.agent.run_conversation(
+                user_message=nudge,
+                conversation_history=_history or cli.conversation_history,
+                **author_kwargs,
+            )
+            _sync_cli_session_id_from_agent(cli)
+
+        _recover_turns(
+            _quiet_recover_turn,
+            lambda: result,
+            emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+        )
         # The turn is over and persisted: the one-shot exit linger that follows protects nested
         # notify_on_complete replies and is NOT part of the spawner's delivery (#113608). The
         # report carries what this run will print, so a spawner booking a child still lingering
@@ -274,13 +310,28 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         not response and isinstance(result, dict) and result.get("error")
         and (result.get("failed") or result.get("partial"))
     ):
-        print(f"Error: {result['error']}", file=sys.stderr)
+        print(t("gateway.model.error_prefix", error=result["error"]), file=sys.stderr)
     elif response:
         print(response)
 
+    # ONE exit-code decision point for this driver, shared with the non-quiet one-shot
+    # path via _single_query_exit_code: a quota/billing wall keeps the EX_TEMPFAIL
+    # sentinel so the dispatcher releases the task without counting a failure, and any
+    # other unfinished worker turn exits non-zero instead of ending as a silent rc=0
+    # that reads as a protocol violation. Computed BEFORE goal continuation — the
+    # post-recovery disposition must be authoritative for the rest of the driver.
+    _exit_code = _single_query_exit_code(result)
+
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).
-    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+    # ONLY a settled, authorized turn may continue: a result that remains
+    # failed/unfinished — recovery exhausted or DENIED (lease expired, claim lost,
+    # quota wall, interrupt, terminal settlement) — must reach the shared exit path
+    # below without goal continuation. goal_run_status() checks only run identity,
+    # not the claim lock or either expiry, so an unreaped expired-lease row still
+    # reports "running" and a continue verdict would re-enter the model under an
+    # authority this process can no longer prove (round-3 finding).
+    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1" and _exit_code == 0:
         try:
             _run_kanban_goal_loop_q(cli, response)
         except Exception as _goal_exc:
@@ -289,7 +340,6 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     if emitter is None:
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-    _exit_code = _single_query_exit_code(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     exit_single_query(_exit_code)
@@ -306,7 +356,7 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
     _img_mode = "text"
     _build_parts = None
     try:
-        from agent.image_routing import build_native_content_parts as _build_parts  # noqa: F811
+        from agent.image_routing import build_native_content_parts as _build_parts
         from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
 
@@ -467,13 +517,15 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         from tools.kanban_tools import register_current_worker_from_env
         if not register_current_worker_from_env():
             # No exit trailer: the task log now belongs to the run that replaced this one.
-            print("kanban: this worker's run was reclaimed before it started; exiting", file=sys.stderr)
+            print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
+        from hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready
+        record_cli_one_shot_ready()
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
@@ -510,13 +562,36 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:
-            cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+            cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
         cli._show_security_advisories()
         response = cli.chat(query, images=single_query_images or None)
+        # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
+        # terminal kanban call, so the dispatcher booked a protocol violation and
+        # cold-restarted the task from scratch. Retry the authorised turn IN PLACE
+        # (see agent/kanban_turn_recovery.py) and CARRY THE RECOVERED RESPONSE: the
+        # goal judge below must evaluate the deliverable of the latest settled turn,
+        # never the stale provider error of the turn recovery replaced (re-review P2).
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns
+
+        def _nonquiet_recover_turn(nudge):
+            nonlocal response
+            response = cli.chat(nudge)
+            return response
+
+        recover_failed_kanban_turns(
+            _nonquiet_recover_turn,
+            lambda: getattr(cli, "_last_turn_result", None),
+            emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+        )
         # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn
         # runs through cli.chat so the worker log keeps its live tool feed (the dispatcher
         # used to force -Q here, which left goal_mode cards with a blank Worker log).
-        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+        # Gated on the post-recovery disposition exactly like the `-Q` block: a result that
+        # remains failed/unfinished — recovery exhausted or DENIED (claim lost, quota wall,
+        # interrupt, terminal settlement) — must reach the shared exit path below with zero
+        # further model entry, because goal_run_status() checks run identity only and would
+        # otherwise continue under an authority this process can no longer prove.
+        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1" and _single_query_exit_code(cli._last_turn_result) == 0:
             try:
                 _run_kanban_goal_loop_chat(cli, response or "")
             except Exception as _goal_exc:

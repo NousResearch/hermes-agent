@@ -103,7 +103,7 @@ def fake_telegram_sdk(monkeypatch):
 
 def test_lazy_install_rebinds_every_placeholder(monkeypatch, fake_telegram_sdk):
     """Every symbol the fallback stubbed must be rebound by the lazy install."""
-    import plugins.platforms.telegram.adapter as adapter
+    from plugins.platforms.telegram import adapter
 
     import pm
 

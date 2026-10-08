@@ -45,7 +45,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 ```
 /tools list
 /tools disable browser
-/tools enable homeassistant
+/tools enable spotify
 ```
 
 ## 核心工具集
@@ -63,7 +63,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `feishu_doc` | `feishu_doc_read` | 读取飞书/Lark 文档内容。由飞书文档评论智能回复处理器使用。 |
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | 飞书/Lark 云盘评论操作。仅限评论 agent 使用；不在 `hermes-cli` 或其他消息工具集上暴露。 |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | 文件读取、写入、搜索和编辑。 |
-| `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | 通过 Home Assistant 进行智能家居控制。仅在设置 `HASS_TOKEN` 时可用。 |
 | `computer_use` | `computer_use` | 通过 cua-driver 进行后台 macOS 桌面控制——不抢占光标/焦点。适用于任何支持工具调用的模型。仅限 macOS；需要 `cua-driver` 在 `$PATH` 中。 |
 | `image_gen` | `image_generate` | 通过 FAL.ai 进行文本生成图像（支持可选的 OpenAI / xAI 后端）。 |
 | `video_gen` | `video_generate` | 通过插件注册的后端（xAI Grok-Imagine、FAL.ai Veo 3.1 / Pixverse v6 / Kling O3）进行文本生成视频和图像生成视频。传入 `image_url` 可对图像进行动画化；省略则为文本生成视频。 |
@@ -91,7 +90,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | 工具集 | 与 `hermes-cli` 的差异 |
 |--------|------------------------|
 | `hermes-cli` | 完整工具集——交互式 CLI 会话的默认配置。包含 file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify 和 `safe`（只读）套件，以及标准消息工具。 |
-| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`send_message`、`text_to_speech` 以及全部四个 Home Assistant 工具。专注于 IDE 环境中的编码任务。 |
+| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`send_message`、`text_to_speech`。专注于 IDE 环境中的编码任务。 |
 | `hermes-api-server` | 移除了 `clarify`、`send_message` 和 `text_to_speech`。保留其他所有工具——适用于无法进行用户交互的程序化访问场景。 |
 | `hermes-cron` | 与 `hermes-cli` 相同。 |
 | `hermes-telegram` | 与 `hermes-cli` 相同。 |
@@ -111,9 +110,10 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `hermes-wecom-callback` | 与 `hermes-cli` 相同。 |
 | `hermes-weixin` | 与 `hermes-cli` 相同。 |
 | `hermes-yuanbao` | 在 `hermes-cli` 基础上添加了五个 `yb_*` 工具（私信/群组/表情包）。 |
-| `hermes-homeassistant` | 与 `hermes-cli` 相同（Home Assistant 工具默认已存在，在设置 `HASS_TOKEN` 时激活）。 |
 | `hermes-webhook` | 与 `hermes-cli` 相同。 |
 | `hermes-gateway` | 内部 gateway 编排器工具集——所有 `hermes-<platform>` 工具集的并集；当 gateway 需要接受任意消息来源时使用。 |
+
+由插件提供的平台会获得一个隐式的 `hermes-<platform>` 工具集，且不属于 `hermes-gateway`。例如，安装插件目录中的 `homeassistant` 插件后，`hermes-homeassistant` 仍可解析，但它已不再是内置工具集。
 
 ## 动态工具集
 

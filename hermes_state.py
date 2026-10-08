@@ -929,7 +929,13 @@ class SessionDB(
         self.db_path here: this is the one chokepoint every read passes through,
         so direct ``_read_ctx`` consumers publish the same health fact the
         ``_read_*`` helpers publish. note_storage_error only latches structural
-        damage — busy, IOERR and malformed-schema errors pass through unlatched."""
+        damage — busy, IOERR and malformed-schema errors pass through unlatched.
+
+        The ``with`` body must only touch the yielded ``conn``: this handler
+        cannot tell which connection raised, so a DatabaseError escaping a
+        *different* connection opened inside the block (e.g. a sibling
+        projects.db) would still latch this database — the #134865
+        misattribution in a much narrower window."""
         try:
             with self._read_ctx_conn() as conn:
                 yield conn

@@ -295,7 +295,17 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        if recorded is None:
+            return False
+        if abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+            return True
+        # A coarse writer cannot express our creation time to epsilon: the POSIX
+        # hand-off scripts read it with `ps -o lstart`, which has whole-second
+        # resolution on macOS (/proc gives 3 decimals on Linux). Its floor, in our
+        # own second, is us. Without this the hand-off marker's delegate line --
+        # which names this very process -- reads as a previous incarnation of our
+        # pid, so the update refuses its own hand-off with exit 2.
+        return recorded == float(int(recorded)) and 0.0 <= w.ct - recorded < 1.0
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)

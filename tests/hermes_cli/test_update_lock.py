@@ -281,6 +281,60 @@ def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatc
     assert marker.read_bytes() == base, "the live partner gets its own claim back, byte-identical"
 
 
+def test_a_coarse_creation_time_for_our_own_pid_is_still_us():
+    """macOS hand-off: ``posix.sh``'s ``proc_ct`` reads ``ps -o lstart``, which has whole-second
+    resolution there, while the runtime's psutil reports a sub-second creation time. The
+    hand-off marker's ``delegate:`` line — the only link left after line 1 moved to a custodian
+    the hand-off forked, which is a *sibling* of ``hermes update``, never an ancestor — then read
+    as a previous incarnation of our own pid, so the update refused its own hand-off with exit 2
+    ("Another Hermes update is already running (PID <the custodian>)") on every macOS launch.
+
+    A whole-second value that floors our creation time is us. Anything else — a fractional
+    value, another second, no creation time — keeps the strict rule.
+    """
+    from hermes_cli import update_lock
+
+    # Halfway inside our own second, so the assertions are not decided by the 5 ms rule
+    # itself (a real creation time within epsilon of the next second is legitimately "us").
+    now = float(int(time.time())) + 0.5
+    world = update_lock._World(pid=os.getpid(), ct=now, now=now,
+                               alive=lambda pid: True, ct_of=lambda pid: now)
+    floor = float(int(now))
+
+    assert update_lock._incarnation(os.getpid(), floor, world) is True
+    assert update_lock._incarnation(os.getpid(), floor - 1.0, world) is False, "the previous second is a previous incarnation"
+    assert update_lock._incarnation(os.getpid(), floor + 1.0, world) is False, "the next second cannot be us"
+    assert update_lock._incarnation(os.getpid(), now - 0.25, world) is False, "a sub-second claim stays strict (the pid-namespace rule)"
+    assert update_lock._incarnation(os.getpid(), None, world) is False
+
+
+def test_handoff_marker_with_a_coarse_delegate_ct_is_adopted(marker, other_pid, monkeypatch):
+    """The whole hand-off shape, on a coarse-ct platform: line 1 names a live sibling (the
+    custodian the hand-off forked) and line 4 names us with the shell's whole-second creation
+    time. Adoption must succeed — refusing is the macOS "update always fails from the Desktop"
+    loop, and the marker's live owner is not an ancestor, so the delegate line is the only route.
+    """
+    from hermes_cli import update_lock
+
+    our_ct = float(int(time.time())) + 0.6  # what psutil reports; the shell can only write the floor
+    monkeypatch.setattr(update_lock, "_own_create_time", lambda: our_ct)
+    now = int(time.time())
+    marker.write_text(
+        f"{other_pid}\n{now}\nct:{process_create_time(other_pid):.3f}\n"
+        f"delegate:{os.getpid()} ct:{float(int(our_ct)):.3f}\n",
+        encoding="utf-8", newline="",
+    )
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True, "the hand-off's own update must adopt its claim"
+    assert lock.acquired is False, "the hand-off's claim is not ours to own"
+    holder = read_live_update(path=marker)
+    assert holder is not None and holder.pid == other_pid, "the hand-off still owns the claim"
+
+    lock.release()
+    assert marker.exists(), "the live hand-off still needs its marker after our stage ends"
+
+
 @pytest.mark.parametrize(
     "body",
     ["", "not-a-pid\n123\n", "\n\n", "12345", "{live}\n{now}.5\n", "1_0\n{now}\n", "{live}\nsoon\n"],

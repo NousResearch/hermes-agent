@@ -997,6 +997,94 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     assert captured["env"]["OPENAI_API_KEY"] == "default-action-provider-key"
 
 
+# ---------------------------------------------------------------------------
+# _spawn_hermes_action Windows breakaway fallback (#135179)
+# ---------------------------------------------------------------------------
+
+def test_spawn_hermes_action_retries_without_breakaway_when_denied(
+    monkeypatch, tmp_path
+):
+    """A job object without JOB_OBJECT_LIMIT_BREAKAWAY_OK rejects
+    CREATE_BREAKAWAY_FROM_JOB with ERROR_ACCESS_DENIED, which used to fail the
+    whole dashboard action endpoint; the spawn must retry without the flag
+    (#135179), mirroring gateway_windows._spawn_detached.
+    """
+    import sys
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+    # Sentinel flag bundles so the two spawn attempts stay distinguishable even
+    # though both helpers return 0 off Windows.
+    monkeypatch.setattr(_web_server_gateway, "windows_detach_flags", lambda: 0b011)
+    monkeypatch.setattr(
+        _web_server_gateway, "windows_detach_flags_without_breakaway", lambda: 0b010
+    )
+
+    denied = PermissionError(5, "Access is denied")
+    denied.winerror = 5  # OSError only carries winerror on Windows
+
+    class _FakeProc:
+        pid = 4321
+
+    calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        calls.append(kwargs.get("creationflags"))
+        if len(calls) == 1:
+            raise denied
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    proc = _web_server_gateway._spawn_hermes_action(
+        ["gateway", "restart"], "gateway-restart"
+    )
+
+    assert calls == [0b011, 0b010], (
+        "a denied breakaway spawn must retry without the flag"
+    )
+    assert proc.pid == 4321
+    assert _web_server_gateway._ACTION_PROCS["gateway-restart"] is proc
+
+
+def test_spawn_hermes_action_windows_other_spawn_errors_propagate(
+    monkeypatch, tmp_path
+):
+    """Only a denied breakaway (winerror 5) is recoverable: every other spawn
+    failure re-raises so the endpoint surfaces one clear error instead of
+    masking it behind a doomed retry (#135179).
+    """
+    import sys
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+    monkeypatch.setattr(_web_server_gateway, "windows_detach_flags", lambda: 0b011)
+
+    missing = FileNotFoundError(2, "The system cannot find the file specified")
+    missing.winerror = 2
+
+    calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        calls.append(kwargs.get("creationflags"))
+        raise missing
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(FileNotFoundError):
+        _web_server_gateway._spawn_hermes_action(
+            ["gateway", "restart"], "gateway-restart"
+        )
+
+    assert len(calls) == 1, "a non-breakaway failure must not be retried"
+
+
 def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypatch, tmp_path):
     """A dashboard action for a named profile must not borrow the dashboard profile's
     platform/provider environment, while the target profile's own dotenv still loads in the child."""

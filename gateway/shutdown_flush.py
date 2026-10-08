@@ -313,23 +313,21 @@ def _order_flush_files(paths) -> list[Path]:
     return [path for _key, path in entries]
 
 
-def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
+def recover_pending_to_db(session_db=None, *, session_resolver=None, db_for_key=None) -> int:
     """Replay flush-dir ``*.json`` files into state.db; return the number of messages recovered.
     See :func:`recover_pending_spool`, which also reports the sessions it held back."""
-    return recover_pending_spool(session_db, session_resolver=session_resolver)[0]
+    return recover_pending_spool(session_db, session_resolver=session_resolver,
+                                 db_for_key=db_for_key)[0]
 
 
-def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[int, set[str]]:
+def recover_pending_spool(session_db=None, *, session_resolver=None, db_for_key=None) -> tuple[int, set[str]]:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
-    ``session_resolver`` (optional ``(session_key, not_after=ts) -> (session_id, db) | None``, e.g.
-    ``SessionStore.resolve_session_id_for_key``) is required for real flush files: adapter
-    ``MessageEvent`` objects carry no ``session_id``, so without it every recovery lands in the skip
-    branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
-    gateways); ``None`` falls back to ``session_db``. Returns ``(recovered, held_back)``: the number of
-    messages recovered, and the session ids whose spool files this pass held back after a failed
-    replay, so the live writer can drain them before that session's next row.
+    ``session_resolver`` handles older flush files without a pinned session id. ``db_for_key``
+    selects and verifies the owning profile store for newer pinned events, including completed
+    one-shot webhook sessions. Returns ``(recovered, held_back)``: the number of messages recovered,
+    and the session ids whose spool files this pass held back after a failed replay.
     """
     flush_files = _order_flush_files(_get_flush_dir().glob("*.json"))
     if not flush_files:
@@ -357,6 +355,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
                     continue
                 if _recover_one_payload(session_db, path, payload,
                                         session_resolver=session_resolver,
+                                        db_for_key=db_for_key,
                                         blocked_sessions=blocked_sessions):
                     recovered += 1
                     _remove_replayed(path, payload.get("session_key", ""))
@@ -379,7 +378,8 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
 
 
 def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
-                         session_resolver=None, blocked_sessions: Dict[str, int]) -> bool:
+                         session_resolver=None, db_for_key=None,
+                         blocked_sessions: Dict[str, int]) -> bool:
     """Append one flush payload to ``session_db``; False when it was not replayed (the file is kept,
     or quarantined when the database rejected the row itself)."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id: replay it
@@ -416,11 +416,22 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which real payloads lack — the resolver supplies it together with
-    # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
-    # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the
-    # ambient root store (a None db from the resolver is not a fallback signal — it is "preserve").
+    # needs the real session_id. New queued events pin it before the key can be reused; old files
+    # use the resolver only when that key still unambiguously names a recoverable session.
     session_id, target_db = data.get("session_id", ""), session_db
+    if session_id and db_for_key is not None:
+        # A pinned id may belong to a secondary profile even when its shutdown spool landed under
+        # the launch home. The key selects its store; the row must confirm the exact pairing.
+        try:
+            target_db = db_for_key(session_key)
+            row = target_db.get_session(session_id) if target_db is not None else None
+        except Exception:
+            logger.warning("Cannot verify pinned pending session for %s; preserving %s",
+                           session_key, path, exc_info=True)
+            return False
+        if not isinstance(row, dict) or row.get("session_key") != session_key:
+            logger.warning("Pinned pending session does not own %s; preserving %s", session_key, path)
+            return False
     if not session_id and session_resolver is not None:
         try:
             resolved = session_resolver(session_key, not_after=payload.get("ts"))
@@ -452,7 +463,8 @@ def recover_gateway_pending(runner) -> int:
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     store = runner.session_store
-    recovered, held_back = recover_pending_spool(session_resolver=store.resolve_session_id_for_key)
+    recovered, held_back = recover_pending_spool(
+        session_resolver=store.resolve_session_id_for_key, db_for_key=store._db_for_key)
     store.mark_spooled_drop_sessions(held_back)
     if not getattr(runner.config, "multiplex_profiles", False):
         return recovered
@@ -462,7 +474,8 @@ def recover_gateway_pending(runner) -> int:
             continue
         token = set_hermes_home_override(str(home))
         try:
-            count, held_back = recover_pending_spool(session_resolver=store.resolve_session_id_for_key)
+            count, held_back = recover_pending_spool(
+                session_resolver=store.resolve_session_id_for_key, db_for_key=store._db_for_key)
         except Exception:  # one profile's unreadable spool must not strand the others'
             logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
             continue

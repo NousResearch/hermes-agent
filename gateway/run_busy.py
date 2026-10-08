@@ -107,6 +107,9 @@ class GatewayBusySessionMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
+        if queued_event.session_id is None:
+            with contextlib.suppress(Exception):
+                queued_event.session_id = self.session_store.peek_session_id(session_key)
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:

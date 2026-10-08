@@ -14,12 +14,12 @@ import logging
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from agent.deadline import poll_until
 from agent.redact import redact_sensitive_text
 from cron.executions import _owner_is_live, _process_start_time
 from hermes_constants import get_hermes_home
@@ -404,12 +404,13 @@ def enqueue_and_wait(
     wait_timeout = (
         DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
     )
-    deadline = time.monotonic() + wait_timeout
-    while time.monotonic() < deadline:
+    def _terminal_row() -> Optional[dict]:
         row = get_status(execution_id)
-        if row and row["status"] in _TERMINAL:
-            return None if row["status"] in {"delivered", "suppressed"} else str(
-                row.get("error") or f"delivery {row['status']}"
-            )
-        time.sleep(1.0)
-    return _terminalize_wait_timeout(execution_id) or None
+        return row if row and row["status"] in _TERMINAL else None
+
+    row = poll_until(_terminal_row, wait_timeout, 1.0)
+    if row is None:
+        return _terminalize_wait_timeout(execution_id) or None
+    return None if row["status"] in {"delivered", "suppressed"} else str(
+        row.get("error") or f"delivery {row['status']}"
+    )

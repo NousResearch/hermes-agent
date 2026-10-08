@@ -1,0 +1,27 @@
+name: antfly-hermes-lite
+title: Antfly Lite
+repo: https://github.com/antflydb/hermes-antfly-lite
+sha: 0bb6bc585f023825eafb4d24854b01acc0d44e6b
+subdir: catalog/antfly-hermes-lite
+description: >-
+  Local-first context and long-term memory for Hermes backed by Antfly Lite.
+  Provides scoped cross-session recall, automatic completed-turn and fact
+  capture, curated-memory mirroring, compression checkpoints, and governed MCP
+  knowledge retrieval. Lexical mode is embedded and keyless; optional semantic
+  recall sends memory text and queries only to the operator-configured
+  OpenAI-compatible embedding endpoint. Disclosure — on first use, the plugin
+  verifies and extracts its bundled native runtime into the selected Hermes
+  profile; it starts no service, downloads nothing, and sends no telemetry.
+maintainer: Antfly
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+version: "0.3.0"
+docs_url: https://github.com/antflydb/hermes-antfly-lite#readme
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

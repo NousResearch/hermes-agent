@@ -8,10 +8,11 @@ plugin owns only the token POST. This sibling module keeps that logic out of
 
 Contract (documented in website/docs/developer-guide/model-provider-plugin.md):
 
-* the hook returns a mapping of rotated values — dataclass field names
+* the hook returns a mapping of rotated values — refreshable dataclass field names
   (``access_token``, ``refresh_token``, ``expires_at_ms`` …) replace the row's
-  fields, every other key (``expires_in``, ``token_type``, ``scope`` — the
-  natural token-endpoint shape) lands in ``entry.extra``; ``None``/empty = could not
+  fields, pool-owned field names are refused with a warning, every non-field key
+  (``expires_in``, ``token_type``, ``scope`` — the natural token-endpoint shape)
+  lands in ``entry.extra``; ``None``/empty or a result with no credential field = could not
   rotate and the pool benches the row like a failed refresh POST;
 * raising ``AuthError(..., relogin_required=True)`` (or a grant-dead OAuth code)
   is terminal: the row goes DEAD with a WARNING naming ``hermes auth add``;
@@ -45,20 +46,76 @@ def plugin_row_is_expiring(entry: "PooledCredential") -> bool:
     return entry.expires_at_ms is not None and int(entry.expires_at_ms) <= int(time.time() * 1000) + _EXPIRY_SKEW_MS
 
 
+# Field names a rotation may legitimately replace: the token pair, its expiry, and the
+# runtime-credential pair. Everything else on the row is pool-owned — identity/classification
+# fields (``id`` rekeys the persist merge, ``source`` flips the row to borrowed and the next
+# persist strips its tokens, ``priority``/``auth_type`` relabel it), endpoint fields
+# (``base_url``/``inference_base_url`` would redirect the next request carrying the fresh token),
+# and status bookkeeping. A colliding key is dropped rather than routed to ``extra``: ``to_dict``
+# flattens ``extra`` back to top level, so a colliding value would die silently at persist anyway.
+_REFRESHABLE_FIELDS = frozenset({
+    "access_token", "refresh_token",
+    "expires_at", "expires_at_ms", "last_refresh",
+    "agent_key", "agent_key_expires_at",
+})
+
+# Rotation only counts if the response carried credential material; an expiry- or metadata-only
+# result must bench like an empty one instead of reporting a stale bearer as refreshed.
+_CREDENTIAL_FIELDS = frozenset({"access_token", "refresh_token", "agent_key"})
+
+
+def _refreshable_value_ok(key: str, value: Any) -> bool:
+    """A refused value keeps the stored one — never let a malformed rotation erase live material."""
+    if key in _CREDENTIAL_FIELDS:
+        return isinstance(value, str) and bool(value.strip())
+    if key == "expires_at_ms":
+        return value is None or isinstance(value, int)
+    return value is None or isinstance(value, str)  # expires_at, last_refresh, agent_key_expires_at
+
+
 def apply_plugin_refresh_result(entry: "PooledCredential", result: Any) -> "PooledCredential":
     """Merge a ``refresh_credential`` return value into *entry*.
 
-    Field names go through ``dataclasses.replace``; everything else is merged into ``extra``
-    (mirroring ``PooledCredential.from_dict``). Before this split a token-endpoint-shaped mapping
-    with ``expires_in`` raised ``TypeError`` inside ``replace`` and the pool benched a row whose
-    single-use refresh token the server had already rotated — the login was lost.
+    Keys in ``_REFRESHABLE_FIELDS`` go through ``dataclasses.replace``; other field names and
+    malformed refreshable values are refused with a warning; everything else is merged into
+    ``extra`` (mirroring ``PooledCredential.from_dict``). A result carrying no credential field is
+    not a rotation: the entry is returned unchanged so the caller benches the row like an empty
+    result instead of stamping a stale bearer refreshed.
     """
     if not result:
         return entry
     mapping: Mapping[str, Any] = dict(result)
-    field_names = {f.name for f in fields(type(entry))} - {"provider", "extra"}
-    field_updates = {k: v for k, v in mapping.items() if k in field_names}
-    extra_updates = {k: v for k, v in mapping.items() if k not in field_names and k != "provider"}
+    all_fields = {f.name for f in fields(type(entry))}
+    field_updates: dict = {}
+    extra_updates: dict = {}
+    refused = []
+    for key, value in mapping.items():
+        if key in _REFRESHABLE_FIELDS:
+            # Numeric strings/floats are common off a JSON token endpoint; only the
+            # genuinely non-numeric are refused (an unparseable value crashes the
+            # int() readers downstream rather than landing as a bad timestamp).
+            if key == "expires_at_ms" and value is not None and not isinstance(value, int):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    refused.append(key)
+                    continue
+            if _refreshable_value_ok(key, value):
+                field_updates[key] = value
+            else:
+                refused.append(key)
+        elif key == "extra" and isinstance(value, Mapping):
+            extra_updates.update(value)
+        elif key in all_fields:
+            refused.append(key)
+        else:
+            extra_updates[key] = value
+    if refused:
+        logger.warning("plugin refresh_credential for %s (%s) returned unusable field(s) %s; "
+                       "keeping stored values (see model-provider-plugin.md)",
+                       entry.provider, entry.label or entry.id, ", ".join(sorted(set(refused))))
+    if not (set(field_updates) & _CREDENTIAL_FIELDS):
+        return entry
     if extra_updates:
         field_updates["extra"] = {**entry.extra, **extra_updates}
     return replace(entry, **field_updates) if field_updates else entry

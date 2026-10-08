@@ -275,14 +275,21 @@ class PooledCredential:
 
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
+        field_names = set()
         for field_def in fields(self):
+            field_names.add(field_def.name)
             if field_def.name in {"provider", "extra"}:
                 continue
             value = getattr(self, field_def.name)
             if value is not None or field_def.name in _CLEAR_STATUS:
                 result[field_def.name] = value
         for k, v in self.extra.items():
-            if v is not None:
+            # Extra flattens to top level; a metadata key colliding with a row field
+            # must not overwrite it on persist (it would reload as the field).
+            if v is not None and k in field_names:
+                logger.debug("credential %s: dropping extra key %r that collides with a row field",
+                             self.id, k)
+            elif v is not None:
                 result[k] = v
         return sanitize_borrowed_credential_payload(result, self.provider)
 
@@ -1728,12 +1735,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
-                rotated = plugin_refresh(entry)
+                # Hand the hook a snapshot: the entry is a live mutable row, and in-place
+                # field/extra mutation would bypass the allowlist the result merge enforces.
+                rotated = plugin_refresh(replace(entry, extra=dict(entry.extra)))
                 if not rotated:
                     # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
                     # report the stale row as refreshed (the loop would replay the dead bearer).
                     raise RuntimeError("provider refresh_credential returned no rotated fields")
                 updated = apply_plugin_refresh_result(entry, rotated)
+                if updated is entry:
+                    # Every key was refused or inert: nothing rotated, so bench like the empty
+                    # result instead of stamping a stale bearer refreshed.
+                    raise RuntimeError("provider refresh_credential returned no rotated fields")
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
                 synced = self._sync_nous_entry_from_auth_store(entry)

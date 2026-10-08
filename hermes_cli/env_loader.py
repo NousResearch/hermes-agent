@@ -15,6 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS
 from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -366,6 +367,8 @@ def _load_dotenv_with_fallback(
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
+            if name in LAUNCH_ONLY_ENV_KEYS:
+                continue  # deployment bootstrap knob — only the real launch environment may set it (#135200)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
             ours = record is not None and current == record[1]
@@ -378,7 +381,10 @@ def _load_dotenv_with_fallback(
     # Every key this file defines, for the launch-residue strip: dotenv never unsets, so a key later
     # removed from the launch .env stays in os.environ and a re-parse of the file no longer names it.
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
-    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(name for name, _value in assignments)
+    # Launch-only keys are recorded nowhere: they were never published, so a leftover file entry must
+    # not strip the launch value from a routed child either (#135200).
+    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(
+        name for name, _value in assignments if name not in LAUNCH_ONLY_ENV_KEYS)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 

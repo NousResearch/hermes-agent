@@ -766,6 +766,16 @@ def socket_safe_tmpdir() -> str:
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 
 
+# ---- Launch-only env vars ----
+# Only the real launch environment (service unit ``Environment=``, container image, operator
+# export) may set these. Every Hermes user-writable layer skips them, so a user ``.env`` or a
+# user-configured secret source cannot repoint ``HERMES_MANAGED_DIR`` at a directory the user
+# controls and void administrator policy (#135200). Skipped by
+# ``hermes_cli.env_loader._load_dotenv_with_fallback``, ``hermes_cli.config.reload_env`` and
+# ``agent.secret_sources.registry.apply_all`` (reported as ``skipped_protected``).
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR"})
+
+
 # ---- Managed mode (NixOS declarative config) ----
 # Canonical home of "is this install package-manager managed": ``hermes_cli.config`` re-exports
 # these, and :func:`apply_secure_dir_policy` below reads them. Lives here because constants

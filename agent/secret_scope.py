@@ -177,6 +177,10 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
+    # Managed-scope bootstrap: launch-only (see hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
+    # every process must resolve the SAME directory or a routed child silently loses
+    # administrator policy, so it is never residue and never profile-scoped (#135200).
+    "HERMES_MANAGED_DIR",
     # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",

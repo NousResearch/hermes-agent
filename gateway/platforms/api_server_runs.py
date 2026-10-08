@@ -368,14 +368,14 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
     if self._room_grant_token(request):
         claims = self._room_grant_claims(request, permission=_room_permission_for(request))
         _remember_room_retention(request, claims)
-        from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+        from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
         authority = room_authority(claims)
         try:
             request[_ROOM_AUTHORITY_REQUEST_KEY] = authority
         except (AttributeError, TypeError):
             setattr(request, "_hermes_room_run_authority", authority)
         scope = room_run_scope(claims)
-        self._run_idempotency_store.observe_room_authority(scope, authority)
+        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims))
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",

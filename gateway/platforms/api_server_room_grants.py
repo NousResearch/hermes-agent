@@ -133,19 +133,29 @@ def _previous_authority(claims, body):
 
 def _record_invitation(self, claims, body):
     from gateway import hosted_rooms
-    from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
+    from gateway.platforms.api_server_run_authority import room_authority, room_namespace, room_run_scope
     authority = room_authority(claims)
     if _retirement_only(claims):
         if not self._run_idempotency_store.permits_room_retirement(authority):
             raise RoomGrantReauthorizationRequired("room retirement authority is not retained")
         return
     previous = _previous_authority(claims, body)
-    if not self._run_idempotency_store.accepts_room_authority(authority, previous):
+    namespace = room_namespace(claims)
+    if not self._run_idempotency_store.accepts_room_authority(authority, previous, namespace):
         raise RoomGrantReauthorizationRequired("room authority has already advanced")
+    if previous is None and not self._run_idempotency_store.knows_room_authority(authority):
+        # Old reservations predate namespace metadata. Do not displace one with an
+        # unbound origin merely because its caller selected a higher epoch.
+        with hosted_rooms._transaction(hosted_rooms.default_db_path()) as conn:
+            existing = conn.execute("""SELECT 1 FROM hosted_room_peer_reservations
+                WHERE room_id=? AND member_id=? AND target_profile=?""",
+                (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchone()
+        if existing is not None:
+            raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
     hosted_rooms.reserve_peer_room(
         hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     previous_home = body["previous_authority"]["home_install_id"] if previous is not None else None
-    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home):
+    if not self._run_idempotency_store.observe_room_authority(room_run_scope(claims), authority, previous, previous_home, namespace):
         raise RoomGrantReauthorizationRequired("room authority has already advanced")
 
 

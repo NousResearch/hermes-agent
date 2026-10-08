@@ -196,10 +196,17 @@ class RunIdempotencyStore:
             return "authority_retired", None
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
-    def accepts_room_authority(self, authority, previous=None):
-        from gateway.platforms.api_server_run_authority import successor, superseded
+    def accepts_room_authority(self, authority, previous=None, namespace=None):
+        from gateway.platforms.api_server_run_authority import namespace_matches, successor, superseded
         with self._lock:
-            return not superseded(self._conn, successor(self._conn, authority, previous))
+            candidate = successor(self._conn, authority, previous)
+            return namespace_matches(self._conn, namespace, candidate) and not superseded(self._conn, candidate)
+
+    def knows_room_authority(self, authority):
+        from gateway.platforms.api_server_run_authority import canonical
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM run_room_authorities WHERE authority_key=?",
+                                      (canonical(self._conn, authority)[0],)).fetchone() is not None
 
     def permits_room_retirement(self, authority):
         from gateway.platforms.api_server_run_authority import retirement_allowed
@@ -221,10 +228,10 @@ class RunIdempotencyStore:
         with self._lock:
             return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
 
-    def observe_room_authority(self, scope, authority, previous=None, previous_home=None):
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority, previous, previous_home)
+            current = observe(self._conn, scope, authority, previous, previous_home, namespace)
             self._conn.commit()
         return current
 

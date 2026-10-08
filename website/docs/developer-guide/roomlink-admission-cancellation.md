@@ -31,7 +31,10 @@ original watermark and hidden member session. The writer resolves these aliases
 after restart, including for requests captured before the move. Repeating an
 invitation for the exact current successor is safe after a lost reply. An
 unrelated home using the same room and member identifiers has a separate origin;
-its higher epoch cannot compact the original records or join existing origins.
+its higher epoch cannot compact the original records or displace their target
+reservation. A durable target namespace binding rejects that unlinked collision
+even after the live reservation has expired or been pruned. A retained legacy
+reservation also refuses a new unbound home until the owner names its predecessor.
 Older records lacking authenticated predecessor coordinates remain conservative.
 
 The watermark proves that an old authority cannot admit new work. It does **not**

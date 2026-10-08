@@ -2538,6 +2538,7 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
+                runtime["_fallback_entry"] = entry
                 from hermes_cli.auth import primary_failure_wording
                 logging.getLogger(__name__).warning(
                     "Primary %s (%s), falling back to %s model %s",
@@ -2677,11 +2678,22 @@ def _make_agent(
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    fallback_entry = runtime.pop("_fallback_entry", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    from agent.fallback_reasoning import resolve_fallback_entry_reasoning_config
+    effective_reasoning_config = (
+        reasoning_config_override
+        if reasoning_config_override is not None
+        else (
+            resolve_fallback_entry_reasoning_config(cfg, str(model or ""), fallback_entry)
+            if fallback_entry is not None
+            else _load_reasoning_config(str(model or ""))
+        )
+    )
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -2689,8 +2701,7 @@ def _make_agent(
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
-        reasoning_config=(
-            reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
+        reasoning_config=effective_reasoning_config,
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
         disabled_toolsets=_load_disabled_toolsets(),

@@ -61,6 +61,8 @@ class NousProfile(ProviderProfile):
         if reasoning_config is None:
             return {"reasoning": {"enabled": True, "effort": "medium"}}, {}
         rc = dict(reasoning_config)
+        if rc.get("native") or rc.get("effort") in ("default", "auto", "native"):
+            return {}, {}
         if rc.get("enabled") is False and self._cannot_disable_reasoning(model):
             return {}, {}
         return {"reasoning": rc}, {}

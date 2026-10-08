@@ -1544,6 +1544,7 @@ Manage the fallback provider chain. Fallback providers are tried in order when t
 | `add` | Pick a provider + model (same picker as `hermes model`) and append to the chain |
 | `remove` (alias: `rm`) | Pick an entry to delete from the chain |
 | `clear` | Remove all fallback entries |
+| `heuristics [on\|off\|status]` (alias: `heuristic`) | View or toggle fallback heuristics on/off (disabled by default) |
 
 See [Fallback Providers](../user-guide/features/fallback-providers.md).
 

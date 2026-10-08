@@ -65,3 +65,79 @@ class TestEffectiveRuntimeProvider:
 
     def test_none_inputs_are_safe(self):
         assert effective_runtime_provider(None, None) == ""
+
+
+class TestGetFallbackChainWithHeuristics:
+    """Heuristic fallback entries must dynamically resolve to candidate models when enabled."""
+
+    def test_heuristics_off_by_default(self):
+        config = {
+            "fallback_providers": [
+                {"provider": "openrouter", "heuristic": "largest_parameter_count_free", "max_candidates": 2},
+                {"provider": "anthropic", "model": "claude-sonnet-5"},
+            ]
+        }
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(config)
+        assert len(chain) == 1
+        assert chain[0]["provider"] == "anthropic"
+        assert chain[0]["model"] == "claude-sonnet-5"
+
+    def test_heuristic_entry_expands_to_candidates(self):
+        config = {
+            "fallback_heuristics": True,
+            "fallback_providers": [
+                {"provider": "openrouter", "heuristic": "largest_parameter_count_free", "max_candidates": 2},
+            ]
+        }
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(config)
+        assert len(chain) == 2
+        assert chain[0]["provider"] == "openrouter"
+        assert chain[0]["model"]
+        assert chain[0]["criteria_rank"] == 1
+        assert chain[1]["criteria_rank"] == 2
+
+    def test_static_and_heuristic_merged(self):
+        config = {
+            "fallback_heuristics": True,
+            "fallback_providers": [
+                {"provider": "anthropic", "model": "claude-sonnet-5"},
+                {"provider": "openrouter", "heuristic": "greatest_context_free"},
+            ]
+        }
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(config)
+        assert chain[0]["provider"] == "anthropic"
+        assert chain[0]["model"] == "claude-sonnet-5"
+        assert len(chain) > 1
+        assert chain[1]["provider"] == "openrouter"
+        assert chain[1]["model"]
+
+    def test_default_provider_is_nous(self):
+        config = {
+            "fallback_heuristics": True,
+            "fallback_providers": [
+                {"heuristic": "largest_parameter_count_free", "max_candidates": 2},
+            ]
+        }
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(config)
+        assert len(chain) == 2
+        assert chain[0]["provider"] == "nous"
+        assert chain[0]["model"]
+        assert chain[0]["criteria_rank"] == 1
+
+    def test_model_provider_alias_supported(self):
+        config = {
+            "fallback_heuristics": True,
+            "fallback_providers": [
+                {"model_provider": "openrouter", "heuristic": "latest_flash_free", "max_candidates": 2},
+            ]
+        }
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(config)
+        assert len(chain) == 2
+        assert chain[0]["provider"] == "openrouter"
+        assert chain[0]["model"]
+

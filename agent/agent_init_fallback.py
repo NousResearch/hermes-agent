@@ -10,13 +10,8 @@ logger = logging.getLogger("run_agent")
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
     """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
+    from hermes_cli.fallback_config import _iter_fallback_entries
+    return _iter_fallback_entries(fallback_model)
 
 
 def _init_fallback_chain(agent, fallback_model):
@@ -33,7 +28,8 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain
     if chain and not agent.quiet_mode:
-        labels = [f"{f['model']} ({f['provider']})" for f in chain]
+        from agent.fallback_reasoning import format_fallback_label
+        labels = [format_fallback_label(f) for f in chain]
         if len(chain) == 1:
             print(f"🔄 Fallback model: {labels[0]}")
         else:
@@ -59,3 +55,11 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
         return
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
+
+
+def setup_init_fallback_runtime(agent, fb_entry, fb_client) -> None:
+    """Set up fallback reasoning config and api_mode for init-time routed fallback."""
+    from agent.fallback_reasoning import reresolve_fallback_reasoning_config
+    reresolve_fallback_reasoning_config(agent, fb_entry)
+    recompute_init_fallback_api_mode(agent, fb_client)
+

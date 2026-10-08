@@ -996,6 +996,14 @@ def export_scratch_tmp_env() -> bool:
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
+def _is_native_reasoning_effort(raw: object) -> bool:
+    if isinstance(raw, dict):
+        return bool(raw.get("native") is True or str(raw.get("effort") or "").strip().lower() in {"default", "auto", "native"})
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"default", "auto", "native"}
+    return False
+
+
 def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
@@ -1010,6 +1018,8 @@ def parse_reasoning_effort(effort) -> dict | None:
     if effort is None or effort is True:
         return None
     if isinstance(effort, dict):
+        if effort.get("native") is True or str(effort.get("effort") or "").strip().lower() in {"default", "auto", "native"}:
+            return {"native": True}
         if effort.get("enabled", True) is False:
             return {"enabled": False}
         # ``or ""``: a falsy effort (0/False) is "no level", never the string "0" on the wire.
@@ -1073,7 +1083,10 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     variants = _canonical_model_variants(model)
     for variant in variants:
         if variant in overrides:
-            result = parse_reasoning_effort(overrides[variant])
+            raw = overrides[variant]
+            if _is_native_reasoning_effort(raw):
+                return {"native": True}
+            result = parse_reasoning_effort(raw)
             if result is not None:
                 return result
     # Reverse lookup: the key may carry a custom-provider prefix the model string lost
@@ -1089,6 +1102,8 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
         if len(parts) >= 3:
             key_forms += _canonical_model_variants("/".join(parts[1:]))
         if any(form in variant_set for form in key_forms):
+            if _is_native_reasoning_effort(raw):
+                return {"native": True}
             result = parse_reasoning_effort(raw)
             if result is not None:
                 return result
@@ -1128,7 +1143,8 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     # Keep the raw value: ``or ""`` would turn a YAML False into "" and silently re-enable thinking.
     effort = agent_cfg.get("reasoning_effort", "")
     result = parse_reasoning_effort(effort)
-    if effort and str(effort).strip() and result is None:
+    effort_str = str(effort).strip().lower() if effort is not None else ""
+    if effort_str and effort_str not in {"default", "auto", "native"} and result is None:
         import logging
         logging.getLogger(__name__).warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return result

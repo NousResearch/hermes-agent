@@ -174,7 +174,7 @@ class GatewayConfigLoadersMixin:
 
     def _resolve_session_reasoning_config(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        model: str = "",
+        model: str = "", fallback_entry: Optional[dict] = None,
     ) -> dict | None:
         """Session ``/reasoning --session`` > per-model ``agent.reasoning_overrides`` > global.
 
@@ -186,6 +186,10 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        if fallback_entry is not None:
+            from gateway.run import _load_gateway_config
+            from agent.fallback_reasoning import resolve_fallback_entry_reasoning_config
+            return resolve_fallback_entry_reasoning_config(_load_gateway_config(), model, fallback_entry)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:

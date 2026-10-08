@@ -7,10 +7,10 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_stored_fallback_rules
 
-# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
-_read_chain = get_fallback_chain
+# Declarative fallback chain (stores raw rules, preserves inactive heuristics); always fresh copy.
+_read_chain = get_stored_fallback_rules
 
 
 _MISSING_ACTIVE_PROVIDER = object()
@@ -23,15 +23,47 @@ def _identity(entry: Dict[str, Any]):
 
 
 def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
-    """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
-    config["fallback_providers"] = chain
-    config.pop("fallback_model", None)
+    """Write entries without _from_fallback_model to fallback_providers.
+    Keep remaining entries with _from_fallback_model in fallback_model (or pop if none remain)."""
+    fp_entries: list[dict[str, Any]] = []
+    fm_entries: list[dict[str, Any]] = []
+    for entry in chain:
+        e = copy.deepcopy(entry)
+        if e.pop("_from_fallback_model", False):
+            fm_entries.append(e)
+        else:
+            fp_entries.append(e)
+
+    config["fallback_providers"] = fp_entries
+    if fm_entries:
+        config["fallback_model"] = fm_entries
+    else:
+        config.pop("fallback_model", None)
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:
     """One-line human-readable rendering of a fallback entry."""
     base = entry.get("base_url")
-    return f"{entry.get('model', '?')}  (via {entry.get('provider', '?')}){f'  [{base}]' if base else ''}"
+    base_str = f"  [{base}]" if base else ""
+    criteria_str = ""
+    if entry.get("criteria_matched"):
+        rank = f" #{entry.get('criteria_rank')}" if entry.get("criteria_rank") else ""
+        criteria_str = f"  [heuristic: {entry['criteria_matched']}{rank}]"
+    elif entry.get("criteria") or entry.get("heuristic") or str(entry.get("model", "")).startswith(("auto:", "heuristic:", "criteria:")):
+        try:
+            from hermes_cli.fallback_heuristics import parse_fallback_criteria
+            crit = parse_fallback_criteria(entry)
+            desc = crit.describe()
+        except (ValueError, TypeError, KeyError):
+            desc = "heuristic rule"
+        criteria_str = f"  [heuristic: {desc}]"
+    reasoning_str = ""
+    if entry.get("reasoning_effort") and entry.get("reasoning_effort") != "default":
+        reasoning_str = f"  [thinking: {entry['reasoning_effort']}]"
+    model_name = entry.get("model")
+    if not model_name or str(model_name).startswith(("auto:", "heuristic:", "criteria:")):
+        model_name = "auto"
+    return f"{model_name}  (via {entry.get('provider', '?')}){criteria_str}{reasoning_str}{base_str}"
 
 
 def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]:
@@ -132,7 +164,10 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
         return
     print()
     if primary := _describe_primary(config):
-        print(f"  Primary:   {primary}\n")
+        print(f"  Primary:    {primary}")
+    from hermes_cli.fallback_config import is_fallback_heuristics_enabled
+    heuristics_status = "enabled" if is_fallback_heuristics_enabled(config) else "disabled (default)"
+    print(f"  Heuristics: {heuristics_status}\n")
     _print_chain("Fallback chain", chain)
     print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers\n")
@@ -231,8 +266,44 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
         print("  Cancelled — no change.")
         return
     _write_chain(config, [])
+    config.pop("fallback_model", None)
     save_config(config)
     print("\n  Fallback chain cleared.\n")
+
+
+def cmd_fallback_heuristics(args) -> None:
+    """Turn fallback heuristics on or off, or display current status."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.fallback_config import is_fallback_heuristics_enabled
+
+    action = getattr(args, "heuristics_action", None)
+    if action is None:
+        rem = getattr(args, "args", None)
+        if rem and len(rem) > 0:
+            action = rem[0]
+
+    action_norm = str(action or "").strip().lower()
+    cfg = load_config()
+
+    if action_norm in ("on", "enable", "true", "1"):
+        cfg["fallback_heuristics"] = True
+        save_config(cfg)
+        print("\n  Fallback heuristics: ENABLED")
+        print("  Dynamic heuristics in fallback_providers will now resolve on failure.\n")
+        return
+
+    if action_norm in ("off", "disable", "false", "0"):
+        cfg["fallback_heuristics"] = False
+        save_config(cfg)
+        print("\n  Fallback heuristics: DISABLED (default)")
+        print("  Only explicit static fallback models will be used.\n")
+        return
+
+    current = is_fallback_heuristics_enabled(cfg)
+    status_str = "ENABLED" if current else "DISABLED (default)"
+    print(f"\n  Fallback heuristics: {status_str}")
+    print("  To enable:   hermes fallback heuristics on")
+    print("  To disable:  hermes fallback heuristics off\n")
 
 
 def cmd_fallback(args) -> None:
@@ -241,12 +312,16 @@ def cmd_fallback(args) -> None:
     handler = _SUBCOMMANDS.get(sub)
     if handler is None:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, heuristics")
         raise SystemExit(2)
     handler(args)
 
 
 _SUBCOMMANDS = {
-    **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list), "add": cmd_fallback_add,
-    **dict.fromkeys(("remove", "rm"), cmd_fallback_remove), "clear": cmd_fallback_clear,
+    **dict.fromkeys((None, "", "list", "ls"), cmd_fallback_list),
+    "add": cmd_fallback_add,
+    **dict.fromkeys(("remove", "rm"), cmd_fallback_remove),
+    "clear": cmd_fallback_clear,
+    "heuristics": cmd_fallback_heuristics,
+    "heuristic": cmd_fallback_heuristics,
 }

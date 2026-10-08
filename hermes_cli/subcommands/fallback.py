@@ -22,4 +22,10 @@ def build_fallback_parser(subparsers) -> None:
     fallback_subparsers.add_parser(
         "remove", aliases=["rm"], help="Pick an entry to delete from the chain")
     fallback_subparsers.add_parser("clear", help="Remove all fallback entries")
+    heuristics_parser = fallback_subparsers.add_parser(
+        "heuristics", aliases=["heuristic"],
+        help="View or toggle fallback heuristics on/off (off by default)")
+    heuristics_parser.add_argument(
+        "heuristics_action", nargs="?", choices=["on", "off", "status"],
+        help="Turn fallback heuristics on or off (default: show status)")
     fallback_parser.set_defaults(func=cmd_fallback)

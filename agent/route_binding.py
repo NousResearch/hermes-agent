@@ -88,7 +88,7 @@ def bind_route_entry(agent: Any, entry: Dict[str, Any], provider: str, model: st
         provider=provider, base_url=base_url, api_mode=api_mode, model=model)
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
     _update_fallback_context_compressor(agent)
-    _reresolve_fallback_reasoning_config(agent)
+    _reresolve_fallback_reasoning_config(agent, entry)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
     return old_model, old_provider
 

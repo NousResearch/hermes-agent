@@ -545,7 +545,12 @@ def _run_agent(
 
     from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
 
-    reasoning_config = resolve_reasoning_config(cfg, choice.model)
+    if fallback_entry is not None:
+        from agent.fallback_reasoning import resolve_fallback_entry_reasoning_config
+        reasoning_config = resolve_fallback_entry_reasoning_config(cfg, choice.model, fallback_entry)
+    else:
+        reasoning_config = resolve_reasoning_config(cfg, choice.model)
+
     if reasoning is not None and str(reasoning).strip():
         parsed_reasoning = parse_reasoning_effort(reasoning)
         if parsed_reasoning is None:

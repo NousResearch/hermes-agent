@@ -1709,6 +1709,8 @@ class SessionSessionsMixin:
             removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
@@ -1765,6 +1767,8 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return True
         deleted = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
@@ -1848,6 +1852,8 @@ class SessionSessionsMixin:
             # 3 rows, however many physical links those rows had.
             return len(existing)
         count = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -1888,6 +1894,8 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

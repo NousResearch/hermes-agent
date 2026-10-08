@@ -255,7 +255,7 @@ def release_admission_media(db, admission_id):
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
-    return release_unheld_media(db, admission_media_references(row['payload']))
+    return release_unheld_media(db, admission_media_references(row['payload']), retain_history=False)
 
 
 _API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
@@ -272,8 +272,8 @@ def collect_unheld_api_images(db):
         if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
 
 
-def release_unheld_media(db, references):
-    """Delete each retained reference no admission holds (by path or physical identity)."""
+def release_unheld_media(db, references, *, retain_history=True):
+    """Delete unowned references, preserving accepted admission and retained transcript owners."""
     if not references:
         return 0
     root = _media_root()
@@ -286,6 +286,9 @@ def release_unheld_media(db, references):
         for reference in references:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+                continue
+            if retain_history and conn.execute("SELECT 1 FROM messages WHERE instr(content,?) OR instr(content,?) LIMIT 1",
+                    (reference['path'], json.dumps(reference['path'])[1:-1])).fetchone():
                 continue
             try:
                 if path.parent.resolve() != path.parent or _file_identity(path) in identities:

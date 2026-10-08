@@ -713,4 +713,10 @@ def finish_worker_execution(db, *, epoch: int, execution_id: str, session_id: st
         result = _worker_public(row)
         result['status'] = 'terminal'
         return result
-    return db._execute_write(write)
+    result = db._execute_write(write)
+    with db._read_ctx() as conn:
+        linked = _linked_worker_admission(conn, session_id, generation, epoch, ('terminal',))
+    if linked is not None:
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(db, linked['admission_id'])
+    return result

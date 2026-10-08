@@ -188,6 +188,8 @@ def _project_committed(authority, ref, operation, result):
             entry.origin = authority.sessions[ref.session_id].source
             store._entries[entry.session_key] = entry
     if operation == 'delete':
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(authority.db)
         # Repeat local retirement on an exact retry too: publication may have
         # failed after the transaction committed. Never repeat the event.
         store = getattr(authority.runner, 'session_store', None)

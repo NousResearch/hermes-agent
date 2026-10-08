@@ -343,10 +343,15 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
-        row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
-                                  session_id=request.ref.session_id, request_id=request.request_id,
-                                  payload=payload, intent=request.intent,
-                                  _authorize_write=_authorize_write)
+        try:
+            row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
+                                      session_id=request.ref.session_id, request_id=request.request_id,
+                                      payload=payload, intent=request.intent,
+                                      _authorize_write=_authorize_write)
+        except Exception:
+            from gateway.session_ingress_media import release_unheld_media
+            release_unheld_media(self.db, payload.get('attachments_v1', {}).get('media', []))
+            raise
         self._publish_pending(request.ref)
         self._schedule(request.ref)
         return self._receipt(row)

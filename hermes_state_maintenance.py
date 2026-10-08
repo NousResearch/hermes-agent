@@ -132,6 +132,8 @@ class SessionMaintenanceMixin:
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids if sessions_dir else ():
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
@@ -352,6 +354,8 @@ class SessionMaintenanceMixin:
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
+        from hermes_state_media import collect_retired_media
+        collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

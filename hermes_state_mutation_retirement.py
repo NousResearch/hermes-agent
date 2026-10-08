@@ -47,6 +47,8 @@ def retire_terminal_receipts(conn, session_ids):
             raise RuntimeStoreError('unknown_execution' if 'unknown' in states else 'session_busy')
         for raw in admissions:
             row = dict(raw)
+            from hermes_state_media import retire_media
+            retire_media(conn, json.loads(row['payload_json']))
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'
@@ -120,6 +122,7 @@ def retire_routes(conn, session_ids):
     for sid in session_ids:
         conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
                      (RETIRED_PREFIX + sid, '{}'))
+        conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if json.loads(row['entry_json']).get('session_id') in targets:

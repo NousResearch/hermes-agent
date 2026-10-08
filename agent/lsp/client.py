@@ -161,6 +161,10 @@ class LSPClient:
         self._exit_code: Optional[int] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._cleanup_lock = asyncio.Lock()
+        self._cleanup_error: Optional[str] = None
+        self._shutdown_task: Optional[asyncio.Task] = None
+        self._dispatch_tasks: Set[asyncio.Task] = set()
+        self._initialize_result: dict = {}
         self._next_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
 
@@ -211,6 +215,13 @@ class LSPClient:
         """Spawn + initialize handshake.  On failure the process is killed and state is ``"error"``; re-call to retry."""
         if self._state in _LIVE_STATES:
             return
+        shutdown_task = self._shutdown_task
+        if shutdown_task is not None and not shutdown_task.done():
+            await asyncio.shield(shutdown_task)
+        if self._proc is not None:
+            await self._cleanup_process()
+        self._shutdown_task = None
+        self._stopping = False
         self._state = "starting"
         try:
             await self._spawn()
@@ -269,7 +280,7 @@ class LSPClient:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
-        self._reader_task = asyncio.create_task(self._reader_loop())
+        self._start_reader_task()
 
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
@@ -325,7 +336,9 @@ class LSPClient:
         if kind == "response":
             self._dispatch_response(key, msg)
         elif kind == "request":
-            asyncio.create_task(self._dispatch_request(key, msg))
+            task = asyncio.create_task(self._dispatch_request(key, msg))
+            self._dispatch_tasks.add(task)
+            task.add_done_callback(self._dispatch_tasks.discard)
         elif kind == "notification":
             self._dispatch_notification(key, msg)
         else:
@@ -383,6 +396,7 @@ class LSPClient:
             "initializationOptions": self._init_options, "capabilities": _CLIENT_CAPABILITIES,
         }
         result = await asyncio.wait_for(self._send_request("initialize", params), timeout=INITIALIZE_TIMEOUT)
+        self._initialize_result = result
         sync = (result.get("capabilities") or {}).get("textDocumentSync")
         if isinstance(sync, dict):
             sync = sync.get("change")
@@ -392,61 +406,94 @@ class LSPClient:
             await self._send_notification("workspace/didChangeConfiguration", {"settings": self._init_options})
 
     async def shutdown(self) -> None:
-        """Best-effort graceful shutdown: ``shutdown`` + ``exit``, wait ``SHUTDOWN_GRACE`` for the
-        server to honour ``exit``, then SIGTERM/SIGKILL.  Idempotent."""
-        if self._stopping:
-            return
-        self._stopping = True
-        try:
-            if self.is_running:
-                try:
-                    await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
-                except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
-                    pass
-                try:
-                    await self._send_notification("exit", None)
-                except Exception:  # noqa: BLE001
-                    pass
-                # Signalling right after ``exit`` races the server's own exit: needless SIGTERM
-                # noise for well-behaved servers and, on Darwin, a reaped-and-reused PID target.
-                if (proc := self._proc) is not None and proc.returncode is None:
-                    with contextlib.suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-        finally:
-            self._state = "stopped"
-            await self._cleanup_process()
+        """Best-effort graceful shutdown.
+
+        Sends ``shutdown`` + ``exit``, then SIGTERMs/SIGKILLs the
+        process if it doesn't exit cleanly.  Idempotent.  Cleanup is
+        retained in one task and shielded so cancellation of any caller
+        cannot strand the process or make a later caller return early.
+        """
+        task = self._shutdown_task
+        if task is None or (
+            task.done()
+            and (task.cancelled() or task.exception() is not None)
+        ):
+            task = asyncio.create_task(self._shutdown_impl())
+            self._shutdown_task = task
+        await asyncio.shield(task)
 
     async def _cleanup_process(self) -> None:
         async with self._cleanup_lock:
-            tasks = [self._reader_task, self._stderr_task]
-            self._reader_task = self._stderr_task = None
-            proc, self._proc = self._proc, None
-            live = [t for t in tasks if t is not None and not t.done() and t is not asyncio.current_task()]
-            for t in live:
-                t.cancel()
-            await asyncio.gather(*live, return_exceptions=True)
+            current_task = asyncio.current_task()
+            reader_task = self._reader_task
+            if (
+                reader_task is not None
+                and reader_task is not current_task
+                and not reader_task.done()
+            ):
+                reader_task.cancel()
+                try:
+                    await reader_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            if self._reader_task is reader_task:
+                self._reader_task = None
+
+            dispatch_tasks = [
+                task
+                for task in self._dispatch_tasks
+                if task is not current_task and not task.done()
+            ]
+            for task in dispatch_tasks:
+                task.cancel()
+            if dispatch_tasks:
+                await asyncio.gather(*dispatch_tasks, return_exceptions=True)
+            completed_dispatch = {
+                task for task in self._dispatch_tasks if task.done()
+            }
+            self._dispatch_tasks.difference_update(completed_dispatch)
+
+            stderr_task = self._stderr_task
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            if self._stderr_task is stderr_task:
+                self._stderr_task = None
+
+            proc = self._proc
             if proc is None:
+                self._cleanup_error = None
                 return
-            if proc.returncode is not None:
+
+            try:
+                if proc.returncode is None:
+                    # Kill descendants while their parentage is still visible; a launcher-only
+                    # SIGTERM can let a surviving child escape through reparenting.
+                    from agent.deadline import kill_process_tree
+                    try:
+                        if not await asyncio.to_thread(kill_process_tree, proc.pid):
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+
+                if proc.returncode is None:
+                    raise RuntimeError("language-server exit was not confirmed")
+            except Exception as e:
+                # Keep the process handle and the failure.  A later shutdown
+                # retries this same generation instead of reporting success or
+                # allowing a replacement to overlap it.
+                self._cleanup_error = f"{type(e).__name__}: {e}"
+                raise
+            else:
                 if self._exit_code is None:
                     self._exit_code = proc.returncode
-                return
-            try:
-                # ``shutdown`` has already given the protocol a grace period.  Hard-kill
-                # the tree while its ancestry is still observable: waiting for the launcher
-                # after SIGTERM can let an ignoring descendant become reparented and escape.
-                # Windows maps this to a synchronous taskkill /T /F (up to 15s), so the
-                # kill runs off the event loop.
-                from agent.deadline import kill_process_tree
-
-                if not await asyncio.to_thread(kill_process_tree, proc.pid):
-                    proc.kill()
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-            except ProcessLookupError:
-                pass
-            if self._exit_code is None and proc.returncode is not None:
-                self._exit_code = proc.returncode
+                if self._proc is proc:
+                    self._proc = None
+                self._cleanup_error = None
 
     # ---- request / notification plumbing ----
 
@@ -674,36 +721,82 @@ class LSPClient:
                 d.pull = items
                 d.pull_version = d.version if tag is None else tag
 
-    async def wait_for_diagnostics(self, path: str, version: int, *, mode: str = "document",
-                                   timeout: Optional[float] = None) -> bool:
-        """Wait for fresh diagnostics for ``path`` at ``version``; True iff fresh data arrived in budget.
+    async def wait_for_diagnostics(
+        self,
+        path: str,
+        version: int,
+        *,
+        mode: str = "document",
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Wait for the server to publish diagnostics for ``path`` at ``version``.
 
-        ``mode`` is ``"document"`` (5s) or ``"full"`` (10s); ``timeout`` overrides the budget (how
-        ``lsp.wait_timeout`` reaches the loop).  Callers must treat False as "no data", NOT "no errors" —
-        the stores may still hold stale entries.  Never throws for servers lacking pull support.
+        ``mode`` is ``"document"`` (5s budget, document pulls) or
+        ``"full"`` (10s budget, also workspace pulls).  ``timeout``
+        overrides the mode's default budget when provided — this is
+        how the user's ``lsp.wait_timeout`` config reaches the wait
+        loop (slow servers like tsserver on big projects need more
+        than the 5s default).
+
+        Returns ``True`` when *fresh* diagnostics arrived (a push at
+        or after our didChange, or a pull answered after it) and
+        ``False`` on timeout.  Callers must treat ``False`` as "no
+        data", NOT as "no errors" — the diagnostic stores may still
+        hold stale entries from the previous edit at that point.
+        Best-effort — never throws if the server doesn't support pull
+        diagnostics; we still get the push side.
         """
-        if not (timeout is not None and timeout > 0):
-            timeout = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
-        now = asyncio.get_event_loop().time
-        deadline = now() + timeout
+        if timeout is not None and timeout > 0:
+            budget = timeout
+        else:
+            budget = DIAGNOSTICS_FULL_WAIT if mode == "full" else DIAGNOSTICS_DOCUMENT_WAIT
+        deadline = asyncio.get_event_loop().time() + budget
         abs_path = os.path.abspath(path)
+
         while True:
             if not self._connection_is_open():
-                raise LSPProtocolError("server connection closed while waiting for diagnostics")
-            remaining = deadline - now()
+                raise LSPProtocolError(
+                    "server connection closed while waiting for diagnostics"
+                )
+            remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 return False
-            # Concurrent: document pull + push wait.
-            tasks = {
-                asyncio.create_task(self._pull_document_diagnostics(abs_path)),
-                asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining)),
-            }
-            _done, pending = await asyncio.wait(tasks, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+
+            # Concurrent: document pull + push wait.  The parent owns both
+            # children across every exit path, including cancellation by the
+            # synchronous bridge when its outer timeout fires.
+            children: List[asyncio.Task] = []
+            try:
+                children.append(
+                    asyncio.create_task(
+                        self._pull_document_diagnostics(abs_path)
+                    )
+                )
+                children.append(
+                    asyncio.create_task(
+                        self._wait_for_fresh_push(abs_path, version, remaining)
+                    )
+                )
+                await asyncio.wait(
+                    children,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in children:
+                    if not task.done():
+                        task.cancel()
+                if children:
+                    await asyncio.gather(*children, return_exceptions=True)
+
+            # If we got a fresh push for our version, we're done.
             doc = self._docs.get(abs_path)
-            if doc and doc.fresh(version):
+            if doc and doc.fresh_push(version):
+                return True
+
+            # Pull may have answered for the current version — that's
+            # also success.
+            if doc and doc.fresh_pull(version):
                 return True
 
     async def _await_push(self, timeout: float) -> bool:
@@ -751,6 +844,56 @@ class LSPClient:
         push = doc.push if not fresh_only or doc.fresh_push() else []
         pull = doc.pull if not fresh_only or doc.fresh_pull() else []
         return _dedupe(push, pull)
+
+
+    @staticmethod
+    def _win_wrap_cmd(cmd: List[str]) -> List[str]:
+        """On Windows, wrap .cmd/.bat shims so CreateProcess can run them."""
+        exe = cmd[0]
+        if exe.lower().endswith((".cmd", ".bat")):
+            return ["cmd.exe", "/c", *cmd]
+        return cmd
+
+
+    def _start_reader_task(self) -> None:
+        task = asyncio.create_task(self._reader_loop())
+        self._reader_task = task
+        task.add_done_callback(self._consume_reader_task_result)
+
+
+    def _consume_reader_task_result(self, task: asyncio.Task) -> None:
+        """Retrieve detached reader failures while preserving client state."""
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning(
+                "[%s] reader task failed: %s: %s",
+                self.server_id,
+                type(exc).__name__,
+                exc,
+            )
+
+
+    async def _shutdown_impl(self) -> None:
+        self._stopping = True
+        try:
+            if self.is_running:
+                try:
+                    await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
+                except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
+                    pass
+                try:
+                    await self._send_notification("exit", None)
+                except Exception:
+                    pass
+                if (proc := self._proc) is not None and proc.returncode is None:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+        finally:
+            self._state = "stopped"
+            await self._cleanup_process()
 
 
 def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

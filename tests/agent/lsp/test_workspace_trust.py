@@ -84,12 +84,15 @@ def _record_spawns(tmp_path, monkeypatch, launcher, roots, *, trusted_workspaces
         async def start(self):
             raise RuntimeError("recorded, not started")
 
+        async def shutdown(self):
+            pass
+
     monkeypatch.setattr(manager, "LSPClient", _RecordingClient)
     svc = manager.LSPService.create_from_config()
     try:
         for root in roots:
             for name in _SERVERS.values():
-                svc._loop.run(svc._get_or_spawn(str(_write(root / name))), timeout=10)
+                svc._loop.run(svc._acquire_client(str(_write(root / name))), timeout=10)
         status = svc.get_status()
     finally:
         svc.shutdown()

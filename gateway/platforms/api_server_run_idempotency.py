@@ -56,6 +56,14 @@ def _outcome(row, fingerprint):
     return ("reused" if matches else "conflict"), record
 
 
+def terminal_observation_expired(updated_at, retention_until, acknowledged_at, now):
+    """A settled receipt outlives both its recovery window and verified Status grant."""
+    if acknowledged_at is not None and acknowledged_at >= updated_at:
+        if acknowledged_at + RunIdempotencyStore.ACKNOWLEDGED_RETENTION_SECONDS <= now:
+            return True
+    return max(retention_until, updated_at + RunIdempotencyStore.RETENTION_SECONDS) <= now
+
+
 class RunIdempotencyStore:
     """Durable, tenant-scoped reservations for ``POST /v1/runs``: a unique ``(scope, key)`` row
     inserted inside ``BEGIN IMMEDIATE`` so separate workers cannot both admit one request. Only
@@ -279,14 +287,17 @@ class RunIdempotencyStore:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json, stop_requested
+            """SELECT scope, idempotency_key, status_json, stop_requested, room_authority_key
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
                    OR (retention_until <= 0 AND updated_at < ?)""",
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
-        for stale_scope, stale_key, stale_status, stop_requested in stale:
+        retired_keys = set()
+        for stale_scope, stale_key, stale_status, stop_requested, authority_key in stale:
+            if authority_key:
+                retired_keys.add(authority_key)
             try:
                 status = json.loads(stale_status)
                 # A renewed grant may still carry the same generation after normal replay TTL.
@@ -298,6 +309,10 @@ class RunIdempotencyStore:
             if terminal:
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
+        from gateway.platforms.api_server_run_authority import compact
+        for authority_key in retired_keys:
+            compact(self._conn, authority_key, now=now)
+
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""

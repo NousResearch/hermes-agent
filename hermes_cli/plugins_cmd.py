@@ -453,7 +453,9 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
+        target = _resolved_user_plugin_dir(name)
+        if target is None:
+            _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
 
 
@@ -645,22 +647,43 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
     return resolved[0] if resolved else None
 
 
+def _catalog_installed_dir(name: str) -> Optional[Path]:
+    """Install dir whose installer-owned record names catalog entry *name* (``hermes-memory-wiki`` is
+    installed as ``plugins/memory-wiki``), else None (also when two dirs claim it). Read through
+    :func:`catalog_install_record` (``.install-metadata.json``), never the tree, so a URL-installed
+    repo cannot claim a catalog entry's name."""
+    from hermes_cli.plugins_cmd_catalog import catalog_install_record
+    try:
+        keys = list(_read_install_metadata())
+    except PluginOperationError:
+        return None
+    hits = [target for key in keys if (target := _plugins_dir() / key).is_dir()
+            and (record := catalog_install_record(target)) and record["catalog_name"] == name]
+    return hits[0] if len(hits) == 1 else None
+
+
 def _find_plugin_entry(name: str) -> Optional[tuple]:
-    """First discovered ``(name, version, description, source, dir_path, key)`` entry whose
-    manifest name or canonical key equals *name*."""
-    return next((entry for entry in _discover_all_plugins() if name in (entry[0], entry[5])), None)
+    """THE plugin name resolver for every verb (enable/disable/show/capabilities/remove/update, the
+    dashboard and the Desktop hub): the discovered ``(name, version, description, source, dir_path, key)``
+    entry for a canonical key or manifest name; else a bare leaf (``langfuse`` ->
+    ``observability/langfuse``) only when unique; else the catalog name the plugin was installed under.
+    Never guesses between two candidates."""
+    entries = _discover_all_plugins()
+    exact = next((entry for entry in entries if name in (entry[0], entry[5])), None)
+    if exact is not None:
+        return exact
+    leaf_matches = [entry for entry in entries if name == entry[5].split("/")[-1]]
+    if leaf_matches:
+        return leaf_matches[0] if len(leaf_matches) == 1 else None
+    target = _catalog_installed_dir(name)
+    return next((entry for entry in entries if target is not None and entry[4] and Path(str(entry[4])) == target),
+                None)
 
 
 def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
-    """Resolve *name* to ``(canonical_key, source)`` or ``None``. Exact key/manifest-name match
-    first; then a bare leaf match (``langfuse`` -> ``observability/langfuse``) only when unique,
-    so a same-named nested plugin is never picked silently."""
-    entries = _discover_all_plugins()
-    for entry in entries:
-        if name in (entry[0], entry[5]):
-            return (entry[5], entry[3])
-    leaf_matches = [(entry[5], entry[3]) for entry in entries if name == entry[5].split("/")[-1]]
-    return leaf_matches[0] if len(leaf_matches) == 1 else None
+    """Resolve *name* to ``(canonical_key, source)`` or ``None`` through :func:`_find_plugin_entry`."""
+    entry = _find_plugin_entry(name)
+    return (entry[5], entry[3]) if entry else None
 
 
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
@@ -974,12 +997,20 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
-    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
+    """Resolved path under ``~/.hermes/plugins/<name>`` if it exists, else the user install
+    :func:`_find_plugin_entry` resolves *name* to (its manifest or catalog name)."""
     try:
         target = _sanitize_plugin_name(name, _plugins_dir(), allow_subdir=True)
     except ValueError:
         return None
-    return target if target.is_dir() else None
+    return target if target.is_dir() else _resolved_user_plugin_dir(name)
+
+
+def _resolved_user_plugin_dir(name: str) -> Optional[Path]:
+    """Dir of the user install :func:`_find_plugin_entry` resolves *name* to (manifest or catalog name)."""
+    entry = _find_plugin_entry(name)
+    found = Path(str(entry[4])) if entry and entry[3] in ("user", "git") and entry[4] else None
+    return found if found is not None and found.is_dir() else None
 
 
 def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:

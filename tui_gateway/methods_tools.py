@@ -1941,7 +1941,7 @@ def _plugins_settings(rid, params):
     if not key or not isinstance(values, dict):
         return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
     pc = _tools_mod("hermes_cli.plugins_cmd")
-    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    found = pc._find_plugin_entry(key)
     if found is None:
         return _err(rid, 4020, f"plugin '{key}' not found")
     _name, _version, _desc, _source, plugin_dir, canonical = found

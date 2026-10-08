@@ -19,6 +19,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_runtime_budget as krb
 
 
 @pytest.fixture
@@ -90,14 +91,14 @@ def test_estimate_backfills_on_claim(kanban_home, no_pid):
         assert tid in out
         payload = _timed_out_payload(conn, tid)
         assert payload["limit_source"] == "estimate"
-        assert payload["limit_seconds"] == int(100 * kbd.ESTIMATE_GRACE_FACTOR)
+        assert payload["limit_seconds"] == int(100 * krb.ESTIMATE_GRACE_FACTOR)
         assert payload["estimated_runtime_seconds"] == 100
     finally:
         conn.close()
 
 
 def test_dispatcher_default_bounds_an_unestimated_card(kanban_home, no_pid, monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_DEFAULT_MAX_RUNTIME_SECONDS", "300")
+    monkeypatch.setattr(krb, "default_max_runtime_seconds", lambda: 300)
     conn = kbc.connect()
     try:
         tid = _running(conn, started_seconds_ago=400)
@@ -111,10 +112,10 @@ def test_dispatcher_default_bounds_an_unestimated_card(kanban_home, no_pid, monk
 
 
 def test_unbounded_card_is_left_alone(kanban_home, no_pid, monkeypatch):
-    monkeypatch.delenv("HERMES_KANBAN_DEFAULT_MAX_RUNTIME_SECONDS", raising=False)
+    monkeypatch.setattr(krb, "default_max_runtime_seconds", lambda: 0)
     conn = kbc.connect()
     try:
-        tid = _running(conn, started_seconds_ago=3 * 24 * 3600)
+        _running(conn, started_seconds_ago=3 * 24 * 3600)
         assert kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None) == []
     finally:
         conn.close()
@@ -137,8 +138,8 @@ def test_explicit_cap_outranks_estimate(kanban_home, no_pid):
 
 
 def test_effective_limit_precedence():
-    assert kbd._effective_runtime_limit(500, 100000, 300) == (500, "max_runtime")
-    assert kbd._effective_runtime_limit(None, 200, 300) == (300, "estimate")
-    assert kbd._effective_runtime_limit(None, None, 300) == (300, "default")
-    assert kbd._effective_runtime_limit(None, None, 0) == (None, None)
-    assert kbd._effective_runtime_limit(None, 0, 0) == (None, None), "0 estimate is not a budget"
+    assert krb.effective_runtime_limit(500, 100000, 300) == (500, "max_runtime")
+    assert krb.effective_runtime_limit(None, 200, 300) == (300, "estimate")
+    assert krb.effective_runtime_limit(None, None, 300) == (300, "default")
+    assert krb.effective_runtime_limit(None, None, 0) == (None, None)
+    assert krb.effective_runtime_limit(None, 0, 0) == (None, None), "0 estimate is not a budget"

@@ -704,39 +704,58 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-def _paste_callback_reader(result: dict) -> None:
-    """Read one stdin line as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
+def _paste_callback_reader(result: dict, expected_state: "str | None" = None) -> None:
+    """Read stdin lines as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
     exits without auth) into *result*. Parse failures, EOF and interrupts are swallowed — best-effort
-    fallback racing the HTTP listener, which stays primary."""
-    try:
-        line = sys.stdin.readline()
-    except (KeyboardInterrupt, OSError, ValueError):
+    fallback racing the HTTP listener, which stays primary. When *expected_state* is known (captured
+    from this flow's authorization URL), a pasted callback carrying a different flow's ``state`` is
+    rejected with a clear message and the reader keeps waiting for the matching callback instead of
+    committing the code and claiming success (#134964)."""
+    while True:
+        try:
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, OSError, ValueError):
+            return
+        line = (line or "").strip()
+        if not line or _result_taken(result):
+            return  # EOF / blank, or the HTTP listener already won
+        if line.lower() in _SKIP_TOKENS:
+            result["error"] = _USER_SKIPPED_SENTINEL
+            print(
+                "  OAuth skipped. Run `hermes mcp login <server>` later to authenticate, "
+                "or set ``enabled: false`` on that server in config.yaml to disable persistently.",
+                file=sys.stderr)
+            return
+        # Full URL or "?code=...": take everything after the first "?".
+        query = line.split("?", 1)[1] if "?" in line else line
+        try:
+            parsed = _parse_redirect_query(query.removeprefix("?"))
+        except (ValueError, TypeError):
+            print("  Could not parse pasted input as an OAuth redirect — ignoring.", file=sys.stderr)
+            continue
+        if not parsed["code"] and not parsed["error"]:
+            print("  Pasted input did not contain ``code=`` or ``error=`` — ignoring.", file=sys.stderr)
+            continue
+        if (
+            parsed["code"]
+            and expected_state is not None
+            and parsed["state"] != expected_state
+        ):
+            print(
+                "  Callback state does not match this OAuth flow; this callback belongs to another "
+                "or expired login — waiting for the matching callback.",
+                file=sys.stderr,
+            )
+            continue
+        if _result_taken(result):  # one more race-check before writing
+            return
+        result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
+        if parsed["code"]:
+            print(
+                "  Got authorization code from paste — completing flow.",
+                file=sys.stderr,
+            )
         return
-    line = (line or "").strip()
-    if not line or _result_taken(result):
-        return  # EOF / blank, or the HTTP listener already won
-    if line.lower() in _SKIP_TOKENS:
-        result["error"] = _USER_SKIPPED_SENTINEL
-        print(
-            "  OAuth skipped. Run `hermes mcp login <server>` later to authenticate, "
-            "or set ``enabled: false`` on that server in config.yaml to disable persistently.",
-            file=sys.stderr)
-        return
-    # Full URL or "?code=...": take everything after the first "?".
-    query = line.split("?", 1)[1] if "?" in line else line
-    try:
-        parsed = _parse_redirect_query(query.removeprefix("?"))
-    except (ValueError, TypeError):
-        print("  Could not parse pasted input as an OAuth redirect — ignoring.", file=sys.stderr)
-        return
-    if not parsed["code"] and not parsed["error"]:
-        print("  Pasted input did not contain ``code=`` or ``error=`` — ignoring.", file=sys.stderr)
-        return
-    if _result_taken(result):  # one more race-check before writing
-        return
-    result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
-    if parsed["code"]:
-        print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
 
 # Remote-session hints printed under the authorization URL: a proxy callback forwards the redirect
@@ -782,11 +801,18 @@ def _announce_authorization_url(
     print(f"  ({note})\n", file=sys.stderr)
 
 
-def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
+def _make_redirect_handler(
+    port: int,
+    redirect_uri: str | None = None,
+    redirect_host: str | None = None,
+    state_sink: "dict[str, str] | None" = None,
+):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
     flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
     hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
-    :func:`_resolve_redirect_uri`).
+    :func:`_resolve_redirect_uri`). ``state_sink``, shared with the callback waiter, receives this flow's
+    ``state`` from the authorization URL so the paste fallback can reject a different flow's callback
+    (#134964).
 
     Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
     when multiple MCP servers run OAuth concurrently (fixes #44588).
@@ -807,6 +833,10 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
+        if state_sink is not None:
+            state_sink["expected"] = _parse_redirect_query(
+                urlparse(authorization_url).query
+            ).get("state")
         _announce_authorization_url(authorization_url, port, redirect_uri, redirect_host)
 
     return _redirect_handler
@@ -852,11 +882,18 @@ def _callback_outcome(result: dict, cimd_url: str | None):
     return _authorization_code_result(result["auth_code"], result["state"], result.get("iss"))
 
 
-def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0):
+def _make_callback_waiter(
+    port: int,
+    cimd_url: str | None = None,
+    timeout: float = 300.0,
+    expected_state: "dict[str, str] | None" = None,
+):
     """Callback waiter bound to one flow's port. ``timeout`` is where ``oauth.timeout`` applies (mcp 2.0
     dropped the provider's own). ``cimd_url`` only tailors the timeout message: a server refusing the
     document aborts at the authorization endpoint, so no redirect arrives and a bare "timed out" would
-    hide the cause. Raises ``OAuthNonInteractiveError`` on timeout or when non-interactive.
+    hide the cause. ``expected_state`` is the dict the flow's redirect handler fills with this flow's
+    ``state``; the paste fallback reads it to reject a callback from a different in-flight flow (#134964).
+    Raises ``OAuthNonInteractiveError`` on timeout or when non-interactive.
 
     Closing over the port (instead of reading the module-level ``_oauth_port``) keeps concurrent OAuth flows
     isolated: flow A's waiter listens on flow A's port even when flow B's ``_configure_callback_port``
@@ -896,7 +933,10 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` portion) and press Enter. "
                 "Type ``skip`` + Enter to continue without this server:",
                 file=sys.stderr, flush=True)
-            threading.Thread(target=_paste_callback_reader, args=(result,), daemon=True).start()
+            paste_state = expected_state.get("expected") if expected_state else None
+            threading.Thread(
+                target=_paste_callback_reader, args=(result, paste_state), daemon=True
+            ).start()
         elapsed = 0.0
         try:
             while elapsed < timeout and not _result_taken(result):

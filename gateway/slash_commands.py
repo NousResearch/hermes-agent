@@ -907,8 +907,14 @@ class GatewaySlashCommandsMixin(
         gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
         if gate_off and wa.pending_count(wa.SKILLS) == 0:
             return t("gateway.skills.gate_off")
+        # The cached session agent owns the live memory manager — the approval replay is where the
+        # staged skill write actually commits, so mirror through it (nothing cached = skip).
+        _cached_agent = self._cached_agent_for(self._session_key_for_source(event.source))
+        _memory_manager = getattr(_cached_agent, "_memory_manager", None)
+
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
+            wa.SKILLS, args, memory_manager=_memory_manager,
+            set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:
             return t("gateway.skills.unknown_subcommand")
 

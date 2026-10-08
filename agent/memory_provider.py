@@ -200,6 +200,37 @@ class MemoryProvider(ABC):
         callers may omit this field: ``old_text`` alone is not authoritative identity.
         """
 
+    def on_skill_write(
+        self,
+        action: str,
+        name: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Called when the built-in skill_manage tool writes a skill/file.
+
+        action: 'create', 'edit', 'patch', 'delete', 'write_file', 'remove_file'
+        name: the skill name (e.g. 'my-skill')
+        content: the written payload, mapped per action —
+          create/edit: the full SKILL.md text
+          patch: the replacement text (``new_string``)
+          write_file: the supporting file body (``file_content``)
+          delete/remove_file: empty string
+        metadata: structured provenance for the write. Common keys include
+          ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
+          Supporting-file mutations (write_file, remove_file, and patch with
+          a file target) also carry ``file_path`` (path relative to the skill
+          directory, e.g. 'references/api.md'); patch also carries
+          ``old_string`` (the replaced text).
+
+        Only committed writes are mirrored: failed writes and writes staged
+        for approval never reach this hook; approved staged writes fire it
+        from the approval-replay path instead.
+
+        Use to mirror built-in skill writes to your backend.
+        """
+
     def backup_paths(self) -> List[str]:
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""

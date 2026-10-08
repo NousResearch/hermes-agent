@@ -209,8 +209,26 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind),
+                                    frame_accept=_TAB_PROBES["login"] if kind == "login" else None)
     return (origin or focused.get("url")) if focused.get("ok") else None
+
+def _focus_login_frame(task_id: str, origin: str) -> Optional[str]:
+    """Find a password field in an OOPIF of a page on the saved relying-party origin."""
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return None
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES["login"],
+                                    frame_accept=_TAB_PROBES["login"])
+    return focused.get("frame_id") if focused.get("ok") else None
+
+def _frame_eval(task_id: str, frame_id: str, expression: str) -> Dict[str, Any]:
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return {"success": False, "error": "supervisor required"}
+    result = supervisor.evaluate_runtime(expression, frame_id=frame_id)
+    return {"success": bool(result.get("ok")), "result": result.get("result"),
+            "error": result.get("error")}
 
 
 # ---------------------------------------------------------------------------
@@ -456,8 +474,14 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # nothing wildcard/parent-domain is ever inferred.
     allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
     page_origin = None
+    frame_id = None
     for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
+        if meta.kind == "login":
+            try:
+                frame_id = _focus_login_frame(effective_task_id, candidate)
+            except Exception:
+                frame_id = None
+        page_origin = candidate if frame_id else _focus_bound_origin(effective_task_id, candidate, meta.kind)
         if page_origin:
             break
     page_origin = page_origin or _current_page_origin(effective_task_id)
@@ -478,9 +502,29 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             }
         )
 
+    frame_origin = None
+    if frame_id:
+        from agent.vault_store import normalize_origin
+        frame_location = _frame_eval(effective_task_id, frame_id, "location.href")
+        try:
+            frame_origin = normalize_origin(str(frame_location["result"])) if frame_location["success"] else None
+        except (ValueError, TypeError):
+            frame_origin = None
+        if not frame_origin or frame_origin == page_origin:
+            return json.dumps({"success": False, "error_type": "frame_origin_unknown",
+                               "error": "Could not verify the cross-origin login frame."})
+        from tools.approval_prompt import request_elicitation_consent
+        if request_elicitation_consent(
+            f"Fill login saved for {page_origin} into iframe on {frame_origin}",
+            "The password will be sent to a different website embedded by this page. Confirm both origins before proceeding."
+        ) != "accept":
+            return json.dumps({"success": False, "error_type": "frame_origin_declined",
+                               "error": "Cross-origin login fill was not approved."})
+
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    inspect = (_frame_eval(effective_task_id, frame_id, build_inspection_js(nonce)) if frame_id
+               else _eval_js(effective_task_id, build_inspection_js(nonce)))
     if not inspect.get("success"):
         return json.dumps(
             {"success": False, "error": f"Could not inspect page inputs: {inspect.get('error', 'eval failed')}"}
@@ -526,9 +570,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         register_vault_redaction_value(value)
 
     try:
-        fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
-        )
+        expression = build_fill_js(fills, expected_origin=frame_origin or page_origin, nonce=nonce)
+        if frame_id:
+            # Check the embedding origin in the child context immediately before
+            # the origin/nonce guarded write, without reading the parent DOM.
+            expression = ("(() => { const ancestors = location.ancestorOrigins; "
+                          f"if (!ancestors.length || ancestors[ancestors.length - 1] !== {json.dumps(page_origin)}) "
+                          "return {refused:'origin_changed'}; return " + expression + "; })()")
+            fill_result = _frame_eval(effective_task_id, frame_id, expression)
+        else:
+            fill_result = _eval_js_secret(effective_task_id, expression)
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.
         return json.dumps(

@@ -704,7 +704,8 @@ PLATFORM_HINTS = {
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
         "markdown natively (bold, italic, code blocks, links); tables are NOT supported — use bullet lists "
-        "or labeled lines. You can send media files natively: include MEDIA:/absolute/path/to/file in your "
+        "or labeled lines. Put text meant to be copied elsewhere in a code block, not a > quote (copies keep the >). "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file in your "
         "response. Images (.png, .jpg, .webp) are sent as photo attachments, audio as file attachments. You "
         "can also include image URLs in markdown format ![alt](url) and they will be sent as attachments."
     ),

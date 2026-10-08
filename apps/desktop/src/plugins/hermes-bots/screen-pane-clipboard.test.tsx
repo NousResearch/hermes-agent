@@ -3,6 +3,11 @@
  * live screen must forward the client's text clipboard to noVNC's
  * `clipboardPasteFrom`, but only while this viewer holds the lease — never on
  * a watch-only stream, and never via polling.
+ *
+ * Paste-chord interception (#135262): a focused canvas never receives a native
+ * `paste` (and on macOS noVNC forwards Cmd+V as a bare "v"), so the pane also
+ * catches Ctrl/Cmd+V in the capture phase and replays it as a remote-side
+ * Ctrl+V over the freshly synced clipboard.
  */
 
 import { fireEvent, render, waitFor } from '@testing-library/react'
@@ -14,7 +19,13 @@ import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
 const rfbs = vi.hoisted(
-  () => [] as Array<{ target: HTMLElement; viewOnly: boolean; clipboardPasteFrom: (text: string) => void }>
+  () =>
+    [] as Array<{
+      target: HTMLElement
+      viewOnly: boolean
+      clipboardPasteFrom: (text: string) => void
+      sendKey: (keysym: number, code: string, down: boolean) => void
+    }>
 )
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -61,6 +72,7 @@ vi.mock('@novnc/novnc', () => ({
   default: class {
     viewOnly = true
     clipboardPasteFrom = vi.fn()
+    sendKey = vi.fn()
     constructor(target: HTMLElement) {
       rfbs.push(this as never)
       ;(this as unknown as { target: HTMLElement }).target = target
@@ -153,6 +165,103 @@ it("drops a paste over the bridge's 256 KiB cut-text cap instead of forwarding i
   const oversized = 'a'.repeat(256 * 1024 + 1)
   fireEvent.paste(rfbs[0].target, { clipboardData: { getData: () => oversized } })
 
+  expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+// noVNC scopes its keyboard listener to the canvas it appends inside the pane's
+// host element, so a chord fired on that canvas must be intercepted on the way
+// down (capture phase) and never reach it.
+function installNoVncCanvas() {
+  const canvas = document.createElement('canvas')
+
+  rfbs[0].target.appendChild(canvas)
+
+  const noVncKeydown = vi.fn()
+
+  canvas.addEventListener('keydown', noVncKeydown)
+
+  return { canvas, noVncKeydown }
+}
+
+it('intercepts a Ctrl+V chord on the canvas, syncing the local clipboard and replaying a remote paste (#135262)', async () => {
+  vi.stubGlobal('hermesDesktop', { readClipboard: vi.fn(async () => 'clipboard-test-123') })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const { canvas, noVncKeydown } = installNoVncCanvas()
+
+  fireEvent.keyDown(canvas, { code: 'KeyV', key: 'v', ctrlKey: true })
+
+  await waitFor(() => expect(rfbs[0].clipboardPasteFrom).toHaveBeenCalledWith('clipboard-test-123'))
+  // XK_Control_L (0xffe3) and latin "v" (0x0076), mirroring noVNC's KeyTable.
+  expect(vi.mocked(rfbs[0].sendKey).mock.calls).toEqual([
+    [0xffe3, 'ControlLeft', true],
+    [0x0076, 'KeyV', true],
+    [0x0076, 'KeyV', false],
+    [0xffe3, 'ControlLeft', false]
+  ])
+  // The chord was consumed before noVNC could forward it (on macOS as a bare "v").
+  expect(noVncKeydown).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('lets a paste chord through to noVNC while this viewer only watches (no lease)', async () => {
+  vi.stubGlobal('hermesDesktop', { readClipboard: vi.fn(async () => 'clipboard-test-123') })
+  vi.mocked(displayRequest).mockResolvedValue({
+    ...status,
+    lease: { ...status.lease, viewer_hash: 'someone-else' },
+    ticket: 'test-ticket',
+    viewer_id: 'this-viewer'
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(true))
+
+  const { canvas, noVncKeydown } = installNoVncCanvas()
+
+  fireEvent.keyDown(canvas, { code: 'KeyV', key: 'v', ctrlKey: true })
+
+  expect(noVncKeydown).toHaveBeenCalledTimes(1)
+  expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
+  expect(rfbs[0].sendKey).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it("drops a paste chord over the bridge's 256 KiB cut-text cap instead of forwarding it", async () => {
+  vi.stubGlobal('hermesDesktop', {
+    readClipboard: vi.fn(async () => 'a'.repeat(256 * 1024 + 1))
+  })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const { canvas, noVncKeydown } = installNoVncCanvas()
+
+  fireEvent.keyDown(canvas, { code: 'KeyV', key: 'v', ctrlKey: true })
+
+  // Give the async clipboard read a beat to land before asserting nothing moved.
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
+  expect(rfbs[0].sendKey).not.toHaveBeenCalled()
+  expect(noVncKeydown).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('leaves a paste chord to noVNC when the clipboard bridge is unavailable', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const { canvas, noVncKeydown } = installNoVncCanvas()
+
+  fireEvent.keyDown(canvas, { code: 'KeyV', key: 'v', ctrlKey: true })
+
+  expect(noVncKeydown).toHaveBeenCalledTimes(1)
   expect(rfbs[0].clipboardPasteFrom).not.toHaveBeenCalled()
   view.unmount()
 })

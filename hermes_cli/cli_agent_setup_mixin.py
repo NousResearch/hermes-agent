@@ -5,6 +5,7 @@ imported lazily inside each method (import cycle)."""
 from __future__ import annotations
 
 import hmac
+import logging
 import secrets
 import sys
 
@@ -12,6 +13,9 @@ from rich.markup import escape as _escape
 
 from agent.i18n import t
 from utils import base_url_host_matches
+
+# Same record name as cli.py's module logger; getLogger never triggers the cli.py import cycle.
+logger = logging.getLogger("cli")
 
 
 _ROUTE_CREDENTIAL_SALT = secrets.token_bytes(32)
@@ -36,7 +40,10 @@ def _compression_root(session_db, session_id):
                 return session_id
             seen.add(parent_id)
             session_id = parent_id
-    except Exception:
+    except Exception as exc:
+        # Deliberate fail-open: routing identity degrades to the raw session row; the turn
+        # must still run. Traceback at debug keeps DB faults diagnosable without noise.
+        logger.debug("compression-root walk failed open: %s", exc, exc_info=True)
         return session_id
 
 
@@ -668,11 +675,9 @@ class CLIAgentSetupMixin:
                         route["middleware_trace"] = result.trace
                 if result.changed and "middleware_trace" not in route:
                     # A rejected route falls back like a failed middleware; say so instead of silently.
-                    from cli import logger
                     logger.warning("Turn-route middleware returned an unusable route; using the configured route")
             except Exception as exc:
-                from cli import logger
-                logger.warning("Turn-route middleware failed open: %s", exc)
+                logger.warning("Turn-route middleware failed open: %s", exc, exc_info=True)
         # Reasoning policy is model-owned. Keep an explicit CLI --reasoning choice,
         # otherwise resolve the per-model/global policy for the route selected for this turn.
         if route["model"] == self.model or getattr(self, "_explicit_reasoning_config", None) is not None:

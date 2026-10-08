@@ -121,7 +121,7 @@ class GatewayTurnRoutingMixin:
                     # A rejected route falls back like a failed middleware; say so instead of silently.
                     logger.warning("Turn-route middleware returned an unusable route; using the configured route")
             except Exception as exc:
-                logger.warning("Turn-route middleware failed open: %s", exc)
+                logger.warning("Turn-route middleware failed open: %s", exc, exc_info=True)
         tier = getattr(self, "_service_tier", None)
         if tier not in STATIC_TIERS:
             route["request_overrides"] = base_request_overrides
@@ -130,7 +130,8 @@ class GatewayTurnRoutingMixin:
             overrides = resolve_fast_mode_overrides(
                 route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Fast-mode override resolution failed; using base route: %s", exc, exc_info=True)
             overrides = None
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route

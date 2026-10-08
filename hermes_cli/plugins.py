@@ -11,9 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import importlib.metadata
-import inspect
 import json
 import logging
 import os
@@ -64,6 +62,7 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
+from hermes_cli.plugin_command_dispatch import invoke_plugin_command, resolve_plugin_command_result
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -2196,73 +2195,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
-
-
-def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> Any:
-    """Invoke a slash-command handler with only the context it declares."""
-    try:
-        signature = inspect.signature(handler)
-    except (TypeError, ValueError):
-        return handler(raw_args)
-    parameter_list = list(signature.parameters.values())
-    try:
-        bound = signature.bind_partial(raw_args)
-    except TypeError:
-        return handler(raw_args)
-    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameter_list)
-    accepted_names = {
-        p.name for p in parameter_list
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-    }
-    unbound_context = {name: value for name, value in context.items() if name not in bound.arguments}
-    if accepts_kwargs:
-        accepted_context = unbound_context
-    else:
-        accepted_context = {
-            name: value for name, value in unbound_context.items() if name in accepted_names
-        }
-    try:
-        signature.bind_partial(raw_args, **accepted_context)
-    except TypeError:
-        return handler(raw_args)
-    return handler(raw_args, **accepted_context)
-
-
-_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
-
-
-def resolve_plugin_command_result(result: Any) -> Any:
-    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
-    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
-    terminal)."""
-    if not inspect.isawaitable(result):
-        return result
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(result)
-    outcome: dict[str, Any] = {}
-    failure: dict[str, BaseException] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            outcome["value"] = asyncio.run(result)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            failure["exc"] = exc
-        finally:
-            done.set()
-
-    # copy_context: the helper thread must see the caller's profile/secret scope, else an
-    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
-    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
-        raise TimeoutError("Plugin command async handler did not complete within "
-                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
-    if "exc" in failure:
-        raise failure["exc"]
-    return outcome.get("value")
 
 
 def get_plugin_commands() -> dict[str, dict]:

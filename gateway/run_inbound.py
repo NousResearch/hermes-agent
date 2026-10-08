@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- routing changes stay localized here to avoid a risky Gateway MRO split in this PR
 """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner.
 
 Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.

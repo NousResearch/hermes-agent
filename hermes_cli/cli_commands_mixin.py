@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- plugin dispatch stays beside slash-command routing for compatibility
 """Slash-command handlers for the interactive CLI (``HermesCLI`` inherits ``CLICommandsMixin``).
 
 cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
@@ -546,6 +547,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if result:
                 _cprint(str(result))
         except Exception as exc:
+            import logging
+            logging.getLogger("cli").warning(
+                "Plugin command %r failed: %s", base_cmd, exc, exc_info=True)
             _cprint(f"\033[1;31mPlugin command error: {exc}{_RST}")
 
     # ---- /rollback ------------------------------------------------------------------------

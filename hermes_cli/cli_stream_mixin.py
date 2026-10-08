@@ -18,7 +18,7 @@ from pathlib import Path
 from rich.markup import escape as _escape
 
 from agent.i18n import t
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS, fold_tag_case
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
@@ -329,8 +329,9 @@ class CLIStreamMixin:
             self._stream_last_was_newline = True
 
         if not getattr(self, "_in_reasoning_block", False):
-            # Lowercased view catches mixed-case variants (<Think>, <THINKING>, …).
-            prefilt_lower = self._stream_prefilt.lower()
+            # Lowercased view catches mixed-case variants (<Think>, <THINKING>, …); the fold
+            # keeps indices valid on _stream_prefilt.
+            prefilt_lower = fold_tag_case(self._stream_prefilt)
             for tag in _OPEN_TAGS:
                 tag_lower = tag.lower()
                 search_start = 0
@@ -372,7 +373,7 @@ class CLIStreamMixin:
         # Inside a reasoning block — look for a close tag; keep accumulating because close tags
         # can arrive split across tokens ("</REASONING_SCRATCH" + "PAD>...").
         if getattr(self, "_in_reasoning_block", False):
-            prefilt_lower = self._stream_prefilt.lower()
+            prefilt_lower = fold_tag_case(self._stream_prefilt)
             for tag in _CLOSE_TAGS:
                 idx = prefilt_lower.find(tag.lower())
                 if idx != -1:

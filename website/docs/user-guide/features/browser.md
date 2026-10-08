@@ -752,9 +752,15 @@ browser_console(expression="document.querySelector('h1').textContent")
 browser_console(expression="JSON.stringify(performance.timing)")
 ```
 
-When a CDP supervisor is active for the current session (typical for any session that's run `browser_navigate` against a CDP-capable backend), evaluation runs over the supervisor's persistent WebSocket — no subprocess startup cost. Falls through to the standard agent-browser CLI path otherwise. Behaviour is identical either way; only latency changes.
+When a CDP supervisor is active for the current session, evaluation runs over its persistent WebSocket. Local/unrestricted evaluation can fall through to the standard agent-browser CLI path. Guarded evaluation never falls back to a backend lacking engine-enforced read-only support.
 
-Evaluation is unrestricted by default — the agent can use `fetch`, read storage, query form values, and run any DOM extraction. Requests targeting private/internal addresses are still blocked on non-local backends (the SSRF guard is independent of this setting). If you browse hostile pages with a logged-in profile and want a strict denylist over sensitive JS primitives (cookies, storage, clipboard, network calls, form values), opt in with `browser.restrict_evaluate: true` in `config.yaml`. Note the denylist matches primitive *names*, so it also blocks legitimate expressions that merely contain words like `fetch` or `cookie`.
+On non-local sessions where the SSRF guard is active, JavaScript inspection uses CDP/V8 `throwOnSideEffect`. This rejects network calls (including saved API references), global mutations and deferred callback registration **before execution**, without modifying the page's network APIs. Page-owned fetch/XHR/polling continues normally. Source text is passed unchanged: `if` and multi-statement programs work; use local variables/functions inside an IIFE for computations, for example `(()=>{var total=0;for(var i=0;i<3;i++)total+=i;return total})()`. Global `var`/function declarations and some getters can be rejected as possible side effects. Promises, top-level await, `awaitPromise` and `replMode` are unsupported in guarded mode. Camofox REST and subprocess-only evaluation fail closed in this mode; use `browser_snapshot`/`browser_vision` instead.
+
+The same read-only requirement applies to raw CDP `Runtime.evaluate`, `Runtime.callFunctionOn` and `Debugger.evaluateOnCallFrame`, for both direct target and supervisor `frame_id` routing. Persistent script injection (`Page.addScriptToEvaluateOnNewDocument`), compiled-script execution (`Runtime.runScript`) and live script replacement (`Debugger.setScriptSource`) are rejected because they cannot honor a per-evaluation boundary. Engine rejections are never retried with unrestricted execution.
+
+This is a boundary for these JavaScript evaluation entry points, **not a universal browser egress firewall** or a sandbox for all raw CDP commands/page-owned activity. Local sessions and the existing explicit `browser.allow_unsafe_evaluate: true` opt-in do not use this read-only boundary; literal private-URL/page checks still apply where configured. The opt-in weakens evaluation protection and is not a workaround to enable on untrusted sessions.
+
+The separate `browser.restrict_evaluate: true` setting enables a sensitive-primitive name denylist (cookies, storage, clipboard, network calls, form values). It also blocks legitimate expressions containing those names and is not a substitute for engine-enforced read-only execution.
 
 ### `browser_cdp`
 

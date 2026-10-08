@@ -165,6 +165,26 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
     return None
 
 
+def _guard_runtime_evaluate(task_id: str, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Enforce read-only JS identically before direct and OOPIF dispatch.
+
+    Persistent/compiled script execution cannot honor a per-evaluation fence.
+    Reject it rather than allowing a deferred bypass or silently altering source.
+    """
+    from tools import browser_tool_eval_policy as policy
+    if not policy._guarded_evaluate_required(task_id):
+        return params
+    if method in {"Page.addScriptToEvaluateOnNewDocument", "Runtime.runScript", "Debugger.setScriptSource"}:
+        raise ValueError(f"Blocked: {method} cannot enforce guarded read-only browser evaluation; "
+                         "persistent/compiled script execution is unsupported in this browser mode.")
+    if method in {"Runtime.evaluate", "Runtime.callFunctionOn", "Debugger.evaluateOnCallFrame"}:
+        guarded = policy._readonly_evaluate_params(params)
+        if method == "Debugger.evaluateOnCallFrame":
+            guarded.pop("awaitPromise", None)  # This method has no awaitPromise parameter.
+        return guarded
+    return params
+
+
 async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id: Optional[str],
                     timeout: float) -> Dict[str, Any]:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
@@ -265,16 +285,23 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
-
-    if frame_id:
-        blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
-        if blocked:
-            return blocked
-        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
-                                           params=params, timeout=timeout)
-
     if not method or not isinstance(method, str):
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
+    call_params: Dict[str, Any] = params if params is not None else {}
+    if not isinstance(call_params, dict):
+        return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
+    blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
+    if blocked:
+        return blocked
+    try:
+        call_params = _guard_runtime_evaluate(effective_task_id, method, call_params)
+    except ValueError as exc:
+        return _blocked(str(exc), method)
+
+    if frame_id:
+        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
+                                           params=call_params, timeout=timeout)
+
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Run: hermes pm repair")
@@ -287,13 +314,6 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
                           "browser is actually listening on the debug port.")
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
-
-    blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
-    if blocked:
-        return blocked
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0
@@ -379,6 +399,49 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _guard_registry_cdp_args(args: Dict[str, Any], task_id: Optional[str]) -> Dict[str, Any]:
+    """Apply the guarded-evaluation policy BEFORE extension-controller selection.
+
+    The routed (extension-controller) lane is authoritative once a controller is
+    selected: the legacy fallback below never runs, so the registry handler must
+    hand the controller the same guarded parameters the fallback would enforce —
+    ``Runtime.evaluate``/``Runtime.callFunctionOn``/``Debugger.evaluateOnCallFrame``
+    gain ``throwOnSideEffect``, and persistent/async entry points are rejected here
+    instead of reaching the controller. Non-guarded deployments (opt-out, local
+    backends) pass the original ``args`` through unchanged.
+    """
+    method = str(args.get("method") or "")
+    params = args.get("params")
+    if not isinstance(params, dict) or not method:
+        return args
+    # _guard_runtime_evaluate never mutates its input: guarded evaluation
+    # returns a new params dict, everything else returns the input object.
+    # Persistent/async entry points raise ValueError (rendered as a blocked
+    # tool-error by the registry handler before any controller dispatch).
+    guarded = _guard_runtime_evaluate(task_id or "default", method, params)
+    if guarded is params:
+        return args
+    return {**args, "params": guarded}
+
+
+def _browser_cdp_routed_handler(args: Dict[str, Any], **kw) -> str:
+    """Registry handler: enforce the eval policy, then offer the request to the
+    extension-controller lane with the already-guarded arguments."""
+    method = str(args.get("method") or "")
+    try:
+        routed_args = _guard_registry_cdp_args(args, kw.get("task_id"))
+    except ValueError as exc:
+        return _blocked(str(exc), method)
+    return routed_browser_handler(
+        "browser_cdp", routed_args,
+        fallback=lambda: browser_cdp(
+            method=args.get("method", ""), params=args.get("params"), target_id=args.get("target_id"),
+            frame_id=args.get("frame_id"), timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
+        ),
+        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+    )
+
+
 def _browser_cdp_check() -> bool:
     """Availability check: offered only when a static CDP URL is set (Camofox is REST-only;
     the default local agent-browser hides its CDP port; cloud per-session ``cdp_url`` isn't
@@ -397,14 +460,7 @@ registry.register(
     name="browser_cdp",
     toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: routed_browser_handler(
-        "browser_cdp", args,
-        fallback=lambda: browser_cdp(
-            method=args.get("method", ""), params=args.get("params"), target_id=args.get("target_id"),
-            frame_id=args.get("frame_id"), timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
-        ),
-        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
-    ),
+    handler=_browser_cdp_routed_handler,
     check_fn=_browser_cdp_check,
     emoji="🧪",
 )

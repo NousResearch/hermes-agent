@@ -332,6 +332,15 @@ class _FolderIndex:
                 return hit
         return None, -1
 
+    def owns_exactly(self, target: str) -> bool:
+        """True when ``target`` IS one of the declared folders — not merely inside one.
+
+        The distinction is a discovered repo a project already covers (its own row) versus one that
+        only happens to live under that project's folder, which is the nested repo its row is for.
+        """
+        segs = _comparison_segments(target or "")
+        return bool(segs) and "/".join(segs) in self._by_path
+
 
 def _project_for_session(
         session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
@@ -544,11 +553,13 @@ def build_tree(
         info = resolve(raw_root) if resolve else None
         root = (info or {}).get("repo_root") or raw_root
         root_key = _path_key(root)
-        # `folder_index` holds only DECLARED projects, so this is the "inside a real project" case:
-        # its sessions are owned there, and it is not surfaced a second time as its own row. A repo
-        # inside another DISCOVERED repo is not in this index and does get its own row — that is the
-        # nested repo `_assign_parent_projects` then nests under its parent, one step below.
-        if root_key in seen or _junk(root) or folder_index.match(root)[0]:
+        # A discovered repo that IS a declared project's folder is that project's row already — the
+        # only duplicate worth refusing. A repo merely INSIDE a declared project's folder is kept:
+        # its sessions stay owned by the project (that is what `folder_index.match` decides, above),
+        # and its own row is the subproject `_assign_parent_projects` nests under it. Dropping it
+        # here is what made nested discovery find nothing in the case it exists for — a superproject
+        # whose submodules live in its own tree.
+        if root_key in seen or _junk(root) or folder_index.owns_exactly(root):
             continue
         seen.add(root_key)
         label = repo.get("label") or base_name(root) or root

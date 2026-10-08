@@ -26,7 +26,7 @@ import {
   isActivePrimary
 } from '@/store/gateway'
 import { setGatewayProjectAppearance } from '@/store/gateway-project-looks'
-import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarShowAllSessions, dismissAutoProject, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -865,6 +865,32 @@ export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): strin
   return JSON.stringify(policy)
 }
 
+/**
+ * The folder a scan with no configured roots searches: the profile's Working Directory
+ * (`terminal.cwd`) — where its sessions start, so the workspace the sidebar is about.
+ *
+ * A profile that never configured one (`.` or blank) has no workspace to speak of, which keeps the
+ * scan off instead of walking the home directory that #53328 was filed against. `repo_scan_roots` is
+ * how a folder outside the workspace is added.
+ */
+export function defaultRepoScanRoot(config: unknown): null | string {
+  const terminal = config && typeof config === 'object' ? (config as { terminal?: unknown }).terminal : undefined
+  const raw =
+    terminal && typeof terminal === 'object' && typeof (terminal as { cwd?: unknown }).cwd === 'string'
+      ? ((terminal as { cwd: string }).cwd || '').trim()
+      : ''
+
+  // `~` is expanded by the scanner, so only the paths that could BE home (or the root) are refused
+  // here; a real folder is passed through untouched.
+  const root = raw.replace(/[/\\]+$/, '')
+
+  if (!root || root === '.' || root === '~' || root === '/' || root === '~/' || root === '/Users' || root === '/home') {
+    return null
+  }
+
+  return root
+}
+
 interface RepoScanState {
   completedSignature?: string
   generation: number
@@ -943,8 +969,14 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
   let generation: number | undefined
 
   try {
-    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
-    const signature = repoDiscoveryPolicySignature(policy)
+    const config = await getHermesConfig(context.profile)
+    const policy = repoDiscoveryPolicyFromConfig(config)
+    // No configured roots: the profile's workspace stands in for them, so automatic discovery does
+    // something out of the box instead of silently returning nothing (#53328 is why it is not `$HOME`).
+    const workspaceRoot = defaultRepoScanRoot(config)
+    const roots = policy.roots.length > 0 ? policy.roots : workspaceRoot ? [workspaceRoot] : []
+    // The workspace belongs in the signature: moving it must re-scan the same way a policy change does.
+    const signature = repoDiscoveryPolicySignature({ ...policy, roots })
 
     if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
       return
@@ -963,7 +995,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       scanningGatewayGenerations.set(context.gateway, generation)
       syncReposScanning()
 
-      const repos = await scan(policy.roots, {
+      const repos = await scan(roots, {
         enabled: true,
         excludePaths: policy.exclude_paths,
         nested: policy.nested
@@ -1397,6 +1429,14 @@ export async function deleteProject(id: string): Promise<void> {
   // Capture membership BEFORE removal — the project's folders (which determine
   // ownership) are gone once it's dropped from the cache.
   const kickToIntro = openSessionBelongsToProject(id, snap.projects)
+  // And capture the folders themselves: a deleted project leaves its folder unowned, which is
+  // exactly what the auto tiers key on (sessions left in it, and the disk scan), so without this
+  // the row the user just removed comes straight back as an auto-discovered one.
+  const removed = snap.projects.find(project => project.id === id)
+  const removedPaths = [
+    removed?.primary_path,
+    ...(removed?.folders ?? []).map(folder => folder.path)
+  ].filter((path): path is string => Boolean(path && path.trim()))
 
   $projects.set(snap.projects.filter(project => project.id !== id))
   $projectTree.set(snap.tree.filter(node => node.id !== id))
@@ -1420,6 +1460,11 @@ export async function deleteProject(id: string): Promise<void> {
       )
     )
   })
+
+  for (const path of removedPaths) {
+    dismissAutoProject(path.replace(/[/\\]+$/, ''))
+  }
+
   void refreshProjectTree()
 }
 

@@ -246,6 +246,23 @@ def _repo_discovery_policy_is_default(policy: dict) -> bool:
         _repo_discovery_policy(DEFAULT_CONFIG["desktop"]))
 
 
+def _scan_default_root() -> str:
+    """The folder a scan with no configured roots searches: the profile's Working Directory.
+
+    ``terminal.cwd`` is where sessions start, so it is the workspace whose repositories the sidebar
+    is about. A profile that never configured one (``"."``, blank, home, ``/``) has no workspace to
+    speak of and gets no scan at all — silently expanding to the home directory is what #53328 was
+    filed against. ``repo_scan_roots`` is how a user adds folders outside the workspace.
+    """
+    cwd = str((_load_cfg().get("terminal") or {}).get("cwd") or "").strip()
+    if not cwd:
+        return ""
+    root = os.path.realpath(os.path.expanduser(cwd))
+    if os.path.normcase(root) in _non_workspace_dirs() or not os.path.isdir(root):
+        return ""
+    return root
+
+
 def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     """Backend-side disk scan of the policy roots into the discovery cache. Best-effort:
     failures log and leave the cache untouched. True only when the scan is authoritative
@@ -260,6 +277,10 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     """
     from hermes_cli import projects_db as pdb
     roots = policy.get("roots") or []
+    if not roots:
+        # No roots configured: the workspace stands in for them (see `_scan_default_root`).
+        default_root = _scan_default_root()
+        roots = [default_root] if default_root else []
     excludes = policy.get("exclude_paths") or []
     # Opt-in: descend through a repo to find the repos inside it. Absent means off, so an older caller
     # passing a policy without the key keeps the cheap, stop-at-first-repo walk.

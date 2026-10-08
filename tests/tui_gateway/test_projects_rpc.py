@@ -332,6 +332,60 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     assert seed in joined
 
 
+def test_remote_scan_without_roots_searches_the_working_directory(monkeypatch, tmp_path):
+    """No configured roots is not \"scan nothing\": the workspace stands in (#53328 keeps it off $HOME)."""
+    from hermes_cli import projects_db as pdb
+
+    workspace = tmp_path / "workspace"
+    repo = workspace / "service"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=outside, check=True)
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "terminal": {"cwd": str(workspace)},
+            "desktop": {"repo_scan_enabled": True, "repo_scan_roots": [], "repo_scan_exclude_paths": []},
+        },
+    )
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, {"enabled": True, "roots": [], "exclude_paths": []})
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    assert str(repo) in found
+    assert str(outside) not in found
+
+
+def test_remote_scan_without_roots_or_workspace_scans_nothing(monkeypatch, tmp_path):
+    """A profile that never configured a Working Directory has no workspace to scan."""
+    from hermes_cli import projects_db as pdb
+
+    repo = tmp_path / "service"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    for cwd in (".", "", os.sep, os.path.expanduser("~")):
+        monkeypatch.setattr(
+            server,
+            "_load_cfg",
+            lambda cwd=cwd: {
+                "terminal": {"cwd": cwd},
+                "desktop": {"repo_scan_enabled": True, "repo_scan_roots": [], "repo_scan_exclude_paths": []},
+            },
+        )
+
+        with pdb.connect_closing() as conn:
+            server._scan_discovered_repos_remote(conn, {"enabled": True, "roots": [], "exclude_paths": []})
+            found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+        assert str(repo) not in found
+
+
 def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     """A configured discovery root missing on disk must NOT wipe the cache.
 

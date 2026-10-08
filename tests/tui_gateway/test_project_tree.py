@@ -461,6 +461,30 @@ def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     assert fresh["repos"][0]["groups"] == []
 
 
+def test_discovered_repo_inside_a_declared_project_nests_under_it():
+    # A superproject's submodules live inside its own folder. The scan finds them, and each one
+    # belongs UNDER the project that holds the folder — dropping it here is what made nested
+    # discovery find nothing in the case it exists for.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["isAuto"] is True
+    assert child["parentId"] == "p_app"
+
+
+def test_discovered_repo_that_is_a_projects_own_folder_does_not_duplicate_its_row():
+    # The one case worth refusing: the repo IS the declared project, so the project row already is it.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app", "label": "app", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    assert [p["id"] for p in tree["projects"]] == ["p_app"]
+
+
 def test_seeded_folder_repo_does_not_duplicate_a_session_derived_repo():
     # When a folder already has sessions (same git root), seeding must not add a
     # second repo for the same path.

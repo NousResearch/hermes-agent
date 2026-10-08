@@ -109,10 +109,15 @@ class StagedPlugin:
         self.configs = selection_snapshot()
         self.target = Path(plugin["target"]).absolute()
         self.staged = Path(plugin["staged"]).resolve()
-        if (not self.target.resolve().is_relative_to(dependency_home_root().resolve())
+        # Containment is judged against the resolved plugins root: that directory may itself be
+        # a symlink or junction relocating plugins off the home drive, and the staged tree lives
+        # outside the home either way.
+        resolved_root = (dependency_home_root() / "plugins").resolve()
+        resolved_target = self.target.resolve()
+        if (resolved_target == resolved_root or resolved_root not in resolved_target.parents
                 or self.target.parent.name != "plugins" or self.target.is_symlink()
-                or self.staged == self.target.resolve() or self.staged.is_relative_to(self.target.resolve())
-                or self.target.resolve().is_relative_to(self.staged)):
+                or self.staged == resolved_target or self.staged.is_relative_to(resolved_target)
+                or resolved_target.is_relative_to(self.staged)):
             raise ValueError("plugin publication paths escape or overlap their home")
         manifest = validate_manifest(self.staged)
         if manifest.get("name", self.target.name) != self.target.name:

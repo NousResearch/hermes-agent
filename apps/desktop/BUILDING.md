@@ -81,16 +81,31 @@ scripts\build-bundle.ps1           # Windows sideload MSIX
 scripts\build-bundle.ps1 -Store    # Windows Store MSIX
 ```
 
-The checkout must be clean, because the build packages `HEAD`. Both scripts
-delete the previous build output first and write to `apps/desktop/release/`.
-The packages are unsigned.
+The checkout must be clean, because the build packages `HEAD`. Both scripts pass
+`--clean` to the driver. The driver removes the previous outputs only after it holds
+the checkout lock, so a second run cannot delete a build that is still going. Output
+goes to `apps/desktop/release/`.
+
+The scripts do not sign or notarize. They remove `AZURE_SIGN_*` (Windows) and the
+`CSC_*`/`APPLE_*` signing variables (macOS, Linux) from the build, and restore your
+Windows shell afterward. macOS can still sign nested binaries when it finds a
+Developer ID in your keychain.
 
 `-Store` allocates a local claim tag `rc.<N>-vX.Y.Z` (N starts at 900) for the
 next patch after the newest published stable tag, and deletes it when the
 build ends. The tag is never pushed. Each architecture builds on its own host.
-To combine the x64 and arm64 Store packages, copy both `Store-*.msix` files into
-one `apps/desktop/release` and run `node scripts/bundle-store-msixbundle.mjs --tag vX.Y.Z`.
-On Windows, use a short checkout path such as `C:\hsb`.
+`-Store` prints the claim timestamp as `HERMES_RELEASE_EPOCH=<n>`. To combine the
+x64 and arm64 Store packages, copy both `Store-*.msix` files into one
+`apps/desktop/release`, then run this on that host:
+
+```powershell
+$env:HERMES_RELEASE_EPOCH = '<n from the build>'
+node scripts/bundle-store-msixbundle.mjs --tag vX.Y.Z
+```
+
+Use the epoch from ONE claim for both architectures. The tag is already deleted, so
+without the epoch the bundle step finds no release timestamp. On Windows, use a
+short checkout path such as `C:\hsb`.
 
 ## Complete native build
 

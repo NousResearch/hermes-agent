@@ -4,7 +4,9 @@
 #   scripts/build-bundle.sh [--variant bundled|light] [-- <electron-builder args>]
 #
 # macOS gets a DMG and ZIP, Linux an AppImage, in apps/desktop/release/.
-# The commit does not need to be pushed. The build is unsigned.
+# The commit does not need to be pushed. The build is not notarized, and the
+# release signing variables in your shell are ignored. macOS can still sign
+# nested binaries with a Developer ID that it finds in your keychain.
 # Windows has its own script: scripts/build-bundle.ps1.
 set -euo pipefail
 
@@ -13,7 +15,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --variant) variant="${2:?--variant needs bundled or light}"; shift 2 ;;
     --) shift; break ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "build-bundle: unknown argument $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -40,18 +42,17 @@ if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
 fi
 commit="$(git rev-parse HEAD)"
 
-# A rebuild in the same checkout needs the previous work and outputs gone.
-# .cache stays: it holds downloaded tools and is safe to reuse.
-for stale in .build/desktop-job apps/desktop/build apps/desktop/dist apps/desktop/release; do
-  if [ -e "$stale" ]; then
-    echo "build-bundle: removing previous output $stale"
-    chmod -R u+w "$stale" 2>/dev/null || true
-    rm -rf "$stale"
-  fi
-done
+# A local build never signs or notarizes with credentials from the caller's shell.
+# CSC_IDENTITY_AUTO_DISCOVERY=false is the same switch the desktop rebuild command uses.
+unset APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_NOTARY_PROFILE APPLE_SIGNING_IDENTITY \
+      CSC_LINK CSC_KEY_PASSWORD CSC_NAME CSC_KEYCHAIN
+export CSC_IDENTITY_AUTO_DISCOVERY=false
 
+# --clean removes the previous outputs after the driver holds the checkout lock, so a
+# second invocation cannot delete the files of a build that is still running.
+# .cache stays: it holds downloaded tools and is safe to reuse.
 echo "build-bundle: building $commit ($variant)"
-"$python" scripts/bundles/desktop.py --commit "$commit" --variant "$variant" ${1+-- "$@"}
+"$python" scripts/bundles/desktop.py --commit "$commit" --variant "$variant" --clean ${1+-- "$@"}
 
 echo "build-bundle: done. Artifacts in $repo/apps/desktop/release:"
 ls -lh apps/desktop/release | sed 's/^/  /'

@@ -7,14 +7,19 @@
   scripts\build-bundle.ps1 -Store      Microsoft Store MSIX (Store identity).
 
   The commit does not need to be pushed. The checkout must be clean: the build
-  packages HEAD. Output goes to apps\desktop\release\. The packages are unsigned.
+  packages HEAD. Output goes to apps\desktop\release\. The script removes the
+  AZURE_SIGN_* variables from the build, so the packages are unsigned even when
+  your shell has release signing set.
 
   -Store needs a stable release tag. This script makes a local claim tag
   (rc.<N>-vX.Y.Z) for the next patch version, builds with it, and deletes it
   when the build ends. It never pushes the tag. Each architecture builds on its
-  own native host. To combine x64 and arm64 Store packages into one bundle, copy
-  both Store-*.msix files into one apps\desktop\release and run
-  scripts\bundle-store-msixbundle.mjs.
+  own native host. The script prints the claim tag's timestamp as
+  HERMES_RELEASE_EPOCH. To combine the x64 and arm64 Store packages, copy both
+  Store-*.msix files into one apps\desktop\release, set the same
+  HERMES_RELEASE_EPOCH on that host, and run
+  node scripts\bundle-store-msixbundle.mjs --tag vX.Y.Z.
+  Both hosts must use the epoch from ONE claim, or the package versions differ.
 
   Use a short checkout path such as C:\hsb. On Windows ARM64, a long path makes
   the cryptography build fail with LNK1104.
@@ -65,14 +70,6 @@ function Git-Lines {
   return $lines | Where-Object { $_ }
 }
 
-# Previous builds leave read-only payload files, which a plain delete refuses.
-function Remove-Output([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) { return }
-  Write-Host "build-bundle: removing previous output $Path"
-  & attrib -r "$Path\*" /s /d | Out-Null
-  Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-}
-
 # Next patch after the newest published stable tag (vX.Y.Z, not CalVer or canary).
 function Get-ClaimVersion {
   $latest = $null
@@ -111,11 +108,14 @@ if ($Repo.Length -gt 40) {
   Write-Warning "checkout path is $($Repo.Length) characters. On Windows ARM64 a long path can fail the cryptography build (LNK1104). Prefer C:\hsb."
 }
 
-# .cache stays: it holds downloaded tools and is safe to reuse.
-foreach ($stale in '.build\desktop-job', 'apps\desktop\build', 'apps\desktop\dist', 'apps\desktop\release') {
-  Remove-Output (Join-Path $Repo $stale)
-}
-
+# Release settings and signing credentials exist only for this build. Save the caller's
+# values and put them back, so a later direct build command sees an untouched session.
+$buildVariables = @('PYTHONUTF8', 'RELEASE_CLAIM_TAG', 'RELEASE_CLAIM_OBJECT', 'HERMES_PAYLOAD_TAG',
+  'HERMES_PAYLOAD_VERSION', 'HERMES_DESKTOP_VARIANT') +
+  @(Get-ChildItem Env: | Where-Object { $_.Name -like 'AZURE_*' } | ForEach-Object { $_.Name })
+$savedEnvironment = @{}
+foreach ($name in $buildVariables) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+foreach ($name in $buildVariables | Where-Object { $_ -like 'AZURE_*' }) { Remove-Item "Env:$name" }
 $env:PYTHONUTF8 = '1'
 $claim = $null
 try {
@@ -127,6 +127,8 @@ try {
       tag -a $claim -m 'local build claim' $sha
     if ($LASTEXITCODE) { Fail "could not create claim tag $claim" }
     $claimObject = @(Git-Lines rev-parse "refs/tags/$claim")[0]
+    # Every architecture's Store package derives its 4-part version from this one timestamp.
+    $claimEpoch = [int64]((@(Git-Lines cat-file -p $claimObject) | Where-Object { $_ -match '^tagger ' })[0] -replace '^tagger .* (\d+) [+-]\d{4}$', '$1')
     $env:RELEASE_CLAIM_TAG = $claim
     $env:RELEASE_CLAIM_OBJECT = $claimObject
     $env:HERMES_PAYLOAD_TAG = "v$version"
@@ -136,16 +138,19 @@ try {
     # Prepare as bundled, then package as store from that preparation, as CI does.
     $work = Join-Path $Repo '.build\desktop-job'
     & $py scripts/bundles/desktop.py --tag "v$version" --release-commit $sha --variant bundled --prepare-only `
-      --work $work --cache (Join-Path $Repo '.cache\desktop-inputs')
+      --work $work --cache (Join-Path $Repo '.cache\desktop-inputs') --clean
     if ($LASTEXITCODE) { Fail "preparation failed (exit $LASTEXITCODE)" }
     & $py scripts/bundles/desktop.py --prepared (Join-Path $work 'prepared.json') --variant store
     if ($LASTEXITCODE) { Fail "Store packaging failed (exit $LASTEXITCODE)" }
   } else {
     Write-Host "build-bundle: building $sha (sideload)"
-    & $py scripts/bundles/desktop.py --commit $sha --variant bundled
+    & $py scripts/bundles/desktop.py --commit $sha --variant bundled --clean
     if ($LASTEXITCODE) { Fail "build failed (exit $LASTEXITCODE)" }
   }
 } finally {
+  foreach ($name in $buildVariables) {
+    [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+  }
   if ($claim) {
     # Claim tags are local only. Delete this one even when the build fails.
     & git tag -d $claim | Out-Null
@@ -153,5 +158,8 @@ try {
 }
 
 Write-Host "build-bundle: done. Unsigned packages in $Repo\apps\desktop\release:"
+if ($Store) {
+  Write-Host "build-bundle: claim timestamp for combining architectures: HERMES_RELEASE_EPOCH=$claimEpoch (version v$version)"
+}
 Get-ChildItem (Join-Path $Repo 'apps\desktop\release') -Filter '*.msix*' |
   ForEach-Object { '  {0}  {1:N0} MB' -f $_.Name, ($_.Length / 1MB) }

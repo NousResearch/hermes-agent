@@ -208,6 +208,37 @@ class TestCandidateDiscovery:
         assert found == [(1, temp_profile, "/usr/bin/chromium-browser", 10, 1)]
 
 
+class TestAllCmdlines:
+    def test_maps_every_live_process_cmdline(self, monkeypatch):
+        """psutil-backed ``_all_cmdlines`` must flatten argv like the old /proc reader."""
+        import sys
+        import types
+
+        class _Proc:
+            def __init__(self, pid, cmdline):
+                self.info = {"pid": pid, "cmdline": cmdline}
+
+        fake = types.SimpleNamespace(process_iter=lambda _attrs: [
+            _Proc(100, ["python", "--user-data-dir=/tmp/x"]),
+            _Proc(101, None),                       # vanished between scan and read
+            _Proc(102, []),                         # kernel thread: empty cmdline
+        ])
+        monkeypatch.setitem(sys.modules, "psutil", fake)
+
+        assert lifecycle._all_cmdlines() == {
+            100: "python --user-data-dir=/tmp/x",
+            101: "",
+            102: "",
+        }
+
+    def test_psutil_unavailable_yields_empty_map(self, monkeypatch):
+        """No psutil -> no cmdline reference data; the reap path gates on psutil anyway."""
+        import sys
+        monkeypatch.setitem(sys.modules, "psutil", None)
+
+        assert lifecycle._all_cmdlines() == {}
+
+
 class TestWiring:
     def test_daemon_sweep_also_sweeps_chromium(self, monkeypatch, tmp_path):
         calls = []
@@ -221,10 +252,49 @@ class TestWiring:
         assert calls == ["chrome"]
 
     def test_atexit_registers_the_sweep_before_the_emergency_teardown(self):
-        """LIFO: registering first makes it run last, after our own daemons are torn down."""
-        import atexit
-        src = Path(bt.__file__).read_text(encoding="utf-8")
-        sweep = src.index("atexit.register(_lifecycle._reap_orphaned_chrome_processes)")
-        emergency = src.index("atexit.register(_lifecycle._emergency_cleanup_all_sessions)")
-        assert sweep < emergency
+        """LIFO: registering first makes it run last, after the emergency teardown.
+
+        Behavioral check, not source-reading: in a fresh interpreter, interpose on
+        ``atexit.register`` while importing ``browser_tool`` and assert the sweep is
+        wrapped in ``_best_effort`` and registered *before* the emergency teardown.
+        """
+        import subprocess
+        import sys
+        import textwrap
+        script = textwrap.dedent("""\
+            import atexit
+
+            seen = []
+            real_register = atexit.register
+
+            def wrapped_register(fn, *args, **kwargs):
+                seen.append((getattr(fn, "__name__", repr(fn)), [
+                    getattr(a, "__name__", None) for a in args
+                ], kwargs))
+                return real_register(fn, *args, **kwargs)
+
+            atexit.register = wrapped_register
+            try:
+                import tools.browser_tool  # noqa: F401 -- import performs the registrations
+            finally:
+                atexit.register = real_register
+
+            sweep_pos = emergency_pos = None
+            for pos, (name, arg_names, _kwargs) in enumerate(seen):
+                if name == "_best_effort" and "_reap_orphaned_chrome_processes" in arg_names:
+                    sweep_pos = pos
+                if name == "_emergency_cleanup_all_sessions":
+                    emergency_pos = pos
+
+            if sweep_pos is None or emergency_pos is None or not (sweep_pos < emergency_pos):
+                print(f"BAD sweep={sweep_pos} emergency={emergency_pos} seen={seen}")
+                raise SystemExit(1)
+            print("OK")
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
         assert hasattr(lifecycle, "_reap_orphaned_chrome_processes")

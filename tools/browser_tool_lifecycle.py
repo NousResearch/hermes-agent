@@ -507,15 +507,25 @@ def _devtools_port(profile: str) -> Optional[str]:
 
 
 def _all_cmdlines() -> Dict[int, str]:
-    """``pid -> cmdline`` for every live process; used to spot an owner by reference."""
+    """``pid -> cmdline`` for every live process; used to spot an owner by reference.
+
+    Cross-platform via psutil (the same dependency the scanner already uses): the old
+    ``/proc/<pid>/cmdline`` walk only exists on Linux and raises ``FileNotFoundError``
+    on Windows.  Individual processes we cannot read are skipped, matching the old
+    ``OSError`` swallow; if psutil itself is unavailable we fall back to an empty map
+    (the reap path is already gated on psutil by ``_chromium_main_processes``).
+    """
+    try:
+        import psutil
+    except Exception as exc:
+        _bt.logger.debug("Command-line scan unavailable (psutil): %s", exc)
+        return {}
     out: Dict[int, str] = {}
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
+    for proc in psutil.process_iter(["pid", "cmdline"]):
         try:
-            with open(f"/proc/{entry}/cmdline", "rb") as fh:
-                out[int(entry)] = fh.read().decode("utf-8", "replace").replace("\x00", " ").strip()
-        except OSError:
+            argv = proc.info.get("cmdline") or []
+            out[int(proc.info["pid"])] = " ".join(argv).strip()
+        except Exception:
             continue
     return out
 

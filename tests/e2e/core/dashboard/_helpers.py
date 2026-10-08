@@ -244,7 +244,7 @@ class Dashboard:
                  argv: tuple[str, ...] = ()) -> None:
         self.sb = sb
         self.log_path = log_path
-        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
+        self._log = open(log_path, "a", encoding="utf-8")
         env = sb.env({"HERMES_WEB_DIST": str(sb.root / "web_dist"), **(extra_env or {})})
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "dashboard", "--no-open", "--skip-build",

@@ -67,7 +67,7 @@ def _reset_auxiliary_provider_state():
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     kwargs = dict(
         api_key="test-key",
@@ -454,7 +454,7 @@ class TestChatMessagesToResponsesInput:
     def test_user_message_passes_through(self, monkeypatch):
         messages = [{"role": "user", "content": "hello"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "user", "content": "hello"}]
+        assert items == [{"type": "message", "role": "user", "content": "hello"}]
 
     def test_system_messages_filtered(self, monkeypatch):
         messages = [
@@ -567,7 +567,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = _normalize_codex_response(response)
+        msg, _reason = _normalize_codex_response(response)
         assert msg.codex_reasoning_items is not None
         assert len(msg.codex_reasoning_items) == 1
         assert msg.codex_reasoning_items[0]["encrypted_content"] == "gAAAA_secret_blob_123"
@@ -592,7 +592,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = _normalize_codex_response(response)
+        msg, _reason = _normalize_codex_response(response)
         assert msg.codex_message_items is not None
         assert len(msg.codex_message_items) == 2
         assert msg.codex_message_items[0]["id"] == "msg_abc"
@@ -626,7 +626,7 @@ class TestChatMessagesToResponsesInputMessageItems:
             {"role": "user", "content": "follow up"},
         ]
         items = _chat_messages_to_responses_input(messages)
-        msg_items = [i for i in items if i.get("type") == "message"]
+        msg_items = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         assert len(msg_items) == 1
         assert msg_items[0]["id"] == "msg_123"
         assert msg_items[0]["phase"] == "final_answer"
@@ -635,7 +635,7 @@ class TestChatMessagesToResponsesInputMessageItems:
     def test_fallback_to_plain_when_no_message_items(self, monkeypatch):
         messages = [{"role": "assistant", "content": "Hello world"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "assistant", "content": "Hello world"}]
+        assert items == [{"type": "message", "role": "assistant", "content": "Hello world"}]
 
 
 
@@ -713,7 +713,7 @@ class TestAuxiliaryClientProviderPriority:
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import _OPENROUTER_MODEL, get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
-            client, model = get_text_auxiliary_client()
+            _client, model = get_text_auxiliary_client()
         assert model == _OPENROUTER_MODEL
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
 
@@ -727,7 +727,7 @@ class TestAuxiliaryClientProviderPriority:
         with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
              patch("agent.auxiliary_client.OpenAI") as mock, \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
-            client, model = get_text_auxiliary_client()
+            _client, model = get_text_auxiliary_client()
         assert model == _NOUS_MODEL
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
@@ -744,7 +744,7 @@ class TestAuxiliaryClientProviderPriority:
              patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("http://localhost:1234/v1", "local-key", "openai-compatible")), \
              patch("agent.auxiliary_client.OpenAI") as mock:
-            client, model = get_text_auxiliary_client()
+            _client, _model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
     def test_codex_not_in_auto_fallback(self, monkeypatch):

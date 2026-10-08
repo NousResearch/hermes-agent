@@ -47,8 +47,20 @@ logger = logging.getLogger(__name__)
 
 
 class ServerRequest:
-    __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
-                 "qids", "locked", "on_result", "declined")
+    __slots__ = (
+        "answered",
+        "created_at",
+        "declined",
+        "event",
+        "id",
+        "locked",
+        "method",
+        "on_result",
+        "params",
+        "qids",
+        "result",
+        "sid",
+    )
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
                  on_result: Callable[[dict | None], None] | None = None) -> None:
@@ -62,7 +74,7 @@ class ServerRequest:
         self.created_at = time.time()
         # Batch clarify: question ids still to lock, and the answers locked so far.
         self.qids = list(qids) if qids else None
-        self.locked: dict[str, str] = {}
+        self.locked: dict[str, str | None] = {}
         self.on_result = on_result
         # Client transports that answered NOT_SHOWN_CODE (no window there shows this session).
         self.declined: set = set()
@@ -86,14 +98,14 @@ _open: dict[str, ServerRequest] = {}
 # Frame sinks, bound by ``bind_sinks`` from server.py at import time (like the method_ctx split
 # modules): importing server back from here would pick a different module object under the test
 # fixtures that patch ``sys.modules`` around the server import.
-_write: Callable[[dict], Any] = lambda frame: None  # noqa: E731
-_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noqa: E731
+_write: Callable[[dict], Any] = lambda frame: None
+_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None
 # ``answerable(sid)``: False only when every client attached to the session is a build that never
 # advertised handling server→client requests (session_transports.py::_session_client_answers_requests).
-_answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
+_answerable: Callable[[str], bool] = lambda sid: True
 # ``clients(sid)``: the attached client transports that answer server→client requests — the set whose
 # unanimous NOT_SHOWN_CODE decline settles a window-owned request (session_transports.py).
-_clients: Callable[[str], list] = lambda sid: []  # noqa: E731
+_clients: Callable[[str], list] = lambda sid: []
 
 # Error code a client answers when none of its windows shows the request's session, and the refusal the
 # tool reports once every attached client said so. Mirrored in apps/desktop server-requests.ts.
@@ -166,8 +178,8 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
 
     Returns ``None`` when the renderer never answered (timeout, cancel, or an error response — e.g.
     a client without a handler for ``method``). ``timeout`` semantics: None → wait until answered or
-    cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that times out
-    returns ``{"answers": <locked so far>, "timed_out": True}`` instead of None.
+    cancelled, 0 → return immediately, > 0 → bounded wait. A batch (``qids``) that settled returns
+    ``{"answers": <locked so far>, "outcome"}`` (``submitted`` / ``cancelled`` / ``timed_out``).
     """
     if _unanswerable(method, sid):
         return None
@@ -195,7 +207,7 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
-            return {"answers": locked, "timed_out": True}
+            return {"answers": locked, "outcome": "timed_out"}
     return None
 
 
@@ -283,7 +295,9 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
                 merged = dict(req.locked)
                 if isinstance(answers, dict):
                     merged.update(answers)
-                req.result = {**req.result, "answers": merged}
+                req.result = {**req.result, "answers": merged, "outcome": "submitted"}
+            elif req.qids:
+                req.result = {"answers": dict(req.locked), "outcome": "cancelled"}
             req.answered = True
     if req.on_result is not None:
         req.on_result(req.result)
@@ -291,10 +305,10 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
     return True
 
 
-def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | None:
-    """Lock one batch-clarify answer (update-in-place). Returns the question ids still unanswered;
-    the last lock resolves the request with the full ``{"answers"}`` set. ``None`` when no open
-    batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
+def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[str] | None:
+    """Lock one batch-clarify answer (update-in-place; ``None`` = skipped). Returns the question ids
+    still unanswered; the last lock resolves the request with the full ``{"answers"}`` set. ``None``
+    when no open batch has that id (expired or foreign); ``ValueError`` for an unknown question id."""
     with _lock:
         req = _open.get(request_id)
         if req is None or req.qids is None:
@@ -304,7 +318,7 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
-            req.result, req.answered = {"answers": dict(req.locked)}, True
+            req.result, req.answered = {"answers": dict(req.locked), "outcome": "submitted"}, True
             _open.pop(request_id, None)
     if not remaining:
         req.event.set()
@@ -313,13 +327,17 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
 
 def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
     """Withdraw open requests — only *sid*'s (session.interrupt must not touch other sessions'), or
-    every one when *sid* is None (shutdown). Blocked waits return None; queue-backed requests run
-    ``on_result(None)`` so their owner can settle. Returns the number withdrawn."""
+    every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
+    answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
+    owner can settle. Returns the number withdrawn."""
     with _lock:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
             _open.pop(req.id, None)
-            req.result, req.answered = None, False
+            if req.qids is not None:
+                req.result, req.answered = {"answers": dict(req.locked), "outcome": "cancelled"}, True
+            else:
+                req.result, req.answered = None, False
     for req in targets:
         if req.on_result is not None:
             req.on_result(None)

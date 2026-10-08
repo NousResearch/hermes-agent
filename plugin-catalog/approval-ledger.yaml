@@ -1,0 +1,20 @@
+name: approval-ledger
+repo: https://github.com/olric3015/hermes-plugins
+sha: d029b8e9dafbf17ff85cef54030f4ee3b2565be3
+subdir: approval-ledger
+description: "Local ledger of Hermes's approval prompts (dangerous commands, protected writes, MCP consent, smart-mode verdicts): /approval-log shows how often each rule asked, how many prompts were approved, denied or left unanswered, and how long a person took to answer, per rule or per surface, for the last 24 hours, any number of hours or days, the latest session or everything recorded; /approval-log recent lists the newest decisions. Disclosure — writes decision metadata (session id, surface, rule label, answer, timings; no command, description or session key) to plugin-data/approval-ledger/approvals.jsonl, trimmed to 5,000 rows past 2 MB; observer only, cannot answer or change an approval; no network"
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/approval-ledger
+version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/d029b8e9dafbf17ff85cef54030f4ee3b2565be3/docs/approval-ledger-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_approval_request
+  - post_approval_response
+  provides_middleware: []
+  requires_env: []

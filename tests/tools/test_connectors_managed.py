@@ -152,7 +152,6 @@ def test_desktop_connect_url_stays_on_the_live_operation_for_the_panel():
 
     def cb(payload):
         captured["op"] = live.get("s1", payload["op_id"])
-        return None
 
     _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb)
     snap = captured["op"].result()["targets"][0]
@@ -190,7 +189,6 @@ def test_respond_from_the_card_skips_a_target_and_wakes_the_loop():
             operation.transition("notion", c.TargetState.skipped, c.Actor.user)
             done.set()
         threading.Timer(0.02, answer).start()
-        return None
 
     out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=cb, tick=0.01)
     assert done.is_set()
@@ -341,7 +339,6 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
 
     def cb(payload):
         op_id["v"] = payload["op_id"]
-        return None
 
     out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb, tick=0.01)
     assert settled.is_set()
@@ -363,7 +360,6 @@ def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
         def stop():
             set_interrupt(True, worker["tid"])
         threading.Timer(0.02, stop).start()
-        return None
 
     import time
     started = time.monotonic()

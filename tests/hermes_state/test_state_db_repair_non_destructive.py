@@ -807,7 +807,6 @@ def test_stale_scratch_is_removed_before_health_check(tmp_path, monkeypatch):
     def fake_health(_path):
         checks.append("health")
         assert not scratch.exists()
-        return None
 
     monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", fake_health)
 

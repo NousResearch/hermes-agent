@@ -55,8 +55,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
@@ -248,7 +249,7 @@ def _hash_file(path: Path) -> Optional[str]:
         return None
 
 
-def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
+def _load_ledger(store: Path, dir_hash: str) -> dict[str, dict]:
     """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
 
     The ledger records the content hash of every file the last successful
@@ -263,7 +264,7 @@ def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
         return {}
 
 
-def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
+def _save_ledger(store: Path, dir_hash: str, ledger: dict[str, dict]) -> None:
     """Persist the agent-write ledger, capped to the newest entries."""
     try:
         if len(ledger) > _LEDGER_MAX_ENTRIES:
@@ -284,6 +285,24 @@ def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
 
 def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
+
+
+def _gitlink_paths(ls_tree_z: str) -> list[str]:
+    """Paths of gitlinks (nested repositories stored as a commit reference, not
+    their files) in ``git ls-tree -r -z`` output."""
+    return [
+        record.split("\t", 1)[1]
+        for record in ls_tree_z.split("\x00")
+        if record.startswith("160000 commit ") and "\t" in record
+    ]
+
+
+def _uncaptured_note(nested_repos: list[str]) -> str:
+    """Checkpoint-message suffix naming nested repositories whose files were
+    not captured, so every /rollback listing discloses it."""
+    shown = ", ".join(nested_repos[:3])
+    more = f" (+{len(nested_repos) - 3})" if len(nested_repos) > 3 else ""
+    return f" [nested git repos not captured: {shown}{more}]"
 
 
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
@@ -336,14 +355,14 @@ def _git_env(
 
 
 def _run_git(
-    args: List[str],
+    args: list[str],
     store: Path,
     working_dir: str,
     timeout: int = _GIT_TIMEOUT,
-    allowed_returncodes: Optional[Set[int]] = None,
+    allowed_returncodes: Optional[set[int]] = None,
     index_file: Optional[Path] = None,
-    extra_env: Optional[Dict[str, str]] = None,
-) -> Tuple[bool, str, str]:
+    extra_env: Optional[dict[str, str]] = None,
+) -> tuple[bool, str, str]:
     """Run a git command against the shared store.  Returns (ok, stdout, stderr).
 
     ``allowed_returncodes`` suppresses error logging for known/expected non-zero
@@ -411,7 +430,7 @@ def _run_git(
         return False, "", str(exc)
 
 
-def _git_out(args: List[str], store: Path, working_dir: str, rc: Optional[Set[int]] = None) -> str:
+def _git_out(args: list[str], store: Path, working_dir: str, rc: Optional[set[int]] = None) -> str:
     """stdout of a successful git call, else ``""``."""
     ok, out, _ = _run_git(args, store, working_dir, allowed_returncodes=rc)
     return out if ok else ""
@@ -422,7 +441,7 @@ def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
     return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
 
 
-def _list_project_refs(store: Path, working_dir: str) -> List[str]:
+def _list_project_refs(store: Path, working_dir: str) -> list[str]:
     out = _git_out(["for-each-ref", "--format=%(refname)", _REFS_PREFIX], store, working_dir, {128})
     return [r for r in out.splitlines() if r.strip()]
 
@@ -559,7 +578,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     return None
 
 
-def _volume_evidence(workdir: Path) -> Dict:
+def _volume_evidence(workdir: Path) -> dict:
     """Record the identity of ``workdir``'s parent while the project is live.
 
     ``(st_dev, st_ino)`` of the parent directory, captured at a moment when
@@ -597,7 +616,7 @@ def _register_project(store: Path, working_dir: str) -> None:
     dir_hash = _project_hash(working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     now = time.time()
-    meta: Dict = {"workdir": str(_normalize_path(working_dir)),
+    meta: dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
     evidence = _volume_evidence(_normalize_path(working_dir))
     if evidence:
@@ -653,12 +672,12 @@ def _touch_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
 
-def _list_projects(store: Path) -> List[Dict]:
+def _list_projects(store: Path) -> list[dict]:
     """Return all registered projects under the store."""
     projects_dir = store / _PROJECTS_DIRNAME
     if not projects_dir.exists():
         return []
-    out: List[Dict] = []
+    out: list[dict] = []
     for meta_path in projects_dir.glob("*.json"):
         dir_hash = meta_path.stem
         try:
@@ -672,7 +691,7 @@ def _list_projects(store: Path) -> List[Dict]:
     return out
 
 
-def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
+def _pre_v2_shadow_repos(base: Path) -> list[dict]:
     """Return pre-v2 per-project shadow repos still directly under ``base``.
 
     Pre-v2 layout kept one shadow git repo per working directory directly
@@ -680,7 +699,7 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
     single source of truth for that scan so a preview built from it (e.g.
     ``store_status``) always matches what ``prune_checkpoints`` deletes.
     """
-    out: List[Dict] = []
+    out: list[dict] = []
     if not base.exists():
         return out
     for child in base.iterdir():
@@ -775,7 +794,7 @@ class CheckpointManager:
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
-        self._checkpointed_dirs: Set[str] = set()
+        self._checkpointed_dirs: set[str] = set()
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -831,7 +850,7 @@ class CheckpointManager:
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 
-    def _safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
+    def _safe_restore_plan(self, working_dir: str, commit_hash: str) -> dict:
         """Classify files changed since ``commit_hash`` for a safe restore.
 
         Returns ``{"success", "restore": [rel...], "skipped": [rel...],
@@ -874,8 +893,8 @@ class CheckpointManager:
             # skipping every file.
             return {"success": True, "restore": [], "skipped": [],
                     "ledger_empty": True}
-        restore: List[str] = []
-        skipped: List[str] = []
+        restore: list[str] = []
+        skipped: list[str] = []
         for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(abs_dir) / rel
             entry = ledger.get(str(abs_path))
@@ -926,7 +945,7 @@ class CheckpointManager:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
 
-    def list_checkpoints(self, working_dir: str) -> List[Dict]:
+    def list_checkpoints(self, working_dir: str) -> list[dict]:
         """List available checkpoints for a directory (most recent first)."""
         abs_dir = str(_normalize_path(working_dir))
         store = _store_path()
@@ -944,7 +963,7 @@ class CheckpointManager:
         if not ok or not stdout:
             return []
 
-        results: List[Dict] = []
+        results: list[dict] = []
         for line in stdout.splitlines():
             parts = line.split("|", 3)
             if len(parts) == 4:
@@ -967,7 +986,7 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
-    def list_all_checkpoints(self) -> List[Dict]:
+    def list_all_checkpoints(self) -> list[dict]:
         """List checkpoints across every registered project (most recent first).
 
         Surgical reapply of PR #10633 by @nightq (#10505) onto the v2
@@ -979,7 +998,7 @@ class CheckpointManager:
         store = _store_path()
         if not (store / "HEAD").exists():
             return []
-        results: List[Dict] = []
+        results: list[dict] = []
         for meta in _list_projects(store):
             workdir = meta.get("workdir") or ""
             if not workdir:
@@ -991,7 +1010,7 @@ class CheckpointManager:
         return results
 
     @staticmethod
-    def _parse_shortstat(stat_line: str, entry: Dict) -> None:
+    def _parse_shortstat(stat_line: str, entry: dict) -> None:
         """Parse git --shortstat output into entry dict."""
         m = re.search(r'(\d+) file', stat_line)
         if m:
@@ -1003,7 +1022,7 @@ class CheckpointManager:
         if m:
             entry["deletions"] = int(m.group(1))
 
-    def diff(self, working_dir: str, commit_hash: str) -> Dict:
+    def diff(self, working_dir: str, commit_hash: str) -> dict:
         """Show diff between a checkpoint and the current working tree."""
         from tools.checkpoint_pruning import PruneError, store_lock
 
@@ -1013,7 +1032,7 @@ class CheckpointManager:
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
 
-    def _diff(self, working_dir: str, commit_hash: str) -> Dict:
+    def _diff(self, working_dir: str, commit_hash: str) -> dict:
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -1024,7 +1043,7 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        ok, _, err = _run_git(
+        ok, _, _err = _run_git(
             ["cat-file", "-t", commit_hash], store, abs_dir,
         )
         if not ok:
@@ -1062,7 +1081,7 @@ class CheckpointManager:
             "diff": diff_out if ok_diff else "",
         }
 
-    def session_diff(self, working_dir: str) -> Dict:
+    def session_diff(self, working_dir: str) -> dict:
         """Show the cumulative diff of everything changed in this directory.
 
         This powers ``/diff session``.  It answers "what has Hermes changed
@@ -1098,9 +1117,9 @@ class CheckpointManager:
         self,
         working_dir: str,
         commit_hash: str,
-        file_path: str = None,
+        file_path: str | None = None,
         safe: bool = False,
-    ) -> Dict:
+    ) -> dict:
         """Restore files to a checkpoint state.
 
         With ``safe=True`` (full-directory restores only), files the user
@@ -1119,7 +1138,7 @@ class CheckpointManager:
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
 
-    def _restore(self, working_dir: str, commit_hash: str, file_path: str | None, safe: bool) -> Dict:
+    def _restore(self, working_dir: str, commit_hash: str, file_path: str | None, safe: bool) -> dict:
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -1143,10 +1162,94 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
-        skipped_user_edits: List[str] = []
-        kept_oversize: List[str] = []
-        failed_deletes: List[str] = []
-        restore_paths: Optional[List[str]] = None
+        ok, tree_out, err = _run_git(
+            ["ls-tree", "-r", "-z", commit_hash], store, abs_dir,
+        )
+        if not ok:
+            return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
+        nested_repos = _gitlink_paths(tree_out)
+        selected_paths: Optional[list[str]] = None
+        if nested_repos:
+            blocked_repos = nested_repos
+            if file_path:
+                # Select by the path as recorded in the checkpoint, not by
+                # where it points now: a captured file later replaced by a
+                # symlink into a nested repo is still recoverable. Resolved
+                # confinement is enforced separately by _validate_file_path.
+                root_path = Path(abs_dir)
+                requested_path = Path(os.path.normpath(root_path / file_path))
+                try:
+                    requested_rel = requested_path.relative_to(root_path)
+                except ValueError:
+                    requested_rel = Path(file_path)
+                requested_parts = tuple(requested_rel.parts)
+
+                def _scope_intersects_nested_repo(repo_path: str) -> bool:
+                    repo_parts = tuple(PurePosixPath(repo_path).parts)
+                    return (
+                        requested_parts[:len(repo_parts)] == repo_parts
+                        or repo_parts[:len(requested_parts)] == requested_parts
+                    )
+
+                blocked_repos = [
+                    repo for repo in nested_repos
+                    if _scope_intersects_nested_repo(repo)
+                ]
+
+                # Literal paths below a gitlink have no tree entry to match.
+                # Keep the explicit refusal above, but let Git resolve all
+                # other selections exactly as checkout does (glob, icase,
+                # top, exclude, literal, etc.). ls-tree lacks that pathspec
+                # support. A disposable index avoids touching the project's
+                # index, refs or files before we know rollback is possible.
+                if not blocked_repos:
+                    with tempfile.TemporaryDirectory(prefix="restore-inspect-", dir=store) as scratch:
+                        inspect_index = Path(scratch) / "index"
+                        ok, _, err = _run_git(
+                            ["read-tree", commit_hash], store, abs_dir,
+                            index_file=inspect_index,
+                        )
+                        if ok:
+                            ok, selected, err = _run_git(
+                                ["ls-files", "--stage", "--error-unmatch", "-z", "--", file_path],
+                                store, abs_dir, index_file=inspect_index,
+                            )
+                        if not ok:
+                            return {"success": False, "error": f"Could not inspect restore selection: {err}"}
+                    blocked_repos = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if record.startswith("160000 ") and "\t" in record
+                    ]
+                    selected_paths = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if "\t" in record
+                    ]
+                    if not selected_paths:
+                        # An exclusion-only spec can match nothing. Checkout
+                        # with no paths would switch the store's HEAD instead
+                        # of restoring files, so refuse before the snapshot.
+                        return {
+                            "success": False,
+                            "error": f"Restore selection matched no files in checkpoint: {file_path}",
+                        }
+
+            if blocked_repos:
+                paths = ", ".join(blocked_repos)
+                return {
+                    "success": False,
+                    "error": (
+                        "Checkpoint contains nested git repositories that were not captured "
+                        f"({paths}); rollback was not performed"
+                    ),
+                    "nested_repositories": blocked_repos,
+                }
+
+        skipped_user_edits: list[str] = []
+        kept_oversize: list[str] = []
+        failed_deletes: list[str] = []
+        restore_paths: Optional[list[str]] = None
         if safe and not file_path:
             plan = self._safe_restore_plan(abs_dir, commit_hash)
             if not plan.get("success"):
@@ -1178,8 +1281,8 @@ class CheckpointManager:
         if restore_paths is not None:
             # Split into files present in the checkpoint (checkout) and
             # Hermes-created files absent from it (delete to restore state).
-            checkout_targets: List[str] = []
-            delete_targets: List[str] = []
+            checkout_targets: list[str] = []
+            delete_targets: list[str] = []
             for rel in restore_paths:
                 ok_in_commit, _, _ = _run_git(
                     ["cat-file", "-e", f"{commit_hash}:{rel}"],
@@ -1210,15 +1313,31 @@ class CheckpointManager:
                     )
                     failed_deletes.append(rel)
             if not checkout_targets:
-                ok, stdout, err = True, "", ""
+                ok, _stdout, err = True, "", ""
             else:
-                ok, stdout, err = _run_git(
+                ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
                 )
+        elif selected_paths is not None:
+            # Check out exactly the entries inspected above. Re-evaluating
+            # file_path here could select something else: _take() has just
+            # restaged the project index, and attribute pathspecs read
+            # .gitattributes from it. A NUL-separated literal pathspec file
+            # keeps long selections off the command line.
+            with tempfile.TemporaryDirectory(prefix="restore-select-", dir=store) as scratch:
+                spec_file = Path(scratch) / "pathspec"
+                spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in selected_paths))
+                ok, _stdout, err = _run_git(
+                    ["checkout", commit_hash, f"--pathspec-from-file={spec_file}",
+                     "--pathspec-file-nul"],
+                    store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                    index_file=index_file,
+                    extra_env={"GIT_LITERAL_PATHSPECS": "1"},
+                )
         else:
-            ok, stdout, err = _run_git(
+            ok, _stdout, err = _run_git(
                 ["checkout", commit_hash, "--", file_path if file_path else "."],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
@@ -1395,6 +1514,20 @@ class CheckpointManager:
             logger.debug("Checkpoint write-tree failed: %s", err)
             return False
 
+        # A nested repository is stored as a gitlink, not its files: say so in
+        # the checkpoint itself rather than only when a rollback is refused.
+        ok_ls, tree_out, _ = _run_git(["ls-tree", "-r", "-z", tree_sha], store, working_dir)
+        nested_repos = _gitlink_paths(tree_out) if ok_ls else []
+        if nested_repos:
+            logger.info("Checkpoint of %s does not capture nested git repositories: %s",
+                        working_dir, ", ".join(nested_repos))
+            # Listings read the subject (%s), which ends at the first blank
+            # line, so keep a multiline reason (a terminal command) on one
+            # line or the note falls outside every listing.
+            reason = " ".join(
+                line.strip() for line in reason.splitlines() if line.strip()
+            ) + _uncaptured_note(nested_repos)
+
         # Build commit (parent = current ref tip, if any).
         commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]
         if has_ref:
@@ -1500,7 +1633,7 @@ class CheckpointManager:
             logger.warning("Checkpoint pruning stopped: %s", exc)
 
 
-def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
+def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
     """Format checkpoint list for display to user."""
     if not checkpoints:
         return f"No checkpoints found for {directory}"

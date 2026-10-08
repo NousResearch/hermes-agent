@@ -235,7 +235,7 @@ class TestCaptureLogSnapshotRedaction:
     ):
         """Regression test: redact_sensitive_text short-circuits without force=True.
 
-        If a future refactor drops `force=True` from `_redact_log_text`, this
+        If a future refactor drops `force=True` from `redact_debug_support_text`, this
         test fails immediately. Without `force=True`, the redactor returns the
         input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
         redaction feature ships silently broken for users who opted out of
@@ -286,6 +286,38 @@ class TestCaptureLogSnapshotRedaction:
         # Default threads redact=True to all three captured logs.
         assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
         assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
+
+    def test_redacts_complete_log_lines_before_applying_byte_limits(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        max_bytes = 512
+        raw_window = 8192
+        tail_canary = "r36_REDACTED_tail_boundary_canary_012345"
+        full_canary = "r36_REDACTED_full_boundary_canary_678901"
+        payload = bytearray(b"x" * 12_000)
+
+        # The backwards-read window and the final full-log window each begin
+        # inside a credential field. Truncating first drops ``accessToken=``
+        # while retaining its complete value, which the redactor cannot then
+        # classify. A redacted share must either scrub the complete logical
+        # line before either cap or omit that partial line.
+        for boundary, canary in (
+            (len(payload) - raw_window, tail_canary),
+            (len(payload) - max_bytes, full_canary),
+        ):
+            marker = f"accessToken={canary}".encode()
+            start = boundary - len("accessToken=")
+            payload[start:start + len(marker)] = marker
+
+        (hermes_home_with_secret / "logs" / "agent.log").write_bytes(payload)
+
+        snap = _capture_log_snapshot("agent", tail_lines=1, max_bytes=max_bytes)
+
+        assert tail_canary not in snap.tail_text
+        assert snap.full_text is not None
+        assert full_canary not in snap.full_text
 
 
 
@@ -869,6 +901,28 @@ class TestCollectShareBundle:
         assert secret in "\n".join(unredacted.values())
         # With redaction it must be scrubbed everywhere.
         assert secret not in "\n".join(redacted.values())
+
+    def test_redaction_masks_url_credentials(self, hermes_home):
+        """Log-time redaction leaves ``?token=`` and ``user:pass@`` in URLs for tool flows;
+        the upload must not carry them."""
+        from hermes_cli.debug import collect_share_bundle
+
+        query_token = "Q7fK2mZp9RtX4vLb8NcW1yHs"
+        password = "Pw7Kq2Lm9Xs4Vb"
+        (hermes_home / "logs" / "agent.log").write_text(
+            "2026-09-29 01:00:00 INFO plugins.web.firecrawl.provider: Firecrawl scraping: "
+            f"https://files.example.com/export.csv?token={query_token}&page=2\n"
+            f"2026-09-29 01:00:01 INFO agent: using proxy http://alice:{password}@10.0.0.5:3128\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert query_token not in bundle
+        assert password not in bundle
+        # Query credentials are masked in place; strict URL redaction masks the
+        # complete userinfo field while preserving the host and port.
+        assert "export.csv?token=***&page=2" in bundle
+        assert "***:***@10.0.0.5:3128" in bundle
 
 
 

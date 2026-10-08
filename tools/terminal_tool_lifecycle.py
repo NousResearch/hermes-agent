@@ -118,7 +118,7 @@ def _create_env_for_task(
 
 
 def _create_configured_env(
-    config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
+    config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
     task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
 ):
     """``_create_environment`` with the ssh/container kwargs shaped from *config*

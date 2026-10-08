@@ -7,12 +7,32 @@ import sys
 from hermes_cli.subcommands._shared import add_json_flag
 
 
+def _exit_if_plugin_backend(*, doctor: bool = False) -> None:
+    """cua-driver checks do not apply when ``computer_use.backend`` selects another backend: report it
+    (running its own ``doctor()`` when asked and it ships one) and exit; return for the built-in."""
+    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
+    if configured_backend_name() == DEFAULT_BACKEND:
+        return
+    try:
+        provider = get_active_provider()
+    except LookupError as e:
+        print(f"Computer Use: {e}")
+        sys.exit(2)
+    if doctor and (rc := provider.doctor()) is not None:
+        sys.exit(rc)
+    ok = provider.is_available()
+    print(f"Computer Use backend: {provider.name} ({provider.display_name}) — "
+          f"{'available' if ok else 'not available'}. cua-driver checks do not apply to this backend.")
+    sys.exit(0 if ok else 1)
+
+
 def _cu_install(args) -> int:
     from hermes_cli.tools_config_cua import install_cua_driver
     return 0 if install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))) else 1
 
 
 def _cu_status(args) -> int:
+    _exit_if_plugin_backend()
     import os as _os
     from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
     from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
@@ -54,6 +74,7 @@ def _cu_status(args) -> int:
 
 
 def _cu_doctor(args) -> None:
+    _exit_if_plugin_backend(doctor=True)
     from tools.computer_use.doctor import run_doctor
     sys.exit(run_doctor(
         include=list(getattr(args, "include", []) or []),
@@ -62,6 +83,8 @@ def _cu_doctor(args) -> None:
 
 
 def _cu_perms_status(args) -> None:
+    if not getattr(args, "json", False):  # --json: computer_use_status() reports the selected backend itself
+        _exit_if_plugin_backend()
     import json as _json
     from tools.computer_use.permissions import TCC_FIELDS, computer_use_status, stale_tcc_grant_hint
     st = computer_use_status()
@@ -94,6 +117,7 @@ def _cu_perms_status(args) -> None:
 
 
 def _cu_perms_grant(args) -> None:
+    _exit_if_plugin_backend()
     from tools.computer_use.permissions import request_permissions_grant
     sys.exit(request_permissions_grant())
 

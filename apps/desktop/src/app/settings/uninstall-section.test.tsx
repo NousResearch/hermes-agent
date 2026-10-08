@@ -18,6 +18,7 @@ function Surface(): React.JSX.Element {
 function summary(allowed: boolean): DesktopUninstallSummary {
   return {
     code_removal_allowed: allowed,
+    native_removal_instructions: allowed ? null : 'Quit the app and drag Hermes Agent.app from /Applications to the Trash.',
     hermes_home: '/test/home',
     agent_installed: true,
     gui_installed: true,
@@ -34,9 +35,9 @@ afterEach((): void => {
   vi.unstubAllGlobals()
 })
 
-it.each(['external', 'missing-policy', 'probe-failed', 'loading'] as const)(
+it.each(['missing-policy', 'probe-failed', 'loading'] as const)(
   'does not offer uninstall actions when ownership is %s',
-  async (state: 'external' | 'missing-policy' | 'probe-failed' | 'loading'): Promise<void> => {
+  async (state: 'missing-policy' | 'probe-failed' | 'loading'): Promise<void> => {
     const getSummary: ReturnType<typeof vi.fn> = vi.fn(async (): Promise<DesktopUninstallSummary> => {
       if (state === 'probe-failed') {
         throw new Error('IPC unavailable')
@@ -107,3 +108,27 @@ it.each(['gui', 'lite', 'full'] as const)(
     expect(run).toHaveBeenCalledWith(mode)
   }
 )
+
+it('shows native removal steps, data location, and Apps settings on a managed Windows install', async (): Promise<void> => {
+  const run: ReturnType<typeof vi.fn> = vi.fn()
+  const openAppsSettings: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
+
+  vi.stubGlobal('hermesDesktop', {
+    uninstall: {
+      summary: async (): Promise<DesktopUninstallSummary> => ({
+        ...summary(false),
+        platform: 'win32',
+        native_removal_instructions: 'To uninstall, go to Windows Settings → Apps → Installed apps.'
+      }),
+      run,
+      openAppsSettings
+    }
+  })
+  render(<UninstallSection />)
+  expect(await screen.findByText(/Installed apps/)).toBeTruthy()
+  expect(screen.getByText(/\/test\/home/)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Open Apps settings' }))
+  expect(openAppsSettings).toHaveBeenCalledOnce()
+  expect(run).not.toHaveBeenCalled()
+  expect(screen.queryByRole('button', { name: /Uninstall/ })).toBeNull()
+})

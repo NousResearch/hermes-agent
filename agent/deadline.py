@@ -431,7 +431,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         try:
             proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=15, check=False, creationflags=creationflags,
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False, creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0

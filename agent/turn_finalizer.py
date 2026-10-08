@@ -498,12 +498,103 @@ def apply_llm_output_transform(
         model=agent.model,
         platform=platform,
         turn_id=turn_id,  # per-turn identity for the hook callback gate
+        **context_usage_kwargs(agent),
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
     agent._llm_output_transform = (turn_id, transformed, pre_transform)
     return final_response, transformed, pre_transform
+
+
+def context_usage_kwargs(agent) -> dict:
+    """``prompt_tokens`` / ``context_threshold_tokens`` exactly as the context compressor compares
+    them (``should_compress`` defaults to ``last_prompt_tokens`` against ``threshold_tokens``).
+
+    Read-only: never resolves a threshold the engine has not computed itself, never estimates.
+    Either value is ``None`` when the engine has no positive reading (fresh session, provider
+    without usage, minimal engine) so observers render nothing rather than a guess."""
+    def _positive_int(value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    out: dict = {"prompt_tokens": None, "context_threshold_tokens": None}
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return out
+    with suppress(Exception):
+        out["prompt_tokens"] = _positive_int(getattr(compressor, "last_prompt_tokens", None))
+    with suppress(Exception):
+        out["context_threshold_tokens"] = _positive_int(getattr(compressor, "threshold_tokens", None))
+    return out
+
+
+def apply_turn_footer(agent, final_response, *, turn_id, logger=None) -> Any:
+    """Fire ``append_turn_footer`` once per turn AFTER the turn-end gate accepted ``final_response``
+    and BEFORE the assistant row is first persisted, and return ``final_response + suffix``.
+
+    Append-only by construction: a callback returns only a suffix; the core concatenates it after
+    the exact bytes the gate evaluated, so it can neither alter nor remove checked text. The suffix
+    itself is unchecked, non-claim metadata. Because this runs ahead of ``append_message`` and the
+    durable flush, the stored/replayed row equals the delivered text (#44239).
+
+    ``gate_outcome`` is the ``gate_outcome`` mapping a ``before_turn_end`` callback returned for
+    THIS turn and THIS exact text, else ``None`` (no gate, rework, recovery path, mismatch). The
+    recorded transform outcome is updated so streaming surfaces deliver the appended suffix
+    (``response_transformed`` / ``pre_transform_response``). No-op without subscribers."""
+    if logger is None:
+        from agent.conversation_loop import logger
+    recorded = getattr(agent, "_turn_footer", None)
+    if isinstance(recorded, tuple) and len(recorded) == 2 and recorded[0] == turn_id:
+        return final_response
+    if not final_response or not isinstance(final_response, str):
+        return final_response
+    try:
+        from hermes_cli.lifecycle import has_hook
+        if not has_hook("append_turn_footer"):
+            return final_response
+    except Exception:
+        logger.warning("append_turn_footer lookup failed open")
+        return final_response
+    checked = getattr(agent, "_turn_end_outcome", None)
+    gate_outcome = None
+    if isinstance(checked, tuple) and len(checked) == 3 and checked[0] == turn_id and checked[1] == final_response:
+        gate_outcome = checked[2]
+    suffix = None
+    for _hook_result in _invoke_hook_safely(
+        "append_turn_footer", logger,
+        response_text=final_response,
+        session_id=agent.session_id or "",
+        model=agent.model,
+        platform=getattr(agent, "platform", None) or "",
+        turn_id=turn_id,
+        gate_outcome=gate_outcome,
+        **context_usage_kwargs(agent),
+    ):
+        if isinstance(_hook_result, str) and _hook_result.strip():
+            suffix = _hook_result
+            break
+    agent._turn_footer = (turn_id, suffix)
+    if suffix is None:
+        return final_response
+    footed = final_response + suffix
+    prior = getattr(agent, "_llm_output_transform", None)
+    pre_transform = final_response
+    if isinstance(prior, tuple) and len(prior) == 3 and prior[0] == turn_id and prior[1]:
+        pre_transform = prior[2]
+    agent._llm_output_transform = (turn_id, True, pre_transform)
+    # The gate already judged the body; the appended metadata must not trigger finalize_turn's
+    # audit-only re-check or a second file-mutation trailer keyed on the pre-footer text.
+    if getattr(agent, "_turn_end_checked", None) == (turn_id, final_response):
+        agent._turn_end_checked = (turn_id, footed)
+    prepared = getattr(agent, "_turn_end_prepared", None)
+    if (isinstance(prepared, tuple) and len(prepared) == 2 and prepared[0] == turn_id
+            and isinstance(prepared[1], tuple) and prepared[1] and prepared[1][0] == final_response):
+        agent._turn_end_prepared = (turn_id, (footed,) + tuple(prepared[1][1:]))
+    return footed
 
 
 def finalize_turn(
@@ -610,6 +701,8 @@ def finalize_turn(
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+            # Recovery paths never passed the gate here; the seam reports gate_outcome=None.
+            final_response = apply_turn_footer(agent, final_response, turn_id=turn_id, logger=logger)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)

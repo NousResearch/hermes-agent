@@ -46,6 +46,24 @@ def prepare_response(agent, text):
     return value[0]
 
 
+def _gate_outcome(results):
+    """First JSON-safe ``gate_outcome`` mapping a ``before_turn_end`` callback returned, else None.
+
+    Optional and purely informational: only ``{"action": "block", ...}`` changes control flow.
+    """
+    import copy
+    import json
+    for result in results or ():
+        outcome = result.get("gate_outcome") if isinstance(result, dict) else None
+        if isinstance(outcome, dict):
+            try:
+                json.dumps(outcome)
+                return copy.deepcopy(outcome)
+            except (TypeError, ValueError):
+                logger.warning("before_turn_end gate_outcome is not JSON-safe; ignored")
+    return None
+
+
 def before_turn_end(agent, final_response, final_msg, messages, *, user_message, can_continue):
     if getattr(agent, "_interrupt_requested", False):
         return False
@@ -63,6 +81,8 @@ def before_turn_end(agent, final_response, final_msg, messages, *, user_message,
             already_blocked=already_blocked, can_continue=can_continue,
             user_message=user_message, messages=_current_turn_messages(messages),
             source_identity=getattr(agent, "_current_source_identity", None))
+        # Evaluated verdict for the append-only footer seam, bound to the exact text checked.
+        agent._turn_end_outcome = (turn_id, final_response, _gate_outcome(results))
         if already_blocked or not can_continue:
             return False
         for result in results:

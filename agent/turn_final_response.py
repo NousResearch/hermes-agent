@@ -364,6 +364,21 @@ def finish_text_response(
         else:
             final_msg["content"] = final_response
 
+    # Post-gate, append-only footer seam: the gate's verdict (before_turn_end above) covers the
+    # body; the suffix is concatenated after those exact bytes and before the first durable
+    # write, so delivered == stored (#44239). No subscribers -> no-op.
+    if not getattr(agent, "_interrupt_requested", False):
+        from agent.turn_finalizer import apply_turn_footer
+        _footed = apply_turn_footer(
+            agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
+        )
+        if _footed != final_response:
+            final_response = _footed
+            if _promoted:
+                final_msg["api_content"] = final_response
+            else:
+                final_msg["content"] = final_response
+
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.

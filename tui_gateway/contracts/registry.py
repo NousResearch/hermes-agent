@@ -46,15 +46,16 @@ class EventContract:
 
 METHODS: dict[str, MethodContract] = {}
 # ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
-# (``contracts/canonical.py``); a name both dispatchers serve keeps its one ``METHODS`` entry.
+# (``contracts/canonical.py``), plus explicit overrides where a shared name has a different wire.
 CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
 
 
 def _declare(table: dict, entry) -> None:
-    if entry.name in table or (table in (METHODS, CANONICAL_METHODS)
-                               and entry.name in (METHODS.keys() | CANONICAL_METHODS.keys())):
+    # Method names may have different envelopes on independently shipped
+    # transports. Duplicates within one transport's catalog are still errors.
+    if entry.name in table:
         raise RuntimeError(f"contract declared twice: {entry.name}")
     table[entry.name] = entry
 
@@ -126,8 +127,11 @@ def canonical_param_problems(contract: MethodContract, params: dict) -> list[str
     try:
         contract.params.model_validate(params)
     except ValidationError as exc:
+        # Shared methods preserve handler-owned missing-field/permission refusals,
+        # while refusing malformed values before the handler indexes them.
         return [".".join(str(p) for p in err.get("loc", ())) or "params" for err in exc.errors()
-                if err.get("type") in ("extra_forbidden", "missing")]
+                if (err.get("type") != "missing" if contract.name in METHODS
+                    else err.get("type") in ("extra_forbidden", "missing"))]
     return []
 
 

@@ -44,10 +44,13 @@ shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_
 `tests/tui_gateway/contracts/test_generated.py` fails when they are stale, so the loop is: change the model →
 regenerate → `tsc` shows every consumer the field moved. `apps/shared/src/gateway-events.ts` only adds
 the client-local synthetic events and the `GatewayEvent` envelope on top.
-Verbs only the session authority serves (`hermes-gateway-v1`, `gateway/session_controls.py::
-AuthorityConnection`) are `canonical_method(...)` in `contracts/canonical.py` (`CANONICAL_METHODS` →
-TS `CanonicalRpcMethods`); `dispatch` refuses an unknown/missing key with `4001 invalid_params`, and
-`tests/gateway/test_canonical_wire_contract.py` fails when a handler name has no declaration.
+The native `hermes-gateway-v1` transport has a separate `CANONICAL_METHODS` catalog in
+`contracts/canonical*.py`, declared with `canonical_method(...)`. `gateway/session_controls.py::
+AuthorityConnection` validates parameters and successful results against it; unknown/missing
+parameter keys return `4001 invalid_params`. Reuse a standalone model only when its wire is
+identical: shared method names can carry different snapshots, admission receipts and producer
+results. The same generator emits `CanonicalRpcMethods` and OpenRPC `x-canonical-methods` without
+widening `RpcMethods`. `tests/gateway/test_canonical_wire_contract.py` checks handler coverage.
 New question for the user = `_ask("<method>", sid, params, timeout)` in the emitter, a handler in
 `apps/desktop/.../gateway-event/server-requests.ts` and `ui-tui/src/app/createServerRequestHandler.ts`,
 and a `server_request(...)` in `contracts/server_requests.py`.

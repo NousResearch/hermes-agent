@@ -2,8 +2,8 @@
 
 ``gateway/session_controls.py::AuthorityConnection.dispatch`` answers these on the authenticated
 native socket; the TUI sidecar (``server._methods``) never registers them, so they live in
-``CANONICAL_METHODS`` rather than ``METHODS``. Names both dispatchers serve keep their ``METHODS``
-contract. The dispatcher refuses an unknown or missing key with ``4001 invalid_params`` before the
+``CANONICAL_METHODS`` rather than ``METHODS``. Shared names with different authority semantics are overridden in
+``canonical_sessions`` / ``canonical_projections``; unchanged names reuse ``METHODS``. The dispatcher refuses an unknown or missing key with ``4001 invalid_params`` before the
 handler runs; value checks stay in the handlers, which own their domain reasons.
 """
 
@@ -367,3 +367,7 @@ class GroupsDiscardResult(Result):
 
 canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
                  doc="Discard one indeterminate room task after explicit user confirmation.")
+
+
+# Shared-name overrides load after the authority-only value shapes above.
+from . import canonical_sessions, canonical_projections  # noqa: F401,E402

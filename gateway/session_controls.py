@@ -117,13 +117,17 @@ class AuthorityConnection:
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
-        from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+        from tui_gateway.contracts.registry import (
+            CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
+        )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
             # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
             # key set: an unknown or missing key never reaches the handler.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
+        original_params = dict(params)
+        contract = contract or METHODS.get(method)
         handlers = self.handlers()
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
@@ -135,14 +139,16 @@ class AuthorityConnection:
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                    return {'jsonrpc': '2.0', 'id': rid, 'result': result}
-                if method not in handlers:
+                elif method not in handlers:
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
                         'code': -32601, 'message': f'unknown method: {method}',
                         'data': {'reason': 'unknown_method'}}}
-                result = await handlers[method](ref, params)
+                else:
+                    result = await handlers[method](ref, params)
+            check_params_accepted(contract, original_params)
+            check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {

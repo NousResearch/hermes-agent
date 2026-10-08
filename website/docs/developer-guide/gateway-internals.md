@@ -219,6 +219,10 @@ session registration before routing or transcript creation. These edits
 do not interrupt a running turn. This RPC does not yet migrate legacy direct
 writers, expose arbitrary SQL, or implement reset, delete, or rewind.
 
+Canonical wire models live in `tui_gateway/contracts/canonical*.py` and generate
+`CanonicalRpcMethods` plus the OpenRPC `x-canonical-methods` catalog, separately
+from the standalone protocol. Both parameters and successful results are checked.
+
 ## Private native HTTP authentication
 
 The authoritative daemon accepts a **fresh, one-use HTTP grant per request** from

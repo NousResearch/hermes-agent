@@ -46,7 +46,7 @@ import {
   isExternalMemoryProvider,
   sectionFieldEntries,
   setNested,
-  voiceFieldVisible
+  sectionFieldVisible
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
@@ -441,7 +441,7 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  const visibleFields = fields.filter(([key]) => sectionFieldVisible(activeSectionId, key, config))
 
   const showEmptyState =
     visibleFields.length === 0 &&

@@ -8,6 +8,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 
+import { FIELD_LABELS } from './constants'
+import { schemaKeyToFieldCopyKey } from './field-copy'
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
 // The vi.mock factory below replaces the computed (read-only) atom with a
@@ -150,5 +152,34 @@ describe('ConfigSettings autosave', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ConfigSettings workspace section', () => {
+  const scanRow = FIELD_LABELS[schemaKeyToFieldCopyKey('desktop.repo_scan_enabled')]
+  const nestedRow = FIELD_LABELS[schemaKeyToFieldCopyKey('desktop.repo_scan_nested')]
+
+  function withDiscovery(desktop: Record<string, unknown>) {
+    getHermesConfigRecord.mockResolvedValue({ desktop })
+  }
+
+  it('offers nested discovery as a refinement of the scan', async () => {
+    withDiscovery({ repo_scan_enabled: true, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+
+    renderConfigSettings('workspace')
+
+    expect(await screen.findByText(scanRow)).toBeTruthy()
+    expect(screen.getByText(nestedRow)).toBeTruthy()
+  })
+
+  it('hides nested discovery while the scan itself is off', async () => {
+    // The sub-setting only ever describes what the scan produced: with the scan off it would
+    // promise subprojects nothing can find.
+    withDiscovery({ repo_scan_enabled: false, repo_scan_exclude_paths: [], repo_scan_nested: false, repo_scan_roots: [] })
+
+    renderConfigSettings('workspace')
+
+    expect(await screen.findByText(scanRow)).toBeTruthy()
+    expect(screen.queryByText(nestedRow)).toBeNull()
   })
 })

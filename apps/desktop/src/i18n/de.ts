@@ -1206,6 +1206,7 @@ export const deOverrides = {
       },
       desktop: {
         repoScanEnabled: 'Automatische Repository-Erkennung',
+        repoScanNested: 'Verschachtelte Repositories mitentdecken',
         repoScanRoots: 'Repository-Erkennungs-Wurzeln',
         repoScanExcludePaths: 'Ausgeschlossene Repository-Pfade'
       },
@@ -1382,7 +1383,8 @@ export const deOverrides = {
       },
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',
-        repoScanRoots: 'Zu durchsuchende Ordner. Leer lassen, um Ihr Home-Verzeichnis zu durchsuchen.',
+        repoScanNested: 'Repositories innerhalb eines bereits vorhandenen als Unterprojekte anzeigen.',
+        repoScanRoots: 'Zusätzliche zu durchsuchende Ordner. Leer durchsucht Ihr Arbeitsverzeichnis.',
         repoScanExcludePaths: 'Ordner und deren Unterordner, die bei der Repository-Erkennung übersprungen werden.'
       },
       timezone: 'IANA-Zeitzonenkennung. Leer verwendet die Systemzeitzone.',

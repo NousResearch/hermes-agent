@@ -418,6 +418,7 @@ export const zhHantSettings = {
       },
       desktop: {
         repoScanEnabled: '自動探索程式碼儲存庫',
+        repoScanNested: '同時探索巢狀儲存庫',
         repoScanRoots: '程式碼儲存庫掃描根目錄',
         repoScanExcludePaths: '排除的程式碼儲存庫路徑'
       },
@@ -594,7 +595,8 @@ export const zhHantSettings = {
       },
       desktop: {
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',
-        repoScanRoots: '要掃描的資料夾。留空時掃描主目錄。',
+        repoScanNested: '將既有儲存庫內部的儲存庫顯示為子專案。',
+        repoScanRoots: '要掃描的其他資料夾。留空則掃描工作目錄。',
         repoScanExcludePaths: '探索程式碼儲存庫時略過這些資料夾及其子目錄。'
       },
       timezone: 'Hermes 需要本機時間上下文時使用。留空則使用系統時區。',

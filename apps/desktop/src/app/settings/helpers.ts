@@ -196,6 +196,24 @@ export function voiceFieldVisible(key: string, config: HermesConfigRecord): bool
   return provider === (selected || fallback)
 }
 
+// Fields that exist only under another switch in the same section. Search and
+// the page share this rule, like `voiceFieldVisible`, so every indexed field can
+// actually mount when opened — a hit that lands on a hidden row is a dead entry.
+export function sectionFieldVisible(sectionId: string, key: string, config: HermesConfigRecord): boolean {
+  if (sectionId === 'voice') {
+    return voiceFieldVisible(key, config)
+  }
+
+  // Repository discovery is a stack: nested discovery is a refinement of the scan, and it does
+  // nothing while the scan itself is off — showing it there would promise subprojects that the
+  // scan never produces.
+  if (sectionId === 'workspace' && key === 'desktop.repo_scan_nested') {
+    return getNested(config, 'desktop.repo_scan_enabled') !== false
+  }
+
+  return true
+}
+
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   if (typeof value === 'boolean') {
     return { type: 'boolean' }

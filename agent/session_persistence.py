@@ -120,17 +120,31 @@ def _summary_display_kind(msg: Dict) -> Any:
 
 
 def _durable_content(content: Any) -> Any:
-    """Text-only DB projection: multimodal envelopes → summary; part lists keep text, images → ``[screenshot]``."""
+    """Text-only DB projection: multimodal envelopes → summary; part lists keep text, images → ``[screenshot]``.
+
+    Image-only (or empty-text) part lists must not persist as ``""``: SQLite stores that as a
+    successful blank tool row, which is how a native screenshot attach can complete in-memory
+    and vanish from the transcript.
+    """
     if _is_multimodal_tool_result(content):
-        return _multimodal_text_summary(content)
+        return _multimodal_text_summary(content) or "[screenshot]"
     if not isinstance(content, list):
         return content
-    txt = [
-        str(p.get("text", "")) if p.get("type") == "text" else "[screenshot]"
-        for p in content
-        if isinstance(p, dict) and (p.get("type") == "text" or p.get("type") in _IMAGE_PART_TYPES)
-    ]
-    return "\n".join(txt) if txt else None
+    txt: List[str] = []
+    had_image = False
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            text = str(p.get("text", "") or "")
+            if text.strip():
+                txt.append(text)
+        elif p.get("type") in _IMAGE_PART_TYPES:
+            had_image = True
+            txt.append("[screenshot]")
+    if txt:
+        return "\n".join(txt)
+    return "[screenshot]" if had_image else None
 
 
 def _persist_lock(agent):

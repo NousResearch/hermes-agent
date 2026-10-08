@@ -737,6 +737,45 @@ Supermemory used to ship inside the Hermes tree (and as the `hermes-agent[superm
 
 What changes on disk: the plugin appears in `~/.hermes/plugins/supermemory/` and `config.yaml` gains `plugins.enabled: [supermemory]`. The Supermemory SDK is installed from the plugin's own package metadata, so the `hermes-agent[supermemory]` extra is no longer needed. `memory.provider`, `$HERMES_HOME/supermemory.json`, the `SUPERMEMORY_*` keys in `.env` and the memories stored in your Supermemory account are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
 
+### Nexusyn
+
+Multi-agent memory engine with hybrid retrieval (vector + full-text + reranking), per-agent attribution, and project scoping. A server-side compile pipeline automatically distills raw memories into wiki articles, lessons, decisions and error reports — visible in the Nexusyn dashboard. Built for teams running several agents (Hermes, IDEs, CLIs) against one shared memory.
+
+| | |
+|---|---|
+| **Best for** | Multi-agent teams sharing one memory with per-agent attribution and project scoping |
+| **Requires** | `pip install hermes-nexusyn` + `hermes-nexusyn install` + [API token](https://app.nexusyn.ai) (cloud) or a self-hosted Nexusyn engine |
+| **Data storage** | Nexusyn Cloud or self-hosted |
+| **Cost** | Free tier; paid plans by monthly query volume / free (self-hosted) |
+
+**Tools (4):** `nexusyn_search` (hybrid search), `nexusyn_query` (grounded answer with sources), `nexusyn_remember` (persist a fact), `nexusyn_forget` (delete by id)
+
+**Architecture:** Prefetch runs a hybrid search on the user message in the background and injects a `[Nexusyn Memory]` block on the next turn. Turn persistence is configurable: `session` (default — one digest ingested at session end/compression), `turn` (every turn), or `off`. Built-in memory writes are mirrored. Ingested content is distilled server-side, so the plugin needs no client-side extraction. Recall with a project set returns that project's memories plus globals.
+
+**Setup:**
+```bash
+pip install hermes-nexusyn
+hermes-nexusyn install     # copies the plugin into $HERMES_HOME/plugins/nexusyn/
+hermes config set memory.provider nexusyn
+hermes memory setup
+```
+
+**Config reference:** [nexusyn/hermes-nexusyn](https://github.com/nexusyn/hermes-nexusyn) (standalone plugin repo)
+
+**MCP:** The same engine is also published as a remote MCP server (Streamable HTTP, bearer auth). This path does not set `memory.provider` and does not run the plugin's prefetch or session capture — Hermes calls the tools when it decides to. Add it under `mcp_servers` in `config.yaml`:
+
+```yaml
+mcp_servers:
+  nexusyn:
+    url: "https://api.nexusyn.ai/v1/mcp"
+    headers:
+      Authorization: "Bearer ${NEXUSYN_API_KEY}"
+```
+
+**MCP tools (7):** `add_memory` (persist a fact), `search_memory` (hybrid recall with sources), `update_memory` (edit in place), `delete_memory` (drop from recall), `get_guideline` (standing org guidelines), `get_related` (knowledge-graph neighbors), `graph_overview` (graph snapshot).
+
+**Published at:** [Smithery `@nexusyn/nexusyn`](https://smithery.ai/servers/@nexusyn/nexusyn) · [Glama `nexusyn/engine`](https://glama.ai/mcp/servers/nexusyn/engine). Server card: `https://api.nexusyn.ai/.well-known/mcp/server-card.json`.
+
 ### Memori
 
 Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.
@@ -785,6 +824,7 @@ package command. Restart Hermes after successful dependency preparation.
 | **RetainDB** | Cloud | $20/mo | 10 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
+| **Nexusyn** | Cloud/Self-hosted | Free/Paid | 4 | `hermes-nexusyn` | Per-agent attribution + project scoping + server-side distillation |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation

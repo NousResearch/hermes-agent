@@ -99,9 +99,17 @@ def _chunk_paragraph(paragraph: str, limit: int) -> list[str]:
     return chunks
 
 
-def _privmsg_budget(target: str) -> int:
-    """Payload bytes left in a 510-byte line after ``PRIVMSG <target> :`` and CRLF."""
-    return 510 - (len(f"PRIVMSG {target} :".encode()) + 2)
+# RFC 2812 §2.3: a line is at most 512 bytes including CRLF, and the server prepends the sender's
+# ":nick!user@host " when it relays a PRIVMSG to other clients — text past the limit is cut on their
+# side. The client can't see its own user/host, so reserve their maximums (USERLEN 10 plus the "~"
+# ident marker, HOSTLEN 63).
+_RELAY_USER_HOST_RESERVE = len("!~@") + 10 + 63
+
+
+def _privmsg_budget(target: str, nick: str) -> int:
+    """Payload bytes for one PRIVMSG so the relayed ``:<nick>!<user>@<host> PRIVMSG <target> :<text>``
+    line stays within 512 bytes including CRLF."""
+    return 510 - len(f":{nick} PRIVMSG {target} :".encode()) - _RELAY_USER_HOST_RESERVE
 
 
 def _split_lines(paragraphs, limit: int) -> list[str]:
@@ -229,7 +237,8 @@ class IRCAdapter(BasePlatformAdapter):
     def _split_message(self, content: str, target: str) -> list[str]:
         """Split a long message into IRC-safe chunks (510-byte line limit minus PRIVMSG overhead)."""
         paragraphs = [p for p in self._strip_markdown(content).split("\n") if p.strip()]
-        return _split_lines(paragraphs, min(self.max_message_length, _privmsg_budget(target))) or [""]
+        budget = _privmsg_budget(target, self._current_nick)
+        return _split_lines(paragraphs, min(self.max_message_length, budget)) or [""]
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -451,6 +460,7 @@ class _StandaloneConn:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.reader, self.writer = reader, writer
         self._loop = asyncio.get_running_loop()
+        self.nick = ""  # set once registration succeeds; sizes the relayed PRIVMSG prefix
 
     async def raw(self, line: str) -> None:
         self.writer.write(_encode_line(line))
@@ -505,6 +515,7 @@ async def _sa_register(conn: _StandaloneConn, nick_base: str, server_password: s
         return _sa_error("registration timeout (no RPL_WELCOME)")
     if registered is _EOF:
         return _sa_error("server closed connection during registration")
+    conn.nick = standalone_nick
     return None if registered is True else registered
 
 
@@ -563,7 +574,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         # Bytes-aware per-line splitting (same algorithm as IRCAdapter._split_message),
         # with control-character stripping per line to block CRLF injection from content.
         paragraphs = [q for q in (_strip_irc_control_chars(p).rstrip() for p in plain.split("\n")) if q]
-        lines = _split_lines(paragraphs, _privmsg_budget(target))
+        lines = _split_lines(paragraphs, _privmsg_budget(target, conn.nick))
         for line in lines:
             await conn.raw(f"PRIVMSG {target} :{line}")
             await asyncio.sleep(0.3)

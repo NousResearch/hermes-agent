@@ -116,6 +116,50 @@ def _blocked(message: str, method: str) -> str:
     return tool_error(message, method=method, cdp_docs=CDP_DOCS_URL)
 
 
+class _PrivateCDPDestinationError(RuntimeError):
+    def __init__(self, url: str) -> None:
+        super().__init__(url)
+        self.url = url
+
+
+def _selected_destination_guard_active(task_id: str, method: str) -> bool:
+    """Whether a selected target/frame URL must be checked before ``method``."""
+    if method in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
+        return False
+    try:
+        from tools import browser_tool_eval_policy as policy
+        return policy._eval_ssrf_guard_active(task_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("browser_cdp: selected-destination guard probe failed: %s", exc)
+        return False
+
+
+def _private_destination_url(url: str) -> Optional[str]:
+    """Return ``url`` when the selected page/frame is private/internal (or a local file).
+
+    Uses the already-loaded-page predicate, not the navigate-time one: ``about:blank`` (which
+    the supervisor itself creates), ``chrome://``, ``devtools://``, ``data:`` and public
+    ``blob:``/``view-source:`` pages are not private destinations. Fails open on probe errors
+    like the sibling browser guards."""
+    if not url:
+        return None
+    try:
+        from tools import browser_tool as bt  # type: ignore[import-not-found]
+        from tools import browser_tool_eval_policy as policy
+        return url if policy._page_url_blocked(bt, url) else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("browser_cdp: selected-destination URL probe failed: %s", exc)
+        return None
+
+
+def _blocked_private_destination(url: str, method: str) -> str:
+    return _blocked(
+        f"Blocked: selected CDP destination is a private/internal address or local file ({url}). "
+        f"Raw CDP method {method!r} could expose private page content or state.",
+        method,
+    )
+
+
 def _expression_private_target(expression: str) -> Optional[str]:
     from tools.browser_tool_eval_policy import _expression_targets_private_url
     return _expression_targets_private_url(expression)
@@ -166,7 +210,7 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
 
 
 async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id: Optional[str],
-                    timeout: float) -> Dict[str, Any]:
+                    timeout: float, *, guard_target_url: bool = False) -> Dict[str, Any]:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
@@ -200,6 +244,26 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
             if not session_id:
                 raise RuntimeError("Target.attachToTarget did not return a sessionId")
             req["sessionId"] = session_id
+            if guard_target_url:
+                # Resolve on this same socket, immediately before the content-bearing call.
+                # Target.getTargetInfo is browser-scoped (no sessionId); attaching first
+                # narrows, but cannot eliminate, the navigation race inherent to this
+                # best-effort in-process guard.
+                try:
+                    info_msg = await _send(
+                        {"method": "Target.getTargetInfo", "params": {"targetId": target_id}},
+                        f"resolving target {target_id}",
+                    )
+                    if "error" in info_msg:
+                        logger.debug("browser_cdp: Target.getTargetInfo failed for %s: %s", target_id, info_msg["error"])
+                    else:
+                        target_url = str(info_msg.get("result", {}).get("targetInfo", {}).get("url") or "")
+                        if blocked_url := _private_destination_url(target_url):
+                            raise _PrivateCDPDestinationError(blocked_url)
+                except _PrivateCDPDestinationError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("browser_cdp: Target.getTargetInfo probe failed for %s: %s", target_id, exc)
 
         msg = await _send(req, f"waiting for response to {method}")
         if "error" in msg:
@@ -238,6 +302,13 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
         return tool_error(f"frame_id {frame_id!r} is not an out-of-process iframe (no dedicated CDP session). "
                           "For same-origin iframes, use `browser_cdp(method='Runtime.evaluate', params={'expression': "
                           "\"document.querySelector('iframe').contentDocument.title\"})` at the top-level page instead.")
+
+    if _selected_destination_guard_active(task_id, method):
+        # The snapshot is taken under the supervisor state lock immediately before
+        # dispatch. Navigation can still race this best-effort in-process guard.
+        frame_url = str(frame_info.get("url") or "")
+        if blocked_url := _private_destination_url(frame_url):
+            return _blocked_private_destination(blocked_url, method)
 
     loop = supervisor._loop  # type: ignore[attr-defined]
     if loop is None or not loop.is_running():
@@ -301,7 +372,12 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
     try:
-        result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
+        result = _run_async(_cdp_call(
+            endpoint, method, call_params, target_id, safe_timeout,
+            guard_target_url=bool(target_id) and _selected_destination_guard_active(effective_task_id, method),
+        ))
+    except _PrivateCDPDestinationError as exc:
+        return _blocked_private_destination(exc.url, method)
     except asyncio.TimeoutError as exc:
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
     except (TimeoutError, RuntimeError) as exc:

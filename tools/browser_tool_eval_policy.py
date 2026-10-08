@@ -28,6 +28,52 @@ def _url_blocked(_bt, url: str) -> bool:
     return _bt._is_always_blocked_url(url) or not _bt._is_safe_url(url)
 
 
+# Page-URL schemes with no network destination of their own (browser-internal pages, inline
+# documents). An already-loaded page on one of these cannot be "at" a private host.
+_NON_NETWORK_PAGE_SCHEMES = frozenset({
+    "about", "data", "javascript", "chrome", "chrome-untrusted", "chrome-extension", "chrome-search",
+    "chrome-error", "devtools", "edge", "brave", "opera", "vivaldi", "moz-extension", "resource",
+})
+# Schemes whose document belongs to an embedded origin URL (``blob:https://a/uuid``,
+# ``filesystem:http://a/temporary/x``) or renders another URL's content (``view-source:``).
+_WRAPPER_PAGE_SCHEMES = frozenset({"view-source", "blob", "filesystem"})
+_PAGE_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):(.*)$", re.S)
+
+
+def _page_url_blocked(_bt, url: str) -> bool:
+    """True when an ALREADY-LOADED page/frame URL exposes a private/internal destination.
+
+    ``_url_blocked`` is the navigate-time predicate and fails closed for every non-http(s)
+    scheme — right for "may we go there?", wrong for "where is this tab now?" (a fresh tab
+    sits on ``about:blank``). Here: http(s) -> full SSRF verdict (incl. the metadata floor);
+    ``view-source:`` / ``blob:`` / ``filesystem:`` -> verdict of the wrapped URL (so
+    ``blob:http://127.0.0.1/...`` stays blocked); ``file:`` -> blocked (a genuine local read
+    on the browser host); browser-internal/inline schemes (``about:``, ``data:``,
+    ``chrome://``, ``devtools://``...) -> allowed; any other authority-bearing scheme
+    (``ftp://host``) -> host-checked; a scheme-less value -> navigate predicate (fail closed).
+    """
+    raw = (url or "").strip()
+    for depth in range(4):  # view-source:blob:http://... nests at most a couple of levels
+        match = _PAGE_SCHEME_RE.match(raw)
+        if not match:
+            # ``blob:null/<uuid>`` (opaque origin) unwraps to a scheme-less remainder.
+            return False if depth else _url_blocked(_bt, raw)
+        scheme, rest = match.group(1).lower(), match.group(2).strip()
+        if scheme in ("http", "https"):
+            return _url_blocked(_bt, raw)
+        if scheme == "file":
+            return True
+        if scheme in _WRAPPER_PAGE_SCHEMES:
+            raw = rest
+            continue
+        if scheme in _NON_NETWORK_PAGE_SCHEMES:
+            return False
+        if rest.startswith("//"):
+            return _url_blocked(_bt, "http:" + rest)
+        return False
+    return True  # pathological nesting: fail closed
+
+
 # URL-shaped literals embedded in a JS expression (http/https only). fetch/XHR/navigate
 # to a private host never updates ``location.href``, so the post-eval page-URL recheck
 # can't see it; pre-screen the literals instead.
@@ -49,7 +95,7 @@ def _current_page_private_url(effective_task_id: str) -> Optional[str]:
         url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
         if url_result.get("success"):
             current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
-            if current_url and _url_blocked(_bt, current_url):
+            if current_url and _page_url_blocked(_bt, current_url):
                 return current_url
     except Exception as exc:
         _bt.logger.debug("_current_page_private_url: probe failed (%s)", exc)
@@ -160,7 +206,7 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
         data = _post(f"/tabs/{tab_id}/evaluate", body={"expression": "window.location.href", "userId": user_id})
         current_url = str(data.get("result") if isinstance(data, dict) else data or "")
         current_url = current_url.strip().strip('"').strip("'")
-        if current_url and _url_blocked(_bt, current_url):
+        if current_url and _page_url_blocked(_bt, current_url):
             return current_url
     except Exception as exc:
         _bt.logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)

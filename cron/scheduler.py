@@ -211,7 +211,7 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
-def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
+def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     """Resolve the toolset list for a cron job.
 
     Precedence:
@@ -222,8 +222,8 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
-       (legacy behavior before this change, preserved as the safety net).
+    An explicitly empty per-job list enables no tools, including MCP servers.
+    Lookup failures refuse the run rather than widening to AIAgent's defaults.
 
     _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
     ``_get_platform_tools`` for unconfigured platforms, so fresh installs
@@ -231,7 +231,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     surprise $4.63 run).
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
+    if per_job is not None:
+        if not per_job:
+            return []
         from toolsets import get_allowed_toolsets, restrict_toolsets
 
         return restrict_toolsets(
@@ -242,11 +244,10 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
-        logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
-            exc,
-        )
-        return None
+        raise RuntimeError(
+            "Cron toolset resolution failed, so this run was refused rather than given every "
+            f"tool. Check `platform_toolsets.cron` in config.yaml (`hermes cron doctor`): {exc}"
+        ) from exc
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.

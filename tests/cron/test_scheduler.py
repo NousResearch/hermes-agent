@@ -45,6 +45,23 @@ class TestPerJobToolsetMcpMerge:
 
         assert result == ["web"]
 
+    @pytest.mark.parametrize("allowed", [None, "web"])
+    def test_explicit_empty_job_toolsets_do_not_enable_platform_or_mcp(self, monkeypatch, allowed):
+        if allowed is None:
+            monkeypatch.delenv("HERMES_ALLOWED_TOOLSETS", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_ALLOWED_TOOLSETS", allowed)
+        cfg = {**self.CFG, "platform_toolsets": {"cron": ["web", "terminal"]}}
+
+        assert _resolve_cron_enabled_toolsets({"enabled_toolsets": []}, cfg) == []
+
+    def test_platform_resolution_error_does_not_enable_default_toolsets(self):
+        error = ValueError("unreadable cron tool policy")
+        with patch("hermes_cli.tools_config._get_platform_tools", side_effect=error):
+            with pytest.raises(RuntimeError, match="Cron toolset resolution failed") as caught:
+                _resolve_cron_enabled_toolsets({}, self.CFG)
+        assert caught.value.__cause__ is error
+
 
     def test_explicit_mcp_name_is_treated_as_allowlist(self):
         # User named one server -> add nothing further.
@@ -1909,5 +1926,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-

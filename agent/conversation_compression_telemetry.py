@@ -1,4 +1,4 @@
-"""Content-free per-attempt compression telemetry (attempt log line + shared metric).
+"""Content-free per-attempt compression telemetry (attempt log line, Relay mark, shared metric).
 
 Sibling of ``agent/conversation_compression.py`` (the facade), which imports it at module level; this
 module must never import the facade (import cycle). It logs under the facade's logger name so log
@@ -13,6 +13,8 @@ import logging
 import time
 import uuid
 from typing import Any
+
+from agent.compaction_events import publish_attempt
 
 logger = logging.getLogger("agent.conversation_compression")
 
@@ -127,6 +129,7 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        publish_attempt(agent, payload)
         from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
         finish_compression_attempt(
@@ -169,6 +172,7 @@ def _emit_bypassed_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        publish_attempt(agent, payload)
     except Exception as exc:
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
     finally:

@@ -166,6 +166,7 @@ class TestToolProgressDispatch:
         assert call.args[1] == "exec_command"
         assert "ls /tmp" in call.args[2]  # preview
         assert call.args[3] == {"command": "ls /tmp", "cwd": "/tmp"}
+        assert call.kwargs["tool_call_id"] == "codex_exec_exec-1"
 
     def test_command_completed_fires_tool_completed_with_result(self):
         agent = _make_stub_agent()
@@ -193,6 +194,7 @@ class TestToolProgressDispatch:
         assert completed.kwargs["duration"] == pytest.approx(0.042)
         assert completed.kwargs["is_error"] is False
         assert completed.kwargs["result"] == "hi\n"
+        assert completed.kwargs["tool_call_id"] == "codex_exec_exec-2"
 
     def test_web_search_builtin_fires_started_and_completed(self):
         """Codex's built-in webSearch produces a start/complete bubble pair

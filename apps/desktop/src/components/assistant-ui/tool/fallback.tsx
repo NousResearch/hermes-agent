@@ -486,7 +486,6 @@ function ToolEntry({ part }: ToolEntryProps) {
   // read_file / terminal result can be huge. Memoize on the view fields so it
   // recomputes only when the tool's content changes, not on every parent
   // re-render (tool rows re-render on every stream tick of the running message).
-  const detailMatchesSubtitle = useMemo(() => looksRedundant(view.subtitle, view.detail), [view.subtitle, view.detail])
   const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
@@ -494,7 +493,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status === 'notice' && Boolean(view.detail)) ||
-      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
+      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle))
 
   const renderDetailAsCode =
     view.status !== 'error' &&

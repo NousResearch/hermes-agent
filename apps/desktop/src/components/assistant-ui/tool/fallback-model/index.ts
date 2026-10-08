@@ -1224,7 +1224,8 @@ function toolDetailText(
     return cronjobDetail(argsRecord, resultRecord)
   }
 
-  return fallbackDetailText(argsRecord, resultRecord)
+  // A derived record cannot carry primitive or array output from native tools.
+  return fallbackDetailText(argsRecord, part.result !== undefined ? part.result : resultRecord)
 }
 
 export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string; text: string } {

@@ -116,4 +116,20 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(rows[1].part).toMatchObject({ args: { command: 'echo step2' }, result: 'step 2 output' })
     expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
   })
+
+  it('recovers a real late result after a resultless completion sealed the row', () => {
+    event('message.start', 600)
+    event('tool.start', 601, { name: 'terminal', tool_id: 'late-output', args: { command: 'echo evidence' } })
+    event('tool.complete', 602, { name: 'terminal', tool_id: 'late-output' })
+    event('message.interim', 603, { text: 'Waiting for output.' })
+    event('tool.complete', 604, {
+      name: 'terminal',
+      tool_id: 'late-output',
+      result: { output: 'evidence', exit_code: 0 }
+    })
+
+    const rows = toolRows('late-output')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].part).toMatchObject({ result: { output: 'evidence', exit_code: 0 } })
+  })
 })

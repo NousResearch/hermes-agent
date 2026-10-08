@@ -473,7 +473,8 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     # that home. A parent record already gone (close / WS orphan reap mid-turn) cannot be attributed
     # to a profile — bind nothing rather than fold the run into the launch profile.
     if (parent := _sessions.get(sid)) is not None:
-        _mirror_subagent_to_child(event_type, payload, parent.get("profile_home"))
+        _mirror_subagent_to_child(event_type, {**payload, "tool_call_id": kw.get("tool_call_id"),
+                                                "args": kw.get("tool_args")}, parent.get("profile_home"))
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
@@ -497,8 +498,12 @@ def _on_tool_progress(
         return
     # Subagent lifecycle is application state (Desktop status stack, TUI spawn tree), not
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
+    if event_type == "subagent.tool_complete":
+        if (parent := _sessions.get(sid)) is not None:
+            _mirror_subagent_to_child(event_type, {**_kwargs, "tool_name": name}, parent.get("profile_home"))
+        return
     if event_type.startswith("subagent."):
-        return _progress_subagent(sid, name, preview, _kwargs, event_type)
+        return _progress_subagent(sid, name, preview, {**_kwargs, "tool_args": _args}, event_type)
     # No blanket tool_progress gate here: reasoning.available and moa.* are reasoning
     # content that follow display.show_reasoning in their own handlers.
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))

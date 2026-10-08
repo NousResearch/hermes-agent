@@ -374,7 +374,9 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: payload?.result !== undefined ? payload.result : prevResult,
+      ...((payload?.result !== undefined || prevResult !== undefined) && {
+        result: payload?.result !== undefined ? payload.result : prevResult
+      }),
       toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
       isError:
         payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)

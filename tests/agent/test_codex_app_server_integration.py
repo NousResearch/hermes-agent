@@ -869,7 +869,7 @@ class TestCodexToolProgressBridge:
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
 
         agent = _make_codex_agent()
-        agent.tool_progress_callback = lambda kind, name, preview, args: events.append(
+        agent.tool_progress_callback = lambda kind, name, preview, args, **kwargs: events.append(
             (kind, name, preview))
         with patch.object(agent, "_spawn_background_review", return_value=None):
             agent.run_conversation("run the tests")

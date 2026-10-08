@@ -302,6 +302,41 @@ the operating system account home. This setting only controls the environment
 passed to subprocesses that Hermes launches through tools such as `terminal`,
 background terminal processes, `execute_code`, and ACP helper processes.
 
+#### Foreground command isolation (systemd gateways)
+
+On Linux, when the gateway runs as a systemd service and the gateway user has a
+user systemd session, each **foreground** `terminal` command is launched in its own
+transient user scope (`systemd-run --user --scope --unit hermes-fg-<gateway-pid>-<suffix>`).
+An OOM, a memory-limit breach, or a `systemd-oomd` cgroup kill inside that command
+therefore stops the command's own cgroup instead of the gateway's — the messaging
+control plane keeps serving. This is the same isolation [cron
+workers](features/cron.md#restart-safe-workers-under-systemd) and
+[kanban workers](features/kanban.md#workers-and-systemd-cgroups) already get, and
+the same machinery `terminal(background=true)` uses.
+
+Two consequences worth knowing:
+
+- **Foreground commands are no longer charged to the gateway unit's memory limit.** With
+  `agent.agent_cache.memory_high_mb: auto` the budget is derived from the unit's own cgroup
+  charge, which no longer includes them ([Gateway Agent Cache](#gateway-agent-cache)) — a heavy build no
+  longer counts as gateway memory pressure, and the gateway's own `MemoryMax` no longer
+  applies to the command.
+- **The scope needs a user session.** Hosts without one (containers, minimal LXCs, a service
+  user without linger) keep the old behaviour: the command runs unwrapped in the gateway's
+  cgroup, and the gateway logs one warning per process so the degraded failure domain is not
+  silent. The remedy is the same as for cron: `sudo loginctl enable-linger <gateway-user>`
+  (plus `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs),
+  then restart the gateway.
+
+The scope name carries the gateway's PID. On a graceful exit the gateway stops its own
+scopes; if it is SIGKILLed (OOM victim, `TimeoutStopSec` escalation, a crash) the
+`ExecStopPost` reaper (`gateway/cgroup_cleanup.py`) enumerates the loaded `hermes-fg-*`
+scopes and stops each one whose PID is no longer alive, so a live gateway's commands are
+never matched and no PID file has to survive the crash. Treat it as a best-effort backstop
+rather than a guarantee: an unreachable systemd manager, an unnameable unit, or a liveness
+answer that cannot be resolved means no stop at all, and the reaper enqueues the stop
+instead of waiting for it.
+
 #### `terminal.home_mode`
 
 | Mode | Host installs | Containers | Tradeoff |
@@ -1187,7 +1222,7 @@ agent:
 
 `max_size` and `idle_ttl_secs` bound the cache by count and by time. Neither knows how many bytes it holds, so `memory_high_mb` adds a third bound: once anonymous memory crosses the budget, it sheds least-recently-used transcripts, which reload from the stored session on the next turn. Lower it if the gateway is competing for memory with other services; raise it (or set `0` to switch the pass off) if you would rather keep every prefix warm.
 
-`auto` derives the budget from the memory limit the gateway actually runs under — the cgroup limit for a container or systemd unit, total RAM otherwise — so a `MemoryMax`/`MemoryHigh` on the unit is respected without a second number to keep in sync. Under such a limit the measurement is scoped the same way: the cgroup's own anonymous charge (`memory.stat` `anon`), which includes child processes such as `execute_code` kernels and terminal commands that count against the unit's limit. Uncapped, the gateway's own anonymous RSS is measured.
+`auto` derives the budget from the memory limit the gateway actually runs under — the cgroup limit for a container or systemd unit, total RAM otherwise — so a `MemoryMax`/`MemoryHigh` on the unit is respected without a second number to keep in sync. Under such a limit the measurement is scoped the same way: the cgroup's own anonymous charge (`memory.stat` `anon`), which includes child processes such as `execute_code` kernels. Terminal commands are included only when they run inside the unit — on a systemd gateway with a user session a foreground `terminal` command runs in its own transient scope and is charged there instead ([Foreground command isolation](#foreground-command-isolation-systemd-gateways)). Uncapped, the gateway's own anonymous RSS is measured.
 
 Sessions that are mid-turn, the `protect_recent` most recently used ones, and any session whose transcript has not finished being written to disk are never shed. Eviction is logged at WARNING with the measured RSS and the sessions dropped:
 

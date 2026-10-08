@@ -526,11 +526,34 @@ def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", 
     return model_cfg
 
 
+# JSON numbers are IEEE-754 doubles in every browser/Electron client, so an int above
+# 2**53 (Discord/Telegram/Slack snowflake IDs are ~1e18) is rounded the moment the SPA
+# parses it; the debounced PUT /api/config autosave then writes the rounded value back
+# (``free_response_channels: 1535369580753592401`` became ``…592300`` and the bot
+# silently stopped answering). Serve such ints as strings: adapters already read IDs
+# as strings, and ruamel quotes them on save so they round-trip exactly thereafter.
+_JS_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _stringify_unsafe_ints(value: Any) -> Any:
+    """Recursively replace ints beyond JavaScript's exact range with their decimal string."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value) if abs(value) > _JS_MAX_SAFE_INTEGER else value
+    if isinstance(value, dict):
+        return {k: _stringify_unsafe_ints(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stringify_unsafe_ints(v) for v in value]
+    return value
+
+
 def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
-    DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
-    as a top-level field (0 = auto-detect)."""
-    config = dict(config)
+    DEFAULT_CONFIG where ``model`` is a string), surface ``model_context_length``
+    as a top-level field (0 = auto-detect), and stringify ints JavaScript cannot
+    hold exactly (see ``_stringify_unsafe_ints``)."""
+    config = _stringify_unsafe_ints(dict(config))
     model_val = config.get("model")
     if isinstance(model_val, dict):
         ctx_len = model_val.get("context_length", 0)

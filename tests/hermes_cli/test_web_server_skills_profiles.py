@@ -81,6 +81,21 @@ class TestProfileScopedSkills:
         default_cfg = _load_cfg(isolated_profiles["default"])
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
+    def test_toggle_with_query_profile_writes_target_only(self, client, isolated_profiles):
+        """Desktop's shape (#119088): the profile rides in ``?profile=``, the body is just
+        name/enabled. The write must land in that profile, never the launch profile."""
+        resp = client.put(
+            "/api/skills/toggle",
+            params={"profile": "worker_alpha"},
+            json={"name": "worker-skill", "enabled": False},
+        )
+        assert resp.status_code == 200
+
+        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
+        assert "worker-skill" in worker_cfg.get("skills", {}).get("disabled", [])
+        default_cfg = _load_cfg(isolated_profiles["default"])
+        assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
+
 
 
     def test_scope_restores_module_globals(self, client, isolated_profiles):

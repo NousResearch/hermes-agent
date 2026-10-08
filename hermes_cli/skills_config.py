@@ -40,6 +40,18 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     return disabled - ESSENTIAL_SKILLS
 
 
+def fresh_profile_skills_seed(source_cfg: dict) -> dict:
+    """The global skill opt-outs a fresh (non-cloned) profile copies from the profile creating it.
+
+    Without them every skill the user turned off comes back on in each new profile, although the
+    Desktop create dialog's Fresh profile preview shows those skills disabled (#119088). A copy at
+    creation, not a link, so the profiles stay independent islands. ``{}`` when nothing is
+    disabled, so no empty ``skills`` section is written.
+    """
+    disabled = get_disabled_skills(source_cfg)
+    return {"skills": {"disabled": sorted(disabled)}} if disabled else {}
+
+
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
     """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
     silently dropped — they cannot be disabled from any surface."""

@@ -659,6 +659,25 @@ test('registry model reads and writes retain each profile on a shared local back
   }
 })
 
+// #119088: the Skills page toggle for profile `writer` landed in the launch profile's config.yaml.
+test('the skill toggle names its profile on every shared backend route', () => {
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }, { sharedRemote: true }]) {
+    assert.equal(
+      pathForRegistryBackendRequest('/api/skills/toggle', 'writer', backend),
+      '/api/skills/toggle?profile=writer'
+    )
+  }
+
+  assert.deepEqual(
+    resolveProfileApiRequest('writer', '/api/skills/toggle', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'PUT'
+    }),
+    { backendProfile: null, requestPath: '/api/skills/toggle?profile=writer' }
+  )
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {

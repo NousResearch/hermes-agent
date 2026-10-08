@@ -789,16 +789,16 @@ def launch_model_seed(source_cfg: dict) -> dict:
 
 
 def _seed_model_config(profile_dir: Path) -> None:
-    """Copy (not link) the active profile's model block into a fresh profile so it is usable;
-    profiles stay independent islands afterwards."""
+    """Copy (not link) the active profile's model block and skill opt-outs into a fresh profile so
+    it is usable and keeps the skills the user turned off; profiles stay islands afterwards."""
     config_path = profile_dir / "config.yaml"
     if config_path.exists():
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
-        from hermes_constants import get_hermes_home
         from hermes_cli.config import atomic_config_write, read_user_config_raw
-        source = get_hermes_home() / "config.yaml"
-        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
+        from hermes_cli.skills_config import fresh_profile_skills_seed
+        source_cfg = read_user_config_raw()  # the active profile's config.yaml; {} when it has none
+        seed = {**launch_model_seed(source_cfg), **fresh_profile_skills_seed(source_cfg)}
         if seed:
             atomic_config_write(config_path, seed)
 
@@ -1344,7 +1344,7 @@ def cloned_plugin_names(profile_dir: Path) -> List[str]:
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
-    """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
+    """Fresh layout: bootstrap dirs, then either seed a model block and skill opt-outs (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
 

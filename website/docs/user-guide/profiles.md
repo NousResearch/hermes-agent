@@ -64,7 +64,7 @@ Quickest setup: run `hermes setup --portal` inside the new profile to wire up mo
 hermes profile create mybot
 ```
 
-Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
+Creates a fresh profile with bundled skills seeded. It copies the active profile's model and its `skills.disabled` list, so skills you turned off stay off; everything else starts fresh. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 

@@ -113,7 +113,7 @@ def _profile_list(args):
         print("No profiles found.")
         return
     print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias':<12} {'Distribution'}")
-    print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 11}    {'─' * 20}")
+    print(f" {'─' * 16} {'─' * 28} {'─' * 12} {'─' * 12} {'─' * 12}")
     for p in profiles:
         marker = " ◆" if _is_active(p, active) else "  "
         name = format_profile_label(p.name, p.display_name)

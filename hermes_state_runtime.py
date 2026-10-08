@@ -380,6 +380,9 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
+        if (type(generation) is int and row['generation'] == generation
+                and row['status'] == 'terminal' and row['outcome'] == 'interrupted'):
+            return _row(row)
         if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
             raise RuntimeStoreError('stale_generation')
         if _terminal_write is not None:

@@ -29,7 +29,9 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
     db = store._db
 
     async def answer(event):
+        from gateway.session_results import execution_result
         executed.append(event.text)
+        execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
 
     runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
@@ -81,11 +83,11 @@ async def test_resolve_unknown_releases_the_paused_follower_exactly_once(tmp_pat
             infos.append(await asyncio.to_thread(peer.frames.get, True, 5))
         first_info = next(f for f in infos if f['params']['type'] == 'session.info')
         assert all(r['status'] != 'unknown' for r in first_info['params']['payload']['pending'])
-        # Acknowledging twice is not a second resolution.
+        # Lost-ACK retries return the committed resolution without another turn.
         again = await viewer.dispatch({'id': 3, 'method': 'prompt.resolve_unknown', 'params': {
             'session_id': 's', 'admission_id': unknown['admission_id'],
             'execution_generation': unknown['generation']}})
-        assert again['error']['data']['reason'] == 'stale_generation'
+        assert again['result'] == receipt
         assert executed == ['FOLLOWER']
     finally:
         await viewer.close()

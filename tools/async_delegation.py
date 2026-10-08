@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -50,6 +51,19 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+# Databases (path + file identity) whose schema this process already reconciled. Replaying
+# SCHEMA_SQL is idempotent, so doing it once per file is enough; doing it on every connection
+# put an executescript on the hot read path behind subagent.list, which every open chat polls.
+_SCHEMA_READY: set[tuple[str, int, int]] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
+# Short read cache for failed_delegations_for_session (polled every few seconds per open chat).
+# Any ledger write in this process bumps the generation and invalidates it; the TTL bounds how
+# long a write from another process can stay unseen.
+_FAILED_CACHE_TTL_S = 2.0
+_FAILED_CACHE_MAX = 256
+_FAILED_CACHE_LOCK = threading.Lock()
+_failed_cache: dict[tuple, tuple[float, int, list[dict[str, Any]]]] = {}
+_ledger_generation = 0
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -110,19 +124,40 @@ def _connect() -> sqlite3.Connection:
     # A late replay or writer must not resurrect a removed named profile (#123265).
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
+    identity = _db_identity(path)
+    with _SCHEMA_READY_LOCK:
+        reconciled = identity is not None and identity in _SCHEMA_READY
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
+                   wal=False, row_factory=None,
+                   initialize=_apply_barriers_only if reconciled else _initialize_schema)
     _secure_state_db_files(path)
+    if not reconciled and (identity := _db_identity(path)) is not None:
+        with _SCHEMA_READY_LOCK:
+            _SCHEMA_READY.add(identity)
     return conn
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
+def _db_identity(path) -> Optional[tuple[str, int, int]]:
+    """``(path, st_dev, st_ino)`` of an existing database file, else None. Including the file
+    identity means a state.db that was deleted or replaced at the same path is reconciled again."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return os.path.normcase(os.path.abspath(path)), st.st_dev, st.st_ino
+
+
+def _apply_barriers_only(conn: sqlite3.Connection) -> None:
     from hermes_state_repair import apply_durability_barriers
+    apply_durability_barriers(conn)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
-    apply_durability_barriers(conn)
+    _apply_barriers_only(conn)
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -133,10 +168,21 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     reconcile_state_schema(conn)
 
 
+@contextlib.contextmanager
 def _transaction():
+    """Ledger transaction; bumps :data:`_ledger_generation` when it changed any row, which
+    invalidates the read cache of :func:`failed_delegations_for_session`."""
     from hermes_cli.sqlite_util import transaction
 
-    return transaction(_connect())
+    global _ledger_generation
+    with transaction(_connect()) as conn:
+        before = conn.total_changes
+        try:
+            yield conn
+        finally:
+            if conn.total_changes != before:
+                with _FAILED_CACHE_LOCK:
+                    _ledger_generation += 1
 
 
 def _capture_routing_origin() -> dict[str, Any]:
@@ -589,6 +635,13 @@ def failed_delegations_for_session(
         ("origin_ui_session_id", origin_ui_session_id), ("parent_session_id", parent_session_id)) if val]
     if not selectors:
         return []
+    cache_key = (str(_db_path()), tuple(selectors), limit) if now is None else None
+    if cache_key is not None:
+        with _FAILED_CACHE_LOCK:
+            hit = _failed_cache.get(cache_key)
+            if hit is not None and hit[1] == _ledger_generation and time.monotonic() < hit[0]:
+                return [dict(row) for row in hit[2]]
+            generation = _ledger_generation
     cutoff = (now if now is not None else time.time()) - _FAILURE_SURFACE_WINDOW_S
     owner_sql = " OR ".join(f"{col}=?" for col, _ in selectors)
     with _DB_LOCK, _transaction() as conn:
@@ -615,7 +668,14 @@ def failed_delegations_for_session(
                 "delegation_id": delegation_id, "task_index": index, "status": status,
                 "goal": str(goal_for.get(index, goals[0]) or ""), "error": str(error) if error else None,
                 "dispatched_at": dispatched_at, "completed_at": completed_at})
-    return failed[:limit]
+    failed = failed[:limit]
+    if cache_key is not None:
+        with _FAILED_CACHE_LOCK:
+            if len(_failed_cache) >= _FAILED_CACHE_MAX:
+                _failed_cache.clear()
+            _failed_cache[cache_key] = (time.monotonic() + _FAILED_CACHE_TTL_S, generation,
+                                        [dict(row) for row in failed])
+    return failed
 
 
 # ── In-memory registry queries ──────────────────────────────────────────────
@@ -1209,3 +1269,7 @@ def _reset_for_tests() -> None:
     with _orphan_lock:
         _offered.clear()
         _last_orphan_sweep.clear()
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY.clear()
+    with _FAILED_CACHE_LOCK:
+        _failed_cache.clear()

@@ -56,15 +56,3 @@ def find_stable_prefix(content: str) -> Optional[str]:
         if best is not None:
             _prefixes.move_to_end(best)  # after the scan: never mutate mid-iteration
         return best
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def clear_stable_prefixes() -> None:
-    """Test isolation helper."""
-    with _lock:
-        _prefixes.clear()
-# ---- END PLUGIN-COMPAT ----

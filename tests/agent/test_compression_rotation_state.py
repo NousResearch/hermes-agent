@@ -31,6 +31,7 @@ from agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
 )
+from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
 
 
@@ -1176,16 +1177,9 @@ class TestAutomaticCompressionStateRefreshAfterLock:
 
 
 class TestGateLevelGuardRefresh:
-    """The unblock direction must work from the should_compress() pre-gates.
+    """The pre-gate uses the measured ineffective count, not summary type."""
 
-    compress_context refreshes durable guards internally, but the automatic
-    paths (preflight/turn gates) consult should_compress() first — if a stale
-    in-memory fallback streak (which has no expiry timer) blocks there, the
-    refresh inside compress_context is never reached and the agent stays
-    blocked forever.
-    """
-
-    def test_should_compress_unblocks_after_another_agent_clears_streak(
+    def test_durable_fallback_streak_does_not_block_should_compress(
         self,
         refresh_state_db: SessionDB,
     ):
@@ -1196,11 +1190,8 @@ class TestGateLevelGuardRefresh:
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._fallback_compression_streak == 2
 
-        # Another agent's healthy boundary clears the durable breaker.
-        db.set_compression_fallback_streak(session_id, 0)
-
+        # A previous run's fallback streak is diagnostic, so it never blocks.
         assert compressor.should_compress(10**9) is True
-        assert compressor._fallback_compression_streak == 0
 
 
 
@@ -1465,10 +1456,12 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER}
+                if k not in {"_row_id", "timestamp", "message_uid", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
             }
             for m in compressed
         ] == expected
+        # The rotation handoff stamps each child row's stored digest, so a re-flush takes the versioned path.
+        assert all(isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in compressed)
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed

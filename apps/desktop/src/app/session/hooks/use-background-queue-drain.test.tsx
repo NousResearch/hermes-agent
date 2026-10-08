@@ -8,9 +8,19 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
-  parkQueuedPrompts
+  MAX_AUTO_DRAIN_ATTEMPTS,
+  parkQueuedPrompts,
+  resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
-import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
+import { $notifications, clearNotifications } from '@/store/notifications'
+import {
+  $sessions,
+  _resetSessionOwnerHintsForTests,
+  setSessionOwnerHint,
+  setSessionProfilesTruncated,
+  setSessions,
+  setSessionsLoading
+} from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -62,10 +72,12 @@ describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()
+    _resetSessionOwnerHintsForTests()
     // The queue store merges over live localStorage on save (cross-window sync,
     // #46732) — stale persisted entries from an earlier test would be adopted
     // into the atom and drained here as if they were fresh queue state.
     window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    resetFrozenQueuedTransportsForTests()
     // Production drain waits for the sidebar list. Tests that assert drain
     // behavior are post-load unless they opt into the loading gate.
     setSessionsLoading(false)
@@ -77,8 +89,10 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    resetFrozenQueuedTransportsForTests()
     $sessions.set([])
     setSessionsLoading(true)
+    clearNotifications()
     clearAllSessionStates()
   })
 
@@ -101,6 +115,76 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
+
+  it('submits a queued entry once when two idle windows both drain it', async () => {
+    // Web Locks are arbitrated across windows by the browser; jsdom has none.
+    // A FIFO mutex per lock name stands in for it.
+    const tails = new Map<string, Promise<unknown>>()
+
+    const request = (name: string, callback: () => Promise<unknown>) => {
+      const granted = (tails.get(name) ?? Promise.resolve()).then(callback)
+      tails.set(
+        name,
+        granted.catch(() => {})
+      )
+
+      return granted
+    }
+
+    Object.defineProperty(window.navigator, 'locks', { configurable: true, value: { request } })
+
+    try {
+      const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+      let accept!: (accepted: boolean) => void
+      const submitText = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
+
+      enqueueQueuedPrompt('stored-session-a', { text: 'send me once', attachments: [] })
+      clearAllSessionStates()
+
+      // Two windows, each viewing another chat, share session A's queue.
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
+
+      await waitFor(() => expect(submitText).toHaveBeenCalled())
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      await act(async () => accept(true))
+
+      await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+      // Let the window that waited on the claim finish its turn at the queue.
+      await act(async () => {
+        await Promise.all(tails.values())
+      })
+
+      expect(submitText).toHaveBeenCalledTimes(1)
+    } finally {
+      delete (window.navigator as { locks?: unknown }).locks
+    }
+  })
+
+  it('forwards queued displayText so frozen @terminal chips render in the bubble', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', {
+      text: 'look at @terminal:`zsh:23-58`',
+      displayText: 'look at @terminal:`zsh:23-58`',
+      attachments: [],
+      frozenTransport: '```terminal\nselection A\n```\n\nlook at'
+    })
+    clearAllSessionStates()
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await waitFor(() => {
+      expect(submitText).toHaveBeenCalledWith('```terminal\nselection A\n```\n\nlook at', {
+        attachments: [],
+        displayText: 'look at @terminal:`zsh:23-58`',
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    })
   })
 
   it('leaves the selected session queue to the mounted ChatBar drainer', async () => {
@@ -277,5 +361,165 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
+
+  it("drops a gone session's queued prompt quietly at drain exhaustion instead of erroring (#98015)", async () => {
+    vi.useFakeTimers()
+
+    // The session list has settled and no row answers to the queued session:
+    // the conversation is gone from this backend (reaped runtime whose stored
+    // resume refuses — the post-restart shape the issue reports).
+    setSessions([])
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'never sends', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+
+    // The entry is dropped and the notice is a quiet info, not the old
+    // "message not sent" error banner.
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+    const stuck = $notifications.get().find(n => n.id === 'composer-background-queue-stuck-stored-session-a')
+    expect(stuck?.kind).toBe('info')
+  })
+
+  it('keeps the queued prompt for a session the loaded list still knows, with a quiet notice (#98015)', async () => {
+    vi.useFakeTimers()
+
+    setSessions([lineageSession({ id: 'stored-session-a' })])
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'retry from the panel', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    // The conversation exists — the entry survives for a manual send, and the
+    // notice is downgraded from the error banner.
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+    const stuck = $notifications.get().find(n => n.id === 'composer-background-queue-stuck-stored-session-a')
+    expect(stuck?.kind).toBe('info')
+  })
+
+  it('keeps the queued prompt when the session is reachable but its owner hint is ambiguous (#122083 review)', async () => {
+    vi.useFakeTimers()
+
+    // Two routes for the same id (cloud gateway + local backend, or a profile
+    // switch that re-stamped the route) make getSessionOwnerHint return
+    // undefined — a POSITIVE liveness signal, not absence. Reading the
+    // singular accessor as an existence test dropped the user's queued
+    // prompt at drain exhaustion.
+    setSessions([])
+    setSessionOwnerHint('stored-session-a', { connectionId: 'conn-cloud', profile: 'default' })
+    setSessionOwnerHint('stored-session-a', { connectionId: 'conn-local', profile: 'work' })
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'still alive', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('keeps the queued prompt when the loaded list page cannot prove the session gone (#122083 review)', async () => {
+    vi.useFakeTimers()
+
+    // $sessions is one PAGE of the sidebar list: a queued session that simply
+    // fell off the loaded window ($sessionProfilesTruncated) is unknown by
+    // row and by hint — but "not on this page" is not "deleted". Dropping the
+    // entry there destroyed real data.
+    setSessionProfilesTruncated({ default: true })
+    setSessions([])
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'below the fold', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+    setSessionProfilesTruncated({})
+  })
+
+  it('does not replay the retry ladder for a queue restored after prior exhaustion (#98015)', async () => {
+    vi.useFakeTimers()
+
+    // A queue restored from localStorage with the persisted drain budget
+    // already spent: no attempts, no notice — the every-boot replay of four
+    // rejections plus a banner is the reported symptom.
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ id: 'stored-session-a' })])
+    $queuedPromptsBySession.set({
+      'stored-session-a': [
+        {
+          id: 'queued-restored',
+          text: 'already exhausted in a previous process',
+          attachments: [],
+          queuedAt: 1,
+          drainFailures: MAX_AUTO_DRAIN_ATTEMPTS
+        }
+      ]
+    })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 6)
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a').map(e => e.id)).toEqual(['queued-restored'])
+    expect($notifications.get()).toHaveLength(0)
   })
 })

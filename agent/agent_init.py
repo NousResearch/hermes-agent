@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -49,28 +50,38 @@ logger = logging.getLogger("run_agent")
 
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[str] = set()
+_warned_unavailable_providers: set[tuple[str, str]] = set()
 
 
-def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
-    """Warn once per provider that a configured memory provider is unavailable.
+def _unavailable_warning_key(name: str) -> tuple[str, str]:
+    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
+    profiles, and each one running without its memory must be told."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    return hermes_home_key(get_hermes_home()), name
+
+
+def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
+    """Warn once per home and provider that a configured memory provider is unavailable.
 
     ``is_available()`` is a side-effect-free hot-path check and can't log itself; without this
     the provider is silently dropped. ``reason`` (the provider's ``unavailable_reason()`` hint)
-    can only reach the user here, so it is appended when present.
+    can only reach the user here, so it is appended when present. *say* is the agent's
+    user-facing sink: a log line alone leaves the user running without memory unaware.
     """
-    if name in _warned_unavailable_providers:
+    key = _unavailable_warning_key(name)
+    if key in _warned_unavailable_providers:
         return
-    _warned_unavailable_providers.add(name)
-    logger.warning(
-        "Memory provider %r is selected but reports unavailable — external memory "
+    _warned_unavailable_providers.add(key)
+    message = (
+        f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
         "is disabled for this session (built-in memory still works). Check the "
         "provider's credentials/config with 'hermes memory status'. Note: "
         "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
-        "any required variables in the service environment.%s",
-        name,
-        f" {reason}" if reason else "",
+        f"any required variables in the service environment.{f' {reason}' if reason else ''}"
     )
+    logger.warning(message)
+    if say is not None:
+        say(message)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -586,9 +597,11 @@ _TURN_STATE: Dict[str, Any] = {
 # Session persistence state.
 _SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
-    # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
-    # make the loop disable it for the session (stateless continuity).
+    # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
+    # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
+    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
+    "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
     "_memory_write_context": "foreground",
     # Cached system prompt (built once, rebuilt on compression) + its cross-session-stable
@@ -678,8 +691,8 @@ def _init_prompt_cache_config(agent):
         elif _ttl == AUTO_CACHE_TTL:
             # Decided once per session from its source (a delegated child is clamped to 5m again
             # in delegate_tool regardless).
-            from run_agent import _session_source_for_agent  # late: run_agent imports this module
-            agent._cache_ttl = auto_cache_ttl_for_source(_session_source_for_agent(getattr(agent, "platform", None)))
+            from agent.session_source import session_source_for
+            agent._cache_ttl = auto_cache_ttl_for_source(session_source_for(getattr(agent, "platform", None)))
         elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
@@ -700,7 +713,11 @@ def _setup_logging(agent):
     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents
     # don't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents
+    # for several profiles inside set_hermes_home_override(), and the frozen launch home made
+    # setup_logging() see a home it already served, so it never adopted the profile and every
+    # profile's records landed in the launch profile's agent.log (#125974).
+    setup_logging(hermes_home=get_hermes_home())
 
     if agent.verbose_logging:
         setup_verbose_logging()
@@ -881,12 +898,14 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             from agent.moa_loop import bind_moa_runtime
             bind_moa_runtime(agent, _fb["model"])
             return None
-        agent.provider = _fb["provider"]
+        agent.provider = agent.requested_provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
+        recompute_init_fallback_api_mode(agent, _fb_client)
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
     _pool_exhausted = False
+    _pool = None
     if _explicit and _explicit != "auto":
         with suppress(Exception):
             from agent.credential_pool import load_pool
@@ -901,13 +920,33 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             "credential pool exhausted" if _pool_exhausted else "no usable credentials",
             "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
         )
+    # A fully-exhausted pool is a billing/quota failure, NOT a config problem: name it for EVERY
+    # explicit provider. ``openrouter`` / ``custom`` have no provider-specific missing-credentials
+    # branch, so a burned override pool there fell through to the generic "No LLM provider
+    # configured" setup message even though the config default was fine (#94785). Prefer a billing
+    # verdict (402 / classifier "billing") and fall back to the existing cooldown wording (which
+    # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
+    # 402 is never described as a missing key or a transient rate limit.
+    if _pool_exhausted:
+        from agent.auxiliary_unavailable import (
+            ProviderCredentialsExhaustedError,
+            pool_billing_message,
+            pool_cooldown_message,
+        )
+        _exhausted_message = (
+            pool_billing_message(_explicit, model=agent.model, pool=_pool)
+            or pool_cooldown_message(_explicit)
+        )
+        if _exhausted_message:
+            raise ProviderCredentialsExhaustedError(_exhausted_message, provider=_explicit)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
-        from agent.auxiliary_unavailable import missing_provider_credentials_message
-        raise RuntimeError(missing_provider_credentials_message(_explicit))
+        from agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
+        raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector
+    from agent.auxiliary_unavailable import ProviderNotConfiguredError
     _sel = profile_cli_selector()
-    raise RuntimeError(
+    raise ProviderNotConfiguredError(
         "No LLM provider configured. Run `hermes model` to "
         "select a provider, or run `hermes setup` for first-time "
         "configuration."
@@ -1051,39 +1090,11 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     return kwargs
 
 
-def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
-
-
-def _init_fallback_chain(agent, fallback_model):
-    # Stable pool-entry identity: OAuth refreshes can replace the token before a failed
-    # request is recovered, so the key value alone can't attribute the failure.
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-    sync_credential_pool_entry_id(agent)
-
-    # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
-    agent._fallback_chain = _fallback_entries(fallback_model)
-    agent._fallback_index = 0
-    agent._fallback_activated = getattr(agent, "_fallback_activated", False)
-    # Legacy attribute kept for backward compat (tests, external callers)
-    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    chain = agent._fallback_chain
-    if chain and not agent.quiet_mode:
-        labels = [f"{f['model']} ({f['provider']})" for f in chain]
-        if len(chain) == 1:
-            print(f"🔄 Fallback model: {labels[0]}")
-        else:
-            print(f"🔄 Fallback chain ({len(chain)} providers): " + " → ".join(labels))
-
-
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
+    # A feature that left core for a catalog plugin (Home Assistant) is installed for a home that
+    # used it, once per process, before discovery so its tools are in this agent's snapshot.
+    from hermes_cli.left_core_migration import recover_at_startup
+    recover_at_startup(say=getattr(agent, "_emit_startup_warning", None))
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
@@ -1099,16 +1110,15 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
+    from toolsets import agent_tool_drops, session_disabled_toolsets
+    disabled_toolsets = session_disabled_toolsets(disabled_toolsets, getattr(agent, "platform", None))
+    agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
     agent.tools = model_tools.get_tool_definitions(
-        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=agent.quiet_mode)
     # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
     from agent.oneshot_footprint import prune_oneshot_tools
     agent.tools = prune_oneshot_tools(agent.tools or [])
-    from tools.connectors.turn import side_agent_tool_drops
-    drops = side_agent_tool_drops(agent)
-    if drops:
+    if drops := agent_tool_drops(agent):
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
@@ -1340,16 +1350,17 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
                     from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name):
+                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
                         _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
+                elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
                     with suppress(Exception):
                         _unavailable_reason = _mp.unavailable_reason()
-                    _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
+                    _warn_memory_provider_unavailable(
+                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
                 if agent._memory_manager.providers:
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
@@ -2279,8 +2290,12 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
+    # Prefer the session's explicitly adopted workspace (a Desktop session created under the
+    # spawn-time home pin records none; a picked/adopted one does — agent.session_cwd is set
+    # at build time and on every workspace move). TERMINAL_CWD is the launch fallback.
+    working_dir = getattr(agent, "session_cwd", None) or scope_terminal_cwd() or None
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
+        working_dir=working_dir, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 
@@ -2337,7 +2352,7 @@ _CALLBACK_PARAMS = (
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
-    "step_callback", "stream_delta_callback", "interim_assistant_callback",
+    "setup_choose_callback", "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
 )
@@ -2360,7 +2375,7 @@ def init_agent(
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
     read_window_below_callback: callable = None, connection_callback: callable = None,
-    tour_callback: callable = None, step_callback: callable = None,
+    tour_callback: callable = None, setup_choose_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,
     notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -2479,25 +2494,3 @@ def init_agent(
 
 
 __all__ = ["init_agent"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ToolGuardrailDecision': ('agent.tool_guardrails', 'ToolGuardrailDecision'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -1,4 +1,4 @@
-"""Audio dashboard routes: transcription upload, voice config, ElevenLabs voices, TTS speak/lease and the speak-stream WebSocket.
+"""Audio dashboard routes: transcription upload + live transcribe-stream, voice config, ElevenLabs voices, TTS speak/lease and the speak-stream WebSocket.
 
 Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are late-bound (cycle-safe).
@@ -20,9 +20,15 @@ from fastapi import APIRouter
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
-from hermes_cli.web_server_gateway import _split_text_for_speak_stream
+from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
+from hermes_cli.web_models import (
+    AudioTranscriptionRequest,
+    STTLeaseRequest,
+    TTSSpeakRequest,
+    TTSLeaseRequest,
+    VoiceLiveSessionRequest,
+)
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -156,6 +162,8 @@ async def get_client_voice_config(profile: Optional[str] = None):
     from tools.voice_client_config import resolve_client_voice_config
     try:
         result = await _run_config_scoped(profile, resolve_client_voice_config)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a reason to fall back to relay
     except Exception:
         _log.exception("Client voice-config resolution failed")
         fallback = {"mode": "relay", "reason": "resolution error"}
@@ -242,7 +250,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
 
         def _fetch() -> Dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return _read_dashboard_json_response(response)
 
         payload = await loop.run_in_executor(None, _fetch)
     except urllib.error.HTTPError as exc:
@@ -468,6 +476,117 @@ def _ffmpeg_s16le_mono(path: str) -> tuple:
         stderr = (result.stderr or b"").decode("utf-8", "replace")[:200]
         raise RuntimeError(f"TTS audio decode failed: {stderr}")
     return result.stdout, 24000
+
+
+@router.post("/api/audio/stt-lease")
+async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
+    """Desktop voice-input sessions as STT warm-up / release signals.
+
+    ``active: true`` registers a lease and pre-loads the configured local STT
+    model (first-use download + load) so the transcription request doesn't pay
+    the cold cost inside its timeout; ``active: false`` drops the lease. The
+    model stays resident after the last release — it is shared with the
+    gateway/CLI surfaces in this process, and ``stt.local.unload_after_idle_seconds``
+    still governs eviction. Blocking work runs off the event loop. Warm-up
+    failures are reported in the body, never as an HTTP error — recording must
+    start even when preload fails.
+    """
+    lease = (payload.lease or "").strip()
+    if not lease:
+        raise HTTPException(status_code=400, detail="lease is required")
+
+    def _apply():
+        from tools.stt_lease import acquire_stt_lease, release_stt_lease
+        if payload.active:
+            with _config_profile_scope(profile):
+                return acquire_stt_lease(lease)
+        return release_stt_lease(lease)
+
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("STT lease %s (%s) failed: %s", lease, payload.active, exc)
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    return {"ok": True, "lease": lease, "active": payload.active, **result}
+
+
+@router.websocket("/api/audio/transcribe-stream")
+async def transcribe_stream_ws(ws: "WebSocket") -> None:
+    """Live STT for Desktop dictation: mic PCM in while the user speaks, partial + final text out.
+
+    Protocol:
+      client → ``{"sample_rate": N}`` first (8000-48000), then binary s16le mono PCM frames,
+               ``{"eos": true}`` when the recording ends (disconnect = cancel)
+      server → ``{"type": "partial", "text": ...}`` as speech is recognized,
+               ``{"type": "final", "transcript": ..., "provider": ...}``,
+               ``{"type": "error", "message": ...}`` — also when no live STT is available, so the
+               client falls back to ``POST /api/audio/transcribe`` with its recorded blob.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+
+    profile = (ws.query_params.get("profile") or "").strip() or None
+    loop = asyncio.get_running_loop()
+    partials: asyncio.Queue = asyncio.Queue()
+
+    def _open():
+        from tools.transcription_streaming import open_streaming_session
+        with _config_profile_scope(profile):
+            return open_streaming_session(on_partial=lambda text: loop.call_soon_threadsafe(partials.put_nowait, text))
+
+    session = None
+    with contextlib.suppress(Exception):
+        session = await loop.run_in_executor(None, _open)
+    if session is None:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "message": "no live STT for the configured provider"})
+            await ws.close()
+        return
+
+    async def _forward_partials():
+        while True:
+            await ws.send_json({"type": "partial", "text": await partials.get()})
+
+    forwarder = asyncio.ensure_future(_forward_partials())
+    ended = False
+    try:
+        first = json.loads(await ws.receive_text())
+        rate = int(first.get("sample_rate") or 0)
+        if not 8000 <= rate <= 48000:
+            raise ValueError(f"unsupported sample_rate {rate}")
+        session.set_input_rate(rate)
+        while True:
+            message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if message.get("bytes"):
+                session.push_audio(message["bytes"])
+            elif message.get("text") and json.loads(message["text"]).get("eos"):
+                ended = True
+                break
+    except (WebSocketDisconnect, ValueError, RuntimeError) as exc:
+        _log.debug("transcribe-stream client ended early: %s", exc)
+    if not ended:
+        session.cancel()
+        forwarder.cancel()
+        return
+    result = await loop.run_in_executor(None, session.finalize)
+    await asyncio.sleep(0)  # let the last partial flush before the final frame
+    forwarder.cancel()
+    with contextlib.suppress(Exception):
+        if result.get("success"):
+            await ws.send_json({"type": "final", "transcript": result.get("transcript", ""),
+                                "provider": result.get("provider", "")})
+        else:
+            await ws.send_json({"type": "error", "message": result.get("error") or "transcription failed"})
+        await ws.close()
 
 
 @router.websocket("/api/audio/speak-stream")

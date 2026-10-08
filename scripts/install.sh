@@ -32,6 +32,13 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
+SKIP_COMPUTER_USE=false
+INSTALL_LADDER=false
+INSTALL_STARTED=0
+INSTALL_RUN_ID=""
+FAILURE_CLASS=""
+INSTALL_SIGNAL=""
+INSTALL_IN_STAGE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +61,7 @@ while [ $# -gt 0 ]; do
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
+        --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -61,11 +69,14 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser]"
+            echo "                  [--skip-browser] [--skip-computer-use]"
             echo
             echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
-            echo "                  Alias: --no-playwright. Remembered by later installs and"
-            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "                  Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-computer-use"
+            echo "                  Do not install the computer-use driver (cua-driver). Remembered"
+            echo "                  the same way; undo with 'hermes pm install cua-driver'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -90,7 +101,63 @@ log() { printf '%s→%s %s\n' "$C_CYAN" "$C_NC" "$1"; }
 log_success() { printf '%s✓%s %s\n' "$C_GREEN" "$C_NC" "$1"; }
 log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }
 log_error() { printf '%s✗%s %s\n' "$C_RED" "$C_NC" "$1" >&2; }
-fail() { STAGE_REASON="$1"; log_error "$1"; exit 1; }
+# $2: closed failure class for the local install receipt (write_install_receipt).
+fail() { STAGE_REASON="$1"; FAILURE_CLASS="${2:-other}"; log_error "$1"; exit 1; }
+
+# One local receipt per full-ladder run, under the profile's shared-metrics dir.
+# Only closed tokens and two timestamps (never STAGE_REASON, paths or URLs); the
+# installer never sends anything. Hermes reports it as hermes.install.run on a
+# later start only while shared metrics collection is on, and deletes it
+# unreported when collection is off. Best effort: never fails the install.
+write_install_receipt() {
+    # $1 outcome, $2 failed stage, $3 failure class. One file per run: the first writer wins.
+    # A failed write (full disk) removes its partial temp file: the reader never sees dotfiles.
+    {
+        local dir="$HERMES_HOME/telemetry/shared_metrics/pending_installs" id="$INSTALL_RUN_ID"
+        [ -n "$id" ] && [ ! -e "$dir/$id.json" ] && mkdir -p "$dir" && {
+            printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
+                "$id" "$1" "$2" "$3" "$INSTALL_STARTED" "$(date +%s)" > "$dir/.$id.tmp" \
+                && mv -f "$dir/.$id.tmp" "$dir/$id.json" \
+                || rm -f "$dir/.$id.tmp"
+        }
+    } >/dev/null 2>&1 || :
+}
+
+# Ladder signal handling. The traps only note the signal while a stage owns the
+# terminal: bash runs a trap once the foreground stage returns, and that stage's
+# result decides. A stage whose child caught Ctrl-C and succeeded (setup's
+# provider picker: "Provider setup skipped.") lets the ladder carry on, as bash's
+# own wait-and-cooperative-exit did before these traps existed. A stage that
+# failed after the signal is recorded as `interrupted`, then the signal is
+# re-raised so the exit status is the signal's. A TERM or HUP sent to the
+# installer alone (not its process group) takes effect when the running stage
+# returns, and the receipt names the stage the run stopped before. The stage
+# stays in the foreground because a background stage's children ignore Ctrl-C
+# under bash 3.2 (macOS /bin/bash), even after `trap -`.
+install_signal() {
+    # $1 signal name. Outside a stage (platform check, banner, between stages) stop now.
+    INSTALL_SIGNAL="$1"
+    [ "$INSTALL_IN_STAGE" = true ] || install_interrupted
+}
+
+install_interrupted() {
+    # Record the stage the signal cut off, then die by that signal (exit code if it is blocked).
+    local stage="${s:-prerequisites}" sig="${INSTALL_SIGNAL:-INT}" code=130
+    case "$sig" in HUP) code=129 ;; TERM) code=143 ;; esac
+    write_install_receipt failed "${stage//-/_}" interrupted
+    trap - INT TERM HUP EXIT
+    kill -s "$sig" "$$" 2>/dev/null
+    exit "$code"
+}
+
+# Inside a ladder stage: a child the signal killed ends the stage like bash's own
+# cooperative exit (its status is the signal's, 128+N); a child that caught the
+# signal keeps its own result, and the stage's receipt reads `interrupted`.
+stage_signal() {
+    # $1 status of the command the signal arrived during, $2 this signal's 128+N.
+    STAGE_INTERRUPTED=true
+    [ "$1" -ne "$2" ] || exit "$2"
+}
 
 print_banner() {
     printf '\n%s%s' "$C_MAGENTA" "$C_BOLD"
@@ -179,6 +246,16 @@ uv_bootstrap_pin() {
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             UV_PIN_SHA256="bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
             ;;
+        linux-x64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            UV_PIN_SHA256="0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3"
+            ;;
+        linux-arm64-musl)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
+            UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            UV_PIN_SHA256="fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e"
+            ;;
         darwin-x64)
             UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz"
             UV_PIN_MIRROR="https://hermes-assets.nousresearch.com/upstream/sha256/4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
@@ -207,25 +284,37 @@ uv_bootstrap_target() {
         *) return 1 ;;
     esac
     case "$(uname -s)" in
-        Linux)  echo "linux-$_arch" ;;
+        Linux)
+            # Same precedence as pm/store.py::_is_musl_libc: the native
+            # userland's ELF interpreter decides; ldd and a musl loader on
+            # disk are fallbacks only (a glibc host may carry musl as a
+            # secondary toolchain, and minimal musl roots may lack ldd).
+            local _libc="" _probe _head
+            for _probe in /bin/sh /bin/ls; do
+                _head="$(head -c 8192 "$_probe" 2>/dev/null | LC_ALL=C tr -d '\000')" || continue
+                [[ "$_head" == $'\x7f'ELF* ]] || continue
+                case "$_head" in
+                    *ld-musl-*) _libc="musl"; break ;;
+                    *ld-linux*) _libc="glibc"; break ;;
+                esac
+            done
+            if [[ -z "$_libc" ]]; then
+                _libc="$(ldd --version 2>&1 || true)"
+                _libc="${_libc,,}"
+            fi
+            if [[ "$_libc" == *musl* ]]; then
+                echo "linux-$_arch-musl"
+            elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then
+                echo "linux-$_arch"
+            elif compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
+                echo "linux-$_arch-musl"
+            else
+                echo "linux-$_arch"
+            fi
+            ;;
         Darwin) echo "darwin-$_arch" ;;
         *) return 1 ;;
     esac
-}
-
-# version_at_least HAVE WANT: dotted numeric comparison; a pre-release or
-# build suffix on a component is ignored ("0.12.3-rc1" reads as 0.12.3).
-version_at_least() {
-    local have="$1" want="$2" h w
-    while [ -n "$want" ]; do
-        h="${have%%.*}"; h="${h%%[!0-9]*}"
-        w="${want%%.*}"; w="${w%%[!0-9]*}"
-        [ "${h:-0}" -gt "${w:-0}" ] && return 0
-        [ "${h:-0}" -lt "${w:-0}" ] && return 1
-        case "$have" in *.*) have="${have#*.}" ;; *) have="" ;; esac
-        case "$want" in *.*) want="${want#*.}" ;; *) want="" ;; esac
-    done
-    return 0
 }
 
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
@@ -236,24 +325,14 @@ version_at_least() {
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
-    local _path_uv _path_version
-    if _path_uv="$(command -v uv 2>/dev/null)"; then
-        # Developer shortcut: a uv on PATH fetches nothing, but only one at
-        # least as new as the pin -- the bootstrap passes flags older uv
-        # lacks (`python install --no-bin` arrived in 0.7).
-        _path_version="$("$_path_uv" --version 2>/dev/null | awk '{print $2}')"
-        if [ -n "$_path_version" ] && version_at_least "$_path_version" "$UV_PIN_VERSION"; then
-            UV_CMD="$_path_uv"
-            return 0
-        fi
-        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
-    fi
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
-        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host" unsupported_platform
     fi
     if ! uv_bootstrap_pin "$_target"; then
-        fail "no pinned uv artifact for $_target; install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv artifact for $_target; Hermes does not support this host" unsupported_platform
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
@@ -272,13 +351,13 @@ ensure_uv() {
             local _curl_status=$?
             case "$_curl_status" in
                 5|6|7|18|22|28|52|55|56) ;;
-                *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" ;;
+                *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" download_failed ;;
             esac
             if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" -o "$_tmp/uv.tar.gz"; then
                 _fetched_from="$UV_PIN_MIRROR"
             else
                 rm -rf "$_tmp"
-                fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}"
+                fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}" download_failed
             fi
         fi
         local _digest
@@ -289,17 +368,17 @@ ensure_uv() {
         fi
         if [ "$_digest" != "$UV_PIN_SHA256" ]; then
             rm -rf "$_tmp"
-            fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)"
+            fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)" download_digest_mismatch
         fi
         if ! tar -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
             rm -rf "$_tmp"
-            fail "failed to extract pinned uv archive"
+            fail "failed to extract pinned uv archive" uv_unusable
         fi
         local _unpacked
         _unpacked="$(find "$_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
         if [ -z "$_unpacked" ]; then
             rm -rf "$_tmp"
-            fail "uv binary not found in the downloaded archive"
+            fail "uv binary not found in the downloaded archive" uv_unusable
         fi
         mkdir -p "$_entry"
         mv "$_unpacked" "$UV_CMD"
@@ -310,7 +389,7 @@ ensure_uv() {
     fi
     # Bootstrap keeps the installer private; only UV_CMD invokes it.
     if ! "$UV_CMD" --version >/dev/null 2>&1; then
-        fail "pinned uv staged but does not run on this host"
+        fail "pinned uv staged but does not run on this host" uv_unusable
     fi
     log_success "uv ready ($("$UV_CMD" --version 2>/dev/null))"
 }
@@ -320,12 +399,12 @@ check_platform() {
     # install the phone cannot run (no Android wheels in the lock). The
     # signed APT package is the only supported shape there.
     if [ -n "${TERMUX_VERSION:-}" ] || case "${PREFIX:-}" in *com.termux/files/usr*) true ;; *) false ;; esac; then
-        fail "Termux is installed from its APT repository, not install.sh: pkg install hermes-agent (setup: https://hermes-agent.nousresearch.com/docs/getting-started/termux)"
+        fail "Termux is installed from its APT repository, not install.sh: pkg install hermes-agent (setup: https://hermes-agent.nousresearch.com/docs/getting-started/termux)" unsupported_platform
     fi
     case "$(uname -s 2>/dev/null)" in
         Linux*) : ;;
         Darwin*) : ;;
-        *) fail "unsupported platform: $(uname -s). On Windows use install.ps1." ;;
+        *) fail "unsupported platform: $(uname -s). On Windows use install.ps1." unsupported_platform ;;
     esac
 }
 
@@ -360,6 +439,14 @@ stage_result() {
     fi
     if [ "$JSON" = true ]; then
         json_frame "$ok" "$STAGE" "${STAGE_SKIPPED:-false}" "$reason"
+    fi
+    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ]; then
+        local class="${FAILURE_CLASS:-other}"
+        # A user abort beats the stage's own class: a child that caught Ctrl-C and exited 1
+        # (pm, source_completion, `hermes setup`) still reaches the stage's `|| fail ... <class>`.
+        case "$code" in 129|130|143) class=interrupted ;; esac
+        [ "${STAGE_INTERRUPTED:-false}" = false ] || class=interrupted
+        write_install_receipt failed "${STAGE//-/_}" "$class"
     fi
 }
 
@@ -411,8 +498,28 @@ emit_manifest() {
 }
 
 stage_prerequisites() {
-    command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
-    command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
+    command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing
+    command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager." curl_missing
+    # PM's Node on musl is the unofficial-builds musl archive, which links the
+    # system libstdc++; without it every node/npm stage fails verification.
+    local _target
+    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
+    if [[ "$_target" == *-musl ]]; then
+        local _libdir _stdcxx=""
+        for _libdir in /lib /usr/lib /usr/local/lib; do
+            compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
+        done
+        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run." libstdcxx_missing
+    fi
+    # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
+    # installs the distro package with `sudo -n` under its install lock, so
+    # cache sudo credentials now, while the terminal can answer the prompt.
+    if [ "$NON_INTERACTIVE" != true ] && [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+        && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
+        && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
+        log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"
+        sudo -v </dev/tty || log_warn "sudo failed; if Node.js fails, install libatomic (Debian/Ubuntu: libatomic1) and re-run"
+    fi
     log_success "prerequisites ok (git, curl)"
 }
 
@@ -425,16 +532,51 @@ stage_repository() {
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
         log_warn "$INSTALL_DIR has no commits (interrupted clone); moving it aside to $broken"
-        mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside"
+        mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside" filesystem_error
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         log "Updating $INSTALL_DIR ($BRANCH)"
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
-            git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
+            git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL" git_fetch_failed
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older
+        # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
+        # never the origin/$BRANCH everything below resolves (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor
+        # marker (#124272), and an install stuck there never fetches the updater that
+        # heals it. Marking is idempotent and never rewrites objects.
+        if [ "$(git -C "$INSTALL_DIR" config --bool --get remote.origin.promisor)" = true ]; then
+            local pack
+            for pack in "$INSTALL_DIR"/.git/objects/pack/pack-*.pack; do
+                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then
+                    : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
+                fi
+            done
+            # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
+            git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+                || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+                || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+                || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
+            # A treeless (tree:0) checkout from a late-September installer downloads whole
+            # directory snapshots again on every history walk (#129514). Fetch its trees once; the
+            # new filter is recorded only after that succeeds, so `hermes update` retries otherwise.
+            if [ "$(git -C "$INSTALL_DIR" config --get remote.origin.partialclonefilter)" = tree:0 ]; then
+                if run_logged --may-fail "Fetching directory history once (treeless checkout)" \
+                    git -C "$INSTALL_DIR" -c gc.auto=0 -c maintenance.auto=false fetch --refetch \
+                    --filter=blob:none origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+                    git -C "$INSTALL_DIR" config remote.origin.partialclonefilter blob:none \
+                        || log_warn "could not record the blobless filter in $INSTALL_DIR"
+                else
+                    log_warn "could not fetch the directory history; the next hermes update retries it"
+                fi
+            fi
+        fi
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+            || fail "git fetch failed" git_fetch_failed
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -447,14 +589,22 @@ stage_repository() {
             # the stash below (#4735).
             if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
                 log_warn "clearing unmerged index entries from a previous conflict"
-                git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR"
+                git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR" local_changes_blocked
             fi
             run_logged "Stashing local changes" \
                 git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
-                || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
+                || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun" local_changes_blocked
             log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
-        run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        # checkout's branch guess only sees remote refs the refspec maps, so a
+        # narrow checkout (detached at its tag, no local branch) gets the branch
+        # created at the fetched tip.
+        if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed" git_checkout_failed
+        else
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
+                || fail "git checkout failed" git_checkout_failed
+        fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
             # A release cut off the main line, a force-pushed remote, or the
@@ -466,21 +616,21 @@ stage_repository() {
             # namespace as `hermes update` so its pruning and recovery work.
             local dropped rescue_kind rescue_ref prior
             dropped="$(git -C "$INSTALL_DIR" rev-list --count "origin/$BRANCH..HEAD")" \
-                || fail "cannot count commits before reset"
+                || fail "cannot count commits before reset" git_reset_failed
             if [ "$dropped" -gt 0 ]; then
                 rescue_kind="diverged"
                 git -C "$INSTALL_DIR" merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 \
                     || rescue_kind="orphan"
                 prior="$(git -C "$INSTALL_DIR" rev-parse --short=12 HEAD)" \
-                    || fail "cannot identify commits before reset"
+                    || fail "cannot identify commits before reset" git_reset_failed
                 rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$stamp-$prior"
                 git -C "$INSTALL_DIR" update-ref "$rescue_ref" HEAD \
-                    || fail "cannot back up $dropped local commit(s); refusing to reset"
+                    || fail "cannot back up $dropped local commit(s); refusing to reset" git_reset_failed
                 log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
                 log "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
             fi
             run_logged "Resetting to origin/$BRANCH" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" \
-                || fail "git reset failed"
+                || fail "git reset failed" git_reset_failed
             log_warn "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
@@ -489,9 +639,9 @@ stage_repository() {
         # the empty dir over) or we refuse: whatever lives there is not ours.
         if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
             if [ -d "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR" ] && [ -z "$(ls -A "$INSTALL_DIR")" ]; then
-                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR"
+                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR" filesystem_error
             else
-                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>."
+                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>." dir_not_checkout
             fi
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -499,16 +649,17 @@ stage_repository() {
         # Phase lines ("Receiving objects: 42%") feed the status line; git
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
-        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
+        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone" filesystem_error
         for attempt in 1 2 3; do
-            # Treeless: every commit and release tag (runtime identity is the
-            # nearest reachable release; --commit pins and branch switches
-            # still resolve), trees and blobs fetched on demand, so the
-            # download stays close to a --depth 1 clone.
+            # Blobless: every commit, tree and release tag (runtime identity is
+            # the nearest reachable release; --commit pins and branch switches
+            # still resolve), file contents fetched on demand. Not treeless:
+            # a long-lived treeless checkout re-downloads whole trees on every
+            # checkout and history walk (#129712).
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                --filter=blob:none --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -520,7 +671,7 @@ stage_repository() {
             # graph alone, then retry materializing the tree separately.
             log_warn "direct clone failed; trying deferred checkout"
             if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=tree:0 --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                --filter=blob:none --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 for attempt in 1 2; do
                     if run_logged "Checking out files (attempt $attempt of 2)" \
                         git -C "$staged/tree" reset --hard HEAD; then
@@ -533,13 +684,23 @@ stage_repository() {
         fi
         if [ "$cloned" = false ]; then
             rm -rf "$staged"
-            fail "git clone failed; no checkout published"
+            fail "git clone failed; no checkout published" git_clone_failed
         fi
         if ! mv "$staged/tree" "$INSTALL_DIR"; then
             rm -rf "$staged"
-            fail "cannot publish cloned checkout"
+            fail "cannot publish cloned checkout" filesystem_error
         fi
         rmdir "$staged"
+        # A treeless checkout must never write a commit-graph: over a graph with
+        # changed-path data that lazy-fetches the trees of every unseen commit, in a
+        # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
+        # `gc --auto`.
+        git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+            || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+            || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+            || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
@@ -547,9 +708,9 @@ stage_repository() {
         # marker records both, and a commit off that branch would make the
         # next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
-            || fail "commit $INSTALL_COMMIT is not on branch $BRANCH"
+            || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
-            || fail "could not pin commit $INSTALL_COMMIT"
+            || fail "could not pin commit $INSTALL_COMMIT" git_checkout_failed
     fi
 }
 
@@ -580,11 +741,11 @@ bootstrap_python() {
     if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
         && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
         run_logged "Downloading Python $_py" "$UV_CMD" python install --no-bin --no-registry "$_py" \
-            || fail "bootstrap Python installation failed"
-        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+            || fail "bootstrap Python installation failed" python_install_failed
+        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed" python_install_failed
     fi
     boot_py="${boot_py%$'\r'}"
-    [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py"
+    [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py" python_install_failed
 }
 
 # uv exits before PM can replace its tool entry. pm.cli then prepares and
@@ -592,13 +753,17 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     local pm_args=(install)
-    # PM records the opt-out, so later installs and `hermes update` keep the
-    # browser tools off until `hermes pm install agent-browser` opts back in.
+    # PM records the opt-outs, so later installs and `hermes update` keep the
+    # tools off until `hermes pm install <name>` opts back in.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
+    [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
+    # Refresh the sudo ticket cached in prerequisites (never prompts): the
+    # clone and downloads can outlast sudo's timestamp_timeout.
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo -n -v 2>/dev/null || :; fi
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
-        || fail "pm install failed"
+        || fail "pm install failed" deps_install_failed
     log_success "dependencies installed"
 }
 
@@ -612,10 +777,21 @@ desktop_product_present() {
     # bundle built from the previous code: the app is part of that install, and
     # the artifacts live inside the tree (gitignored), so an update makes them
     # stale instead of removing them.
-    local release="$INSTALL_DIR/apps/desktop/release"
-    [ -d "$release/linux-unpacked" ] || [ -d "$release/mac" ] \
-        || [ -d "$release/mac-arm64" ] || [ -d "$release/win-unpacked" ]
+    # electron-builder suffixes the output dir with the arch on every non-x64
+    # target (linux-arm64-unpacked, mac-arm64, win-arm64-unpacked), so the x64
+    # names alone miss a desktop build on ARM64 Linux/Windows (#94703).
+    local release="$INSTALL_DIR/apps/desktop/release" dir
+    for dir in linux-unpacked linux-arm64-unpacked mac mac-arm64 \
+               win-unpacked win-ia32-unpacked win-arm64-unpacked; do
+        [ -d "$release/$dir" ] && return 0
+    done
+    return 1
 }
+
+# Guarded: a login shell whose ~/.bash_profile sources ~/.bashrc (Fedora, RHEL)
+# reads both files, so an unconditional prepend would put ~/.local/bin on PATH twice.
+SHELL_PATH_LINE='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+SHELL_PATH_SETUP_RE='^[[:space:]]*([^#[:space:]].*)?PATH=.*\.local/bin'
 
 append_shell_path() {
     local rc="$1" line="$2" pattern="$3"
@@ -624,7 +800,7 @@ append_shell_path() {
         return 0
     fi
     mkdir -p "$(dirname "$rc")"
-    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc"
+    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc" filesystem_error
     log_success "added ~/.local/bin to PATH in $rc"
 }
 
@@ -635,19 +811,23 @@ wire_shell_path() {
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
-            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             ;;
         fish)
             append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
             ;;
         *)
-            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            # Bash prefers .bash_profile over .profile if both exist.
-            if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            fi
+            append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            # A login bash reads only the first of .bash_profile, .bash_login, .profile,
+            # so an existing earlier file hides the .profile line above.
+            local rc
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    append_shell_path "$rc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+                fi
+            done
             ;;
     esac
 }
@@ -667,7 +847,7 @@ stage_products() {
     fi
     (cd "$INSTALL_DIR" && run_logged "Building the hermes command and apps" \
         "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
-        || fail "app products or command publication failed"
+        || fail "app products or command publication failed" products_build_failed
     wire_shell_path
     log_success "app products and hermes command ready"
 }
@@ -705,7 +885,7 @@ stage_setup() {
         log "setup skipped (no terminal); run 'hermes setup' after install"
         return 0
     fi
-    "$INSTALL_DIR/.hermes/bin/hermes" setup </dev/tty || fail "setup failed"
+    "$INSTALL_DIR/.hermes/bin/hermes" setup </dev/tty || fail "setup failed" setup_failed
 }
 
 stage_gateway() {
@@ -715,7 +895,7 @@ stage_gateway() {
         return 0
     fi
     # Setup installs the service when it handles the gateway; ask only if it did not.
-    "$INSTALL_DIR/.hermes/bin/hermes" gateway install --if-missing </dev/tty || fail "gateway installation failed"
+    "$INSTALL_DIR/.hermes/bin/hermes" gateway install --if-missing </dev/tty || fail "gateway installation failed" gateway_failed
 }
 
 stage_complete() {
@@ -752,8 +932,15 @@ run_stage() (
     set -e
     STAGE="$1"
     STAGE_REASON=""
+    FAILURE_CLASS=""
+    STAGE_INTERRUPTED=false
     STAGE_SKIPPED=false
     trap 'stage_result "$?"' EXIT
+    if [ "$INSTALL_LADDER" = true ]; then
+        trap 'stage_signal "$?" 130' INT
+        trap 'stage_signal "$?" 143' TERM
+        trap 'stage_signal "$?" 129' HUP
+    fi
     if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
         STAGE_SKIPPED=true
         STAGE_REASON="needs user input"
@@ -786,6 +973,18 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
 
     if [ -n "$STAGE" ] && [ "$JSON" = true ]; then
         trap 'stage_result "$?"' EXIT
+    elif [ -z "$STAGE" ]; then
+        INSTALL_LADDER=true
+        INSTALL_STARTED="$(date +%s 2>/dev/null)"
+        INSTALL_RUN_ID="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || INSTALL_RUN_ID=""
+        [ "${#INSTALL_RUN_ID}" -eq 32 ] || INSTALL_RUN_ID="$(printf '%08x%08x%08x%08x' "$(( RANDOM * 32768 + RANDOM ))" "$$" "${INSTALL_STARTED:-0}" "$RANDOM")"
+        # No clock, no receipt: the reader drops a receipt without both timestamps anyway.
+        case "$INSTALL_STARTED" in ''|*[!0-9]*) INSTALL_RUN_ID="" ;; esac
+        trap '[ "$?" -eq 0 ] || write_install_receipt failed prerequisites "${FAILURE_CLASS:-other}"' EXIT
+        # Ctrl-C, SIGTERM or a closed terminal (SIGHUP) anywhere in the run: one `interrupted` receipt.
+        trap 'install_signal INT' INT
+        trap 'install_signal TERM' TERM
+        trap 'install_signal HUP' HUP
     fi
     check_platform
     trap - EXIT
@@ -799,9 +998,30 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     # manifest prints, so --include-desktop inserts desktop here too.
     print_banner
     for s in $(stage_names); do
+        # A TERM/HUP noted while the previous stage ran stops the run before this one.
+        [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+        INSTALL_IN_STAGE=true
         run_stage "$s"
         rc=$?
-        [ "$rc" -eq 0 ] || exit "$rc"
+        INSTALL_IN_STAGE=false
+        if [ "$rc" -eq 0 ]; then
+            # The stage succeeded, so a Ctrl-C it saw was handled there: carry on.
+            [ "$INSTALL_SIGNAL" != INT ] || INSTALL_SIGNAL=""
+            continue
+        fi
+        case "$rc" in
+            129) INSTALL_SIGNAL="${INSTALL_SIGNAL:-HUP}" ;;
+            130) INSTALL_SIGNAL="${INSTALL_SIGNAL:-INT}" ;;
+            143) INSTALL_SIGNAL="${INSTALL_SIGNAL:-TERM}" ;;
+        esac
+        [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+        # The stage normally wrote its receipt; one killed outright (SIGKILL, OOM) did not.
+        write_install_receipt failed "${s//-/_}" other
+        exit "$rc"
     done
+    write_install_receipt success none none
+    # Every stage finished: the receipt says success, and a pending TERM/HUP still ends the run.
+    [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+    trap - INT TERM HUP
     print_path_reload_hint
 fi

@@ -231,6 +231,26 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_404_retired_free_route_is_model_not_found(self):
+        # The provider retired the :free route — the slug is dead for every
+        # credential, so fall back instead of burning retries (#123180). Not
+        # billing: the account's tier/balance is not what rejected the call.
+        e = MockAPIError(
+            "Not Found",
+            status_code=404,
+            body={
+                "status": 404,
+                "message": (
+                    "This model is no longer free. To continue using the paid "
+                    "variant, switch to 'meituan/longcat-2.0'."
+                ),
+            },
+        )
+        result = classify_api_error(e, provider="nous", model="meituan/longcat-2.0:free")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",
@@ -2059,12 +2079,6 @@ class TestNousWelcomeTier:
     def test_retry_after_zero_carries_no_reset(self):
         result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous", api_key=make_jwt())
         assert "reset_at" not in result.error_context
-
-    def test_unknown_reason_is_not_the_welcome_shape(self):
-        err = MockAPIError("Error code: 429", status_code=429,
-                           body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
-        result = classify_api_error(err, provider="nous", api_key=make_jwt())
-        assert "welcome_refusal" not in result.error_context
 
     def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}

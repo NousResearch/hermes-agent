@@ -26,8 +26,8 @@ class _P(DebPackage):
 
 
 
-def _build_deb(path: Path, members: list[tarfile.TarInfo | tuple[str, bytes]]) -> None:
-    """A real ar archive with one data.tar (uncompressed) holding `members`."""
+def _build_deb(path: Path, members: list[tarfile.TarInfo | tuple[str, bytes]], *, zstd: bool = False) -> None:
+    """A real ar archive with one data.tar (uncompressed, or zstd as Ubuntu ships) holding `members`."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
         for item in members:
@@ -38,10 +38,15 @@ def _build_deb(path: Path, members: list[tarfile.TarInfo | tuple[str, bytes]]) -
                 tf.addfile(info, io.BytesIO(content))
             else:
                 tf.addfile(item)
+    payload, member = buf.getvalue(), "data.tar"
+    if zstd:
+        from compression import zstd as zstd_codec
+
+        payload, member = zstd_codec.compress(payload), "data.tar.zst"
     path.write_bytes(
         b"!<arch>\n"
         + _ar_member("debian-binary", b"2.0\n")
-        + _ar_member("data.tar", buf.getvalue())
+        + _ar_member(member, payload)
     )
 
 
@@ -80,6 +85,22 @@ def test_relative_member_escape_preserves_outside(tmp_path):
     staged.mkdir()
     with pytest.raises(InstallError, match="escape|unsafe|outside"):
         _P().unpack(deb, staged, "linux-arm64-bionic")
+    assert sentinel.read_bytes() == b"outside"
+
+
+def test_zstd_payload_unpacks_under_the_same_containment(tmp_path):
+    """Ubuntu's .debs carry data.tar.zst; it stages like any other and its escapes are refused."""
+    deb, staged = tmp_path / "ok.deb", tmp_path / "staged"
+    _build_deb(deb, [("usr/lib/x86_64-linux-gnu/libgomp.so.1", b"omp")], zstd=True)
+    staged.mkdir()
+    _P().unpack(deb, staged, "linux-x64")
+    assert (staged / "usr/lib/x86_64-linux-gnu/libgomp.so.1").read_bytes() == b"omp"
+
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"outside")
+    _build_deb(deb, [("../sentinel", b"escaped")], zstd=True)
+    with pytest.raises(InstallError, match="escape|unsafe|outside"):
+        _P().unpack(deb, tmp_path / "staged2", "linux-x64")
     assert sentinel.read_bytes() == b"outside"
 
 

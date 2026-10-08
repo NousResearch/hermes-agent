@@ -117,7 +117,7 @@ def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bo
     """Sudo failure handling -> (output, auth_failed, cache_cleared)."""
     import tools.terminal_tool as tt
     from tools.terminal_tool_sudo import (
-        _handle_sudo_failure, _in_delegated_child_context, _invalidate_cached_sudo_on_auth_failure,
+        _handle_sudo_failure, _invalidate_cached_sudo_on_auth_failure, _no_sudo_user,
         _sudo_wrong_password_failure,
     )
     from utils import env_var_enabled
@@ -126,7 +126,7 @@ def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bo
     cache_cleared = _invalidate_cached_sudo_on_auth_failure(command, output)
     can_reprompt = cache_cleared and (
         tt._get_sudo_password_callback() is not None or env_var_enabled("HERMES_INTERACTIVE")
-    ) and not _in_delegated_child_context()
+    ) and not _no_sudo_user()
     if can_reprompt:
         output += ("\n\n⚠️ Sudo authentication failed — cached password "
                    "cleared. You will be prompted again on the next sudo command.")

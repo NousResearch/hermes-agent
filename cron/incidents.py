@@ -41,6 +41,11 @@ _FAILURE_TYPE_ORDER = (
 )
 MAX_ERROR_CHARS = 500
 _MAX_SIGNATURE_ERROR_CHARS = 200
+# Measured durations ("idle for 603s", "retry in 12.5 seconds") differ run to run for the same
+# failure, so they are masked out of the signature. Status codes and other numbers still count.
+_DURATION_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
+)
 
 _lock = threading.RLock()
 
@@ -125,7 +130,7 @@ def _redact_error(error: str) -> str:
 
 def _error_signature(job_id: str, error: str) -> str:
     """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _normalize_error(error)[:_MAX_SIGNATURE_ERROR_CHARS]
+    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 
@@ -262,8 +267,11 @@ def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
     where, params = _state_filter(state)
     with _transaction() as conn:
+        # last_seen_at carries a DST-varying offset: order by instant, not text.
         rows = conn.execute(
-            "SELECT * FROM cron_incidents" + where + " ORDER BY last_seen_at DESC, id DESC", params
+            "SELECT * FROM cron_incidents" + where
+            + " ORDER BY julianday(last_seen_at) DESC, last_seen_at DESC, id DESC",
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 

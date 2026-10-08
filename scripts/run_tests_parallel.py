@@ -45,6 +45,7 @@ Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -197,6 +198,86 @@ def _split_pathspec(value: str) -> List[str]:
 # this runner never executes them, by construction. The summary calls that
 # out explicitly so a local run isn't misread as covering macOS/Windows
 # behaviour, and names the CI lane where those tests actually execute.
+
+
+def _apply_pytest_ignores(
+    files: List[Path], pytest_args: List[str], repo_root: Path
+) -> List[Path]:
+    """Drop the files a passthrough ``--ignore``/``--ignore-glob`` names.
+
+    Each file is handed to its own pytest as an explicit argument, and pytest
+    applies ``--ignore``/``--ignore-glob`` only while recursing directories,
+    never to an explicit file argument. Forwarded as-is, the flags are no-ops:
+    the CI lane's ``--ignore-glob='*test_desktop_update_windows_*.py'`` gate
+    ran every one of those files on PRs it was meant to spare. Apply them here
+    with pytest's own matching (``fnmatch`` on the absolute path, relative
+    patterns anchored at the invocation directory, the repo root here).
+    """
+    paths: List[Path] = []
+    globs: List[str] = []
+    i = 0
+    while i < len(pytest_args):
+        tok = pytest_args[i]
+        flag, eq, value = tok.partition("=")
+        if flag in ("--ignore", "--ignore-glob"):
+            if not eq:
+                i += 1
+                value = pytest_args[i] if i < len(pytest_args) else ""
+            if value:
+                anchored = Path(value) if Path(value).is_absolute() else repo_root / value
+                if flag == "--ignore":
+                    paths.append(anchored.resolve())
+                else:
+                    globs.append(str(anchored))
+        i += 1
+    if not paths and not globs:
+        return files
+
+    def _ignored(file: Path) -> bool:
+        real = file.resolve()
+        if any(real == p or p in real.parents for p in paths):
+            return True
+        return any(fnmatch.fnmatch(str(file), g) or fnmatch.fnmatch(str(real), g) for g in globs)
+
+    kept = [f for f in files if not _ignored(f)]
+    ignored = len(files) - len(kept)
+    if ignored:
+        print(f"note: --ignore/--ignore-glob excluded {ignored} test "
+              f"file{'s' if ignored != 1 else ''} from this run.", flush=True)
+    return kept
+
+
+def _select_files(
+    args: argparse.Namespace, pytest_passthrough: List[str], repo_root: Path
+) -> Tuple[List[Path], List[Path]]:
+    """Return ``(files, discovery roots)`` for this run, passthrough ignores applied."""
+    # --files / --files-from: explicit file list (argv or file-backed) from
+    # the CI generate job — skip discovery.
+    if args.files and args.files_from:
+        print(
+            "error: --files and --files-from are mutually exclusive", file=sys.stderr
+        )
+        sys.exit(2)
+    roots: List[Path] = []
+    if args.files:
+        files = [repo_root / f for f in _split_pathspec(args.files)]
+    elif args.files_from:
+        files = [repo_root / f for f in _read_files_from(args.files_from)]
+    else:
+        # Resolve discovery roots: positional path args override --paths if any
+        # were supplied, otherwise --paths (which itself defaults to 'tests').
+        if args.paths_positional:
+            roots = [repo_root / p for p in args.paths_positional]
+        else:
+            roots = [repo_root / p for p in _split_pathspec(args.paths)]
+
+        if args.include_integration:
+            # Caller takes responsibility — typically used via explicit -k filter.
+            global _SKIP_PARTS  # noqa: PLW0603 — config knob
+            _SKIP_PARTS = set()
+
+        files = _discover_files(roots)
+    return _apply_pytest_ignores(files, pytest_passthrough, repo_root), roots
 
 
 def _read_files_from(spec: str) -> List[str]:
@@ -886,7 +967,10 @@ def _slice_files(
 ) -> List[Path]:
     """Return the subset of *files* belonging to slice *slice_index*.
 
-    Uses :func:`_compute_lpt_slices` for LPT distribution.
+    Every slice job computes the partition on its own, so it must come only from
+    the checkout: a duration cache restored separately per job can differ (a main
+    push saves a newer one in between) and silently drop or double-run files.
+    Sorted round-robin balances within seconds of timed LPT at this suite size.
 
     ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
     ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
@@ -900,7 +984,7 @@ def _slice_files(
         )
         sys.exit(2)
 
-    bucket_files = _compute_lpt_slices(files, slice_count, durations, repo_root)
+    bucket_files = _compute_lpt_slices(sorted(files), slice_count, {}, repo_root)
 
     target = bucket_files[slice_index - 1]
     target_dur = sum(
@@ -1208,6 +1292,9 @@ def main() -> int:
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
     slice_raw = args.slice or os.environ.get("HERMES_TEST_SLICE")
+    # Read once, here: test processes inherit this env, and a runner they start (the
+    # runner's own probe tests) must run its whole file set, not "its" slice of it.
+    os.environ.pop("HERMES_TEST_SLICE", None)
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
@@ -1221,33 +1308,7 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    # --files / --files-from: explicit file list (argv or file-backed) from
-    # the CI generate job — skip discovery.
-    if args.files and args.files_from:
-        print(
-            "error: --files and --files-from are mutually exclusive", file=sys.stderr
-        )
-        sys.exit(2)
-    if args.files:
-        files = [repo_root / f for f in _split_pathspec(args.files)]
-        roots = []
-    elif args.files_from:
-        files = [repo_root / f for f in _read_files_from(args.files_from)]
-        roots = []
-    else:
-        # Resolve discovery roots: positional path args override --paths if any
-        # were supplied, otherwise --paths (which itself defaults to 'tests').
-        if args.paths_positional:
-            roots = [repo_root / p for p in args.paths_positional]
-        else:
-            roots = [repo_root / p for p in _split_pathspec(args.paths)]
-
-        if args.include_integration:
-            # Caller takes responsibility — typically used via explicit -k filter.
-            global _SKIP_PARTS  # noqa: PLW0603 — config knob
-            _SKIP_PARTS = set()
-
-        files = _discover_files(roots)
+    files, roots = _select_files(args, pytest_passthrough, repo_root)
 
     if not files:
         print("No test files to run", file=sys.stderr)
@@ -1276,8 +1337,7 @@ def main() -> int:
     test_counts = _approximately_count_tests(files, repo_root)
     approx_total_tests = sum(test_counts.values())
 
-    # Apply slicing if requested — distribute files across CI jobs by
-    # estimated duration so no one job gets all the slow files.
+    # Apply slicing if requested (partition from the checkout alone; see _slice_files).
     if slice_index is not None:
         durations = _load_durations(repo_root)
         files = _slice_files(files, slice_index, slice_count, durations, repo_root)

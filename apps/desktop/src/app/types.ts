@@ -53,6 +53,8 @@ export interface BrowserManageResponse {
   connected?: boolean
   url?: string
   messages?: string[]
+  /** `status` / `use`: new chats on this profile get browser_exec (Browser Use mode). */
+  browser_use?: boolean
 }
 
 /** Response from the `session.compress` RPC. `messages` is the post-compress

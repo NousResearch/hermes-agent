@@ -214,15 +214,14 @@ class HostedRoomService:
         leaves the room intact for retry rather than a false disband with a live grant."""
         with self._policy_lock:
             routes = [(key, route) for key, route in self.peer_routes.items() if key[0] == room_id]
+        from gateway import hosted_room_retirement as retirement
+        stored = {(link.room_id, link.member_id): link for link in hosted_room_links.load_room_links(self.db_path)}
         for key, route in routes:
-            revoke = _hook(self.peer_clients.get(key), "revoke_grant")
-            if revoke is None:
-                raise RuntimeError("peer room grant cannot be revoked safely")
-            try:
-                revoke(grant=route.grant, retire_authority=True)
-            except PeerRunsHTTPError as exc:
-                if not _grant_revoke_is_terminal(exc):
-                    raise
+            link = stored.get(key)
+            if link is None or link.grant != route.grant:
+                raise RuntimeError("peer retirement requires its durable route")
+            identity = retirement.retain_link(self.db_path, link)
+            retirement.settle(self.db_path, room_id, identity, client=self.peer_clients.get(key))
         hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
         with self._policy_lock:
             for key, _route in routes:

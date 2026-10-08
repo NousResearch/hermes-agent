@@ -128,7 +128,7 @@ class _FakePeerClient:
 
     def revoke_grant(self, **kwargs):
         self.revoked.append(kwargs["grant"])
-        return {"revoked": True}
+        return {"revoked": True, "authority_retired": True}
 
 
 class _UnavailablePeerClient(_FakePeerClient):
@@ -1287,6 +1287,17 @@ def test_registration_disk_failure_does_not_publish_live_route(
     assert "install-peer" not in service.peer_clients
 
 
+def _cleanup_route(catalog):
+    home = hosted_rooms.local_authority_gateway_id()
+    grant = issue_room_grant(b"retirement-fixture-key" * 2, grant_id="cleanup-fixture",
+        room_id="room-1", home_install_id=home, authority_gateway_id=home, authority_epoch=1,
+        member_id="member-peer", target_install_id="install-peer", target_profile="reviewer",
+        execution_policy_digest=catalog.execution_policy.policy_digest)
+    return PeerMemberRoute(home_install_id=home, member_id="member-peer", target_install_id="install-peer",
+        target_profile="reviewer", capability_digest=catalog.catalog_digest,
+        cancellation_scope_id="cancel-room-1", trace_id="trace-room-1", grant=grant)
+
+
 def test_room_route_revocation_is_remote_first_and_removes_local_state(
     tmp_path: Path,
 ):
@@ -1296,16 +1307,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
+    route = _cleanup_route(catalog)
     peer = _FakePeerClient()
     service = HostedRoomService(_server(), db_path=db)
     service.register_peer_route(
@@ -1318,7 +1320,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
     )
 
     assert service.revoke_room_routes("room-1") == 1
-    assert peer.revoked == ["signed.room.grant"]
+    assert peer.revoked == [route.grant]
     assert ("room-1", "member-peer") not in service.peer_routes
     assert hosted_room_links.load_room_links(db) == ()
 
@@ -1330,16 +1332,7 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
+    route = _cleanup_route(catalog)
     service = HostedRoomService(_server(), db_path=db)
     service.register_peer_route(
         room_id="room-1",
@@ -1363,17 +1356,7 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        execution_policy_digest=catalog.execution_policy.policy_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="expired.room.grant",
-    )
+    route = _cleanup_route(catalog)
     service = HostedRoomService(_server(), db_path=db)
     service.register_peer_route(
         room_id="room-1",
@@ -1387,6 +1370,9 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
     assert service.revoke_room_routes("room-1") == 1
     assert ("room-1", "member-peer") not in service.peer_routes
     assert hosted_room_links.load_room_links(db) == ()
+
+    from gateway.hosted_room_retirement import status
+    assert status(db, "room-1")[0]["status"] == "needs_reauthorization"
 
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(

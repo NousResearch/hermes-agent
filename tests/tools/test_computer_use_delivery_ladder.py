@@ -82,7 +82,7 @@ def test_confirmed_verdict_is_preserved():
         "structuredContent": {"verified": True, "effect": "confirmed", "path": "ax"},
     }
     be = _make_backend(_FakeSession(out))
-    res = be.click(element=3)
+    res = be.click(x=10, y=20)
     assert res.ok is True
     assert res.verified is True
     assert res.effect == "confirmed"
@@ -100,7 +100,7 @@ def test_suspected_noop_carries_escalation():
         },
     }
     be = _make_backend(_FakeSession(out))
-    res = be.click(element=3)
+    res = be.click(x=10, y=20)
     assert res.effect == "suspected_noop"
     assert res.escalation == {"recommended": "foreground", "reason": "occluded renderer"}
     assert res.code == "background_unavailable"
@@ -127,7 +127,7 @@ def test_degraded_capture_signal_preserved():
                               "escalation": {"recommended": "px", "reason": "empty tree"}},
     }
     be = _make_backend(_FakeSession(out))
-    res = be.scroll(direction="down", element=1)
+    res = be.scroll(direction="down")
     assert res.degraded is True
     assert res.escalation["recommended"] == "px"
 
@@ -137,7 +137,7 @@ def test_old_driver_without_structured_content_is_clean():
     None — unchanged behavior, no crash."""
     out = {"isError": False, "data": {"message": "done"}, "structuredContent": None}
     be = _make_backend(_FakeSession(out))
-    res = be.click(element=3)
+    res = be.click(x=10, y=20)
     assert res.ok is True
     assert res.message == "done"
     assert res.verified is None
@@ -181,7 +181,7 @@ def test_background_is_default_no_flag_sent():
     out = {"isError": False, "data": {}, "structuredContent": {"effect": "confirmed"}}
     sess = _FakeSession(out)
     be = _make_backend(sess)
-    be.click(element=1)  # no delivery_mode
+    be.click(x=10, y=20)  # no delivery_mode
     assert "delivery_mode" not in sess.last_args
 
 
@@ -189,7 +189,7 @@ def test_foreground_sent_when_schema_property_present():
     out = {"isError": False, "data": {}, "structuredContent": {"effect": "unverifiable"}}
     sess = _FakeSession(out, input_properties={"click": {"delivery_mode"}})
     be = _make_backend(sess)
-    res = be.click(element=1, delivery_mode="foreground", bring_to_front=True)
+    res = be.click(x=10, y=20, delivery_mode="foreground", bring_to_front=True)
     assert [name for name, _ in sess.calls] == ["bring_to_front", "click"]
     assert sess.calls[0][1] == {"pid": 4242, "window_id": 7}
     assert sess.last_args.get("delivery_mode") == "foreground"
@@ -203,7 +203,7 @@ def test_foreground_refused_on_old_driver():
     out = {"isError": False, "data": {}, "structuredContent": {}}
     sess = _FakeSession(out)
     be = _make_backend(sess)
-    res = be.click(element=1, delivery_mode="foreground")
+    res = be.click(x=10, y=20, delivery_mode="foreground")
     assert res.ok is False
     assert res.code == "foreground_unsupported"
     # crucially: no tool call was made with a silent background downgrade

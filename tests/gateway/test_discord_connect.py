@@ -709,7 +709,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     entries_at_backoff = []
 
     async def _capture_backoff(_seconds):
-        entries_at_backoff.append(json.loads(state_path.read_text(encoding="utf-8"))["999"])
+        entries_at_backoff.append(json.loads(state_path.read_text(encoding="utf-8-sig"))["999"])
 
     monkeypatch.setattr(adapter, "_sleep_for_command_sync_retry", _capture_backoff)
 
@@ -722,7 +722,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     assert "summary" not in timed_out_entry
 
     assert sync.await_count == 2
-    recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
+    recovered_entry = json.loads(state_path.read_text(encoding="utf-8-sig"))["999"]
     assert recovered_entry["last_success_at"] >= recovered_entry["last_attempt_at"]
     assert recovered_entry["summary"] == summary
 
@@ -1005,7 +1005,7 @@ async def test_post_connect_initialization_retries_after_discord_retry_after(tmp
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
     )
-    entry = json.loads(state_path.read_text())["999"]
+    entry = json.loads(state_path.read_text(encoding="utf-8-sig"))["999"]
     # Cooldown cleared once the retry succeeded; success recorded.
     assert entry["last_success_at"]
     assert "retry_after_until" not in entry
@@ -1043,7 +1043,7 @@ async def test_post_connect_initialization_retries_after_outer_timeout(tmp_path,
             tmp_path
             / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
             / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
-        ).read_text()
+        ).read_text(encoding="utf-8-sig")
     )["7"]
     assert entry["last_success_at"]
 

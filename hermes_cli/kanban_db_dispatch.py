@@ -308,24 +308,47 @@ def reap_worker_zombies() -> "list[int]":
     return reaped
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
-    """Return True if ``pid`` is still running on this host.
+# ---------------------------------------------------------------------------
+# Liveness: one witness, three answers
+# ---------------------------------------------------------------------------
+# A liveness read has to be able to answer "I cannot tell" (#123811). Reading a FAILED probe as death
+# is what let a single dispatch tick declare six live workers dead — each recovery then spawned a
+# duplicate beside the worker it had just abandoned. Every verdict here is one of the three below, and
+# only ``WORKER_DEAD`` may release a claim or authorize a signal. ``WORKER_UNKNOWN`` holds the claim.
+WORKER_ALIVE = "alive"
+WORKER_UNKNOWN = "unknown"
+WORKER_DEAD = "dead"
 
-    Uses ``gateway.status._pid_exists`` (OpenProcess on Windows, ``os.kill(pid, 0)``
-    on POSIX). **DO NOT** call ``os.kill(pid, 0)`` directly on Windows — there
-    ``sig=0`` is ``CTRL_C_EVENT`` broadcast to the console group, potentially
-    killing unrelated processes.
 
-    Zombies (exited, not yet reaped) still pass the existence check, so a
-    worker would look "alive" forever between exit and reap. Linux: peek at
-    ``/proc/<pid>/status`` and treat ``State: Z`` as dead; macOS: ask ``ps``
-    for the BSD ``stat`` field and treat ``Z`` as dead.
+def _exists_probe(pid: int) -> bool:
+    """Is the PID number occupied (zombies included)?
+
+    Goes through the ``kanban_db`` facade when it has been replaced — plugins and tests patch
+    ``kanban_db._pid_alive`` to drive liveness, and the pre-existing code honoured that by calling
+    ``_kb._pid_alive``. Doing that unconditionally would recurse here, because by default the facade IS
+    this module's ``_pid_alive``; so only an OVERRIDE is consulted, and otherwise the probe is made
+    directly.
+    """
+    facade = getattr(_kb, "_pid_alive", None)
+    if facade is not None and facade is not _pid_alive:
+        return bool(facade(int(pid)))
+    from gateway.status import _pid_exists
+    return bool(_pid_exists(int(pid)))
+
+
+def _pid_liveness(pid: Optional[int]) -> str:
+    """``alive`` / ``dead`` / ``unknown`` for a bare PID (no identity component).
+
+    ``dead`` is reserved for proof: the OS says the number is unoccupied (``ESRCH``/``OpenProcess``
+    failure) or the process is a zombie. A secondary probe that FAILED is not proof — macOS ``ps``
+    exits non-zero for PIDs it cannot see, under load as well as after exit — so it answers
+    ``unknown`` and leaves the caller's own evidence (a matching fingerprint) in charge. The probe
+    timing out or raising keeps the ``kill(0)`` answer, which is the pre-existing behaviour.
     """
     if not pid or pid <= 0:
-        return False
-    from gateway.status import _pid_exists
-    if not _pid_exists(int(pid)):
-        return False
+        return WORKER_DEAD
+    if not _exists_probe(int(pid)):
+        return WORKER_DEAD
     if sys.platform == "linux":
         try:
             with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
@@ -333,7 +356,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
                     if line.startswith("State:"):
                         # "State:\tZ (zombie)" → dead
                         if "Z" in line.split(":", 1)[1]:
-                            return False
+                            return WORKER_DEAD
                         break
         except (FileNotFoundError, PermissionError, OSError):
             # proc entry gone → already reaped; treat as dead.
@@ -349,13 +372,25 @@ def _pid_alive(pid: Optional[int]) -> bool:
                 check=False,
             )
             if proc.returncode != 0:
-                return False
+                # A failed probe proves nothing: the number IS occupied (``_pid_exists`` said so
+                # above), and "could not read the state" is not "the process is gone".
+                return WORKER_UNKNOWN
             if "Z" in (proc.stdout or "").strip():
-                return False
+                return WORKER_DEAD
         except (OSError, subprocess.SubprocessError, TimeoutError):
             # If the secondary probe fails, keep the kill(0) answer.
             pass
-    return True
+    return WORKER_ALIVE
+
+
+def _pid_alive(pid: Optional[int]) -> bool:
+    """True only when ``pid`` is PROVEN to be a running process (verdict ``alive``).
+
+    Callers asking "is this number still occupied?" must not use the negation: ``unknown`` reads as
+    False here, so ``not _pid_alive(...)`` would turn an unreadable probe into proof of death.
+    Compare the verdict instead — ``_pid_liveness(pid) == WORKER_DEAD``.
+    """
+    return _pid_liveness(pid) == WORKER_ALIVE
 
 
 # ``worker_started_at`` value for a spawn whose fingerprint could not be captured. Distinct from the
@@ -365,53 +400,144 @@ UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
 
 def _process_fingerprint(pid: int) -> Optional[str]:
-    """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
-    time alone (``/proc/<pid>/stat`` field 22 on Linux) is clock ticks since THIS boot, so a row that
-    survives a reboot could match an unrelated process with the same PID and the same tick value;
-    ``gateway.drain_control.current_instantiation_epoch`` (``boot_id`` + PID-1 start) changes on every
-    reboot / container recreate, so the composed value never survives one. ``None`` when unreadable."""
-    from gateway.drain_control import current_instantiation_epoch
-    from gateway.status import get_process_start_time
-    start = get_process_start_time(int(pid))
+    """Restart-stable identity of a live process: ``"<boot witness>|<uptime-relative start>"``.
+
+    Both halves are chosen so that no clock or ``kern.boottime`` adjustment can move them, and so that
+    a reboot breaks the pair: the start is centiseconds since boot
+    (``gateway.status.get_process_uptime_start_time``) and the witness names the boot itself
+    (``gateway.status.host_boot_witness``). An absolute start time paired with a boot *epoch* would
+    have both halves move on the same adjustment, which is how a liveness read came to declare live
+    workers dead (#123811). ``None`` when either half is unreadable — including "the platform has no
+    boot witness", whose only honest reading is inability to certify identity, never a difference.
+    """
+    from gateway.status import get_process_uptime_start_time, host_boot_witness
+    witness = host_boot_witness()
+    if not witness:
+        return None
+    start = get_process_uptime_start_time(int(pid))
     if start is None:
         return None
-    return f"{current_instantiation_epoch()}|{start}"
+    return f"{witness}|{start}"
+
+
+def _fingerprint_parts(fingerprint: Any) -> Optional[tuple[str, int]]:
+    """``(witness, uptime-relative start)`` for a COMPARABLE fingerprint, else ``None``.
+
+    ``None`` covers every older shape — a bare start tick (rows written before the witness existed) and
+    a ``"|<start>"`` pair whose witness component is EMPTY (macOS rows written while
+    ``current_instantiation_epoch`` had no answer there). Those cannot be compared: a mismatch carries
+    the same information as a clock correction, so a caller must read "unknown", never "recycled".
+    """
+    if not isinstance(fingerprint, str) or "|" not in fingerprint:
+        return None
+    witness, _, raw_start = fingerprint.partition("|")
+    if not witness:
+        return None
+    try:
+        return witness, int(raw_start)
+    except (TypeError, ValueError):
+        return None
+
+
+def _witnesses_agree(recorded: str, current: str) -> Optional[bool]:
+    """True/False when two boot witnesses are comparable, ``None`` when they are not.
+
+    Opaque witnesses (a boot id, a boot session UUID) must be EQUAL: they only ever change on a reboot.
+    The boot-epoch fallback is the one form a clock step can move, so it is compared within
+    ``START_TIME_DRIFT_TOLERANCE`` — the same tolerance the start component gets — instead of exactly.
+    """
+    from gateway.status import START_TIME_DRIFT_TOLERANCE
+    if recorded == current:
+        return True
+    prefix = "boottime:"
+    recorded_is_time = recorded.startswith(prefix)
+    current_is_time = current.startswith(prefix)
+    if recorded_is_time and current_is_time:
+        try:
+            gap = abs(int(recorded[len(prefix):]) - int(current[len(prefix):]))
+        except (TypeError, ValueError):
+            return None
+        return gap <= START_TIME_DRIFT_TOLERANCE
+    if recorded_is_time != current_is_time:
+        # Mixed forms: one probe failed to yield its session id, so the witness changed SHAPE, not the
+        # boot. "Cannot tell", never "different boot".
+        return None
+    return False
+
+
+def _worker_liveness(pid: Optional[int], started_at) -> str:
+    """The liveness verdict for a recorded worker: ``alive`` / ``dead`` / ``unknown``.
+
+    ``dead`` needs proof of death (the PID is gone or a zombie) or proof of non-identity (the recorded
+    fingerprint and the live reading disagree within one boot). Everything else is ``unknown``, and
+    ``unknown`` never releases a claim: a reclaim that cannot prove the worker is gone must hold the
+    claim and retry, because releasing it spawns a duplicate beside the process it abandoned. A
+    fingerprint in an older shape is ``unknown`` for the same reason — a mismatch there is
+    indistinguishable from a reference adjustment. Legacy NULL rows (no fingerprint at all) and
+    deliberately UNVERIFIED spawns keep the existence answer they always had.
+    """
+    if not pid or int(pid) <= 0:
+        return WORKER_DEAD
+    pid_state = _pid_liveness(int(pid))
+    if pid_state == WORKER_DEAD:
+        return WORKER_DEAD
+    if started_at is None or started_at == UNVERIFIED_WORKER_FINGERPRINT:
+        # Unchanged semantics today: these rows never had a comparable identity, so the
+        # answer is the bare existence probe's, unprovable reading included.
+        return WORKER_ALIVE if pid_state == WORKER_ALIVE else WORKER_DEAD
+    parts = _fingerprint_parts(started_at)
+    if parts is None:
+        return WORKER_UNKNOWN
+    witness, recorded_start = parts
+    from gateway.status import host_boot_witness, get_process_uptime_start_time, start_time_fingerprints_match
+    current_witness = host_boot_witness()
+    if not current_witness:
+        return WORKER_UNKNOWN
+    same_boot = _witnesses_agree(witness, current_witness)
+    if same_boot is None:
+        return WORKER_UNKNOWN
+    if not same_boot:
+        # A different boot: the PID and the boot-relative tick can both recur.
+        return WORKER_DEAD
+    current_start = get_process_uptime_start_time(int(pid))
+    if current_start is None:
+        return WORKER_UNKNOWN
+    if recorded_start <= 0 or current_start <= 0:
+        return WORKER_UNKNOWN
+    if start_time_fingerprints_match(recorded_start, current_start):
+        return WORKER_ALIVE
+    return WORKER_DEAD
 
 
 def _worker_alive(pid: Optional[int], started_at) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the fingerprint
-    recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated process can own
-    the number, so bare existence is never enough to extend a claim or to signal. A legacy row without
-    a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
-    rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
-    (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
-    if not _kb._pid_alive(pid):
-        return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    return not _pid_recycled(pid, started_at)
+    """True when ``pid`` is live AND is still the worker we spawned (verdict ``alive``).
+
+    ``started_at`` is the fingerprint recorded by ``_set_worker_pid``; after a reboot (or any PID
+    recycle) an unrelated process can own the number, so bare existence is never enough to extend a
+    claim or to signal. For CLAIM PROTECTION use :func:`_worker_not_dead` — this one answers False for
+    ``unknown``, which must never be read as "release it".
+    """
+    return _worker_liveness(pid, started_at) == WORKER_ALIVE
+
+
+def _worker_not_dead(pid: Optional[int], started_at) -> bool:
+    """Claim protection: keep the claim unless the worker is PROVEN dead (``alive`` or ``unknown``).
+
+    This is the predicate every reclaim guard uses. Holding a claim beside a worker that may still be
+    running costs a delayed retry; releasing it spawns a second worker on the same card, which is the
+    duplication loop the reclaim exists to prevent.
+    """
+    return _worker_liveness(pid, started_at) != WORKER_DEAD
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
-    if started_at is None or not pid:
-        return False
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        return True
-    if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
-    if current is None:
-        return True
-    try:
-        return not _start_times_agree(current, started_at)
-    except (TypeError, ValueError):
-        return True
+    """True when a live ``pid`` is PROVEN not to be the process fingerprinted at spawn.
+
+    Signalling it would hit a stranger, and the reclaim may proceed: the worker we cared about is
+    gone. An unprovable identity is NOT recycled (``unknown`` answers False here) — callers must
+    consult the verdict, not this boolean, before releasing a claim.
+    """
+    return _worker_liveness(pid, started_at) == WORKER_DEAD
 
 
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
@@ -422,9 +548,13 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
 
 
 def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
-    """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
+    """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is PROVEN gone.
+
+    An ``unknown`` read keeps polling instead of answering "exited": the caller uses True to conclude
+    the worker is gone, and an unreadable probe is not that conclusion.
+    """
     for _ in range(10):
-        if not _worker_alive(pid, started_at):
+        if _worker_liveness(pid, started_at) == WORKER_DEAD:
             return True
         time.sleep(0.5)
     return False
@@ -472,9 +602,20 @@ def _terminate_reclaimed_worker(
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
         info["signal_refused"] = True
-        info["terminated"] = not _kb._pid_alive(pid)
+        info["terminated"] = _pid_liveness(pid) == WORKER_DEAD
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+    verdict = _worker_liveness(pid, started_at)
+    if verdict == WORKER_UNKNOWN:
+        # The recorded identity cannot be compared with the live process (see ``_worker_liveness``).
+        # Signalling the bare number could hit whatever now owns it, and reporting ``terminated`` would
+        # release the claim beside a worker that may still be running. Hold both; retry next tick.
+        info["signal_refused"] = True
+        info["liveness_unknown"] = True
+        info["terminated"] = False
+        return info
+
+    if verdict == WORKER_DEAD and _pid_liveness(pid) == WORKER_ALIVE:
+        # Occupied by a stranger (the PID was recycled): never signal it. Our worker is gone.
         info["terminated"] = True
         info["pid_recycled"] = True
         return info
@@ -493,11 +634,11 @@ def _terminate_reclaimed_worker(
     if _poll_worker_exit(pid, started_at):
         info["terminated"] = True
         return info
-    if _worker_alive(pid, started_at):
+    if _worker_liveness(pid, started_at) == WORKER_ALIVE:
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
+    info["terminated"] = _worker_liveness(pid, started_at) == WORKER_DEAD
     return info
 
 
@@ -537,7 +678,12 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
         return
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
-    alive = _worker_alive(pid, fingerprint)
+    verdict = _worker_liveness(pid, fingerprint)
+    if verdict == WORKER_UNKNOWN:
+        # Cannot certify identity. Clearing this row's pid would destroy the only handle on a worker
+        # that may still be running, so leave the evidence for the next tick instead.
+        return
+    alive = verdict == WORKER_ALIVE
     termination = None
     if alive:
         termination = _terminate_reclaimed_worker(
@@ -681,7 +827,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
+        verdict = _worker_liveness(pid, started_at)
+        if verdict == WORKER_UNKNOWN:
+            # Cannot certify identity: the number may belong to a stranger (no signal) and the worker
+            # may still be running (no release beside it). Hold the claim; the next tick re-reads.
+            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but its process "
+                             "identity cannot be read; held, not signalled", tid, pid)
+            continue
+        if started_at == UNVERIFIED_WORKER_FINGERPRINT and verdict != WORKER_DEAD:
             # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
             # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
@@ -692,12 +845,13 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # mismatch) is never signalled: the worker is already gone.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+        stranger = verdict == WORKER_DEAD and _pid_liveness(pid) == WORKER_ALIVE
+        if kill is not None and not stranger:
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
+            if _worker_liveness(pid, started_at) == WORKER_ALIVE:
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
@@ -842,6 +996,30 @@ def detect_stale_running(
     return reclaimed
 
 
+def _orphan_deferral_recorded(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int], payload: dict,
+) -> bool:
+    """True when this orphan deferral is already on the record for the current episode.
+
+    The defer path of :func:`reconcile_orphaned_running` changes no state, so the card keeps
+    matching its own selection and would append an identical ``reclaim_deferred`` row on every
+    tick — ~1 row/minute for a persistently deferred orphan, and nothing ever collects it
+    (``gc_events`` skips non-terminal tasks). One row per deferral EPISODE is what the record
+    needs. The episode is the card's current attempt when it has one; when ``run_id`` is NULL
+    there is no attempt to key on, so the facts themselves identify it (``now`` excluded — it
+    moves every tick by definition). A new attempt, or a changed worker/liveness fact, is a new
+    episode and records afresh.
+    """
+    prior = _kb._latest_event(conn, task_id, "reclaim_deferred", run_id=run_id)
+    if prior is None:
+        return False
+    if run_id is not None:
+        return True
+    recorded = _kb._json_dict(prior["payload"])
+    keys = ("reason", "liveness", "claim_lock", "claim_expires", "worker_pid")
+    return all(recorded.get(k) == payload.get(k) for k in keys)
+
+
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     """Requeue ``running`` cards with broken claim bookkeeping; returns their ids.
 
@@ -862,12 +1040,33 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
-            # Never requeue beside a live process. Retry next tick.
+        verdict = _worker_liveness(pid, _kb._row_get(row, "worker_started_at")) if pid else WORKER_DEAD
+        if verdict != WORKER_DEAD:
+            # Never requeue beside a live process — nor beside one whose identity cannot be read:
+            # the reclaim would spawn a duplicate next to a worker that may still be running
+            # (#123811). Retry next tick.
             _kb._log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
-                "pid %s is alive on this host — deferring", tid, pid,
+                "pid %s is %s on this host — deferring", tid, pid, verdict,
             )
+            # Record the deferral ONCE PER EPISODE. This branch mutates no state, so the card keeps
+            # matching the selection above and would otherwise append an identical row every tick
+            # (#123822: ~1 row/minute for a persistently deferred orphan). The record says the card
+            # is running-but-unreconcilable, not abandoned by its worker; repeating the same facts
+            # every tick says nothing a reader consumes. A new attempt, or a changed
+            # worker/liveness fact, is a new episode and does record.
+            run_id = _kb._current_run_id(conn, tid)
+            payload = {
+                "reason": "orphaned_running_worker_alive",
+                "liveness": verdict,
+                "claim_lock": row["claim_lock"],
+                "claim_expires": _kb._opt_int(row["claim_expires"]),
+                "worker_pid": int(pid) if pid else None,
+                "now": now,
+            }
+            if not _orphan_deferral_recorded(conn, tid, run_id, payload):
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, tid, "reclaim_deferred", payload, run_id=run_id)
             continue
         with _kb.write_txn(conn):
             cur = conn.execute(
@@ -900,6 +1099,11 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
                 now,
             )
             _kb._append_event(conn, tid, "reconciled", payload, run_id=run_id)
+            # The reclaim has no worker evidence: nobody observed a crash, the card simply
+            # lost its claim bookkeeping. Reconcile the run it closed with an empty completion so
+            # that row is not the attempt history's last word, and so the failure counter the
+            # recovery booked does not stand against a worker that never failed.
+            _kb._synthesize_empty_completion_run(conn, tid, disowned_run_id=run_id)
             reconciled.append(tid)
         _kb._log.info(
             "kanban reconcile: requeued orphaned running task %s "
@@ -1162,7 +1366,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+            if _worker_not_dead(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+                # Alive, or unprovable. Only PROOF of death releases a claim or spawns beside it:
+                # an unreadable start-time/probe read is not proof, and treating it as one put six
+                # duplicate workers on six live cards in a single tick (#123811). Held rows are
+                # re-read next tick, and the TTL/backstop paths bound the wait.
                 continue
 
             pid = int(row["worker_pid"])
@@ -2022,6 +2230,28 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _lane_skip_recorded(
+    conn: sqlite3.Connection, task_id: str, kind: str, payload: dict,
+) -> bool:
+    """True when the newest event on the card is already this held-skip record.
+
+    The dispatcher's skip branches — a non-spawnable assignee, a respawn guard — mutate no
+    state, so the card keeps matching the dispatch selection and would append an identical
+    event on every tick: ~1 row/minute for a hold that lasts hours (``active_pr`` until the PR
+    closes, ``blocker_auth`` until the quota returns), and ``gc_events`` skips non-terminal
+    cards, so nothing ever collects them. One row per held EPISODE is what the record needs:
+    an event of another kind landing in between (a claim, a reclaim, a comment, a reassignment)
+    is a changed situation, and a changed payload (e.g. a new guard reason) is new information,
+    so both record again.
+    """
+    last = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+    if last is None or last["kind"] != kind:
+        return False
+    return last["payload"] == _kb._json_or_null(payload)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2056,11 +2286,8 @@ def _dispatch_lane_task(
         # and not one row per foreign home per tick on a shared board (#101015).
         if not dry_run:
             with _kb.write_txn(conn):
-                last = conn.execute(
-                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
-                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
-                if (last is None or last["kind"] != "skipped_nonspawnable"
-                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                if not _lane_skip_recorded(
+                        conn, task_id, "skipped_nonspawnable", {"assignee": assignee}):
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
@@ -2080,9 +2307,16 @@ def _dispatch_lane_task(
         # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
+        # Record the hold ONCE PER EPISODE: this branch mutates no state, so the card keeps
+        # matching the dispatch selection and would otherwise append an identical row on every
+        # tick (#123822 class — the daemon ticks every 60s and ``gc_events`` skips non-terminal
+        # cards). A new guard reason, or any intervening event, is a new episode and records.
         if not dry_run:
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                if not _lane_skip_recorded(
+                        conn, task_id, "respawn_guarded", {"reason": guard_reason}):
+                    _kb._append_event(
+                        conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
     def _count_spawn(name: str) -> None:

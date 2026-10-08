@@ -111,9 +111,11 @@ class TestMinimaxM31AdaptiveEffort:
     def test_lookalikes_do_not_match(self):
         from agent.anthropic_endpoints import _model_name_is_minimax_adaptive
         for m in ("MiniMax-M3", "MiniMax-M3-Flash", "MiniMax-M31", "minimax-m30",
+                  "MiniMax-M3.10", "minimax-m3.11-Flash", "minimax-m3-10", "minimax-m3-1x",
                   "not-minimax-m3.1", "", None):
             assert _model_name_is_minimax_adaptive(m) is False, m
-        for m in ("MiniMax-M3.1-Flash-Preview", "minimax-m3.1", "MiniMax-M3-1", "minimax/minimax-m3.1-x"):
+        for m in ("MiniMax-M3.1-Flash-Preview", "minimax-m3.1", "MiniMax-M3-1", "minimax/minimax-m3.1-x",
+                  "vendor/MiniMax-M3.1-20260901", "MiniMax-M3-1-Flash-Preview"):
             assert _model_name_is_minimax_adaptive(m) is True, m
 
 

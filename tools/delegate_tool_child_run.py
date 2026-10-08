@@ -454,9 +454,25 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
                     None,
                 )
                 leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
-            if leased_entry is not None and hasattr(child, "_swap_credential"):
+            if leased_entry is not None and _child_holds_credential(child, leased_entry):
+                # Same key on the same route (e.g. a sole-entry pool): a swap would only rebuild an identical
+                # client and retire the fresh one. Bind the entry id so failures still name the leased entry.
+                child._credential_pool_entry_id = leased_entry.id
+            elif leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
+
+def _child_holds_credential(child: Any, entry: Any) -> bool:
+    """Whether ``_swap_credential(entry)`` would leave the child's key and route unchanged (same key and route
+    resolution as the swap). A refreshed token or another endpoint is a real change and still swaps."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    key, base_url = getattr(child, "api_key", None), getattr(child, "base_url", None)
+    entry_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+    entry_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or base_url
+    return (
+        isinstance(key, str) and bool(key) and entry_key == key
+        and normalize_route_base_url(entry_base) == normalize_route_base_url(base_url)
+    )
 
 def _merge_late_steer(result: Dict[str, Any], subagent_id: Optional[str], child: Any) -> None:
     """Linearization boundary for registry steering: from here the child cannot consume another steer. Closing under

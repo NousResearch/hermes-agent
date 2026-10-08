@@ -31,6 +31,10 @@ mcp_servers:
     # client_key: "/path/to/key.pem"  # optional, when key lives in a separate file
 
     enabled: true
+    # Optional platform exposure. A string is accepted as a one-item scope;
+    # lists support multiple platforms. A malformed explicit scope is refused.
+    platforms: discord
+    exclude_platforms: [api_server]
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
@@ -54,6 +58,8 @@ mcp_servers:
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
 | `enabled` | bool | both | Skip the server entirely when false |
+| `platforms` | string or list of strings | both | Allowlist the server to named platforms; a scalar string is one platform |
+| `exclude_platforms` | string or list of strings | both | Denylist the server from named platforms; applies after `platforms` |
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |

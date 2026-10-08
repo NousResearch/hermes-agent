@@ -120,13 +120,26 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_subprocess_compat.py",
-    "symbol": "resolve_node_command",
-    "kind": "bare_which"
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_git_executable",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair (runs from hermes_bootstrap before hermes_platform or app deps import); falls back to PM's staged git"
   },
   {
-    "path": "hermes_cli/auth.py",
-    "symbol": "_external_process_spec",
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_held_open_lsof",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair asks the OS's own lsof (macOS/BSD) whether a dead git's index.lock is still open; absent lsof means unknown and the lock is kept"
+  },
+  {
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_ps_git_holder",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair asks the OS's own ps (macOS/BSD) for lock-keeping gits whose fd is closed; falls back to /bin/ps because the launcher's PATH may hold neither git nor ps; absent ps means unknown and the lock is kept"
+  },
+  {
+    "path": "hermes_cli/_subprocess_compat.py",
+    "symbol": "resolve_node_command",
     "kind": "bare_which"
   },
   {
@@ -315,11 +328,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/mcp_app_detection.py",
-    "symbol": "_Scan.path_candidates",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/mcp_catalog.py",
     "symbol": "_do_git_install",
     "kind": "bare_which"
@@ -388,6 +396,12 @@
     "path": "hermes_cli/update_abort_recovery.py",
     "symbol": "_serve_unit_recovery_available",
     "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_cmd_commit.py",
+    "symbol": "_absolute_git",
+    "kind": "bare_which",
+    "reason": "records, as an absolute path, the git this updater already runs (git_cmd[0] on the PATH expose_pm_git extended) so the launch-time repair can rerun it without importing pm"
   },
   {
     "path": "hermes_cli/update_restart_recovery.py",
@@ -572,21 +586,6 @@
   {
     "path": "tools/terminal_tool_backends.py",
     "symbol": "<module>",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_local_tirith",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_verify_cosign",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "verify_release_provenance",
     "kind": "bare_which"
   },
   {

@@ -28,7 +28,7 @@ from agent.skill_utils import (
     parse_frontmatter as _parse_frontmatter,
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
-    _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
+    _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
     _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
@@ -197,7 +197,7 @@ def _description_preview(content: str) -> str:
     return ""
 
 
-def _resolve_skill_dir(name: str, category: str = None) -> Path:
+def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
     """New-skill dir; honors ``skills.create_dir`` (e.g. a shared fleet dir)."""
     base = _skills_dir()
     try:
@@ -237,7 +237,7 @@ def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
     return None
 
 
-def _find_skill(name: str) -> Optional[Dict[str, Any]]:
+def _find_skill(name: str) -> Optional[dict[str, Any]]:
     """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
 
     Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
@@ -263,7 +263,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 "skills dir resolve failed; categorized lookups fall back to the unresolved path",
                 exc_info=True)
             local_root = _skills_dir()
-    display_matches: List[Path] = []
+    display_matches: list[Path] = []
     seen_display: set = set()
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
@@ -293,10 +293,10 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
+def _find_skill_in_other_profiles(name: str) -> list[tuple[str, Path]]:
     """``(profile, skill_dir)`` pairs for OTHER profiles holding ``name`` (so the not-found
     error can explain a wrong-profile mistake). Fail-quiet."""
-    matches: List[Tuple[str, Path]] = []
+    matches: list[tuple[str, Path]] = []
     try:
         from hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
@@ -306,7 +306,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     active_dir = _active.resolve() if _active.exists() else _active
     # Every profile's skills dir EXCEPT the active one (already searched). A candidate whose
     # path cannot be resolved is skipped (not a fatal error); is_dir() checks stay unguarded.
-    candidates: List[Tuple[str, Path]] = []
+    candidates: list[tuple[str, Path]] = []
     with suppress(OSError, RuntimeError):
         if (root / "skills").resolve() != active_dir:
             candidates.append(("default", root / "skills"))
@@ -382,17 +382,18 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
 
 
 def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
-    """Find the skill; run the background-review write guard -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
+    """Find the skill; a delete also runs the background-review delete guard -> ``(skill_dir, None)``
+    | ``(None, error_dict)``."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
-    guard = _background_review_write_guard(name, skill_dir, action)
+    guard = _background_review_delete_guard(name, skill_dir) if action == "delete" else None
     return (None, guard) if guard else (skill_dir, None)
 
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
-                   content: str) -> Optional[Dict[str, Any]]:
+                   content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
     a blocked scan restores the original (or unlinks a new file). Error dict or None."""
     original = None
@@ -413,7 +414,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     return _err(scan_error)
 
 
-def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dict[str, Any]:
+def _add_description_prompt_preview(result: dict[str, Any], content: str) -> dict[str, Any]:
     fm, _ = _parse_frontmatter(content)
     if is_skill_description_truncated_for_prompt(fm):
         result["system_prompt_preview"] = (
@@ -422,7 +423,7 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dic
     return result
 
 
-def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Optional[str] = None) -> None:
+def _attach_lint_findings(result: dict[str, Any], skill_md: Path, before: Optional[str] = None) -> None:
     """Attach ADVISORY authoring findings (hard rejects already ran in _validate_frontmatter).
     With ``before`` (the pre-write content) only rules the write INTRODUCED are attached, so a
     patch reports the line it crossed rather than re-listing the skill's standing findings."""
@@ -449,7 +450,7 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 # --- Core actions -------------------------------------------------------------
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
         return _err(err)
@@ -490,7 +491,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     return result
 
 
-def _edit_skill(name: str, content: str) -> Dict[str, Any]:
+def _edit_skill(name: str, content: str) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
@@ -504,8 +505,8 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     return _add_description_prompt_preview(result, content)
 
 
-def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
-                 replace_all: bool = False) -> Dict[str, Any]:
+def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | None = None,
+                 replace_all: bool = False) -> dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
         return _err(_PATCH_NEEDS_OLD_STRING)
@@ -555,7 +556,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     return result
 
 
-def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
+def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
     """Delete a skill. ``absorbed_into``: None = undeclared (legacy, accepted); "" = explicit prune;
     "<skill>" = absorbed into that umbrella, which must exist (so the model can't claim one)."""
     skill_dir, guard = _locate_for_write(name, "delete")
@@ -597,7 +598,7 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
         parent.rmdir()
 
 
-def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
+def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     if err := _validate_file_path(file_path):
         return _err(err)
@@ -622,7 +623,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     return result
 
 
-def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
+def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     if err := _validate_file_path(file_path):
         return _err(err)
@@ -686,7 +687,7 @@ _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string
                  "absorbed_into", "operations")
 
 
-def _skill_manage_from(payload: Dict[str, Any], **extra) -> str:
+def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
     """Call ``skill_manage`` with the flat-shape fields (and absorbed_into/operations) of ``payload``."""
     return skill_manage(
         action=payload.get("action", ""), name=payload.get("name", ""),
@@ -694,7 +695,7 @@ def _skill_manage_from(payload: Dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
-def apply_skill_pending(payload: Dict[str, Any]) -> str:
+def apply_skill_pending(payload: dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
     token = _skill_gate_bypass.set(True)
     try:
@@ -762,10 +763,10 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
 
 
 def skill_manage(
-    action: str, name: str, content: str = None, category: str = None, file_path: str = None,
-    file_content: str = None, old_string: str = None, new_string: str = None,
-    replace_all: bool = False, absorbed_into: str = None, task_id: str = None,
-    session_id: str = None, operations=None) -> str:
+    action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
+    file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
+    replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+    session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
     if operations is not None:

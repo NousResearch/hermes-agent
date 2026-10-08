@@ -11,7 +11,7 @@ import type { PoolLimits } from '../electron/pool-limits'
 import type { KeepAwakeMode } from '../electron/power-save'
 import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
-import type { GrowRequest } from '../electron/window-growth'
+import type { WindowSizeMode } from '../electron/window-size-types'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -132,8 +132,7 @@ declare global {
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
       chatOnboarding?: {
-        grow: (request: GrowRequest) => void
-        soloBoot: () => void
+        size: (mode: WindowSizeMode) => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
@@ -664,6 +663,7 @@ declare global {
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+        openAppsSettings: () => Promise<void>
       }
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
@@ -823,6 +823,8 @@ export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 export interface DesktopUninstallSummary {
   /** Local package ownership, resolved by Electron before offering removal. */
   code_removal_allowed: boolean
+  /** Native removal steps when the OS or a package manager owns removal. */
+  native_removal_instructions: null | string
   hermes_home: string
   agent_installed: boolean
   gui_installed: boolean

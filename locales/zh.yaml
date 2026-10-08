@@ -779,6 +779,8 @@ gateway:
   plan:
     ack_task: "正在规划：{task}"
     ack_conversation: "正在根据本次对话的上下文进行规划…"
+  initiate_setup:
+    ack: "正在开始设置…"
   init:
     start_failed: "无法启动 /init——请重试。"
     ack_update: "正在根据项目扫描更新 AGENTS.md…"
@@ -847,6 +849,9 @@ gateway:
     db_fts_corrupt: "⚠️ 会话数据库报告了仅限于搜索索引（FTS5）的损坏错误；消息表未受损。修复前消息可能无法持久化：请运行 `hermes {profile_arg}doctor --fix`，然后重启网关。除非 `hermes {profile_arg}doctor` 确认存在损坏，否则不要运行恢复工具或还原备份。"
     db_then_restart: "{action} 然后执行 `hermes {profile_arg}gateway restart`。"
     db_unavailable: "⚠️ 会话数据库不可用——消息可能无法保存，/resume 将为空。原因：{cause}。{action}"
+  cron_store:
+    unwritable: "⚠️ Cron 存储 {store} 自 {since} 起无法写入（{error}）。在恢复可写之前，计划任务将被跳过。修复方法：{fix}。"
+    recovered: "✅ Cron 存储 {store} 已恢复可写；跳过了 {skipped} 次运行，每个任务将补跑一次。"
   whoami:
     scope_dm: "私聊"
     scope_group: "群组/频道"
@@ -1553,6 +1558,8 @@ slash:
     description: "在此会话中按固定间隔重复运行一条提示词"
   plan:
     description: "将 markdown 实施计划写入 .hermes/plans/，不执行任何操作"
+  initiate-setup:
+    description: "运行首次设置：了解你，并按你的需要设置 Hermes"
   moa:
     description: "用默认的 Mixture of Agents 预设运行一条提示词，然后恢复你的模型"
   subgoal:
@@ -2392,6 +2399,7 @@ cli:
     session_not_found: "未找到会话：{session_id}"
     compressed_into: "会话 {session_id} 已被压缩进 {descendant}；将使用你的记录恢复后继会话。"
     cannot_resume: "无法恢复会话：{error}"
+    kanban_owned: "⛔ 会话 {session_id} 是 Kanban 工作线程的记录。在此恢复会创建一个 Kanban 看板无法观察或监督的写入者——请改为在看板上重试或解除卡片的阻塞，让调度器拥有下一次运行。"
     cannot_resume_prefix: "无法恢复会话："
     resumed_session: "↻ 已恢复会话"
     counts_one: "（{count} 条用户消息，共 {total} 条消息）"
@@ -2426,7 +2434,6 @@ cli:
     run_model_to_retry: "运行 'hermes model' 重试。"
     provider_configured: "✓ 提供方已配置——可以开始聊天了。"
     provider_setup_incomplete: "提供方设置未完成。运行 'hermes model' 重试。"
-    tirith_unavailable: "⚠ 已启用 tirith 安全扫描器但不可用——命令扫描将仅使用模式匹配"
     unknown_toolsets: "警告：未知的工具集：{names}"
     stdin_unusable: "\n错误：stdin 不可用（{error}）。\n某些 Python 安装（例如 macOS 上由 uv 管理的 cPython）可能出现此问题，\n原因是 kqueue 无法注册 fd 0。\n请尝试通过 pyenv 或 Homebrew 重新安装 Python，然后重新运行：hermes setup"
     warning: "警告：{warning}"
@@ -2911,6 +2918,8 @@ cli:
     plan:
       planning: "📋 正在规划：{task}"
       from_conversation: "📋 正在根据本次对话的上下文进行规划..."
+    initiate_setup:
+      starting: "🧭 正在开始设置..."
     init:
       updating: "⚡ 正在通过项目扫描更新 AGENTS.md..."
       generating: "⚡ 正在通过项目扫描生成 AGENTS.md..."
@@ -3644,7 +3653,7 @@ tips:
   t167: "危险命令批准有 4 个层级：once、session、always（永久允许列表）、deny。"
   t168: "智能批准模式使用 LLM 自动批准安全命令，并标记危险命令。"
   t169: "SSRF 防护会阻止访问私有网络、回环地址、链路本地地址和云元数据地址。"
-  t170: "Tirith 执行前扫描可检测同形异义 URL 欺骗以及管道传给解释器的模式。"
+  t170: "会话 ID 以时间戳为前缀（20250305_091523_abcd），在 ls 和 jq 中排序自然有序。"
   t171: "MCP 子进程收到的是经过过滤的环境——只有安全的系统变量会被传入。"
   t172: "上下文文件（.hermes.md、AGENTS.md）在加载前会进行提示词注入安全扫描。"
   t173: "config.yaml 中的 command_allowlist 可永久批准特定的 shell 命令模式。"
@@ -3674,7 +3683,7 @@ tips:
   t197: "轨迹保存（--save-trajectories）会记录完整的工具调用轨迹，可用于模型训练。"
   t198: "插件有三种类型：通用插件（工具/钩子）、记忆提供方和上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接从 GitHub 安装插件。"
-  t200: "外部记忆提供方：OpenViking 已内置；Honcho、Hindsight、Mem0 等可通过 hermes plugins install 安装。"
+  t200: "外部记忆提供方：Honcho、Hindsight、Mem0、OpenViking 等可通过 hermes plugins install 安装。"
   t201: "插件钩子包括 pre/post_tool_call、pre/post_llm_call，以及用于规范化输出的 transform_terminal_output。"
   t202: "提示词缓存（Anthropic）通过复用已缓存的系统提示词前缀来降低成本。"
   t203: "代理会在后台线程中自动生成会话标题——对延迟零影响。"
@@ -3849,12 +3858,9 @@ tips:
   t372: "config.yaml 中的 image_gen.model 选择 FAL 模型：flux-2/klein、gpt-image-2、nano-banana-pro 等。"
   t373: "image_gen.provider 把图像生成路由到插件（OpenAI Images、Codex、FAL），而不使用默认方式。"
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY 可把视觉分析指向任意 OpenAI 兼容端点。"
-  t375: "security.tirith_fail_open: false 会让 Hermes 在 tirith 扫描器自身出错时拦截命令。"
-  t376: "TIRITH_FAIL_OPEN 环境变量可覆盖 tirith_fail_open 配置——无需编辑 config.yaml 的快速开关。"
+  t375: "API_SERVER_MODEL_NAME 自定义 /v1/models 返回的模型名——多配置档的 Open WebUI 部署必不可少。"
+  t376: "控制台插件从 /dashboard-plugins/<name>/ 提供服务——把文件放进 ~/.hermes/dashboard-plugins/ 即可。"
   t377: "--source tool 的聊天默认不出现在 hermes sessions list 中——显式指定 --source 才能看到。"
-  t378: "会话 ID 以时间戳为前缀（20250305_091523_abcd），在 ls 和 jq 中排序自然有序。"
-  t379: "API_SERVER_MODEL_NAME 自定义 /v1/models 返回的模型名——多配置档的 Open WebUI 部署必不可少。"
-  t380: "控制台插件从 /dashboard-plugins/<name>/ 提供服务——把文件放进 ~/.hermes/dashboard-plugins/ 即可。"
   placeholder:
     p01: "随便问点什么，或输入 / 查看命令…"
     p02: "总结这个文件夹里的内容"

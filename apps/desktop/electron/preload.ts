@@ -89,8 +89,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   chatOnboarding: {
-    grow: request => ipcRenderer.send('hermes:chat-onboarding:grow', request),
-    soloBoot: () => ipcRenderer.send('hermes:chat-onboarding:solo-boot')
+    size: mode => ipcRenderer.send('hermes:window:size', mode)
   },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
@@ -659,7 +658,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
-    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
+    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode }),
+    openAppsSettings: () => ipcRenderer.invoke('hermes:uninstall:openAppsSettings')
   },
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),

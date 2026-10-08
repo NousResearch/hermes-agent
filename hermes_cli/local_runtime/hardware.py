@@ -22,6 +22,7 @@ from pathlib import Path
 
 from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
 from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_platform.host.facts import gpu_class
 
 logger = logging.getLogger(__name__)
 
@@ -393,11 +394,11 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
 
 
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
-                gpu_pci_id: int | None = None) -> HardwareBudget:
+                gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
-                          gpu_pci_id=gpu_pci_id)
+                          gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -444,8 +445,11 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
                                   ram_available_bytes=ram_total if planning else ram_avail,
                                   uma=False, gpu_name=device["description"], platform=sys.platform)
-        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory.
-        return _uma_budget(ram_total if planning else ram_avail, ram_total)
+        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory. llama.cpp
+        # loads lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand
+        # halved prefill (#28160).
+        return _uma_budget(ram_total if planning else ram_avail, ram_total,
+                           lazy_reads=gpu_class() not in ("amd", "intel"))
 
     total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))

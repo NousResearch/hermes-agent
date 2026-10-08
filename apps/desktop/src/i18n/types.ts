@@ -8,10 +8,17 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
+import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { NoticeTranslations } from './types_notices'
+import type { OnboardingTranslations } from './types_onboarding'
+import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { UninstallSectionTranslations } from './types_uninstall_section'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -47,6 +54,8 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
+  | 'setup_choose'
+  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'
@@ -65,9 +74,10 @@ interface ModeOptionCopy {
   description: string
 }
 
-export interface Translations {
+export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
+  appTour: AppTourTranslations
   externalOpenFailed: {
     title: string
     message: string
@@ -534,18 +544,7 @@ export interface Translations {
     }
   }
 
-  remoteDisplayBanner: {
-    message: (reason: string) => string
-  }
-
-  billingBlock: {
-    titleNous: string
-    titleProvider: (provider: string) => string
-    fallbackMessage: string
-    openBilling: string
-    addCredits: string
-    dismiss: string
-  }
+  billingBlock: BillingTranslations['billingBlock']
 
   sendDiagnostics: {
     title: string
@@ -950,23 +949,7 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
-    uninstallSection: {
-      dangerZone: string
-      checkingInstalled: string
-      uninstallHermes: string
-      chooseHowMuch: string
-      confirmUninstall: string
-      confirmBody: (what: string) => string
-      appLabel: string
-      couldNotStart: string
-      uninstalling: string
-      yesUninstall: string
-      options: {
-        gui: { title: string; description: string; consequence: string }
-        lite: { title: string; description: string; consequence: string }
-        full: { title: string; description: string; consequence: string }
-      }
-    }
+    uninstallSection: UninstallSectionTranslations
     poolLimits: {
       warmBotBackendsAria: string
       warmBotBackendsTitle: string
@@ -1051,6 +1034,11 @@ export interface Translations {
       disableF12Desc: string
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
+      developerTitle: string
+      resetOnboardingTitle: string
+      resetOnboardingDesc: string
+      resetOnboardingAction: string
+      resetOnboardingFailed: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -2722,6 +2710,7 @@ export interface Translations {
     next: string
     overdueSince: string
     noRuns: string
+    queuedRun: string
     manage: string
     showRuns: string
     hideRuns: string
@@ -2924,81 +2913,7 @@ export interface Translations {
       guide: string
     }
     noFilterMatches: string
-    projects: {
-      showAllSessions: string
-      sectionLabel: string
-      home: string
-      autoDiscovered: string
-      newButton: string
-      createTitle: string
-      createDesc: string
-      renameTitle: string
-      addFolderTitle: string
-      namePlaceholder: string
-      foldersLabel: string
-      ideaLabel: string
-      ideaPlaceholder: string
-      ideaGenerate: string
-      ideaGenerating: string
-      ideaShuffle: string
-      noFolders: string
-      addFolder: string
-      primaryBadge: string
-      removeFolder: string
-      create: string
-      menu: string
-      menuRename: string
-      menuAppearance: string
-      noColor: string
-      menuAddFolder: string
-      menuSetActive: string
-      menuDelete: string
-      moveToProject: string
-      movedTo: (name: string) => string
-      moveFailed: string
-      moveNoFolder: string
-      moveNoProjects: string
-      reveal: string
-      copyPath: string
-      removeFromSidebar: string
-      createdInPreviousContext: string
-      createFailed: string
-      staleBackend: string
-      deleteConfirm: string
-      startWork: string
-      newWorktreeTitle: string
-      newWorktreeDesc: string
-      branchPlaceholder: string
-      branchOff: () => { after: string; before: string }
-      baseBranchPlaceholder: string
-      baseBranchNone: string
-      startWorkFailed: string
-      worktreeStaleBackend: string
-      worktreeProjectLabel: string
-      worktreeProjectPlaceholder: string
-      worktreeProjectNone: string
-      convertBranch: string
-      convertBranchTitle: string
-      convertBranchDesc: string
-      convertBranchPlaceholder: string
-      convertBranchInstead: string
-      branchOpenExisting: string
-      branchSwitchHome: string
-      branchCreateWorktree: string
-      branchTrackRemote: string
-      branchesLoading: string
-      noBranches: string
-      removeWorktree: string
-      removeWorktreeFailed: string
-      removeWorktreeConfirm: string
-      removeWorktreeDirty: string
-      forceRemove: string
-      enter: (label: string) => string
-      reorder: (label: string) => string
-      toggle: (label: string, open: boolean) => string
-      showAllCount: (count: number) => string
-      back: string
-    }
+    projects: SidebarProjectsTranslations
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
@@ -3131,6 +3046,8 @@ export interface Translations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    /** The local-setup offer above the input after the first finished task. */
+    localSetup: { title: string; text: (model: string) => string; action: string }
     queueEdit: string
     queueExpand: string
     queueCollapse: string
@@ -3502,23 +3419,7 @@ export interface Translations {
     versionDetailsUncommittedChanges: string
   }
 
-  /** The guided first run's pre-written opening line — banked, not generated,
-   *  so the first paint costs no model time. Translated per locale because the
-   *  model is told to speak the user's language from its first real turn, and
-   *  an English opener above a Japanese reply reads as two different agents.
-   *  `nameSuggestion` offers the OS account name as a default. */
-  handoffTour: {
-    profileTitle: string
-    profileText: string
-    sessionsTitle: string
-    sessionsText: string
-    stayTitle: string
-    stayText: string
-  }
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
-  }
+  handoffTour: HandoffTourTranslations
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -3588,68 +3489,7 @@ export interface Translations {
     openLogs: string
   }
 
-  onboarding: {
-    headerTitle: string
-    headerDesc: string
-    preparingInstall: string
-    starting: string
-    lookingUpProviders: string
-    collapse: string
-    otherProviders: string
-    haveApiKey: string
-    chooseLater: string
-    recommended: string
-    connected: string
-    featuredPitch: string
-    fireworksPitch: string
-    localModelsTitle: string
-    localModelsPitch: string
-    openRouterPitch: string
-    apiKeyOptions: Record<string, { short: string; description: string }>
-    backToSignIn: string
-    getKey: string
-    replaceCurrent: string
-    pasteApiKey: string
-    localApiKeyPlaceholder: string
-    localModelNamePlaceholder: string
-    couldNotSave: string
-    connecting: string
-    update: string
-    flowSubtitles: Record<string, string>
-    startingSignIn: (provider: string) => string
-    verifyingCode: (provider: string) => string
-    connectedProvider: (provider: string) => string
-    connectedPicking: (provider: string) => string
-    signInFailed: string
-    signInExpired: string
-    signInDidNotFinish: (provider: string) => string
-    tryAgain: string
-    useApiKeyInstead: string
-    errorDetails: string
-    pickDifferentProvider: string
-    signInWith: (provider: string) => string
-    openedBrowser: (provider: string) => string
-    authorizeThere: string
-    copyAuthCode: string
-    pasteAuthCode: string
-    reopenAuthPage: string
-    autoBrowser: (provider: string) => string
-    reopenSignInPage: string
-    waitingAuthorize: string
-    externalPending: (provider: string) => string
-    signedIn: string
-    deviceCodeOpened: (provider: string) => string
-    reopenVerification: string
-    copy: string
-    defaultModel: string
-    freeTier: string
-    pro: string
-    free: string
-    price: (input: string, output: string) => string
-    change: string
-    startChatting: string
-    docs: (provider: string) => string
-  }
+  onboarding: OnboardingTranslations
 
   freeTier: {
     /** Settings › Providers row title while the Nous identity is the free tier. */
@@ -3703,6 +3543,13 @@ export interface Translations {
     unreachableBody: string
     alreadySignedInHeading: string
     alreadySignedInBody: string
+    /** The "keep going" offer the backend times after a finished task (repeats, backing off). */
+    offer: {
+      heading: string
+      body: string
+      signIn: string
+      notNow: string
+    }
     // First-launch set-up failure notice: the free tier could not be created at boot.
     // One sentence per backend code (`hermes_cli/anon_auth.py::ANON_*`); the copy never says
     // the free MODEL is off — what is unavailable is using Hermes without signing in.
@@ -4301,32 +4148,30 @@ export interface Translations {
       confirmAndContinueLabel: string
       singleSelectHint: string
       multiSelectHint: string
+      oneQuestion: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
     }
-    catalogInstall: {
-      preparing: string
-      install: string
-      advanced: string
-      skip: string
-      installing: string
-      installed: string
-      notInstalled: string
-      failed: string
-      showNames: string
-      hideNames: string
-      skill: (name: string) => string
-      kind: { plugin: string; skill: string }
-      tier: { official: string; community: string }
-      targetProfile: (profile: string) => string
-      sendFailed: string
-      commitLabel: string
-      subdirLabel: string
-      securityHeading: string
-      scan: { passed: string; warnings: string; failed: string }
-      requirementsLabel: string
-      credentialsHeading: string
+    setupChoose: {
+      kinds: Record<'accent' | 'connectors' | 'layout' | 'plugins' | 'theme', string>
+      loading: string
+      unavailable: string
+      findApp: string
+      customColor: string
+      plugin: string
+      startsLater: string
     }
+    startChat: {
+      starting: (title: string) => string
+      startingUntitled: string
+      untitled: string
+      notStarted: string
+      retry: string
+      inProfile: (profile: string) => string
+      open: string
+      openFailed: string
+    }
+    catalogInstall: CatalogInstallTranslations
     mcpSetup: {
       installTitle: string
       enableTitle: string
@@ -4549,7 +4394,6 @@ export interface Translations {
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
       'local-runtime-update': { title: string; text: string; action: string }
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

@@ -147,7 +147,7 @@ def _sale_pct(current: Any, original: Any) -> int | None:
     cur, orig = _price_float(current, positive=True), _price_float(original, positive=True)
     if cur is None or orig is None or cur >= orig:
         return None
-    return int(round((1.0 - (cur / orig)) * 100))
+    return round((1.0 - (cur / orig)) * 100)
 
 
 def compute_sale_discount(prompt: str, completion: str, original: Any) -> tuple[int, str, str] | None:
@@ -414,9 +414,76 @@ def _fetch_novita_pricing_for_provider(*, force_refresh: bool = False) -> dict[s
     return _fetch_novita_pricing(force_refresh=force_refresh)
 
 
+def _kilo_pricing_scope() -> str:
+    """The kilocode provider profile's gateway base (``KILOCODE_BASE_URL`` overrides it) —
+    the endpoint the doctor connectivity probe and chat requests already use, so pricing reads
+    the same server the user is actually wired to."""
+    from providers import get_provider_profile
+
+    base_url = (
+        os.getenv("KILOCODE_BASE_URL", "").strip()
+        or getattr(get_provider_profile("kilocode"), "base_url", "")
+        or ""
+    )
+    return base_url.rstrip("/").removesuffix("/v1")
+
+
+def _fetch_kilocode_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """Kilo Gateway ``{base}/models`` pricing (public OpenRouter-shaped catalog — per-token
+    ``prompt``/``completion``/``input_cache_read`` strings, no key required, attached best-effort
+    so an authenticated read also carries the key), cached on the catalog URL.
+
+    ``isFree`` is the explicit free flag the picker badge needs — authoritative over the
+    rates, because a free router (``kilo-auto/free``) can carry non-zero underlying pricing.
+    The gateway's ``-1`` rate sentinel means "varies" (auto-router models); no price is shown
+    rather than a fabricated one, so such rows are skipped.
+    """
+    from hermes_cli.models import _HERMES_USER_AGENT
+
+    cache_key = _kilo_pricing_scope()
+    if not cache_key:
+        return {}
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
+
+    headers = {"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    api_key = os.getenv("KILOCODE_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = _get_json(cache_key + "/models", headers, timeout)
+    if payload is None:
+        return _cache_catalog(cache_key, {})
+
+    result: dict[str, dict[str, str]] = {}
+    for item in _catalog_items(payload):
+        mid, pricing = item.get("id"), item.get("pricing")
+        if not mid or not isinstance(pricing, dict):
+            continue
+        entry = _pricing_entry(pricing)
+        if item.get("isFree"):
+            entry["prompt"] = entry["completion"] = "0"
+            entry.pop("input_cache_read", None)
+        # The gateway's ``-1`` sentinel means "rate varies" (auto-router models); no price is
+        # shown rather than a fabricated one. _price_float also drops any other unusable value
+        # (blank / non-numeric), so a malformed row cannot poison the rest of the catalog.
+        if _price_float(entry["prompt"], positive=False) is None or _price_float(entry["completion"], positive=False) is None:
+            continue
+        if entry:
+            result[str(mid)] = entry
+
+    return _cache_catalog(cache_key, result)
+
+
 def _fetch_fireworks_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     _remember_provider_cache_key("fireworks", _FIREWORKS_PRICING_KEY)
     return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
+
+
+def _fetch_kilocode_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    _remember_provider_cache_key("kilocode", _kilo_pricing_scope())
+    return _fetch_kilocode_pricing(force_refresh=force_refresh)
 
 
 def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
@@ -466,6 +533,7 @@ _STATIC_PRICING_SCOPES = {
     "openrouter": lambda: _OPENROUTER_PRICING_BASE,
     "ai-gateway": _ai_gateway_pricing_scope,
     "novita": _novita_pricing_scope,
+    "kilocode": _kilo_pricing_scope,
     "fireworks": lambda: _FIREWORKS_PRICING_KEY,
 }
 
@@ -549,9 +617,9 @@ def get_pricing_for_provider(
     provider: str, *, base_url: str = "", force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
-    deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
-    normal picker opens use it so cold endpoints cannot hold the response path, while a background
-    prewarm fills the same caches for later opens."""
+    deepinfra, fireworks, kilocode); ``{}`` for everything else. ``cached_only`` never starts
+    provider I/O: normal picker opens use it so cold endpoints cannot hold the response path,
+    while a background prewarm fills the same caches for later opens."""
     normalized = resolve_pricing_provider(provider, base_url=base_url)
     if cached_only:
         return _cached_only_pricing(normalized)
@@ -650,5 +718,6 @@ _PRICING_FETCHERS = {
     "novita": _fetch_novita_pricing_for_provider,
     "deepinfra": _fetch_deepinfra_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
+    "kilocode": _fetch_kilocode_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,
 }

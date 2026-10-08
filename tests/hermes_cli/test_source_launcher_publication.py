@@ -279,7 +279,7 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
 def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     from hermes_cli.runtime_state import collect_generations
 
-    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "bin"
     out.mkdir()
     _launchers.ensure_install_launchers(repo, out)
@@ -535,6 +535,79 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
     assert json.loads(result.stdout)["value"] == "ready"
     assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
 
+def _torn_by_a_killed_merge(tmp_path, monkeypatch):
+    """A git install whose update was killed mid-merge while git rewrote ``hermes_constants.py``.
+
+    Git rewrites a file as unlink, create, write: the kill left HEAD at the old commit, the
+    interrupted-pull marker of a dead updater, ``.git/index.lock`` and no ``hermes_constants.py``.
+    """
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    for relative in ("hermes_cli/update_lock.py", "hermes_cli/update_custody.py"):
+        shutil.copy2(ROOT / relative, repo / relative)
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    git("add", "-A")
+    git("commit", "-qm", "pre")
+    pre = git("rev-parse", "HEAD")
+    constants = repo / "hermes_constants.py"
+    original = constants.read_bytes()
+    constants.write_bytes(original + b"\nTARGET_ONLY = 1\n")
+    git("commit", "-qam", "target")
+    target = git("rev-parse", "HEAD")
+    git("reset", "-q", "--hard", pre)
+    from hermes_cli import _early_recovery
+
+    marker = _early_recovery.interrupted_pull_marker(repo)
+    # The updater records the git it moved the tree with: a Windows install's only git is PM's
+    # store copy, which the repair cannot look up through ``pm`` (it imports hermes_constants).
+    marker.write_text(f"pid=0\npre={pre}\ntarget={target}\nstash=\ngit={shutil.which('git')}\n",
+                      encoding="utf-8", newline="")
+    constants.unlink()
+    (repo / ".git" / "index.lock").touch()
+    select_generation(repo, "one", "repaired")
+    return repo, home, interpreter, pre, original, marker
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("surface", ["launcher", "runtime-command"])
+def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(tmp_path, monkeypatch, surface):
+    """C1 recovery reachability: the launcher reaches the repair before importing any other
+    checkout module, so a torn ``hermes_constants.py`` is put back instead of killing every launch."""
+    repo, home, interpreter, pre, original, marker = _torn_by_a_killed_merge(tmp_path, monkeypatch)
+    env = dict(os.environ)
+    env.pop("HERMES_HOME", None)  # the default-home pin itself needs hermes_constants
+    env.pop("HERMES_RUNTIME_DIR", None)
+    env.pop("PYTEST_CURRENT_TEST", None)  # the repair stands down in a checkout pytest itself runs from
+    no_git = tmp_path / "path-without-git"
+    no_git.mkdir()
+    env["PATH"] = str(no_git)  # as on that Windows install: no git on PATH outside the updater
+    if surface == "launcher":
+        out = tmp_path / "commands"
+        out.mkdir()
+        command = [str(_launchers._mint_shell_launcher("hermes", out, interpreter,
+                                                       _launchers._launcher_script("hermes", repo, None)))]
+    else:
+        command = _launchers.runtime_command(repo, python=interpreter)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert "No module named 'hermes_constants'" not in result.stderr, result.stderr
+    assert result.returncode == 7, result.stdout + result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+    assert receipt["value"] == "repaired"
+    assert Path(receipt["home"]) == home, "the default home is still pinned, after the repair"
+    assert (repo / "hermes_constants.py").read_bytes() == original
+    assert not marker.exists() and not (repo / ".git" / "index.lock").exists()
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, encoding="utf-8", check=True).stdout.strip()
+    assert head == pre
+
+
 
 def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     from hermes_cli import update_cmd, update_cmd_validation
@@ -619,7 +692,7 @@ def test_service_launcher_binds_the_tree_store_despite_inherited_runtime_overrid
 def test_runtime_override_still_selects_the_runtime_python(tmp_path, monkeypatch):
     # The publication split must not mute the override for execution paths:
     # resolving a python to RUN still honors HERMES_RUNTIME_DIR by default.
-    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     foreign_store = tmp_path / "foreign" / "tools"
     foreign_store.mkdir(parents=True)
     foreign_python = foreign_store / "python-foreign" / "bin" / "python3"

@@ -79,7 +79,7 @@ class _AnthropicStreamContext:
     def __enter__(self) -> _BlockingStream:
         return self.stream
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         self.stream.close()
 
 

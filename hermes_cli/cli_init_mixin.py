@@ -300,10 +300,10 @@ class CLIInitMixin:
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
-        self._tool_callbacks_installed = self._tirith_security_checked = False
+        self._tool_callbacks_installed = False
         self._app = None  # prompt_toolkit Application (set in run())
 
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history: list[dict[str, Any]] = []
         self.session_start = datetime.now()
         # Per-prompt elapsed timer shown in the status bar.
         self._prompt_start_time: Optional[float] = None
@@ -429,6 +429,7 @@ class CLIInitMixin:
         self._voice_mode = self._voice_tts = self._voice_recording = False
         self._voice_processing = self._voice_continuous = False
         self._voice_recorder = self._voice_tts_stop = None
+        self._voice_live_text = ""  # live STT partial (stt.streaming) shown in the placeholder
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
@@ -447,7 +448,7 @@ class CLIInitMixin:
         self._resize_recovery_timer = self._status_bar_unsuppress_timer = None  # latter: debounced un-suppress
         self._last_resize_width = None  # width change (reflow, needs viewport clear) vs rows-only
 
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_tasks: dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
         # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.

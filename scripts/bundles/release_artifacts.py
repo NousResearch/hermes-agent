@@ -117,7 +117,7 @@ def record(platform: str, arch: str, root: Path, tag: str | None, commit: str, o
         app = single(root.glob("mac*/*.app"))
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         signature = subprocess.run(["codesign", "-dv", "--verbose=4", str(app)], check=True, capture_output=True, text=True, encoding="utf-8")
-        team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", signature.stderr, re.M)
+        team = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", signature.stderr, re.MULTILINE)
         if not team:
             raise ValueError("Signed app has no Developer ID team")
         with zipfile.ZipFile(package) as archive:

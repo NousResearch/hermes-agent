@@ -101,8 +101,8 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
+_stripped = lambda v: bool(str(v or "").strip())
+_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 
@@ -1087,7 +1087,7 @@ _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
-    "compress": _cmd_compress, "compact": _cmd_compress,
+    "compress": _cmd_compress, "compact": _cmd_compress, "initiate-setup": lambda *a: _cmd_initiate_setup(*a),
     "memory": _cmd_memory, "skills": _cmd_skills}
 
 @method("command.dispatch")
@@ -1941,7 +1941,7 @@ def _plugins_settings(rid, params):
     if not key or not isinstance(values, dict):
         return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
     pc = _tools_mod("hermes_cli.plugins_cmd")
-    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    found = pc._find_plugin_entry(key)
     if found is None:
         return _err(rid, 4020, f"plugin '{key}' not found")
     _name, _version, _desc, _source, plugin_dir, canonical = found

@@ -32,6 +32,10 @@ TARGET_WINDOW = 144 * 1024
 # past this constant). Callers add mmproj bytes on top.
 RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
 
+# llama.cpp's default microbatch, and the larger one launch_args passes for faster prefill.
+DEFAULT_UBATCH = 512
+PREFILL_UBATCH = 2048
+
 
 def ladder(native: int) -> list[int]:
     """64K -> 96K -> 128K -> ... -> native (native always the last rung)."""
@@ -114,6 +118,15 @@ class LaunchPlan:
     decision: WindowDecision | PhysicsRefusal
     mtp_prefill: bool
     overhead_bytes: int
+    profile: ModelProfile | None = None   # as priced at the chosen posture (posture_profile)
+
+
+def posture_profile(profile: ModelProfile, *, mtp_capable: bool, mtp_prefill: bool) -> ModelProfile:
+    """``profile`` at one launch posture: window-scaled compute buffers grow with the microbatch
+    launch_args passes, and MTP runs a second context beside the target."""
+    ubatch = PREFILL_UBATCH if mtp_prefill or not mtp_capable else DEFAULT_UBATCH
+    contexts = 2 if mtp_capable else 1
+    return replace(profile, window_compute_per_token=profile.window_compute_bytes * ubatch * contexts)
 
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
@@ -130,20 +143,21 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
     initial: dict[bool, WindowDecision | PhysicsRefusal] = {}
 
     def candidate(stacked: bool) -> LaunchPlan:
+        posture = posture_profile(profile, mtp_capable=mtp_capable, mtp_prefill=stacked)
         overhead = fixed_overhead + ub_logits_bytes(
             profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked)
-        decision = initial_window(profile, budget, overhead_bytes=overhead)
+        decision = initial_window(posture, budget, overhead_bytes=overhead)
         initial[stacked] = decision
         if isinstance(decision, WindowDecision) and requested_window:
             target = min(requested_window, profile.n_ctx_train or requested_window)
             if target > decision.window and physics_check(
-                    profile, budget, target, overhead_bytes=overhead) is None:
-                need = footprint_bytes(profile, target, overhead_bytes=overhead)
+                    posture, budget, target, overhead_bytes=overhead) is None:
+                need = footprint_bytes(posture, target, overhead_bytes=overhead)
                 decision = WindowDecision(
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
-                    kv_on_gpu=ctx_bytes(profile, target) + overhead <= budget.usable_vram_bytes,
+                    kv_on_gpu=ctx_bytes(posture, target) + overhead <= budget.usable_vram_bytes,
                     reasons=[f"grown window restored ({target // 1024}K)"])
-        return LaunchPlan(decision, stacked, overhead)
+        return LaunchPlan(decision, stacked, overhead, posture)
 
     lean = candidate(False)
     if not mtp_capable:
@@ -186,13 +200,13 @@ def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBu
             return plan
         return LaunchPlan(replace(now.decision, reasons=[
             f"{now.decision.window // 1024}K fits beside other programs' GPU memory "
-            f"({decision.window // 1024}K would not)"]), now.mtp_prefill, now.overhead_bytes)
+            f"({decision.window // 1024}K would not)"]), now.mtp_prefill, now.overhead_bytes, now.profile)
     floor = min(FLOOR, profile.n_ctx_train or FLOOR)
     if decision.window <= floor:
         return plan
     return LaunchPlan(WindowDecision(window=floor, spill_bytes=0, kv_on_gpu=True, reasons=[
         f"floor held at {floor // 1024}K; other programs hold most of the GPU memory"]),
-        plan.mtp_prefill, plan.overhead_bytes)
+        plan.mtp_prefill, plan.overhead_bytes, plan.profile)
 
 
 @dataclass
@@ -287,9 +301,9 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(mtp_draft_depth),
                  "--backend-sampling", "--spec-draft-backend-sampling"]
         if mtp_prefill:
-            args += ["-b", "4096", "-ub", "2048"]
+            args += ["-b", "4096", "-ub", str(PREFILL_UBATCH)]
     else:
-        args += ["-b", "2048", "-ub", "2048"]
+        args += ["-b", str(PREFILL_UBATCH), "-ub", str(PREFILL_UBATCH)]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled and not uma:

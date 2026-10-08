@@ -3,7 +3,11 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
+import { esNotices } from './es_notices'
+import { esOnboarding } from './es_onboarding'
+import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
@@ -512,10 +516,7 @@ export const esOverrides = {
       creditsTitle: 'Créditos'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
-  },
+  ...esNotices,
   billingBlock: {
     titleNous: 'Sin créditos de Nous',
     titleProvider: provider => `Sin créditos — ${provider}`,
@@ -1595,6 +1596,12 @@ export const esOverrides = {
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
+      developerTitle: 'Desarrollador',
+      resetOnboardingTitle: 'Restablecer la configuración inicial',
+      resetOnboardingDesc:
+        'Borra los chats de configuración, reconstruye el perfil de configuración y vuelve a ejecutar la configuración inicial. Tus propios perfiles, chats y plugins se conservan.',
+      resetOnboardingAction: 'Restablecer',
+      resetOnboardingFailed: 'No se pudo restablecer la configuración inicial',
       attachmentSizeTitle: 'Tamaño máximo de vista previa / carga de imagen',
       attachmentSizeDesc:
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
@@ -2027,125 +2034,7 @@ export const esOverrides = {
       moaReferenceHint: 'asesora una vez por turno por defecto',
       tasks: esAuxTasks
     },
-    localModels: {
-      connectionChanged: 'Cambió la conexión de los modelos locales',
-      title: 'Modelos locales',
-      runtimeTitle: 'Entorno local',
-      runtimeReady: backend => `Listo · ${backend}`,
-      serverRunning: 'En ejecución',
-      runtimeInstalled: 'Entorno llama.cpp instalado',
-      runtimeInstalledDetail: (tag, backend) =>
-        `Compilación ${tag}, backend ${backend}. Hermes inicia y gestiona el servidor por ti.`,
-      installTitle: 'Instalar el entorno local',
-      installDetail:
-        'Descarga el motor de inferencia llama.cpp (unos cientos de MB). Los modelos que descargues se ejecutan por completo en este equipo: sin cuenta y sin que nada salga de tu computadora.',
-      installAction: 'Instalar entorno',
-      installing: 'Instalando el entorno…',
-      installFailed: 'Falló la instalación del entorno',
-      hardwareTitle: 'Este equipo',
-      hardwareLoading: 'Comprobando tu hardware…',
-      vram: label => `${label} de memoria de GPU`,
-      ram: label => `${label} de RAM`,
-      unifiedMemory: 'Memoria unificada',
-      modelsTitle: 'Modelos',
-      recommended: 'Recomendado',
-      recommendedReason: {
-        'best-quality-resident':
-          'El modelo de mayor calidad que se ejecuta por completo en tu GPU a máxima velocidad. La selección equilibra la calidad con la velocidad prevista en este hardware.',
-        'speed-gated-quality':
-          'Cabe un modelo de mayor calidad en este equipo, pero respondería demasiado lento por el ancho de banda de su memoria; este es el mejor modelo que se mantiene rápido.',
-        'fastest-resident':
-          'Ningún modelo alcanza la velocidad máxima en este hardware; este es el que más se acerca ejecutándose por completo en la memoria de la GPU.'
-      },
-      noRecommendationTitle: 'No hay recomendación automática para este equipo',
-      noRecommendationDetail:
-        'La configuración automática requiere un modelo seleccionado que quepa por completo en la memoria de la GPU o unificada. Aun así, puedes elegir un modelo abajo o explorar más modelos.',
-      noRecommendationAction: 'Explorar modelos',
-      downloaded: 'Descargado',
-      downloadAction: size => `Descargar · ${size}`,
-      downloadProgress: (done, total) => `Descargando ${done} de ${total}`,
-      downloadDoneToast: model => `${model} está listo.`,
-      installDoneToast: 'Entorno local instalado y listo.',
-      quickstartTitle: 'Ejecutar un modelo en este equipo',
-      quickstartDetail: (model, size) =>
-        `Un clic lo configura todo: el motor local, ${model} (${size} de descarga) y tu modelo predeterminado para chats nuevos. Nada sale de este equipo.`,
-      quickstartDetailReady: model =>
-        `Un clic convierte ${model} en tu modelo predeterminado para chats nuevos. Todo se ejecuta en este equipo.`,
-      quickstartAction: 'Configurarlo por mí',
-      quickstartConfigure: 'Prefiero elegir',
-      quickstartDoneToast: model => `${model} está configurado: los chats nuevos se ejecutan en este equipo.`,
-      quickstartFailed: 'Falló la configuración del modelo local',
-      quickstartStageEngine: 'Motor',
-      quickstartStageModel: 'Modelo',
-      quickstartStageFinish: 'Finalizar',
-      useAction: 'Usar',
-      activePill: 'Predeterminado',
-      updateTitle: 'Hay una actualización del motor',
-      updateDetail: (next, current) =>
-        `Hay una compilación más reciente de llama.cpp (${next}) lista para instalar; tienes ${current}. Los modelos siguen funcionando durante la descarga.`,
-      updateAction: 'Actualizar motor',
-      updating: 'Actualizando el motor…',
-      upToDateTitle: 'Motor actualizado',
-      upToDateDetail: (tag, backend) => `Ejecutando llama.cpp ${tag} (${backend}), la compilación configurada.`,
-      activeDetail: 'Los chats nuevos usan este modelo; se carga cuando envías tu primer mensaje',
-      activeNotLoaded: 'Se carga con tu primer mensaje',
-      loadedPill: 'En memoria',
-      placementResident: 'todo en GPU',
-      placementSpilled: 'parte en RAM',
-      placementResidentTip:
-        'Se ejecuta por completo en la memoria de la GPU con esta ventana de contexto: máxima velocidad.',
-      placementSpilledTip:
-        'Parte de este modelo se ejecuta desde la RAM del sistema: funciona, pero más lento. Una compilación más compacta o un contexto menor cabría por completo.',
-      loadingPill: 'Cargando…',
-      ejectTip: 'Liberar memoria de GPU (se vuelve a cargar con el siguiente mensaje)',
-      ejected: 'Modelo descargado de memoria: memoria de GPU liberada.',
-      ejectFailed: 'No se pudo descargar el modelo de memoria',
-      stopServer: 'Apagar',
-      startServer: 'Encender',
-      runtimeRunningDetail:
-        'El servidor local está en ejecución. Apagarlo libera toda la memoria de GPU e impide que los chats nuevos usen modelos locales hasta que lo vuelvas a encender.',
-      serverStopped: 'Servidor local detenido: memoria de GPU liberada.',
-      serverStarted: 'Servidor local en ejecución.',
-      serverStopFailed: 'No se pudo detener el servidor local',
-      serverStartFailed: 'No se pudo iniciar el servidor local',
-      activating: 'Iniciando…',
-      activateFailed: model => `No se pudo cambiar a ${model}`,
-      activateDoneToast: model => `Los chats nuevos usan ${model}.`,
-      downloadFailed: model => `Falló la descarga de ${model}`,
-      pillFitsGpu: 'Cabe en tu GPU',
-      pillUsesRam: 'Usa RAM del sistema',
-      pillTooBig: 'Demasiado grande para este equipo',
-      browseTitle: 'Buscar más modelos',
-      browseHint:
-        'Busca en todo Hugging Face. Los modelos que descargues aquí se ajustan automáticamente a tu equipo, pero no los hemos probado.',
-      browsePlaceholder: 'Busca modelos por nombre o autor…',
-      browseSearching: 'Buscando en Hugging Face',
-      browseListing: 'Leyendo los archivos del modelo',
-      browseShowFiles: 'Mostrar archivos',
-      browseRefresh: 'Actualizar',
-      browseDownloads: 'descargas',
-      browseLikes: 'me gusta',
-      browseGated: 'requiere iniciar sesión en Hugging Face',
-      browseNoGguf: 'No se encontraron archivos de modelo compatibles.',
-      browseFitUnknown: 'Ajuste desconocido',
-      browseAlreadyDownloaded: 'Ya descargado.',
-      addedByYou: 'Añadido por ti',
-      browseDownloadStarted: 'Descargando {name}',
-      browseDownloadAria: 'Descargar {name}',
-      sideloadButton: 'Añadir archivo de modelo',
-      sideloadTitle: 'Elige un archivo de modelo GGUF',
-      sideloadDone: 'Se añadió {name}.',
-      sideloadAlreadyPresent: 'Ya está en tu biblioteca.',
-      pillFullContext: (max: string) => `Contexto completo de ${max}`,
-      pillFullContextTip: 'Se ejecuta con la ventana de contexto completa del modelo desde el principio',
-      pillUpTo: (max: string) => `Hasta ${max} de contexto`,
-      pillGrowsTip: 'Crece automáticamente cuando tu conversación necesita más espacio',
-      pillVision: 'Ve imágenes',
-      deleteAction: 'Eliminar modelo',
-      deleteConfirm: (model: string) => `¿Eliminar ${model} del disco?`,
-      deleted: (model: string) => `${model} eliminado.`,
-      deleteFailed: 'Error al eliminar'
-    },
+    localModels: esLocalModels,
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
       creditsPerMonth: (amount: string) => `${amount} créditos/mes`,
@@ -3658,6 +3547,7 @@ export const esOverrides = {
     next: 'Siguiente:',
     overdueSince: 'Atrasada desde:',
     noRuns: 'Sin ejecuciones aún',
+    queuedRun: 'Ejecución en cola',
     manage: 'Gestionar',
     showRuns: 'Mostrar ejecuciones',
     hideRuns: 'Ocultar ejecuciones',
@@ -3870,87 +3760,7 @@ export const esOverrides = {
       guide: 'Guía de recuperación'
     },
     noFilterMatches: 'Ninguna sesión coincide con estos filtros',
-    projects: {
-      showAllSessions: 'Mostrar todas las sesiones',
-      sectionLabel: 'Proyectos',
-      home: 'Inicio',
-      autoDiscovered: 'Detectado automáticamente',
-      newButton: 'Nuevo proyecto',
-      createTitle: 'Nuevo proyecto',
-      createDesc: 'Asigne un nombre a un espacio de trabajo y agregue una o más carpetas.',
-      renameTitle: 'Cambiar nombre del proyecto',
-      addFolderTitle: 'Agregar carpeta',
-      namePlaceholder: 'p.ej. Skunkworks',
-      foldersLabel: 'Carpetas',
-      ideaLabel: 'Idea',
-      ideaPlaceholder: '¿De qué se trata este proyecto? (guardado en IDEA.md)',
-      ideaGenerate: 'Generar idea',
-      ideaGenerating: 'Generando…',
-      ideaShuffle: 'Plantillas aleatorias',
-      noFolders: 'Aún no se han agregado carpetas.',
-      addFolder: 'Agregar carpeta',
-      primaryBadge: 'principal',
-      removeFolder: 'Eliminar',
-      create: 'Crear',
-      menu: 'Acciones',
-      menuRename: 'Renombrar',
-      menuAppearance: 'Apariencia',
-      noColor: 'Sin color',
-      menuAddFolder: 'Agregar carpeta',
-      menuSetActive: 'Establecer activo',
-      menuDelete: 'Borrar',
-      moveToProject: 'Mover a proyecto',
-      movedTo: name => `Movido a ${name}`,
-      moveFailed: 'No se pudo mover la sesión',
-      moveNoFolder: 'Ese proyecto no tiene carpeta a la que mover',
-      moveNoProjects: 'No hay otros proyectos',
-      reveal: 'Revelar en carpeta',
-      copyPath: 'Copiar ruta',
-      removeFromSidebar: 'Ocultar de la barra lateral',
-      createdInPreviousContext:
-        'El proyecto se creó en la conexión o el perfil anterior. Vuelve allí; no se escribió IDEA.md.',
-      createFailed: 'No se pudo crear el proyecto',
-      staleBackend:
-        'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',
-      deleteConfirm:
-        'Esto elimina el proyecto guardado de Hermes. Los archivos, los repositorios de git y los árboles de trabajo permanecen intactos.',
-      startWork: 'Nuevo worktree',
-      newWorktreeTitle: 'Nuevo worktree',
-      newWorktreeDesc: 'Asigna un nombre a la rama de este worktree.',
-      branchPlaceholder: 'p.ej. mi-característica',
-      branchOff: () => ({ after: '', before: 'ramificar desde ' }),
-      baseBranchPlaceholder: 'Buscar ramas…',
-      baseBranchNone: 'No se encontraron ramas',
-      startWorkFailed: 'No se pudo crear el worktree',
-      worktreeStaleBackend:
-        'Actualiza el backend de Hermes para crear worktrees por esta conexión remota: es anterior a la API de git worktree.',
-      worktreeProjectLabel: 'Proyecto',
-      worktreeProjectPlaceholder: 'Buscar proyectos…',
-      worktreeProjectNone: 'Ningún proyecto con carpeta',
-      convertBranch: 'Convertir una rama…',
-      convertBranchTitle: 'Convertir una rama',
-      convertBranchDesc: 'Abre ramas ya activas o crea un worktree para una rama disponible.',
-      convertBranchPlaceholder: 'Buscar ramas…',
-      convertBranchInstead: 'Convertir una rama existente',
-      branchOpenExisting: 'abrir',
-      branchSwitchHome: 'cambiar al principal',
-      branchCreateWorktree: 'nuevo worktree',
-      branchTrackRemote: 'seguir remota',
-      branchesLoading: 'Cargando ramas…',
-      noBranches: 'No se encontraron ramas',
-      removeWorktree: 'Eliminar worktree',
-      removeWorktreeFailed: 'No se pudo eliminar el worktree (¿hay cambios sin confirmar?)',
-      removeWorktreeConfirm:
-        'Elimínalo de Git (se borra el directorio del worktree; la rama se conserva) o simplemente oculta el carril de la barra lateral y deja el worktree en disco.',
-      removeWorktreeDirty:
-        'Este worktree tiene cambios sin confirmar. Fuerza la eliminación (se descartarán esos cambios) o simplemente oculta el carril y consérvalo en disco.',
-      forceRemove: 'Forzar eliminación',
-      enter: label => `Abrir ${label}`,
-      reorder: label => `Reordenar ${label}`,
-      toggle: (label, open) => `${open ? 'Mostrar' : 'Ocultar'} sesiones de ${label}`,
-      showAllCount: (count: number) => `Mostrar las ${count} sesiones`,
-      back: 'Todos los proyectos'
-    },
+    projects: esProjects,
     newSessionIn: label => `Nueva sesión en ${label}`,
     showMoreIn: (count, label) => `Mostrar ${count} más en ${label}`,
     loading: 'Cargando…',
@@ -4184,6 +3994,11 @@ export const esOverrides = {
     editingQueuedInComposer: 'Editando turno en cola en el compositor',
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
+    localSetup: {
+      title: 'Esto podría ejecutarse en este equipo',
+      text: (model: string) => `${model} cabe en este equipo. Gratis, y los chats se quedan en este equipo.`,
+      action: 'Muéstrame'
+    },
     queueEdit: 'Editar',
     queueExpand: 'Expandir',
     queueCollapse: 'Contraer',
@@ -4598,6 +4413,9 @@ export const esOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Este equipo puede ejecutar modelos localmente',
+    localText: (model: string) =>
+      `${model} encaja con tu hardware. Funciona gratis y los chats nunca salen de este equipo. Elígelo aquí, en el menú de modelos, cuando quieras.`,
     profileTitle: 'Tu primera tarea se ejecuta en el perfil predeterminado',
     profileText:
       'Esta barra cambia de perfil. El que está iluminado ahora es el predeterminado, donde está la sesión de la tarea. El otro es el perfil de configuración, donde está el chat de bienvenida.',
@@ -4606,10 +4424,6 @@ export const esOverrides = {
       'Esta lista pertenece al perfil predeterminado. Nueva sesión crea una en el perfil que esté seleccionado. Cambia de perfil en la barra y la lista cambia con él.',
     stayTitle: 'Hermes está a un clic',
     stayText: 'Cambia al perfil de configuración y abre Bienvenida a Hermes siempre que necesites ayuda. Se queda ahí.'
-  },
-  guidedGreeting: {
-    line: 'Hola, pasa. Soy Hermes. Dame dos minutos para prepararlo todo a tu medida y luego me pondremos a trabajar en algo que de verdad quieras hacer.\n\nPero antes, ¿cómo quieres que te llame?',
-    nameSuggestion: (name: string) => `(También puedo llamarte simplemente ${name}, si lo prefieres.)`
   },
   install: {
     stageStates: {
@@ -4688,103 +4502,7 @@ export const esOverrides = {
     reloadRetry: 'Recargar y reintentar',
     openLogs: 'Abrir registros'
   },
-  onboarding: {
-    headerTitle: 'Vamos a configurar Hermes Agent',
-    headerDesc: 'Conecta un proveedor de modelo para empezar a chatear. La mayoría de opciones requieren un clic.',
-    preparingInstall: 'Hermes está terminando la instalación. En el primer inicio suele tardar menos de un minuto.',
-    starting: 'Iniciando Hermes…',
-    lookingUpProviders: 'Buscando proveedores...',
-    collapse: 'Contraer',
-    otherProviders: 'Otros proveedores',
-    haveApiKey: 'Tengo una clave API',
-    chooseLater: 'Elegiré un proveedor más tarde',
-    recommended: 'Recomendado',
-    connected: 'Conectado',
-    featuredPitch: 'Una suscripción, más de 300 modelos frontier: la forma recomendada de usar Hermes',
-    fireworksPitch: 'API directa de modelos: modelos frontier alojados en Fireworks',
-    localModelsTitle: 'Ejecutar modelos localmente',
-    localModelsPitch: 'Sin cuenta: descarga un modelo y ejecútalo en este equipo',
-    openRouterPitch: 'Una clave, cientos de modelos: un buen valor predeterminado',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'API de modelo directo',
-        description: 'Acceso directo a modelos alojados en Fireworks AI.'
-      },
-      openrouter: {
-        short: 'una clave, muchos modelos',
-        description:
-          'Aloja cientos de modelos detrás de una sola clave. Buen valor predeterminado para instalaciones nuevas.'
-      },
-      openai: {
-        short: 'modelos tipo GPT',
-        description: 'Acceso directo a modelos de OpenAI.'
-      },
-      gemini: {
-        short: 'modelos Gemini',
-        description: 'Acceso directo a modelos de Google Gemini.'
-      },
-      xai: {
-        short: 'modelos Grok',
-        description: 'Acceso directo a modelos Grok de xAI.'
-      },
-      local: {
-        short: 'autohospedado',
-        description:
-          'Apunta Hermes a un endpoint local o autohospedado compatible con OpenAI (vLLM, llama.cpp, Ollama, etc.).'
-      }
-    },
-    backToSignIn: 'Volver al inicio de sesión',
-    getKey: 'Obtener una clave',
-    replaceCurrent: 'Reemplazar valor actual',
-    pasteApiKey: 'Pegar clave API',
-    localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
-    localModelNamePlaceholder: 'Nombre del modelo (p. ej. command-a-plus-05-2026)',
-    couldNotSave: 'No se pudo guardar la credencial.',
-    connecting: 'Conectando',
-    update: 'Actualizar',
-    flowSubtitles: {
-      pkce: 'Abre tu navegador para iniciar sesión y luego continúa aquí',
-      device_code: 'Abre una página de verificación en tu navegador; Hermes se conecta automáticamente',
-      external: 'Inicia sesión una vez en tu terminal y vuelve para chatear'
-    },
-    startingSignIn: provider => `Iniciando sesión con ${provider}...`,
-    verifyingCode: provider => `Verificando tu código con ${provider}...`,
-    connectedProvider: provider => `${provider} conectado`,
-    connectedPicking: provider => `${provider} conectado. Eligiendo un modelo predeterminado...`,
-    signInFailed: 'No se pudo iniciar sesión. Inténtalo de nuevo.',
-    signInExpired:
-      'La página de inicio de sesión caducó antes de que terminaras. Vuelve a intentarlo y completa el paso del navegador en unos minutos, o usa una clave API.',
-    signInDidNotFinish: (provider: string) =>
-      `No se completó el inicio de sesión con ${provider}. Comprueba tu conexión a internet y vuelve a intentarlo, o elige otro proveedor.`,
-    tryAgain: 'Reintentar',
-    useApiKeyInstead: 'Usar una clave API',
-    errorDetails: 'Detalles',
-    pickDifferentProvider: 'Elegir otro proveedor',
-    signInWith: provider => `Iniciar sesión con ${provider}`,
-    openedBrowser: provider => `Abrimos ${provider} en tu navegador.`,
-    authorizeThere: 'Autoriza Hermes allí.',
-    copyAuthCode: 'Copia el código de autorización y pégalo abajo.',
-    pasteAuthCode: 'Pegar código de autorización',
-    reopenAuthPage: 'Volver a abrir página de autorización',
-    autoBrowser: provider =>
-      `Abrimos ${provider} en tu navegador. Autoriza Hermes allí y te conectarás automáticamente; no hay nada que copiar o pegar.`,
-    reopenSignInPage: 'Volver a abrir página de inicio de sesión',
-    waitingAuthorize: 'Esperando tu autorización...',
-    externalPending: provider =>
-      `${provider} inicia sesión con su propia CLI. Ejecuta este comando en una terminal y luego vuelve y elige "Ya inicié sesión":`,
-    signedIn: 'Ya inicié sesión',
-    deviceCodeOpened: provider => `Abrimos ${provider} en tu navegador. Introduce este código allí:`,
-    reopenVerification: 'Volver a abrir página de verificación',
-    copy: 'Copiar',
-    defaultModel: 'Modelo predeterminado',
-    freeTier: 'Nivel gratis',
-    pro: 'Pro',
-    free: 'Gratis',
-    price: (input, output) => `${input} entrada / ${output} salida por Mtok`,
-    change: 'Cambiar',
-    startChatting: 'Empezar',
-    docs: provider => `Docs de ${provider}`
-  },
+  onboarding: esOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · plan gratuito',
     providerRowPitch: 'Inicia sesión con una cuenta de Nous para desbloquear más modelos y herramientas.',
@@ -4833,6 +4551,12 @@ export const esOverrides = {
       'Hermes no pudo llegar al servicio de Nous para terminar de iniciar tu sesión. Comprueba tu conexión a internet y vuelve a intentarlo. Tu sesión sigue aquí.',
     alreadySignedInHeading: 'Ya has iniciado sesión.',
     alreadySignedInBody: 'Este Hermes ya tiene la sesión iniciada en una cuenta de Nous.',
+    offer: {
+      heading: 'Sigue adelante con Hermes',
+      body: 'Estás usando el uso gratuito. Si sigues usando Hermes, empezarás a encontrarte con límites. Inicia sesión con una cuenta gratuita de Nous para tener un uso mayor.',
+      signIn: 'Iniciar sesión',
+      notNow: 'Ahora no'
+    },
     setupFailed: {
       gateClosed:
         'Esta versión de Hermes no puede iniciarse sin una cuenta de Nous. Inicia sesión o crea una: es gratis y solo lleva un minuto.',
@@ -5572,9 +5296,35 @@ export const esOverrides = {
       confirmAndContinueLabel: 'Confirmar y continuar',
       singleSelectHint: 'Elige una',
       multiSelectHint: 'Elige todas las que correspondan',
+      oneQuestion: '1 pregunta',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Color de acento',
+        connectors: 'Apps',
+        layout: 'Diseño',
+        plugins: 'Plugins',
+        theme: 'Apariencia'
+      },
+      loading: 'Cargando opciones…',
+      unavailable: 'Esta lista no está disponible ahora. Responde en el chat.',
+      findApp: 'Buscar una app',
+      customColor: 'Color personalizado',
+      plugin: 'Plugin',
+      startsLater: 'Los configuraremos cuando empieces.'
+    },
+    startChat: {
+      starting: title => `Iniciando «${title}»…`,
+      startingUntitled: 'Iniciando un chat…',
+      untitled: 'Chat nuevo',
+      notStarted: 'El chat no se inició',
+      retry: 'Reintentar',
+      inProfile: profile => `En ${profile}`,
+      open: 'Abrir',
+      openFailed: 'No se pudo abrir el chat'
     },
     catalogInstall: {
       preparing: 'Preparando la instalación…',
@@ -5776,6 +5526,12 @@ export const esOverrides = {
           pending: 'Buscar en el historial de sesiones',
           pendingAction: 'Buscando'
         },
+        setup_choose: {
+          done: 'Hizo una pregunta de configuración',
+          pending: 'Haciendo una pregunta de configuración',
+          pendingAction: 'Preguntando'
+        },
+        start_chat: { done: 'Inició un chat', pending: 'Iniciando un chat', pendingAction: 'Iniciando' },
         terminal: {
           done: 'Comando ejecutado',
           pending: 'Ejecutar comando',
@@ -5983,11 +5739,6 @@ export const esOverrides = {
         title: 'Hay una actualización del motor local',
         text: 'Actualiza el motor que ejecuta tus modelos locales. Las solicitudes locales activas pueden interrumpirse.',
         action: 'Actualizar ahora'
-      },
-      'local-setup': {
-        title: 'Este equipo puede ejecutar modelos localmente',
-        text: 'Tu hardware puede servir un modelo local. Los chats se quedan en tu equipo y no cuestan nada.',
-        action: 'Configurarlo'
       },
       'right-pane': {
         title: 'El panel de trabajo',

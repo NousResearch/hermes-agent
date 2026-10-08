@@ -64,7 +64,9 @@ function consumeHandoffResultFile(file: string, log: (line: string) => void): { 
   try {
     parsed = JSON.parse(raw)
   } catch (error) {
-    log(`[updates] hand-off result is not valid JSON (${(error as Error).message}); kept as ${path.basename(file)}.corrupt`)
+    log(
+      `[updates] hand-off result is not valid JSON (${(error as Error).message}); kept as ${path.basename(file)}.corrupt`
+    )
 
     try {
       fs.renameSync(file, `${file}.corrupt`)
@@ -102,7 +104,9 @@ function handoffRunMismatch(
   }
 
   if (expectedRunId !== null && runId !== undefined) {
-    return runId !== expectedRunId ? `[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded` : null
+    return runId !== expectedRunId
+      ? `[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded`
+      : null
   }
 
   if (expectedStartedAt !== null && Number.isFinite(startedAt) && !lineTwoWithinRun(expectedStartedAt, parsed)) {

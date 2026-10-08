@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.observability as observability
+from hermes_cli import observability
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_fields as fields
 from hermes_cli.observability import shared_metrics_update as update_metrics
@@ -116,6 +116,23 @@ def test_a_partial_run_with_a_failed_stage_keeps_that_stage_and_its_verify_row_p
     assert [(s["stage"], s["outcome"]) for s in stage_rows if s["outcome"] == "failed"] == [(failed, "failed")]
 
 
+def test_a_run_that_died_before_a_stage_mark_has_a_failed_row_for_that_stage():
+    """Invariant: stage rows agree with the run row on where a FAILED run stopped, and a committed run
+    that owes follow-ups (C3) is a run-level success whose failed stage still shows at stage level."""
+    fetch_failed = _receipt("failed", [("plan", "success"), ("snapshot", "skipped")], exit_code=1,
+                            stop_reason="sys.exit(1)")
+    run, stage_rows = update_metrics.update_receipt_fields(fetch_failed)
+    failed_rows = [s for s in stage_rows if s["outcome"] == "failed"]
+    assert run["failed_stage"] == "apply" and [s["stage"] for s in failed_rows] == ["apply"]
+    assert all(contract.counter_dimensions_are_valid(contract.UPDATE_STAGE_METRIC, s) for s in stage_rows)
+
+    deps_owed = _receipt("success", [*_ALL_PASSED[:3], ("deps", "failed")],
+                         followups=[{"step": "dependencies", "reason": "uv sync exited 2"}])
+    run, stage_rows = update_metrics.update_receipt_fields(deps_owed)
+    assert (run["outcome"], run["failed_stage"]) == ("success", "none")
+    assert [s["stage"] for s in stage_rows if s["outcome"] == "failed"] == ["deps"]
+
+
 @pytest.mark.parametrize(("receipt", "expected"), [
     (_receipt("success", _ALL_PASSED), "none"),
     (_receipt("refused", [], steps=[{"name": "admission", "ok": False}], stop_reason="docker"), "managed_install"),
@@ -127,6 +144,10 @@ def test_a_partial_run_with_a_failed_stage_keeps_that_stage_and_its_verify_row_p
     (_receipt("failed", [("plan", "success")], exit_code=1,
               stop_reason="KeyboardInterrupt: /home/alice/x"), "interrupted"),
     (_receipt("failed", [("plan", "success")], exit_code=1, stop_reason="PermissionError: [Errno 13] /x"),
+     "permission_denied"),
+    (_receipt("failed", [("plan", "success")], exit_code=1, stop_reason="OSError: [Errno 28] No space left: /x"),
+     "disk_full"),
+    (_receipt("failed", [("plan", "success")], exit_code=1, stop_reason="FileExistsError: [Errno 17] /x"),
      "os_error"),
     (_receipt("failed", [("plan", "success")], exit_code=1, stop_reason="InstallError: venv: uv"), "deps_failed"),
     (_receipt("failed", [("plan", "success"), ("snapshot", "success"), ("apply", "success")], exit_code=1,

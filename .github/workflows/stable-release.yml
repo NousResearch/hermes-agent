@@ -87,8 +87,6 @@ jobs:
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
-      # Docker test/publish artifacts are keyed by the admitted attempt ref;
-      # the payload version remains separate below for the install stamp.
       tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
@@ -525,7 +523,6 @@ jobs:
     secrets: inherit
     with:
       release-phase: publish
-      # Match the test phase's attempt-scoped artifact namespace.
       tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 

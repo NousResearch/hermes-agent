@@ -117,3 +117,50 @@ def test_profile_gateway_scope_is_not_applicable_off_linux(profile_homes, monkey
     monkeypatch.setattr(gateway, "get_service_name", unexpected_call)
     monkeypatch.setattr(profile_cmd.subprocess, "run", unexpected_call)
     assert profile_cmd._profile_gateway_scope(profile_homes[0][0]) == "—"
+
+
+@pytest.mark.parametrize("long_models", [False, True], ids=["short-and-missing", "long-suffixes"])
+def test_profile_list_preserves_models_and_column_alignment(tmp_path, monkeypatch, capsys, long_models):
+    """Regression for #129827 part 3: real config discovery must retain model suffixes."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / "hermes-root"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(gateway, "_SYSTEM_UNIT_DIR", tmp_path / "system-units")
+    models = {"default": "short-model", "missing": None}
+    if long_models:
+        prefix = "provider-with-a-long-namespace/model-family-with-a-long-name-"
+        models.update({"alpha": prefix + "thinking", "beta": prefix + "instruct-v2"})
+    for name, model in models.items():
+        home = root if name == "default" else root / "profiles" / name
+        home.mkdir(parents=True)
+        config = f"model:\n  default: {model}\n  provider: openrouter\n" if model else "{}\n"
+        (home / "config.yaml").write_text(config, encoding="utf-8")
+
+    discovered = profiles.list_profiles()
+    assert {p.name: p.model for p in discovered} == models
+    profile_cmd.cmd_profile(SimpleNamespace(profile_action="list"))
+    lines = capsys.readouterr().out.strip("\n").splitlines()
+    header, rule, *rows = lines
+    headers = ("Profile", "Model", "Gateway", "Scope", "Alias", "Distribution")
+    starts = [header.index(label) for label in headers]
+    rule_starts = [i for i, ch in enumerate(rule) if ch == "─" and rule[i - 1] == " "]
+    assert rule_starts == starts
+    assert len(rows) == len(discovered)
+    for row, profile in zip(rows, discovered):
+        if models[profile.name]:
+            assert models[profile.name] in row
+    for row, profile in zip(rows, discovered):
+        assert row[starts[0]:starts[1]].strip() == profile.name
+        assert row[starts[1]:starts[2]].strip() == (models[profile.name] or "—")
+        assert row[starts[2]:starts[3]].strip() == "stopped"
+        assert row[starts[3]:starts[4]].strip() == "—"
+        assert row[starts[4]:starts[5]].strip() == "—"
+        assert row[starts[5]:].strip() == "—"
+        assert row.index("stopped") == starts[2]
+    assert rows[0][1] == "◆"
+    assert all(row[1] == " " for row in rows[1:])

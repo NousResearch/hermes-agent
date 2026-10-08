@@ -185,29 +185,49 @@ def test_gate_outcome_absent_without_gate_and_non_json_outcome_ignored(env):
     assert outcomes == [None, None]
 
 
-def test_recovery_path_footer_gets_no_gate_outcome_and_persists(env, monkeypatch):
+_PARTIAL_NOTE = (
+    "\n\n⚠️ No reply: streaming stopped early and only a partial response was recovered. "
+    "Send `continue` to resume from where it stopped."
+)
+
+
+@pytest.mark.parametrize("exit_reason, delivered_suffix", [
+    ("text_response(finish_reason=stop)", ""),
+    ("partial_stream_recovery", _PARTIAL_NOTE),
+])
+def test_recovery_path_is_excluded_from_footer_and_gate_sees_exact_body(env, exit_reason, delivered_suffix):
+    """Recovery/budget text reaches finalize_turn without passing the gate; its audit runs after
+    persistence. The footer seam must not fire there (a footer would become gate input). With
+    BOTH hooks registered and a real SQLite store, behaviour equals the pre-seam finalizer."""
     from agent.turn_finalizer import finalize_turn
-    import json
 
     agent, db, manager = env
-    seen = []
-    manager._hooks["append_turn_footer"] = [lambda gate_outcome, **_: seen.append(gate_outcome) or "\n-- f"]
-    agent._persist_session = lambda *a, **k: None
+    events = []
+
+    def gate(final_response, **_):
+        events.append(("gate", final_response))
+        return {"gate_outcome": {"action": "deliver", "claims": {"reproduced": 1}}}
+
+    def footer(response_text, gate_outcome, **_):
+        events.append(("footer", response_text, gate_outcome))
+        return "\n-- f"
+
+    manager._hooks["before_turn_end"] = [gate]
+    manager._hooks["append_turn_footer"] = [footer]
     agent._current_turn_id = "turn-r"
-    messages = [
-        {"role": "user", "content": "do a thing"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "read_file", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"ok": True})},
-    ]
+    messages = [{"role": "user", "content": "hi"}]
     result = finalize_turn(
-        agent, final_response="RECOVERED", api_call_count=1, interrupted=False, failed=False,
-        messages=messages, conversation_history=None, effective_task_id="task-1", turn_id="turn-r",
-        user_message="do a thing", original_user_message="do a thing", _should_review_memory=False,
-        _turn_exit_reason="partial_stream_recovery",
+        agent, final_response="Recovered answer.", api_call_count=1, interrupted=False, failed=False,
+        messages=messages, conversation_history=None, effective_task_id=None, turn_id="turn-r",
+        user_message="hi", original_user_message="hi", _should_review_memory=False,
+        _turn_exit_reason=exit_reason,
     )
-    assert seen == [None]
-    assert messages[-1]["content"] == "RECOVERED\n-- f"
-    assert result["final_response"].startswith("RECOVERED\n-- f")
+    delivered = "Recovered answer." + delivered_suffix
+    assert events == [("gate", delivered)]
+    assert result["final_response"] == delivered
+    # Pre-existing finalizer behaviour (not this seam): the abnormal-exit note is appended
+    # after persistence, so the stored row is the body only.
+    assert _stored(db) == ["Recovered answer."]
 
 
 def test_shell_hooks_refuse_footer_event():

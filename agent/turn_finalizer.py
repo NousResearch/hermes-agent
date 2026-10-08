@@ -542,7 +542,7 @@ def apply_turn_footer(agent, final_response, *, turn_id, logger=None) -> Any:
     durable flush, the stored/replayed row equals the delivered text (#44239).
 
     ``gate_outcome`` is the ``gate_outcome`` mapping a ``before_turn_end`` callback returned for
-    THIS turn and THIS exact text, else ``None`` (no gate, rework, recovery path, mismatch). The
+    THIS turn and THIS exact text, else ``None`` (no gate, rework, mismatch). The
     recorded transform outcome is updated so streaming surfaces deliver the appended suffix
     (``response_transformed`` / ``pre_transform_response``). No-op without subscribers."""
     if logger is None:
@@ -701,8 +701,10 @@ def finalize_turn(
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
-            # Recovery paths never passed the gate here; the seam reports gate_outcome=None.
-            final_response = apply_turn_footer(agent, final_response, turn_id=turn_id, logger=logger)
+            # No append_turn_footer here: recovery text has not passed the gate yet (the
+            # audit-only before_turn_end below runs after persistence), so a footer would become
+            # gate input. The post-gate seam fires only in finish_text_response; recovery,
+            # budget and error summaries are delivered without a footer (pre-seam behaviour).
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)

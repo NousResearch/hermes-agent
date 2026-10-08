@@ -866,14 +866,18 @@ non-claim metadata (a provenance footer, a context meter). Streaming surfaces de
 append-only `transform_llm_output`. The suffix is part of the stored assistant row: a plugin that
 must keep it out of later provider requests strips it in its own `llm_request` middleware.
 
+Only normal text turns get a footer. Stream-recovered, budget-exhausted and error-summary replies
+reach the finalizer without having passed the gate (their audit-only `before_turn_end` runs after
+persistence), so `append_turn_footer` does not fire for them and they are delivered unchanged.
+
 ```python
 def footer(response_text, gate_outcome, prompt_tokens, context_threshold_tokens, model, **kwargs) -> str | None:
     ...
 ```
 
 `gate_outcome` is the `gate_outcome` mapping a `before_turn_end` callback returned for this turn and
-this exact text (JSON-safe; display only — it never affects control flow), else `None` (no gate,
-recovery path, mismatched text). `prompt_tokens` / `context_threshold_tokens` as for
+this exact text (JSON-safe; display only — it never affects control flow), else `None` (no gate
+registered, or mismatched text). `prompt_tokens` / `context_threshold_tokens` as for
 `transform_llm_output`. First non-blank string wins; `None`, blank strings and exceptions leave the
 reply unchanged. Not available to shell hooks.
 

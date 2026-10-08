@@ -15,6 +15,13 @@ logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
 
+# Envelope/meta keys that are never forwarded tool arguments when a model emits a
+# flattened tool_call (the `arguments` wrapper dropped, params at the entry root).
+# Excluded from the surplus harvest in normalize_tool_call_entries so they are not
+# forwarded as bogus arguments (e.g. {"name":..., "type":"function","query":...}).
+# Cheap/free models such as poolside/laguna-s-2.1:free omit the `arguments` wrapper.
+_TOOL_CALL_META_KEYS = frozenset({"name", "arguments", "calls", "type"})
+
 
 def _schema_for_local_validation(node: Any) -> Any:
     """JSON-Schema-compatible copy honoring OpenAPI ``nullable: true`` (the normal coercion
@@ -147,10 +154,13 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     """
     raw_calls = args.get("calls")
     if raw_calls is None:
-        # Legacy single shape.
+        # Legacy single shape. Build the entry from the FULL payload (not just name/arguments)
+        # so a flattened tool_call — params at the root because the `arguments` wrapper was
+        # dropped — survives into the per-entry loop, where surplus keys are harvested into
+        # arguments. Excluding name/arguments/calls/type/_* keeps envelope noise out (#148271).
         if not str(args.get("name") or "").strip():
             return [], "tool_call requires 'calls' (an array of {name, arguments})"
-        raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+        raw_calls = [dict(args)]
     if isinstance(raw_calls, str):
         # Tolerate the model emitting the batch envelope as a JSON string —
         # mirror the per-entry `arguments` handling below (#114484).
@@ -175,10 +185,19 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         raw_args = raw.get("arguments")
         if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
             # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
-            # parameterless tool (#83937); the loop already treats an empty outer arguments string
-            # as {} (turn_tool_validation), and a missing required param still surfaces below via
-            # validate_deferred_call_args instead of an opaque JSON parse error.
-            raw_args = {}
+            # parameterless tool (#83937); the blank path becomes {} below.
+            #
+            # Cheap/free models (e.g. poolside/laguna-s-2.1:free) occasionally emit a *flattened*
+            # tool_call: the `arguments` wrapper is dropped and params sit at the entry root
+            # ({"name":..., "query":..., "search_depth":...}). Without repair that yields an empty
+            # arguments dict and validate_deferred_call_args then fails the call with "missing
+            # required argument(s)". Harvest the surplus top-level keys (envelope/meta keys
+            # excluded) so the call dispatches instead.
+            surplus = {
+                key: value for key, value in raw.items()
+                if key not in _TOOL_CALL_META_KEYS and not str(key).startswith("_")
+            }
+            raw_args = surplus if surplus else {}
         if isinstance(raw_args, str):
             try:
                 raw_args = json.loads(raw_args)

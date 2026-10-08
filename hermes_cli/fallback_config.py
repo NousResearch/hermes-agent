@@ -183,6 +183,8 @@ def _iter_fallback_entries(raw: Any, config: dict[str, Any] | None = None) -> li
                 )
                 if model and not model.startswith(("auto:", "heuristic:", "criteria:")):
                     normalized = {**entry, "provider": provider, "model": model}
+                    normalized.pop("criteria", None)
+                    normalized.pop("heuristic", None)
                     base_url = _normalized_base_url(entry.get("base_url"))
                     if base_url:
                         normalized["base_url"] = base_url
@@ -228,21 +230,37 @@ def get_stored_fallback_rules(config: dict[str, Any] | None) -> list[dict[str, A
     """Return the raw, declarative fallback rules stored in config.
 
     Preserves inactive heuristic rules, does not query catalogs or materialize candidates,
-    and handles legacy `fallback_model` as the fallback if `fallback_providers` is missing.
+    iterating over both fallback_providers and fallback_model, deduping by identity and
+    marking legacy items with _from_fallback_model = True.
     Always returns fresh dict copies.
     """
     if not isinstance(config, dict):
         return []
     import copy
 
-    raw = config.get("fallback_providers")
-    if raw is None and "fallback_model" in config:
-        raw = config.get("fallback_model")
-    candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     rules: list[dict[str, Any]] = []
-    for entry in candidates:
+    seen: set[tuple[str, str, str]] = set()
+
+    fp_raw = config.get("fallback_providers")
+    fp_candidates = [fp_raw] if isinstance(fp_raw, dict) else fp_raw if isinstance(fp_raw, list) else []
+    for entry in fp_candidates:
         if isinstance(entry, dict):
-            rules.append(copy.deepcopy(entry))
+            ident = _entry_identity(entry)
+            if ident not in seen:
+                seen.add(ident)
+                rules.append(copy.deepcopy(entry))
+
+    fm_raw = config.get("fallback_model")
+    fm_candidates = [fm_raw] if isinstance(fm_raw, dict) else fm_raw if isinstance(fm_raw, list) else []
+    for entry in fm_candidates:
+        if isinstance(entry, dict):
+            ident = _entry_identity(entry)
+            if ident not in seen:
+                seen.add(ident)
+                e_copy = copy.deepcopy(entry)
+                e_copy["_from_fallback_model"] = True
+                rules.append(e_copy)
+
     return rules
 
 
@@ -276,6 +294,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 def scoped_fallback_chain(
     inherited: list[dict[str, Any]] | None, declared: Any, *, pinned: bool, owner: str,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Fallback chain for a route owner that can pin its own primary (delegated child, cron job).
 
@@ -291,7 +310,16 @@ def scoped_fallback_chain(
         return default
     if declared == []:
         return None
-    normalized = get_fallback_chain({"fallback_providers": declared})
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly() or {}
+        except Exception as exc:
+            logger.debug("Failed to load config for scoped_fallback_chain: %s", exc, exc_info=True)
+            config = {}
+    synth_cfg = {**config, "fallback_providers": declared}
+    normalized = get_fallback_chain(synth_cfg)
     if not normalized:
         logger.warning("%s fallback_providers has no usable routes; using the %s default",
                        owner, "pinned" if pinned else "inherited")

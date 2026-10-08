@@ -61,11 +61,7 @@ def resolve_fallback_entry_reasoning_config(
         return per_model
 
     is_heuristic = bool(
-        fb.get("_is_heuristic")
-        or fb.get("criteria_matched")
-        or fb.get("criteria")
-        or fb.get("heuristic")
-        or str(fb.get("model", "")).startswith(("auto:", "heuristic:", "criteria:"))
+        fb.get("_is_heuristic") or fb.get("criteria_matched")
     )
     if is_heuristic:
         return {"native": True}

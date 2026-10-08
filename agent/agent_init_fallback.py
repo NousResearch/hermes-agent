@@ -55,3 +55,11 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
         return
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
+
+
+def setup_init_fallback_runtime(agent, fb_entry, fb_client) -> None:
+    """Set up fallback reasoning config and api_mode for init-time routed fallback."""
+    from agent.fallback_reasoning import reresolve_fallback_reasoning_config
+    reresolve_fallback_reasoning_config(agent, fb_entry)
+    recompute_init_fallback_api_mode(agent, fb_client)
+

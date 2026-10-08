@@ -1927,12 +1927,11 @@ class TurnRunner:
                 from gateway.run import _gateway_provider_error_reply
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
                         "messages": [], "api_calls": 0, "tools": []}
-            return {
-                "final_response": t("gateway.errors.no_credentials"),
-                "messages": [], "api_calls": 0, "tools": [],
-            }
+            return {"final_response": t("gateway.errors.no_credentials"),
+                    "messages": [], "api_calls": 0, "tools": []}
         pr = runner._provider_routing
-        reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
+        reasoning_config = runner._resolve_session_reasoning_config(
+            source=ctx.source, session_key=ctx.session_key, model=model, fallback_entry=getattr(runner, "_pre_agent_fallback_entry", None))
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)

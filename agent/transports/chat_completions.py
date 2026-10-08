@@ -165,6 +165,8 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if not isinstance(reasoning_config, dict):
         return None
+    if reasoning_config.get("native") or str(reasoning_config.get("effort") or "").strip().lower() in ("default", "auto", "native"):
+        return None
     normalized_model = (model or "").strip().lower().removeprefix("google/")
     # Gemini-only; Gemma/PaLM on the same provider 400 on the field even as ``{"includeThoughts": False}``.
     # ``thinking_config`` is a Gemini-only request parameter. The same ``gemini`` provider also serves Gemma
@@ -439,6 +441,48 @@ def _sanitize_message(
     return out_msg if strip_keys or copied_tool_calls is not None else None
 
 
+def _is_native_reasoning_intent(rc: Any) -> bool:
+    if not isinstance(rc, dict):
+        return False
+    return bool(rc.get("native") or str(rc.get("effort") or "").strip().lower() in ("default", "auto", "native"))
+
+
+def _apply_unregistered_reasoning(
+    extra_body: dict[str, Any],
+    params: dict[str, Any],
+    reasoning_config: Any,
+    thinking_off: bool,
+    is_openrouter: bool,
+) -> None:
+    if params.get("is_github_models", False):
+        if params.get("github_reasoning_extra") is not None:
+            extra_body["reasoning"] = params["github_reasoning_extra"]
+        return
+    if is_openrouter and _is_native_reasoning_intent(reasoning_config):
+        return
+    if reasoning_config is not None:
+        _effort = (reasoning_config.get("effort", "medium") or "medium") if isinstance(reasoning_config, dict) else "medium"
+        off = thinking_off or _effort == "none"
+        extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
+
+
+def _apply_gemini_thinking(
+    extra_body: dict[str, Any],
+    model: str,
+    reasoning_config: Any,
+    base_url: str | None,
+) -> None:
+    raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+    if _is_gemini_openai_compat_base_url(base_url):
+        thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
+        if thinking_config:
+            openai_compat_extra = extra_body.get("extra_body", {})
+            openai_compat_extra["google"] = {**openai_compat_extra.get("google", {}), "thinking_config": thinking_config}
+            extra_body["extra_body"] = openai_compat_extra
+    elif raw_thinking_config:
+        extra_body["thinking_config"] = raw_thinking_config
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'."""
 
@@ -487,7 +531,10 @@ class ChatCompletionsTransport(ProviderTransport):
 
         is_kimi = params.get("is_kimi", False)
         supports_reasoning = params.get("supports_reasoning", False)
+        is_openrouter = params.get("is_openrouter", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
+        if not is_openrouter and _is_native_reasoning_intent(reasoning_config):
+            reasoning_config = None
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
         # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
@@ -505,7 +552,6 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["reasoning_effort"] = tokenhub_effort(_e)
 
         extra_body: dict[str, Any] = {}
-        is_openrouter = params.get("is_openrouter", False)
         base_url = params.get("base_url")
         if is_openrouter and params.get("provider_preferences"):
             extra_body["provider"] = params["provider_preferences"]
@@ -518,25 +564,10 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
         if supports_reasoning:
-            if params.get("is_github_models", False):
-                if params.get("github_reasoning_extra") is not None:
-                    extra_body["reasoning"] = params["github_reasoning_extra"]
-            else:
-                _effort = (reasoning_config.get("effort", "medium") or "medium") if reasoning_config and isinstance(reasoning_config, dict) else "medium"
-                # Honor explicit "thinking off" like the profile path — never re-enable it.
-                off = thinking_off or _effort == "none"
-                extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
+            _apply_unregistered_reasoning(extra_body, params, reasoning_config, thinking_off, is_openrouter)
 
         if str(params.get("provider_name") or "").strip().lower() == "gemini":
-            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
-            if _is_gemini_openai_compat_base_url(base_url):
-                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
-                if thinking_config:
-                    openai_compat_extra = extra_body.get("extra_body", {})
-                    openai_compat_extra["google"] = {**openai_compat_extra.get("google", {}), "thinking_config": thinking_config}
-                    extra_body["extra_body"] = openai_compat_extra
-            elif raw_thinking_config:
-                extra_body["thinking_config"] = raw_thinking_config
+            _apply_gemini_thinking(extra_body, model, reasoning_config, base_url)
 
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
@@ -555,6 +586,9 @@ class ChatCompletionsTransport(ProviderTransport):
         api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)
 
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
+        p_name = (getattr(profile, "name", "") or "").strip().lower()
+        if p_name not in ("nous", "openrouter") and _is_native_reasoning_intent(reasoning_config):
+            reasoning_config = None
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 

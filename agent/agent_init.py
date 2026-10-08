@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
-from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, setup_init_fallback_runtime
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -900,9 +900,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             return None
         agent.provider = agent.requested_provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
-        from agent.fallback_reasoning import reresolve_fallback_reasoning_config
-        reresolve_fallback_reasoning_config(agent, _fb)
-        recompute_init_fallback_api_mode(agent, _fb_client)
+        setup_init_fallback_runtime(agent, _fb, _fb_client)
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.

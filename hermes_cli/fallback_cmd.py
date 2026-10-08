@@ -23,9 +23,22 @@ def _identity(entry: Dict[str, Any]):
 
 
 def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
-    """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
-    config["fallback_providers"] = chain
-    config.pop("fallback_model", None)
+    """Write entries without _from_fallback_model to fallback_providers.
+    Keep remaining entries with _from_fallback_model in fallback_model (or pop if none remain)."""
+    fp_entries: list[dict[str, Any]] = []
+    fm_entries: list[dict[str, Any]] = []
+    for entry in chain:
+        e = copy.deepcopy(entry)
+        if e.pop("_from_fallback_model", False):
+            fm_entries.append(e)
+        else:
+            fp_entries.append(e)
+
+    config["fallback_providers"] = fp_entries
+    if fm_entries:
+        config["fallback_model"] = fm_entries
+    else:
+        config.pop("fallback_model", None)
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:
@@ -253,6 +266,7 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
         print("  Cancelled — no change.")
         return
     _write_chain(config, [])
+    config.pop("fallback_model", None)
     save_config(config)
     print("\n  Fallback chain cleared.\n")
 

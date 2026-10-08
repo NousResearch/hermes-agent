@@ -77,21 +77,6 @@ _DESCRIBE_SORT_BY: dict[str, str] = {
     "latest_flash": "latest flash model",
 }
 
-_CURATED_OPENROUTER_FREE_MODELS: tuple[str, ...] = (
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "minimax/minimax-m3:free",
-    "z-ai/glm-5.2:free",
-    "nvidia/nemotron-3.5-lightning:free",
-    "google/gemini-2.0-flash-exp:free",
-    "thinkingmachines/inkling:free",
-    "thinkingmachines/inkling-small:free",
-    "poolside/laguna-s-2.1:free",
-    "poolside/laguna-xs-2.1:free",
-)
-
 
 @dataclass
 class FallbackCriteria:
@@ -161,7 +146,7 @@ class ModelCandidateMetadata:
     created_ts: float = 0.0
     date_snapshot: float = 0.0
     version_tuple: tuple[int, ...] = (0,)
-    supports_tools: bool = True
+    supports_tools: bool = False
     is_flash: bool = False
     vendor: str = ""
     source: str = "heuristic"
@@ -541,6 +526,11 @@ def _enrich_from_openrouter_cache(meta: ModelCandidateMetadata, model_id: str) -
                         meta.is_free = True
                 except (ValueError, TypeError):
                     pass
+            params = entry.get("supported_parameters")
+            if isinstance(params, list):
+                meta.supports_tools = "tools" in params
+            elif entry.get("tools") is not None:
+                meta.supports_tools = bool(entry.get("tools"))
             meta.source = "openrouter_cache"
     except Exception as exc:
         logger.debug("OpenRouter cache lookup failed for %s: %s", model_id, exc, exc_info=True)
@@ -552,9 +542,17 @@ def _enrich_from_nous_pricing(meta: ModelCandidateMetadata, model_id: str) -> No
         from hermes_cli.models import _is_model_free
         from hermes_cli import models_pricing as mp
         pricing = mp.get_pricing_for_provider("nous") or {}
+        entry = pricing.get(model_id)
+        if isinstance(entry, dict):
+            if (
+                entry.get("tools") is not False
+                and not entry.get("generation")
+                and not model_id.startswith(("voyageai/", "sentence-transformers/", "thenlper/", "baai/", "intfloat/"))
+            ):
+                meta.supports_tools = True
+            meta.source = "nous_pricing"
         if _is_model_free(model_id, pricing):
             meta.is_free = True
-            meta.source = "nous_pricing"
     except Exception as exc:
         logger.debug("Nous pricing lookup failed for %s: %s", model_id, exc, exc_info=True)
 
@@ -618,13 +616,27 @@ def enrich_model_metadata(
 
     if meta.context_window <= 0:
         try:
-            from agent.model_metadata import get_model_context_length
+            from agent.model_metadata import (
+                _config_override_context_length,
+                _resolve_provider_aware_context_length,
+                _resolve_endpoint_context_length,
+                _longest_key_match,
+                DEFAULT_CONTEXT_LENGTHS,
+            )
 
-            ctx = get_model_context_length(model_id, provider=provider, base_url=base_url)
+            ctx = _config_override_context_length(model_id, base_url, provider, None)
+            if ctx is None and base_url:
+                ctx = _resolve_endpoint_context_length(model_id, base_url)
+            if ctx is None:
+                ctx = _resolve_provider_aware_context_length(model_id, base_url, "", provider, provider)
+            if ctx is None:
+                hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model_id.lower())
+                if hit:
+                    ctx = hit[1]
             if ctx and ctx > 0:
                 meta.context_window = ctx
         except Exception as exc:
-            logger.debug("Context length resolution failed for %s (%s): %s", model_id, provider, exc, exc_info=True)
+            logger.debug("Context length positive resolution failed for %s (%s): %s", model_id, provider, exc, exc_info=True)
 
     return meta
 
@@ -634,6 +646,7 @@ def enrich_model_metadata(
 
 _CANDIDATE_CACHE: dict[tuple[str, str, str], tuple[float, list[ModelCandidateMetadata]]] = {}
 _CANDIDATE_CACHE_TTL = 300.0  # 5 minutes
+_CANDIDATE_NEGATIVE_CACHE_TTL = 30.0  # 30 seconds for empty results
 
 
 def clear_candidate_cache() -> None:
@@ -733,11 +746,6 @@ def _gather_openrouter_candidates(provider_norm: str, force_refresh: bool = Fals
         candidates_by_id = _load_openrouter_static_catalog(provider_norm)
     if not candidates_by_id:
         candidates_by_id = _load_openrouter_disk_catalog(provider_norm)
-    if not candidates_by_id:
-        for mid in _CURATED_OPENROUTER_FREE_MODELS:
-            cand = enrich_model_metadata(mid, provider=provider_norm)
-            cand.is_free = True
-            candidates_by_id[mid] = cand
 
     return candidates_by_id
 
@@ -787,7 +795,8 @@ def get_candidate_models(
 
     if not force_refresh and cache_key in _CANDIDATE_CACHE:
         cached_ts, cached_candidates = _CANDIDATE_CACHE[cache_key]
-        if now - cached_ts < _CANDIDATE_CACHE_TTL:
+        ttl = _CANDIDATE_CACHE_TTL if cached_candidates else _CANDIDATE_NEGATIVE_CACHE_TTL
+        if now - cached_ts < ttl:
             return cached_candidates
 
     candidates_by_id: dict[str, ModelCandidateMetadata] = {}
@@ -800,8 +809,7 @@ def get_candidate_models(
         candidates_by_id.update(_gather_generic_candidates(provider_norm, base_url_norm, force_refresh))
 
     res = list(candidates_by_id.values())
-    if res:
-        _CANDIDATE_CACHE[cache_key] = (now, res)
+    _CANDIDATE_CACHE[cache_key] = (now, res)
     return res
 
 
@@ -809,8 +817,9 @@ def get_candidate_models(
 
 
 def _key_largest_params(c: ModelCandidateMetadata) -> tuple[Any, ...]:
+    size_val = c.param_size_b if c.param_size_b is not None else 1.0
     return (
-        c.param_size_b if c.param_size_b is not None else -1.0,
+        size_val,
         c.context_window,
         c.created_ts,
         c.date_snapshot,
@@ -821,7 +830,7 @@ def _key_largest_params(c: ModelCandidateMetadata) -> tuple[Any, ...]:
 def _key_greatest_context(c: ModelCandidateMetadata) -> tuple[Any, ...]:
     return (
         c.context_window,
-        c.param_size_b if c.param_size_b is not None else -1.0,
+        c.param_size_b if c.param_size_b is not None else 1.0,
         c.created_ts,
         c.date_snapshot,
         c.version_tuple,
@@ -836,22 +845,24 @@ def _key_smallest(c: ModelCandidateMetadata) -> tuple[Any, ...]:
 
 
 def _key_latest(c: ModelCandidateMetadata) -> tuple[Any, ...]:
+    has_date = bool(c.created_ts or c.date_snapshot)
     return (
         c.created_ts,
         c.date_snapshot,
-        c.version_tuple,
-        c.param_size_b if c.param_size_b is not None else -1.0,
+        c.version_tuple if has_date else (0,),
+        c.param_size_b if c.param_size_b is not None else 1.0,
         c.context_window,
     )
 
 
 def _key_latest_flash(c: ModelCandidateMetadata) -> tuple[Any, ...]:
+    has_date = bool(c.created_ts or c.date_snapshot)
     return (
         1 if c.is_flash else 0,
         c.created_ts,
         c.date_snapshot,
-        c.version_tuple,
-        c.param_size_b if c.param_size_b is not None else -1.0,
+        c.version_tuple if has_date else (0,),
+        c.param_size_b if c.param_size_b is not None else 1.0,
         c.context_window,
     )
 

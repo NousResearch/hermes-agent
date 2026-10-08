@@ -184,7 +184,7 @@ class GatewayTurnMixin:
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
         # notice must never attach to another session's next turn (#74349).
-        self._pre_agent_fallback_notice = None
+        self._pre_agent_fallback_notice = self._pre_agent_fallback_entry = None
 
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -240,15 +240,14 @@ class GatewayTurnMixin:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
-        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
+        self._pre_agent_fallback_notice, self._pre_agent_fallback_entry = runtime_kwargs.pop("_fallback_notice", None), runtime_kwargs.pop("_fallback_entry", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
         if unavailable_override and not self._pre_agent_fallback_notice:
             from hermes_cli.fallback_config import pre_agent_fallback_notice
-            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
-                unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
+            self._pre_agent_fallback_notice = pre_agent_fallback_notice(unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:
@@ -2439,7 +2438,8 @@ class GatewayTurnMixin:
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
-            reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source, model=model, fallback_entry=getattr(self, "_pre_agent_fallback_entry", None))
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)

@@ -309,11 +309,18 @@ class TestResolveFallbackEntry(unittest.TestCase):
 
     def test_candidate_cache_and_clear(self):
         from hermes_cli.fallback_heuristics import clear_candidate_cache, get_candidate_models
+        from unittest.mock import patch
         clear_candidate_cache()
-        cands1 = get_candidate_models("openrouter")
-        cands2 = get_candidate_models("openrouter")
-        self.assertIs(cands1, cands2)  # Memoized identical object
-        clear_candidate_cache()
+        sample = {"cand-1": ModelCandidateMetadata(id="cand-1", provider="openrouter")}
+        with patch("hermes_cli.fallback_heuristics._gather_openrouter_candidates", return_value=sample) as mock_gather:
+            cands1 = get_candidate_models("openrouter")
+            cands2 = get_candidate_models("openrouter")
+            self.assertEqual(mock_gather.call_count, 1)
+            self.assertEqual([c.id for c in cands1], [c.id for c in cands2])
+            clear_candidate_cache()
+            cands3 = get_candidate_models("openrouter")
+            self.assertEqual(mock_gather.call_count, 2)
+            self.assertEqual([c.id for c in cands3], ["cand-1"])
 
     def test_agent_init_fallback_entries(self):
         from agent.agent_init import _fallback_entries

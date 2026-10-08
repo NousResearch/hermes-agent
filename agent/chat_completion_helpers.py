@@ -1937,8 +1937,10 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     context across every provider again."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+        cooldown_until = time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S
+        if cooldown_until > (getattr(agent, "_rate_limited_until", 0) or 0):
+            agent._rate_limited_until = cooldown_until
+            agent._rate_limit_cooldown_reason = reason
     return False
 
 

@@ -2222,6 +2222,29 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
         return next((e for e in available if e.id == credential_id), None)
 
+    def clear_billing_benches(self) -> int:
+        """Clear every ``STATUS_EXHAUSTED`` bench attributed to billing; return how many.
+
+        A credit exhaustion — unlike a rate-limit window — can be cured mid-session by a
+        portal top-up at any moment (#126818): the full bench would keep a live session
+        pinned to its (paid) fallback long after the primary is funded again. Only
+        billing-attributed benches clear here; rate-limit windows, auth failures and
+        unverified-billing benches keep their cooldowns."""
+        with self._lock:
+            cleared_ids = []
+            for entry in self._entries:
+                if entry.last_status != STATUS_EXHAUSTED or entry.failure_reason != FAILURE_REASON_BILLING:
+                    continue
+                self._adopt(
+                    entry, persist=False, **_MARK_OK, status_cleared_at=time.time(),
+                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"},
+                )
+                cleared_ids.append(entry.id)
+            if cleared_ids:
+                # Declare the reset so the disk-recency merge cannot restore the bench.
+                self._persist(status_cleared_ids=cleared_ids)
+            return len(cleared_ids)
+
     # ---- rotation ----------------------------------------------------------
 
     def _identify_failed_entry(

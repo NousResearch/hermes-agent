@@ -1458,6 +1458,10 @@ def restore_primary_runtime(agent) -> bool:
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
+    # Both recovery paths run before the session and pool gates. The billing probe
+    # clears only billing-owned state; Codex retains its own quota-reopen policy.
+    from agent.fallback_cooldown import _probe_primary_billing_recovery
+    _probe_primary_billing_recovery(agent)
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(

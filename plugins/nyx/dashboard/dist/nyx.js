@@ -1,6 +1,6 @@
 // Nyx — avatar de partículas do Hermes (módulo ES carregado pelo painel do dashboard).
 //
-// Em repouso só o busto: ~3 milhões de pontos de luz em pontilhismo, cheio por dentro, contorno só por pontos.
+// Em repouso só o busto: ~3 milhões de pontos de luz em pontilhismo, opaco, contorno só por pontos.
 // Os eventos do Hermes (barramento do plugin) dirigem o resto:
 //   pensando        → a galáxia nasce do crânio pra fora (3 braços em espiral, disco inclinado)
 //   ferramenta      → um cometa sai do disco e orbita a cabeça enquanto a ferramenta roda
@@ -193,26 +193,29 @@ const extOrelha = (y) => {
 };
 const cranio = (y, z) => { const [w, d, c] = rowR(HEAD, y), zz = (z - c) / d; return w * Math.sqrt(Math.max(0, 1 - zz * zz)); };
 // t = 0 aponta pra nuca, π/2 pro alto; r = 0 no fundo da concha (no crânio), r = 1 na hélice. A frente fica
-// presa no crânio; de cima até o lóbulo a hélice abre até a medida da foto.
+// presa no crânio; de cima até o lóbulo a hélice abre até a medida da foto. O perfil em r dá o relevo: a
+// concha fica rente ao crânio, a borda sobe rápido (a hélice salta) e a antélice é uma crista no meio.
 function naOrelha(sg, t, r) {
   const O = ORELHA, sn = Math.sin(t), cs = Math.cos(t);
   const fundo = O.meiaFundo * (sn < 0 ? 1 + 0.35 * sn : 1);   // de perfil o lóbulo é mais estreito que o alto
   const hy = O.cy - sn * O.meiaAltura - 5 * cs, hz = O.cz - cs * fundo;
   const abre = Math.max(0, extOrelha(hy) - cranio(hy, hz)) * suave(-0.85, -0.05, cs);
   const ey = O.cy + (hy - O.cy) * r, ez = O.cz + (hz - O.cz) * r;
-  return [sg * (cranio(ey, ez) + abre * r ** 1.5), ey, ez];
+  const antelice = 5 * Math.exp(-(((r - 0.68) / 0.08) ** 2)) * suave(-0.5, 0.2, cs);
+  return [sg * (cranio(ey, ez) + abre * (0.15 * r + 0.85 * r ** 3) + antelice), ey, ez];
 }
 
 // O busto é pontilhismo: milhões de pontos na superfície, espalhados por igual (faixa a faixa de y, em
-// intervalos de arco de mesma área, com sorteio dentro de cada intervalo), mais um miolo de pontos soltos
-// no volume, e o shader decide quais aparecem pela luz do lugar (VS_BUSTO). Por cima, correntinhas de
+// intervalos de arco de mesma área, com sorteio dentro de cada intervalo), e o shader decide quais aparecem
+// pela luz do lugar (VS_BUSTO). O busto é opaco: uma máscara de profundidade (gerarOclusor) esconde o que
+// está atrás da pele. Por cima, correntinhas de
 // contas (os riscos pontilhados da foto) e as marcas do pescoço como faixas um pouco mais densas.
 // Cada ponto guarda a normal da superfície; cabeça e pescoço não se atravessam.
 // Tudo vai direto pra arrays tipados (posição, cor em bytes, brilho/semente/tamanho, normal em bytes).
-const PONTOS = 3000000, MIOLO = 90000, CONTAS = 45000, VAO_CONTA = 5.5;
+const PONTOS = 3000000, CONTAS = 45000, VAO_CONTA = 5.5;
 function gerarBusto(densidade) {
   const { rnd, gauss } = criarAleatorio(7);
-  const cap = Math.ceil((PONTOS + MIOLO + CONTAS + 120000) * densidade) + 60000;
+  const cap = Math.ceil((PONTOS + CONTAS + 120000) * densidade) + 60000;
   // 3 milhões de pontos: tudo que dá vai em bytes (cor, normal e [brilho/2, semente, tamanho/1,5], que o
   // shader desfaz com uInf); só a posição fica em float. ~21 bytes por ponto
   const pos = new Float32Array(cap * 3), col = new Uint8Array(cap * 3), inf = new Uint8Array(cap * 3), nor = new Int8Array(cap * 3);
@@ -300,6 +303,7 @@ function gerarBusto(densidade) {
         put(px, y - ny * t, pz, nx, ny, nz, (0.7 + 0.3 * rnd()) * (dourado ? 0.8 : ganho), 0.45 + 0.15 * rnd(), dourado ? GOLD : corPonto());   // tamanho < 0,75: o shader lê ≥ 0,75 como conta
       }
     }
+    return total * densidade / soma;
   };
   // ocupação em voxels de 5 px: cada correntinha nasce onde a vizinhança (~15 px) está mais vazia entre 8
   // candidatos, então elas se espalham por igual
@@ -354,26 +358,8 @@ function gerarBusto(densidade) {
       feitas += Math.max(1, feitasAqui);
     }
   };
-  // miolo: pontos soltos dentro do volume, fatia a fatia pela área da elipse. Sem normal (aparecem sempre);
-  // de frente somam mais onde o corpo é mais grosso, então o meio fica cheio e não oco
-  const miolo = (T, total, fora) => {
-    const ya = T === HEAD ? 143 : 520, yb = T === HEAD ? 649 : 940, cum = [];
-    let soma = 0;
-    for (let y = ya; y < yb; y++) { const r = rowR(T, y + 0.5); soma += r[0] * r[1]; cum.push(soma); }
-    for (let i = 0; i < total * densidade; i++) {
-      const v = rnd() * soma;
-      let lo = 0, hi = cum.length - 1;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < v) lo = m + 1; else hi = m; }
-      const y = ya + lo + rnd(), r = rowR(T, y), q = Math.sqrt(rnd()) * 0.97, a = rnd() * 6.283185;
-      const x = r[0] * q * Math.sin(a), z = r[2] + r[1] * q * Math.cos(a);
-      if (fora(x, y, z) || (y > 932 && rnd() > fadeY(y))) continue;
-      put(x, y, z, 0, 0, 0, 0.5 + 0.25 * rnd(), 0.45 + 0.15 * rnd(), rnd() < 0.35 ? DEEP : rnd() < 0.7 ? BLUE : CYAN);
-    }
-  };
   const semSombra = () => 1;
-  miolo(HEAD, MIOLO * 0.4, insideBody);
-  miolo(BODY, MIOLO * 0.6, insideHead);
-  pontilhar(HEAD, PONTOS * 0.4, insideBody, semSombra, 1);
+  const porPx2 = pontilhar(HEAD, PONTOS * 0.4, insideBody, semSombra, 1);
   pontilhar(BODY, PONTOS * 0.6, insideHead, sombraPescoco, 1.3);   // na foto pescoço e ombros brilham mais que o rosto
   correntes(HEAD, CONTAS * 0.42, insideBody, semSombra, 1);
   correntes(BODY, CONTAS * 0.58, insideHead, sombraPescoco, 1.1);
@@ -395,20 +381,99 @@ function gerarBusto(densidade) {
       }
     }
   }
-  // orelhas: faixas de pontos na hélice (mais densa), na antélice e na concha (rala). Sem normal: a orelha é
-  // fina e se vê das duas faces, então todos os pontos dela aparecem
+  // orelhas: superfície de verdade, com a mesma densidade de pontos da pele e normais reais, então o mesmo
+  // filtro de luz vale pra elas (a orelha do lado de lá some atrás da cabeça, o contorno sai do acúmulo).
+  // As duas faces da placa (de fora e a que olha pro crânio) e, na borda, a hélice como um tubinho de ~3,5 px.
+  const derivadas = (sg, t, r) => {
+    const p = naOrelha(sg, t, r), a = naOrelha(sg, t + 1e-3, r), b = naOrelha(sg, t, r + 1e-3);
+    const pt = [(a[0] - p[0]) / 1e-3, (a[1] - p[1]) / 1e-3, (a[2] - p[2]) / 1e-3], pr = [(b[0] - p[0]) / 1e-3, (b[1] - p[1]) / 1e-3, (b[2] - p[2]) / 1e-3];
+    let nx = pt[1] * pr[2] - pt[2] * pr[1], ny = pt[2] * pr[0] - pt[0] * pr[2], nz = pt[0] * pr[1] - pt[1] * pr[0];
+    const area = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    nx /= area; ny /= area; nz /= area;
+    if (nx * sg < 0) { nx = -nx; ny = -ny; nz = -nz; }   // face de fora: aponta pra longe da cabeça
+    return { p, pt, pr, nx, ny, nz, area };              // normal em px da foto (y pra baixo)
+  };
+  const pontoOrelha = (x, y, z, nx, nyFoto, nz) => put(x, y, z, nx, -nyFoto, nz, 1.1 + 0.4 * rnd(), 0.45 + 0.15 * rnd(), corPonto());
+  const densOrelha = porPx2 * 1.8;   // a orelha é pequena e quase sempre vista de raspão: mais pontos que a pele
   for (const sg of [-1, 1]) {
-    const faixa = (qtd, r0, dr, ta, tb, b, cor) => {
-      for (let i = 0; i < qtd * densidade; i++) {
-        const t = ta + (tb - ta) * rnd(), [x, y, z] = naOrelha(sg, t, Math.max(0, r0 + gauss() * dr));   // r < 0 daria NaN em r ** 1,5
-        put(x + sg * gauss() * 1.2, y, z, 0, 0, 0, b * (0.8 + 0.4 * rnd()), 0.45 + 0.15 * rnd(), cor());
+    // área da placa (r de 0,05 a 0,92) por amostragem, pra saber quantos pontos cabem e aceitar por área
+    let somaA = 0, maxA = 0;
+    for (let i = 0; i < 4000; i++) { const d = derivadas(sg, (rnd() * 2 - 1) * Math.PI, 0.05 + 0.87 * rnd()); somaA += d.area; maxA = Math.max(maxA, d.area); }
+    const areaPlaca = somaA / 4000 * 2 * Math.PI * 0.87;
+    for (const face of [1, -1]) {
+      for (let k = 0, quer = Math.round(areaPlaca * densOrelha); k < quer;) {
+        const r = 0.05 + 0.87 * rnd(), d = derivadas(sg, (rnd() * 2 - 1) * Math.PI, r);
+        if (rnd() * maxA > d.area) continue;
+        k++;
+        // concha e escafa (o sulco atrás da hélice) ficam na sombra; a antélice entre elas, na luz. De frente o
+        // que se vê é a parte que abre (r > 0,7): a hélice clara por fora e o sulco escuro, o "C" da foto
+        const luzOrelha = (0.3 + 0.7 * suave(0.45, 0.65, r)) * (1 - 0.65 * suave(0.74, 0.8, r) * (1 - suave(0.88, 0.93, r)));
+        if (rnd() > luzOrelha) continue;
+        pontoOrelha(d.p[0] + d.nx * face, d.p[1] + d.ny * face, d.p[2] + d.nz * face, d.nx * face, d.ny * face, d.nz * face);
       }
-    };
-    faixa(2500, 0.95, 0.05, -0.7 * Math.PI, 0.75 * Math.PI, 0.6, () => (rnd() < 0.25 ? WHITE : CYAN));   // hélice
-    faixa(500, 0.6, 0.03, -0.25 * Math.PI, 0.65 * Math.PI, 0.8, () => CYAN);                           // antélice
-    faixa(400, 0.45, 0.25, -Math.PI, Math.PI, 0.6, () => (rnd() < 0.6 ? DEEP : BLUE));                  // concha
+    }
+    // hélice: tubo em volta da borda (r ≈ 0,96), da frente de cima até o lóbulo
+    const ta = -0.7 * Math.PI, tb = 0.75 * Math.PI, R = 3.5, densHelice = densOrelha * 1.3;
+    let compr = 0;
+    for (let i = 0; i < 200; i++) { const d = derivadas(sg, ta + (tb - ta) * (i + 0.5) / 200, 0.96); compr += Math.hypot(d.pt[0], d.pt[1], d.pt[2]) * (tb - ta) / 200; }
+    for (let k = 0, quer = Math.round(compr * 2 * Math.PI * R * densHelice); k < quer; k++) {
+      const d = derivadas(sg, ta + (tb - ta) * rnd(), 0.96), al = rnd() * 6.283185;
+      const rl = Math.hypot(d.pr[0], d.pr[1], d.pr[2]) || 1, rx = d.pr[0] / rl, ry = d.pr[1] / rl, rz = d.pr[2] / rl;   // pra fora, no plano da orelha
+      const nx = Math.cos(al) * d.nx + Math.sin(al) * rx, ny = Math.cos(al) * d.ny + Math.sin(al) * ry, nz = Math.cos(al) * d.nz + Math.sin(al) * rz;
+      pontoOrelha(d.p[0] + nx * R, d.p[1] + ny * R, d.p[2] + nz * R, nx, ny, nz);
+    }
   }
   return { n, pos, col, inf, nor };
+}
+
+// A máscara de profundidade: a mesma forma do busto (cabeça, corpo e as placas das orelhas), recuada 2,5 px
+// pra dentro da pele e sem cor. Ela não aparece: só grava a profundidade, então os pontos que estão atrás
+// dela (o outro lado da cabeça, a orelha de lá, a nuca vista de frente) não são desenhados e o rosto fica
+// opaco. Os pontos da pele ficam todos na frente dela (o mais fundo está a 1,9 px da superfície).
+function gerarOclusor() {
+  const pos = [], idx = [], RECUO = 2.5, NS = 96;
+  const emCena = (x, y, z) => pos.push(x * U, -(y - Y0) * U, z * U);
+  const casca = (T, ya, yb) => {
+    const base = pos.length / 3;
+    let linhas = 0;
+    for (let y = ya; y <= yb; y += 2, linhas++) {
+      let r = rowR(T, y); const w = r[0], d = r[1], c = r[2];
+      r = rowR(T, y - 0.5); const wa = r[0], da = r[1], ca = r[2];
+      r = rowR(T, y + 0.5); const wb = r[0], db = r[1], cb = r[2];
+      for (let j = 0; j < NS; j++) {
+        const ph = j / NS * 6.283185, sn = Math.sin(ph), cs = Math.cos(ph);
+        const dx = (wb - wa) * sn, dz = (cb - ca) + (db - da) * cs;      // ∂P/∂y (px da foto, y pra baixo)
+        // normal pra fora = ∂P/∂φ × ∂P/∂y
+        let nx = d * sn, ny = -d * sn * dx - w * cs * dz, nz = w * cs;
+        const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (nl < 1e-6) { nx = 0; ny = -1; nz = 0; } else { nx /= nl; ny /= nl; nz /= nl; }
+        emCena(w * sn - nx * RECUO, y - ny * RECUO, c + d * cs - nz * RECUO);
+      }
+    }
+    for (let i = 0; i < linhas - 1; i++) for (let j = 0; j < NS; j++) {
+      const a = base + i * NS + j, b = base + i * NS + (j + 1) % NS;
+      idx.push(a, a + NS, b, b, a + NS, b + NS);
+    }
+  };
+  casca(HEAD, 141, 649);
+  casca(BODY, 520, 940);
+  // orelhas: a própria placa, até o meio do tubo da hélice (cada face da orelha esconde a de trás)
+  const NT = 64, NR = 10;
+  for (const sg of [-1, 1]) {
+    const base = pos.length / 3;
+    for (let i = 0; i <= NR; i++) for (let j = 0; j < NT; j++) {
+      const [x, y, z] = naOrelha(sg, (j / NT * 2 - 1) * Math.PI, i / NR * 0.96);
+      emCena(x, y, z);
+    }
+    for (let i = 0; i < NR; i++) for (let j = 0; j < NT; j++) {
+      const a = base + i * NT + j, b = base + i * NT + (j + 1) % NT;
+      idx.push(a, a + NT, b, b, a + NT, b + NT);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
 }
 
 // braços: (ângulo inicial, raio px, altura px) — a receita da forma "galáxia" do avatar
@@ -481,8 +546,8 @@ const VS_BUSTO = VS_COMUM + `
   void main() {
     // pontilhismo: cada ponto tem um limiar próprio (tirado da semente) e só aparece se a fração visível
     // dali passar dele; os que aparecem têm quase o mesmo brilho. A fração muda pouco com a luz (de frente
-    // ~12%, de raspão ~23%): o busto fica cheio de pontos e o contorno sai do acúmulo deles, não de uma
-    // linha clara. Pontos sem normal (o miolo e a orelha) aparecem sempre.
+    // ~16%, de raspão ~31%): o busto fica cheio de pontos e o contorno sai do acúmulo deles, não de uma
+    // linha clara. Pontos sem normal aparecem sempre.
     float vis = 1.0, raspao = 1.0, frente = 1.0;
     if (dot(aNor, aNor) > 0.25) {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -494,7 +559,7 @@ const VS_BUSTO = VS_COMUM + `
       frente = step(0.0, fd);
       float l = clamp(luz / 2.0, 0.0, 1.0);
       // bem de raspão a superfície se empilha em poucos px: menos pontos ali, e menos atrás do centro
-      vis = (0.11 + 0.12 * l) * mix(0.3, 1.0, smoothstep(0.0, 0.25, abs(fd))) * mix(0.35, 1.0, smoothstep(-2.3, 2.1, mv.z - uC));
+      vis = (0.15 + 0.16 * l) * mix(0.3, 1.0, smoothstep(0.0, 0.25, abs(fd))) * mix(0.35, 1.0, smoothstep(-2.3, 2.1, mv.z - uC));
       float ouroG = step(0.9, color.r) * step(color.b, 0.3) * step(0.0, fd);
       vis = mix(vis, max(vis, 0.3), ouroG);           // o dourado é luz própria do rosto
       raspao = mix(0.35, 1.0, smoothstep(0.0, 0.5, abs(fd)));   // de raspão cada ponto brilha menos
@@ -580,7 +645,7 @@ export function montar(el, { densidade = 1 } = {}) {
   scene.background = new THREE.Color(0x010309);
   const group = new THREE.Group();
   scene.add(group);
-  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 200);
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 4, 200);   // near longe do zero: a máscara precisa de precisão de profundidade
   camera.position.set(0, ALVO_Y, DIST);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -593,9 +658,12 @@ export function montar(el, { densidade = 1 } = {}) {
     uPensa: { value: 0 }, uFala: { value: 0 }, uExpo: { value: 1 }, uInf: { value: new THREE.Vector3(1, 1, 1) },
   };
   const material = (vs, extra = {}) => new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending,   // a máscara esconde o que está atrás do busto
     uniforms: { ...uniforms, ...extra }, vertexShader: vs, fragmentShader: FS,
   });
+  const oclusor = new THREE.Mesh(gerarOclusor(), new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }));
+  oclusor.renderOrder = -1;                   // grava a profundidade antes de qualquer ponto
+  group.add(oclusor);
   group.add(pontos(gerarBusto(densidade), material(VS_BUSTO, { uInf: { value: new THREE.Vector3(2, 1, 1.5) } })));
 
   const centro = { value: CABECA.clone() };

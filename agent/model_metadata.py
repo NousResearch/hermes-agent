@@ -890,6 +890,23 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(model_id.split("/", 1)[1], entry)
 
 
+# Process-level offline switch for the OpenRouter /models dial-out (#132998).
+_offline_metadata_mode = False
+
+
+def set_model_metadata_offline(enabled: bool) -> None:
+    """Suppress the OpenRouter /models network fetch for this process.
+
+    ``hermes prompt-size`` flips this on before building its inspection agent so the
+    command's documented "never makes a network call" guarantee holds: the agent is
+    constructed with an openrouter.ai base_url, which otherwise triggers both the
+    construction-time prewarm thread and the context-length resolver's live lookup.
+    Cached metadata (in memory or on disk) stays readable; only the dial-out is blocked.
+    """
+    global _offline_metadata_mode
+    _offline_metadata_mode = bool(enabled)
+
+
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
@@ -903,6 +920,19 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache = disk_cache
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
+    if _offline_metadata_mode:
+        # Offline mode wins over force_refresh too: the process promised not to dial out
+        # (#132998). Serve any cache we already have — stale beats a network request here.
+        if not _model_metadata_cache:
+            disk_cache = _load_model_metadata_disk_cache()
+            if disk_cache:
+                _model_metadata_cache = disk_cache
+                disk_age = _model_metadata_disk_cache_age_seconds()
+                _model_metadata_cache_time = time.time() - (disk_age or 0)
+        if _model_metadata_cache:
+            return _model_metadata_cache
+        logger.debug("Offline metadata mode — skipping the OpenRouter /models fetch")
+        return {}
     try:
         # (connect, read) tuple: a flat timeout lets urllib3 block per retry stage through proxies that 403 CONNECT.
         # See #46620.

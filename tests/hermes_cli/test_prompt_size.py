@@ -54,6 +54,71 @@ def test_runs_offline_without_credentials(isolated_home, monkeypatch):
     assert data["system_prompt"]["bytes"] > 0
 
 
+def test_prompt_size_never_dials_out_to_openrouter(isolated_home, monkeypatch):
+    """Issue #132998: with a local custom model configured, building the inspection agent
+    used to live-fetch OpenRouter's /models (prewarm thread + context-length resolver).
+    Any HTTP attempt now fails the test; the breakdown must still be produced."""
+    import threading
+
+    from agent import model_metadata
+
+    # Record the pre-build value so teardown restores it even though
+    # _build_inspection_agent flips the module global itself.
+    monkeypatch.setattr(model_metadata, "_offline_metadata_mode", False)
+    (isolated_home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: custom\n"
+        "  base_url: http://127.0.0.1:8100/v1\n"
+        "  default: qwen/qwen3-coder\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def _tripwire(*_args, **_kwargs):
+        calls.append(1)
+        raise RuntimeError("no network in prompt-size")
+
+    monkeypatch.setattr(model_metadata.model_metadata_http, "get", _tripwire)
+    data = compute_prompt_breakdown("cli")
+    assert data["system_prompt"]["bytes"] > 0
+    assert data["model"] == "qwen/qwen3-coder"
+
+    # Let the daemon prewarm thread (if spawned) finish before asserting, so a late
+    # dial-out inside it cannot slip past the check after teardown.
+    for thread in threading.enumerate():
+        if thread.name == "openrouter-prewarm":
+            thread.join(timeout=5)
+    assert not calls, "prompt-size dialed out to OpenRouter's /models"
+
+
+def test_offline_metadata_mode_suppresses_the_openrouter_fetch(tmp_path, monkeypatch):
+    """The offline switch blocks the /models dial-out even for force_refresh, serving
+    whatever cache exists instead (#132998)."""
+    from agent import model_metadata
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))  # no disk cache
+    monkeypatch.setattr(model_metadata, "_offline_metadata_mode", True)
+
+    calls = []
+
+    def _tripwire(*_args, **_kwargs):
+        calls.append(1)
+        raise RuntimeError("no network while offline")
+
+    monkeypatch.setattr(model_metadata.model_metadata_http, "get", _tripwire)
+
+    monkeypatch.setattr(model_metadata, "_model_metadata_cache", {})
+    assert model_metadata.fetch_model_metadata() == {}
+    assert model_metadata.fetch_model_metadata(force_refresh=True) == {}
+
+    warm = {"m": {"context_length": 8}}
+    monkeypatch.setattr(model_metadata, "_model_metadata_cache", warm)
+    monkeypatch.setattr(model_metadata, "_model_metadata_cache_time", 0)  # long stale
+    assert model_metadata.fetch_model_metadata(force_refresh=True) == warm
+    assert not calls, "offline mode still dialed out to OpenRouter"
+
+
 
 
 

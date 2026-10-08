@@ -224,10 +224,11 @@ def format_banner_version_label() -> str:
         return label
 
     base = f"Hermes Agent v{get_version_info().derived_version} ({RELEASE_DATE})"
-    from hermes_cli.config import load_config
-    from hermes_cli.update_channel import resolve_update_channel
+    from hermes_cli.update_installation import resolve_install_channel
 
-    channel = resolve_update_channel(_quiet(load_config), get_project_root())
+    channel = _quiet(lambda: resolve_install_channel(get_project_root()))
+    if channel is None:
+        return f"{base} · update channel unavailable"
     if channel != "main":
         head = source_check._git_stdout(["rev-parse", "HEAD"], cwd=get_project_root())
         return f"{base} · {channel}" + (f" · local {head[:12]}" if head else "")

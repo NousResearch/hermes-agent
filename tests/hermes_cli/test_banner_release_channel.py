@@ -46,3 +46,21 @@ def test_release_channel_never_compares_main_or_reuses_main_cache(tmp_path, monk
     label = banner.format_banner_version_label()
     assert channel in label
     assert "upstream" not in label
+
+
+def test_conflicting_profile_channels_are_not_labeled_as_main(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
+    home = get_hermes_home()
+    named = home / "profiles" / "work"
+    named.mkdir(parents=True)
+    for path, channel in ((home, "main"), (named, "stable")):
+        (path / "config.yaml").write_text(json.dumps({"update": {"installs": {
+            install_id(root): {"path": str(root), "channel": channel}}}}))
+    label = banner.format_banner_version_label()
+    assert "update channel unavailable" in label
+    assert "upstream" not in label

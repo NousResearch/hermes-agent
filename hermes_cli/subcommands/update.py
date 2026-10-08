@@ -39,6 +39,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Force a FULL pre-update backup (quick state snapshot + HERMES_HOME zip) for this run, regardless of updates.pre_update_backup",
     )
     update_parser.add_argument(
+        "--require-backup", action="store_true", default=False,
+        help="Require complete pre-update backups for every affected profile before changing code; used by auto-update",
+    )
+    update_parser.add_argument(
         "--yes", "-y", action="store_true", default=False,
         help="Run without blocking on prompts: accepts the config-migration and stash-restore prompts, skips the fork-upstream prompt without adding a remote. API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
@@ -111,4 +115,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update code and dependencies but defer the fleet restart. Use for updates "
              "running inside a gateway cgroup, then restart gateways separately.",
     )
+    from hermes_cli.subcommands.update_auto import build_auto_parser
+
+    build_auto_parser(update_parser)
     update_parser.set_defaults(func=cmd_update)

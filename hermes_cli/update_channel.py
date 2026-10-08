@@ -7,6 +7,11 @@ Channel storage — per install, never home-global::
         a4f3b2c1d0e9f8a7:                      # install id (sha16 of the
           path: /home/u/.hermes/hermes-agent   #   canonical install root)
           channel: canary
+          scope: installation
+
+The record lives in the installation owner's root config, shared by every
+profile. ``update_installation`` resolves and consolidates older profile-local
+records without giving any profile's conflicting selection priority.
 
 One config.yaml serves many installs (host + docker gateway + desktop all
 bind-mount one ``~/.hermes``), so a home-global ``update.channel`` key is
@@ -188,7 +193,7 @@ def set_install_channel(
     """
     from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 
-    root = Path(project_root) if project_root is not None else install_root()
+    root = Path(project_root).resolve() if project_root is not None else install_root()
     if is_commit_build(root):
         raise ValueError(COMMIT_BUILD_UPDATE_MESSAGE)
     channel = validate_name(channel)
@@ -257,17 +262,20 @@ def adopt_retired_channel(request: dict) -> bool:
     retirement = request.get("channel_retirement")
     if retirement is None:
         return False
+    from hermes_cli.update_installation import installation_config_path
+
     return _write_channel_record(
         install_id(Path(request["source"])), request["source"],
         validate_name(retirement["destination"]),
-        expected=retirement["original"], config_path=Path(request["home"]) / "config.yaml")
+        expected=retirement["original"],
+        config_path=installation_config_path(Path(request["source"]), home=Path(request["home"])))
 
 
 def _write_channel_record(sha16: str, path: str, channel: str, *,
                           expected: dict | None = None, config_path: Path | None = None) -> bool:
-    from hermes_cli.config import get_config_path
+    from hermes_cli.update_installation_owner import ensure_installation_home
 
-    config_path = config_path if config_path is not None else get_config_path()
+    config_path = config_path if config_path is not None else ensure_installation_home(Path(path)) / "config.yaml"
     with _channel_write_lock(config_path):
         return _write_channel_record_locked(sha16, path, channel, expected, config_path)
 
@@ -295,11 +303,14 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     if installs is not None and not isinstance(installs, dict):
         raise ValueError("config key 'update.installs' is not a mapping")
     record = installs.get(sha16) if isinstance(installs, dict) else None
+    if record is not None and not isinstance(record, dict):
+        raise ValueError("installation update record is not a mapping")
     if expected is not None and (record or {}) != expected:
         return False
     new_record = dict(record) if isinstance(record, dict) else {}
     new_record["path"] = path  # DATA, for humans + doctor GC
     new_record["channel"] = channel
+    new_record["scope"] = "installation"
     atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
     return True
 

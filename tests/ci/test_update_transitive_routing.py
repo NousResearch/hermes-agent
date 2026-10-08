@@ -25,6 +25,7 @@ from tests.ci.test_update_ci_routing import _REPO, _ci_run, _consumers_reached, 
     "pm/plugins_state.py",
     "pm/install.py",
     "hermes_cli/backup.py",
+    "hermes_cli/backup_retention.py",
 ])
 def test_second_hop_update_change_dispatches_real_update_consumers(path):
     lanes = _real_classifier([path])

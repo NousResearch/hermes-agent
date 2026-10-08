@@ -764,15 +764,22 @@ def _run_full_backup() -> None:
 
 
 def _run_pre_update_backup(args) -> Optional[str]:
-    """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
+    """Run the pre-update backup; return the quick-snapshot id (None when off/failed).
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
     ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
 
-    Explicit user opt-out is honored fully. See #34600.
+    Explicit user opt-out is honored fully. See #34600. ``--require-backup`` instead
+    requires complete full archives and a durable receipt before continuing.
     """
     mode = _resolve_pre_update_backup_mode(args)
+
+    if getattr(args, "require_backup", False):
+        from hermes_cli.update_required_backup import require_pre_update_backups
+
+        require_pre_update_backups(args)
+        mode = "quick"  # Full archives already succeeded; preserve the normal recovery snapshots.
 
     if mode == "off":
         if getattr(args, "no_backup", False):

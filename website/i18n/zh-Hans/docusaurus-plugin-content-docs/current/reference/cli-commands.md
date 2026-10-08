@@ -1252,6 +1252,69 @@ hermes update [--check] [--backup] [--restart-gateway]
 - **旧版 `hermes.service` 警告。** 如果 Hermes 检测到预重命名的 `hermes.service` systemd 单元（而非当前的 `hermes-gateway.service`），会打印一次性迁移提示，帮助你避免循环重启问题。
 - **退出码。** 成功时为 `0`，拉取/安装/安装后错误时为 `1`，阻止 `git pull` 的意外工作树变更时为 `2`。
 
+### `hermes update auto`
+
+为自行管理的源码安装提供可选的每日自动更新，**默认关闭**。不调用模型，
+不创建 Hermes cron 任务或后台守护进程。Linux 使用用户级 systemd timer；
+macOS 使用 GUI 会话的 LaunchAgent。Windows、Desktop 应用包、Docker、Nix
+及由软件包管理器维护的安装不支持此源码调度器。
+
+同一源码安装只对应一个调度器、更新 channel、状态和操作锁，全部 profile 共用。
+channel 保存在安装所有者根目录的 `config.yaml` 的 `update.installs.<install-id>` 中，
+标记为 `scope: installation`。`--profile` 不选择另一个 Hermes 版本。
+旧 profile channel 一致时可合并；不一致时显示配置路径和值，并要求明确执行
+`hermes update --set-channel CHANNEL`。原 profile 配置保留不动。
+优先使用 PM 已确定的安装数据根目录。尚未确定所有者的 checkout，会在首次明确
+配置更新或自动更新时，在 Git 元数据中记录一个数据根目录绑定（非 Git 源码树使用
+平台默认 Hermes 根目录下的 `installs/<install-id>/update-owner.json`）。
+后续自定义 `HERMES_HOME` 共用该所有者；冲突时显示双方路径并停止。
+
+```bash
+hermes update auto status
+hermes update auto plan
+hermes update auto run-now
+hermes update auto enable --time 04:00 --plan-time 21:00
+hermes update auto migrate
+hermes update auto disable
+```
+
+- `status` 输出 `<installation-home>/installs/<install-id>/update-auto/status.json` 中的 JSON，不访问网络。
+  未配置时，`status`、`disable` 和 `run-scheduled` 均不创建状态文件。
+  存在旧 profile 调度时会列出需要迁移的设置。
+- `plan` 检查更新器实际选择的 channel 或 branch，保存计划并打印提示。
+  会写入本地检查缓存、状态和日志，但不发送聊天通知。真正执行时会重新解析
+  更新目标；计划不会锁定将来要安装的版本。
+- `run-now` 通过当前安装的稳定启动器，在新进程中运行既有的事务更新器，
+  参数为 `--yes --require-backup`。沿用更新锁、PM、gateway 重启和健康验证。
+  手动运行不会启用调度，也不接受强制绕过安全检查或跳过备份的选项。
+- `run-scheduled` 先检查更新。代码已是最新且没有未完成恢复工作的安装只记录
+  `up_to_date`，不启动更新子进程、不创建备份、不重启服务。检查失败会中止；
+  发现未完成或不可读的恢复记录时仍交给既有更新器处理，避免遗弃恢复任务。
+- `--require-backup` 要求根目录、当前 profile 和全部有效命名 profile 的完整
+  备份成功并写入回执。缺失、不完整、不可读或未记录的备份使更新在修改代码或
+  依赖前以退出码 11 中止。不能与 `--no-backup` 合用；普通更新行为不变。
+- `enable` 使用主机本地时间。可重复传入 `--plan-time`，但不能与更新时间相同。
+  休眠或登录后的补执行会选择最近的每日时段。调度跟随安装已保存的 channel；
+  `--branch` 和 `--channel` 临时覆盖仅适用于手动 `plan`、`run-now`。
+- `migrate` 在旧服务空闲时，把时间设置一致的旧 profile 调度合并为一个安装调度。
+  应从终端执行；旧 timer 自己触发时只提示迁移命令，不卸载正在运行的自身服务。
+  时间冲突时用 `enable --time ...` 明确设置，channel 冲突时先用 `--set-channel` 选择。
+- `disable` 删除当前安装的调度以及已识别的旧 profile 调度，无须选择冲突设置。
+  正在更新或管理器状态不明时
+  拒绝修改。调度变更失败时恢复原文件与管理器状态；恢复不完整则记录
+  `recovery_required`，需检查后才能继续修改。
+
+更新输出追加到 `<installation-home>/installs/<install-id>/update-auto/update.log`。调度器输出分别进入同目录下的
+`update-auto.out.log`、`update-auto.err.log`。仅匹配本次关联 ID 的唯一已完成
+更新回执可以证明成功。版本未变化可以是已验证的 `up_to_date`；已提交但仍需
+后续处理的更新记录为 `followup_required`（退出码 14）。缺失或矛盾的证据不会
+被当作完全成功。包装进程中断后，下次操作会协调匹配的已完成回执；否则应先
+检查日志，再明确执行 `run-now` 重试。
+
+无需 sudo；安装和启动时不会自动开启调度。迁移保留旧状态和日志，并记录原调度文件。
+失败时恢复原文件和管理器状态；中断时保留 `migration_running` 证据并拒绝继续修改，
+需要先检查恢复情况。无法识别的旧状态保持不变，不会静默选择某个 profile。
+
 ## 维护命令
 
 | 命令 | 说明 |

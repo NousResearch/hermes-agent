@@ -64,10 +64,11 @@ def _project_root() -> Path:
 def release_channel(config: dict[str, Any]) -> str:
     """The channel this install follows: a package's baked channel, a source install's channel
     record, else the checkout's branch (``main`` for main/master, ``dev`` for any other)."""
-    from hermes_cli.update_channel import _package_channel, _read_stamp, resolve_update_channel
+    from hermes_cli.update_channel import _package_channel, _read_stamp
+    from hermes_cli.update_installation import resolve_install_channel
 
     root = _project_root()
-    resolved = resolve_update_channel(config, root)
+    resolved = resolve_install_channel(root)
     if resolved != "main" or _package_channel(_read_stamp(root)):
         return _CHANNELS.get(resolved, "unknown")
     branch = _version_info().branch

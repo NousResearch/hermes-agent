@@ -620,12 +620,9 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     if transient is not None:
         from hermes_cli.release_channels import validate_name
         return validate_name(transient)
-    from hermes_cli.update_channel import resolve_update_channel
+    from hermes_cli.update_installation import resolve_install_channel
 
-    from hermes_cli.config import get_config_path, require_readable_config_before_write
-
-    config = require_readable_config_before_write(get_config_path())
-    return resolve_update_channel(config, _m().PROJECT_ROOT)
+    return resolve_install_channel(_m().PROJECT_ROOT)
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):
@@ -1839,17 +1836,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_ref = f"origin/{branch}"
     release_sha = None
     target_repository = None
+    from hermes_cli.update_installation_owner import ensure_installation_home
+    ensure_installation_home(_m().PROJECT_ROOT)
     selected_channel = _source_update_channel(args)
     if not getattr(args, "branch", None):
         from hermes_cli.release_channels import retrying_reads
         from hermes_cli.source_releases import resolve_source_target
 
-        from copy import deepcopy
-        from hermes_cli.config import require_readable_config_before_write
-        from hermes_cli.update_channel import channel_record
+        from hermes_cli.update_installation import prepare_install_channel_record
 
-        original_record = deepcopy(channel_record(require_readable_config_before_write(
-            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
+        original_record = prepare_install_channel_record(_m().PROJECT_ROOT, transient=getattr(args, "channel", None))
         print(f"→ Update channel: {selected_channel}")
         try:
             with retrying_reads():

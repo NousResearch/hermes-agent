@@ -313,6 +313,8 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/image_provenance.py",
     "hermes_cli/backup.py",  # pre-update backup
     "hermes_cli/backup_restore.py",
+    "hermes_cli/backup_retention.py",
+    "hermes_cli/subcommands/__init__.py",  # update parser loads its auto-update sibling
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",

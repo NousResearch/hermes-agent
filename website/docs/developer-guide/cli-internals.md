@@ -10,6 +10,26 @@ Companion to `hermes_cli/AGENTS.md` (the rules) — this page holds the longer e
 
 ## Update pipeline
 
+Update ownership is the installation, not the invoking profile.
+`update_installation_owner.py` resolves PM's committed data-root identity (distinct
+from `owning_home_root`'s "does this caller need redirecting?" result) and binds
+otherwise unowned checkouts on explicit configuration operations. Binding state
+uses the checkout's Git metadata namespace, keyed by canonical installation path,
+with a platform-default `installs/<id>/` metadata fallback for non-Git source trees,
+outside the ZIP payload. Profiles and custom homes
+cannot acquire a second subscription or scheduler identity for a bound checkout.
+`update_installation.py` owns channel consensus and comment-preserving migration
+to the root `update.installs.<id>` record. Manual updates, passive checks, and the
+automatic wrapper read that same subscription; transient overrides remain explicit.
+
+`update_auto_migrate.py` retires legacy profile timers while holding the new
+installation operation lock and every legacy home operation lock. Matching
+settings are preserved, conflicting effective channels or schedules require an
+explicit choice, and running services are never unloaded for self-migration.
+The wrapper's mutex is separate from the canonical checkout lock, which its
+fresh updater child acquires. A scheduled no-op checks durable recovery evidence
+before skipping that child, so a current checkout cannot hide unfinished work.
+
 User-facing behaviour (receipts, `--plan`, snapshot modes) is in
 [Updating](../getting-started/updating.md); `hermes_cli/AGENTS.md` carries the short form of the rules.
 

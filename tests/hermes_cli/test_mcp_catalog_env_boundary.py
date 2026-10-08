@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -230,6 +231,33 @@ def test_catalog_non_secret_env_never_lands_in_env_file(
     assert "${DEMO_BASE_URL}" not in (
         catalog_env / "config.yaml"
     ).read_text(encoding="utf-8")
+
+
+def test_dashboard_catalog_install_never_opens_curses_picker(
+    client: TestClient,
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Dashboard installs must not block a serve worker on terminal input."""
+    import hermes_cli.mcp_catalog as mcp_catalog
+    from hermes_cli.config import load_config
+
+    monkeypatch.setattr(mcp_catalog, "_probe_tools", lambda _name: [("demo_tool", "Demo")])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("dashboard install opened curses")
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fail_if_called)
+
+    response = client.post(
+        "/api/mcp/catalog/install",
+        headers=HEADERS,
+        json={"name": "demo", "env": {"DEMO_API_KEY": "valid-demo-value"}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert load_config()["mcp_servers"]["demo"]["enabled"] is True
 
 
 @pytest.mark.parametrize(

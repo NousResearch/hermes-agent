@@ -1222,3 +1222,31 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_completion_notice_does_not_echo_oversized_task_source(batch):
+    """Regression: a huge dispatch context (a full review diff) was echoed verbatim into the completion
+    message; that 947 KB user turn then sat in the protected tail and blocked compression. The parent
+    already holds the context in its own transcript, so the notice keeps only a bounded reminder."""
+    head_marker, tail_marker = "REVIEW-INSTRUCTIONS-HEAD", "DIFF-TAIL-MARKER"
+    context = head_marker + "\n" + ("-removed line of a large diff\n" * 40_000) + tail_marker
+    result_text = "Verdict: approve. Only low-severity leftovers."
+    common = dict(context=context, toolsets=None, role="leaf", model="m", session_key="", max_async_children=3)
+    if batch:
+        handle = ad.dispatch_async_delegation_batch(
+            goals=["Review candidate abc"],
+            runner=lambda: {"results": [{"task_index": 0, "status": "completed", "summary": result_text}]},
+            **common)
+    else:
+        handle = ad.dispatch_async_delegation(
+            goal="Review candidate abc",
+            runner=lambda: {"status": "completed", "summary": result_text, "api_calls": 3},
+            **common)
+    evt = _drain_for(handle["delegation_id"])
+    assert evt is not None
+    text = format_process_notification(evt)
+    assert result_text in text
+    assert head_marker in text, "the start of the dispatched context still orients the parent"
+    assert tail_marker not in text, "the bulk of an oversized context must not be echoed back"
+    assert len(text) < len(context) // 10

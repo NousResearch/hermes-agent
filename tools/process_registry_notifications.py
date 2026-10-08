@@ -139,6 +139,18 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
+# The parent already supplied this context. Echoing a full review diff here can
+# create a megabyte-sized newest user turn that compression must keep verbatim.
+_ECHO_CONTEXT_MAX_CHARS = 2000
+
+
+def _bounded_task_source(text: str) -> str:
+    if len(text) <= _ECHO_CONTEXT_MAX_CHARS:
+        return text
+    omitted = len(text) - _ECHO_CONTEXT_MAX_CHARS
+    return f"{text[:_ECHO_CONTEXT_MAX_CHARS]}\n[… {omitted:,} more chars of the context you provided omitted]"
+
+
 def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
@@ -149,7 +161,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
     if with_goal:
         lines.append(f"Original goal: {evt.get('goal', '') or ''}")
     if evt.get("context"):
-        lines.append(f"Context you provided: {evt['context']}")
+        lines.append(f"Context you provided: {_bounded_task_source(str(evt['context']))}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
     lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
@@ -261,8 +273,8 @@ def _process_accounting_lines(r: dict) -> list:
 
 
 def _format_async_delegation(evt: dict) -> str:
-    """Self-contained re-injection for an async-delegation completion: the FULL
-    original task source (goal, context, toolsets, role, model), dispatch time, status
+    """Self-contained re-injection for an async-delegation completion: the original task
+    source (goal, bounded context, toolsets, role, model), dispatch time, status
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
     deleg_id = evt.get("delegation_id", "unknown")
     completed_at = evt.get("completed_at") or time.time()
@@ -276,7 +288,7 @@ def _format_async_delegation(evt: dict) -> str:
         evt,
         f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
         "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
+        "have moved on since dispatching it; the task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [

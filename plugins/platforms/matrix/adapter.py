@@ -360,6 +360,7 @@ class _MatrixApprovalPrompt:
     # Prompt text and its agent-protocol choices, to edit it out of "waiting" once settled.
     text: str = ""
     agent_choices: list = field(default_factory=list)
+    agent_run: str | None = None
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -805,6 +806,7 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
+    AGENT_STATUS = True  # agent protocol: the gateway passes run state in metadata["fluxchat_agent"]
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
@@ -880,6 +882,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
+        # Agent protocol: (room, request event) -> (progress bubble event, its text), settled to
+        # done / failed when the run ends so clients don't keep showing it as working.
+        self._agent_status_bubbles: dict[tuple[str, str], tuple[str, str]] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
         self._reaction_redaction_delay_seconds = 5.0
@@ -1416,7 +1421,30 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
+        self._remember_status_bubble(chat_id, last_event_id, content, (metadata or {}).get("fluxchat_agent"))
         return SendResult(success=True, message_id=last_event_id)
+
+    def _remember_status_bubble(self, chat_id: str, event_id: Optional[str], text: str, status: Any) -> None:
+        """Agent protocol: track the run's working message, to settle it when the run ends."""
+        if (not event_id or not isinstance(status, dict) or status.get("state") != "working"
+                or not status.get("run") or status.get("choices")):  # a settled prompt isn't the bubble
+            return
+        bubbles = self.__dict__.setdefault("_agent_status_bubbles", {})
+        bubbles[(chat_id, str(status["run"]))] = (str(event_id), text)
+
+    async def _settle_status_bubble(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Agent protocol: edit the run's working message to how the run ended."""
+        msg_id, room_id = event.message_id, event.source.chat_id
+        bubble = self.__dict__.get("_agent_status_bubbles", {}).pop((room_id, msg_id), None)
+        if not bubble:
+            return
+        status = dict(getattr(event, "_agent_status", None) or {"v": 1, "run": msg_id, "state": "done"})
+        if outcome != ProcessingOutcome.SUCCESS:
+            status["state"] = "failed"
+        try:
+            await self.edit_message(room_id, bubble[0], bubble[1], agent_status=status)
+        except Exception as exc:
+            logger.debug("Matrix: couldn't settle the status of run %s: %s", msg_id, exc)
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -1483,7 +1511,10 @@ class MatrixAdapter(BasePlatformAdapter):
         await self._set_typing(chat_id, 0)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
-                           agent_status: Optional[Dict[str, Any]] = None) -> SendResult:
+                           agent_status: Optional[dict[str, Any]] = None,
+                           metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        if agent_status is None and isinstance((metadata or {}).get("fluxchat_agent"), dict):
+            agent_status = metadata["fluxchat_agent"]
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
         if agent_status:
@@ -1511,7 +1542,10 @@ class MatrixAdapter(BasePlatformAdapter):
             # JSON escaping grows a character at most sixfold (\u00XX).
             fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
             msg_content["body"] = f"* {fallback}…"
-        return await self._send_content_event(chat_id, msg_content)
+        result = await self._send_content_event(chat_id, msg_content)
+        if result.success:
+            self._remember_status_bubble(chat_id, message_id, content, agent_status)
+        return result
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1709,7 +1743,11 @@ class MatrixAdapter(BasePlatformAdapter):
         labels = {choice: label for label, choice, _style in prompt.actions}
         agent_choices = [{"key": self._EA_REACTIONS[c], "label": labels.get(c) or c} for c in choices]
         metadata = dict(prompt.metadata or {})
-        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices}
+        # The gateway may have named the run (``run``); the prompt keeps it when it settles.
+        given = metadata.get("fluxchat_agent")
+        run = given.get("run") if isinstance(given, dict) else None
+        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices,
+                                      **({"run": run} if run else {})}
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1718,7 +1756,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at, text=text, agent_choices=agent_choices)
+                expires_at=expires_at, text=text, agent_choices=agent_choices, agent_run=run)
         return await self._send_reaction_prompt(
             chat_id, text, metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2499,6 +2537,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id
+        await self._settle_status_bubble(event, outcome)
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
@@ -2657,8 +2696,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if not getattr(prompt, "agent_choices", None) or not getattr(prompt, "text", ""):
             return
         try:
+            run = getattr(prompt, "agent_run", None)
             await self.edit_message(room_id, prompt.message_id, prompt.text,
-                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices})
+                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices,
+                                                  **({"run": run} if run else {})})
         except Exception as exc:
             logger.debug("Matrix: couldn't settle agent prompt %s: %s", prompt.message_id, exc)
 

@@ -786,7 +786,10 @@ PLATFORM_HINTS = {
         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
         f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
-        "messages, video (.mp4) inline, other files as attachments."
+        "messages, video (.mp4) inline, other files as attachments. Final replies: open with a "
+        "one-line outcome headline (\u201cDeployed v0.2.0\u201d, \u201c2 tests still failing\u201d) \u2014 "
+        "agent clients on this protocol show your reply's first line as the run's result, so write "
+        "it for readers who won't open the thread, then the answer itself."
     ),
     "feishu": (
         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "

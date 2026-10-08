@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from gateway import agent_status as _agent_status
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -550,6 +551,9 @@ class GatewayTurnProgressMixin:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # Agent protocol (gateway/agent_status.py): the bubble carries the run's state and steps.
+        agent_status: bool = False
+        agent_steps: int = 0
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -573,14 +577,27 @@ class GatewayTurnProgressMixin:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            agent_status=_agent_status.supported(adapter),
         )
+
+    def _progress_send_metadata(self, st) -> Optional[dict]:
+        """Progress metadata, plus the run's ``working`` state for adapters that report it."""
+        ctx = self._ctx
+        # Slack task cards share _send_progress_text with a state that has no agent fields.
+        if not getattr(st, "agent_status", False):
+            return ctx._progress_metadata
+        run = ctx.inbound_message_id or ctx.event_message_id
+        step = st.progress_lines[-1] if st.progress_lines else None
+        return _agent_status.with_status(ctx._progress_metadata, _agent_status.working(run, step, st.agent_steps))
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
         ctx = self._ctx
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
-        if st._edit_accepts_metadata:
+        if st.agent_status:
+            kwargs["metadata"] = self._progress_send_metadata(st)
+        elif st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
         return await st.adapter.edit_message(**kwargs)
 
@@ -603,7 +620,8 @@ class GatewayTurnProgressMixin:
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
         result = await st.adapter.send(
-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to,
+            metadata=self._progress_send_metadata(st),
         )
         self._track_progress_result(result)
         return result
@@ -657,6 +675,7 @@ class GatewayTurnProgressMixin:
             st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
+        st.agent_steps += 1
         return raw
 
     async def _flush_progress_edit(self, st) -> None:

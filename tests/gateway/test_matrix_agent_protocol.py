@@ -69,3 +69,12 @@ async def test_edit_puts_status_in_new_content(monkeypatch):
     await adapter.edit_message("!r:example.org", "$m", "Working on it", agent_status={"v": 1, "state": "done"})
     assert captured[0]["m.new_content"][KEY] == {"v": 1, "state": "done"}
     assert captured[0][KEY] == {"v": 1, "state": "done"}
+
+def test_matrix_hint_teaches_the_result_headline():
+    """The Matrix platform prompt tells the agent to open its final reply with a
+    one-line outcome: the adapter's default `result` is the reply's first line, so
+    the headline has to come from the agent, not from trimming the transcript."""
+    from agent.prompt_builder import PLATFORM_HINTS
+    hint = PLATFORM_HINTS["matrix"]
+    assert "first line" in hint
+    assert "result" in hint

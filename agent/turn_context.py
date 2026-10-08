@@ -138,10 +138,16 @@ def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
     return sidecar
 
 
+_REPLAY_SIDECAR_KEYS = ("api_content", "anthropic_content_blocks", "bedrock_content_blocks", "codex_message_items")
+
+
 def drop_stale_api_content(msg: Dict[str, Any]) -> None:
-    """Drop the ``api_content`` sidecar from a message whose content was rewritten
-    (replaying it would resend what the rewrite removed; cost is one cache miss)."""
-    msg.pop("api_content", None)
+    """Drop the replay sidecars (``api_content`` and the provider-native exact-replay blocks) from a
+    message whose content was rewritten (converters replay them instead of ``content``, so they would
+    resend what the rewrite removed; cost is one cache miss). Signed thinking survives in
+    ``reasoning_details``."""
+    for key in _REPLAY_SIDECAR_KEYS:
+        msg.pop(key, None)
 
 
 def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:

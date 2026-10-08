@@ -6,7 +6,9 @@ fresh-turn path with the #56391 guard never firing: the turn it started read
 the pre-rotation history and its own post-turn compression later committed a
 snapshot taken before the previous commit — double-compressing the transcript
 (352→48→64) while the session looked idle for ~5.5 minutes. The running-agent
-path already demoted for this; the fresh-turn path must refuse too.
+path already demoted for this; the fresh-turn path must refuse too. External
+messages get the resend notice; internal wakes (not user-resendable) are parked
+in the adapter FIFO and re-dispatched until the lock clears.
 """
 
 import pytest
@@ -125,15 +127,66 @@ async def test_no_compression_starts_fresh_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_internal_message_not_gated(tmp_path):
-    """The gate mirrors the external-drain gate and only refuses user traffic;
-    internal events keep the pre-gate fresh-turn behavior."""
+async def test_internal_event_without_compression_unchanged(tmp_path):
+    """Control: with no compression in flight an internal wake keeps the pre-gate
+    fresh-turn behavior — no notice, no deferral, one turn."""
+    store = _store(tmp_path)
+    src = _source(chat_id="555014")
+    store.get_or_create_session(src)
+
+    runner = _make_runner(store)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    result, cold_path = await _drive(runner, _event(src, internal=True))
+
+    assert result == "COLD_PATH_REPLY"
+    assert cold_path.await_count == 1
+    assert adapter._pending_messages.get(runner._session_key_for_source(src)) is None
+
+
+@pytest.mark.asyncio
+async def test_internal_event_deferred_during_compression(tmp_path):
+    """Internal wake while the compression lock is held: no resend notice (a background
+    completion is not user-resendable), no turn on the pre-rotation transcript, and the
+    exact event object is parked in the adapter FIFO for re-dispatch."""
     store = _store(tmp_path)
     src = _source(chat_id="555012")
     store.get_or_create_session(src)
 
     runner = _make_runner(store)
-    result, cold_path = await _drive(runner, _event(src, internal=True))
+    adapter = runner.adapters[Platform.TELEGRAM]
+    event = _event(src, internal=True)
+    with patch.object(GatewayRunner, "_delivery_adapter_for", lambda self, _src: adapter):
+        result, cold_path = await _drive(runner, event, compression_in_flight=True)
+
+    assert result is None, "a deferred internal wake must not produce a resend notice"
+    assert cold_path.await_count == 0, (
+        "an internal turn started while compression was in flight"
+    )
+    assert adapter._pending_messages.get(runner._session_key_for_source(src)) is event
+    assert event._gateway_accepted is True
+
+
+@pytest.mark.asyncio
+async def test_deferred_internal_event_runs_once_compression_clears(tmp_path):
+    """The deferred wake drains exactly once against the post-compression transcript:
+    after the adapter's post-exit drain pops the slot and re-dispatches the same object
+    with the lock released, exactly one turn starts."""
+    store = _store(tmp_path)
+    src = _source(chat_id="555013")
+    store.get_or_create_session(src)
+
+    runner = _make_runner(store)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    event = _event(src, internal=True)
+    key = runner._session_key_for_source(src)
+    with patch.object(GatewayRunner, "_delivery_adapter_for", lambda self, _src: adapter):
+        _, cold_path = await _drive(runner, event, compression_in_flight=True)
+        assert cold_path.await_count == 0
+
+        drained = adapter._pending_messages.pop(key)
+        assert drained is event
+        result, cold_path = await _drive(runner, drained)
 
     assert result == "COLD_PATH_REPLY"
     assert cold_path.await_count == 1
+    assert adapter._pending_messages.get(key) is None

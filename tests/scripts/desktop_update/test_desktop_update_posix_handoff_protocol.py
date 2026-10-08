@@ -510,6 +510,54 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
     assert verdict in ("absent", "reclaimed")
 
 
+def test_the_update_child_is_told_the_pid_that_owns_the_marker(tmp_path):
+    """`hermes update` decides whether the marker it finds is its own claim from
+    HERMES_UPDATE_HANDOFF_PID (update_lock._is_partner: our pid | that value | an ancestor).
+    Marker line 1 belongs to the custodian subshell — a SIBLING of the hand-off script, so no
+    ancestry walk ever reaches it — hence the hand-off must export the marker's owner, not its
+    own pid. Exporting $$ makes the update refuse the very claim its own hand-off just wrote:
+    exit 2, and a Desktop that relaunches and fails forever (Regression for #134268)."""
+    home, install = _install(tmp_path)
+    seen = tmp_path / "update-env-pid"
+    marker = home / ".hermes-update-in-progress"
+    handoff_log = home / "logs" / "desktop-update-handoff.log"
+    launcher = install / ".hermes" / "bin" / "hermes"
+    fixture = launcher.with_name("hermes.fixture")
+    launcher.rename(fixture)
+    launcher.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s' \"${{HERMES_UPDATE_HANDOFF_PID-}}\" >{shlex.quote(str(seen))}\n"
+        f"exec {shlex.quote(str(fixture))} \"$@\"\n",
+        encoding="utf-8")
+    launcher.chmod(0o755)
+    script = subprocess.Popen(
+        ["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install)],
+        env=_env(tmp_path, home), cwd=tmp_path,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 30
+        owner = ""
+        while not (owner and seen.exists()):
+            if marker.exists():
+                owner = marker.read_text(encoding="utf-8-sig").split("\n")[0]
+            assert time.monotonic() < deadline and script.poll() is None, (
+                f"seen={seen.exists()} marker={owner!r}\n"
+                + (handoff_log.read_text(encoding="utf-8-sig") if handoff_log.exists() else "no hand-off log"))
+            time.sleep(0.01)
+        log = handoff_log.read_text(encoding="utf-8-sig")
+        handoff = re.search(r"hand-off start: .*?pid=(\d+)", log)
+        assert handoff, log
+        exported = seen.read_text(encoding="utf-8-sig")
+        assert exported == owner, (exported, owner, log)  # the export names the marker's owner …
+        assert exported != handoff.group(1), log          # … which is never the hand-off script itself
+    finally:
+        if script.poll() is None:
+            script.kill(); script.wait()
+    deadline = time.monotonic() + 30  # the custodian outlives the script, then hands the marker back
+    while marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
 # ── bounded probes and the old-reader line-2 refresh ────────────────────────
 
 

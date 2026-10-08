@@ -3237,10 +3237,16 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     from functools import partial
-    from cron.executions import recover_receipted_execution
+    from cron.executions import get_execution, recover_receipted_execution
     finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else finish_execution
-    finish(
+    finished = finish(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+    if recovered and finished is None:
+        current = get_execution(execution_id)
+        # A live foreign firer still owns this row. Keep its only recovery link until settlement.
+        # Legacy direct calls may have no execution row; an already-finished row is also safe.
+        if current is not None and current['status'] not in {'completed', 'failed'}:
+            return False
     if job.get("last_delivery_queued"):
         # A drain that settled before this run's own bookkeeping landed found nothing to fence on.
         settle_quietly(job["id"], execution_id)

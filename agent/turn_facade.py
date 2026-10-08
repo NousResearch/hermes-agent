@@ -30,7 +30,11 @@ class TurnFacadeMixin:
         relay_metadata: Optional[Dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Run a user turn; ``None`` resumes history ending in a completed tool result.
+
+        Tool-result continuation appends no user row and starts no user-input hooks.
+        See ``agent.conversation_loop.run_conversation``.
+        """
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline

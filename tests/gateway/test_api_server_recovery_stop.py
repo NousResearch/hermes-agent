@@ -105,6 +105,8 @@ async def test_stop_fences_recovery_and_survives_reopening(recovery, tmp_path, m
         return result
 
     def final(**kwargs):
+        assert kwargs["user_message"] is None
+        assert kwargs["conversation_history"][-1]["role"] == "tool"
         if phase == "during_final":
             pause()
         # Stop authority must win even when a provider returns an ordinary result.

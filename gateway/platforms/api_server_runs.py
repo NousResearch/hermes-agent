@@ -531,7 +531,7 @@ class _RunLaunch:
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
-    user_message: str
+    user_message: Optional[str]
     conversation_history: List[Dict[str, str]]
     # #98619: only continuation paths that reload session history may grant wake authority —
     # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
@@ -1683,7 +1683,7 @@ async def _execute_recovery_run(self, plan: Dict[str, Any], *, q, _api_server) -
                 session_id,
                 None,
                 False,
-                "Continue from the completed approved tool result and provide the final answer. Do not call tools.",
+                None,
                 history,
                 False,
                 final_kwargs,

@@ -251,7 +251,7 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
 
     Prefers the LAST user message whose content exactly matches this turn's text, else
     the last user-originated turn; compaction handoffs are never the fallback.
-    Returns -1 when there is no user-originated message.
+    Returns -1 when there is no user-originated message or this is a tool continuation.
 
     Compression replaces list entries with fresh copies (and may append a todo-snapshot user message or a
     restored user turn AFTER the surviving copy of the current turn's message), so a pre-compression index
@@ -262,6 +262,9 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     Compaction handoffs must never become the fallback anchor (#80622) — they are reference-only
     scaffolding, not the active ask.
     """
+    if user_message is None:
+        return -1
+
     from agent.context_compressor import user_originated_turn_view
 
     fallback = -1
@@ -459,7 +462,7 @@ def _should_idle_compact(
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
 
-    user_message: str  # sanitized inbound message (surrogates stripped)
+    user_message: Any  # sanitized inbound message, or None for tool continuation
     original_user_message: Any  # clean text for transcripts / memory queries (no nudges)
     messages: List[Dict[str, Any]]  # working list for this turn (loop appends to it)
     conversation_history: Optional[List[Dict[str, Any]]]  # None after rotation
@@ -1018,6 +1021,13 @@ def build_turn_context(
     if recovered_history is not None:
         conversation_history = recovered_history
 
+    # Durable tool recovery resumes the existing turn, not a fabricated user turn.
+    continuing_tool = user_message is None
+    if continuing_tool and (
+        not conversation_history or conversation_history[-1].get("role") != "tool"
+    ):
+        raise ValueError("A continuation requires history ending in a tool result")
+
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
     # NOTE: the DB session row is created later, AFTER the system prompt is restored/built (see
@@ -1063,27 +1073,30 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
-    user_msg, pending_cli_message = _stage_turn_user_message(
-        agent, user_message, persist_user_message, persist_user_timestamp,
-        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
-    )
+    pending_cli_message = None
+    current_turn_user_idx = -1
+    original_user_message = None
+    should_review_memory = False
+    if not continuing_tool:
+        user_msg, pending_cli_message = _stage_turn_user_message(
+            agent, user_message, persist_user_message, persist_user_timestamp,
+            persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
+        )
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
-    # Append the user message now that close persistence is safe.
-    append_message(messages, user_msg)
-    current_turn_user_idx = len(messages) - 1
+    if not continuing_tool:
+        # Append the user message now that close persistence is safe.
+        append_message(messages, user_msg)
+        current_turn_user_idx = len(messages) - 1
+        agent._user_turn_count += 1
+        original_user_message = persist_user_message if persist_user_message is not None else user_message
+        should_review_memory = _tick_memory_nudge(agent)
+        _emit_reaction(agent, original_user_message)
     agent._persist_user_message_idx = current_turn_user_idx
-
-    agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is user-initiated;
     # tool-loop follow-ups revert to "agent".
-    agent._is_user_initiated_turn = True
-
-    # Preserve the original user message (no nudge injection).
-    original_user_message = persist_user_message if persist_user_message is not None else user_message
-    should_review_memory = _tick_memory_nudge(agent)
-    _emit_reaction(agent, original_user_message)
+    agent._is_user_initiated_turn = not continuing_tool
 
     if not agent.quiet_mode:
         agent._safe_print(
@@ -1129,22 +1142,22 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
-    )
-    plugin_user_context = _merge_gateway_notes(
-        agent, messages, current_turn_user_idx, plugin_user_context
-    )
-
+    plugin_user_context = ""
+    ext_prefetch_cache = {}
+    if not continuing_tool:
+        plugin_user_context = _collect_pre_llm_call_context(
+            agent, effective_task_id=effective_task_id, turn_id=turn_id,
+            original_user_message=original_user_message, messages=messages,
+            conversation_history=conversation_history,
+        )
+        plugin_user_context = _merge_gateway_notes(
+            agent, messages, current_turn_user_idx, plugin_user_context
+        )
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
-
-    # Title the session now: titling depends only on the user's ask (before any injected
-    # context lands on list content), so it runs concurrently with the turn. Daemon thread,
-    # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
+    if not continuing_tool:
+        ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+        # Titling and memory prefetch belong to new user input, never tool recovery.
+        _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":

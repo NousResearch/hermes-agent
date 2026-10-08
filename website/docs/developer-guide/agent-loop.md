@@ -38,6 +38,11 @@ result = agent.run_conversation(
 
 `chat()` is a thin wrapper around `run_conversation()` that extracts the `final_response` field from the result dict.
 
+Durable approval recovery uses `run_conversation(None, conversation_history=history)`
+to continue an existing turn whose history ends in a completed tool result. This
+does not append a user message, rewrite the replayed prefix, or rerun user-input
+memory, reaction, and title hooks. Missing history or a non-tool tail is rejected.
+
 ## API Modes
 
 Hermes supports three API execution modes, resolved from provider selection, explicit args, and base URL heuristics:

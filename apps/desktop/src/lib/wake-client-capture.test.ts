@@ -134,6 +134,21 @@ describe('startClientWakeCapture (issue #119089)', () => {
     expect(handle.active).toBe(true)
   })
 
+  it('requests unprocessed mic audio so browser AGC cannot clip the wake feed', async () => {
+    const handle = await start()
+    handles.push(handle)
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        autoGainControl: false,
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false
+      },
+      video: false
+    })
+  })
+
   it('reports sustained digital silence instead of staying deaf forever', async () => {
     const onError = vi.fn()
     const handle = await start({ onError, silenceFramesThreshold: 10 })

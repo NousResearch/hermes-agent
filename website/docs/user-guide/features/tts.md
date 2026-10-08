@@ -78,10 +78,11 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
+    model: "gemini-2.5-flash-preview-tts"  # or gemini-3.8-flash-tts / gemini-3.8-flash-lite-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
+    style: ""                    # Gemini 3.8: optional concise delivery style
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # BCP-47 code (e.g. "en", "pt-BR") or "auto" for detection
@@ -129,6 +130,10 @@ MiniMax TTS selects its region, endpoint, and credential together:
 Gemini TTS can follow natural-language performance direction. Set `tts.gemini.persona_prompt_file` to a local Markdown or text file that describes the voice persona. The file can include Gemini-style sections such as `AUDIO PROFILE`, `SCENE`, `DIRECTOR'S NOTES`, `SAMPLE CONTEXT`, and `TRANSCRIPT`.
 
 If the file contains `{transcript}` or `{{ transcript }}`, Hermes replaces that placeholder with the live TTS text. Otherwise, Hermes appends a labeled `TRANSCRIPT` section automatically. The persona prompt stays local and is not shown in the chat reply.
+
+**Gemini 3.8 Flash and Flash-Lite** use a different request format: `parts[].text` is only the spoken transcript, while voice direction goes into `parts[].speech_metadata.style`. A placeholder-free `persona_prompt_file` is used as style without discarding it (including existing scene/director notes); `tts.gemini.style` overrides that file, and non-empty per-call `instructions` override both. For best results, migrate long persona descriptions to [Voice design](https://ai.google.dev/gemini-api/docs/voice-design) and use the resulting `voice_...` ID in `tts.gemini.voice` with short style direction. A legacy file with `{transcript}` / `{{transcript}}` cannot be used as 3.8 style: Hermes raises a configuration error unless an explicit `style` or per-call `instructions` overrides it. Remove the placeholder and transcript template before using the file as style. Legacy 2.5/3.1 prompt composition is unchanged.
+
+Gemini 3.8 supports point-in-time angle-bracket events (`<laugh>`, `<sigh>`, `<short pause>`) in the transcript; sustained directions belong in style. When `audio_tags` is enabled, Hermes uses an auxiliary model to insert only supported momentary events for 3.8 and rejects any rewrite that changes the spoken text or adds unsupported tags. The existing square-bracket rewrite remains limited to 3.1. Unary 3.8 returns WAV by default; Hermes also accepts L16 PCM by response MIME. Keep the existing configured model until you explicitly switch it.
 
 ```yaml
 tts:

@@ -79,3 +79,35 @@ def test_initial_connect_failure_stays_fatal_for_start(monkeypatch):
     assert isinstance(supervisor._start_error, ConnectionError)
     assert supervisor._ready_event.is_set()
     assert supervisor.snapshot().active is False
+
+
+def test_concurrent_lost_page_reattach_attaches_once():
+    """One lost tab can reach ``_reattach_lost_page`` twice (the detach event and a timed-out
+    call). The second must not attach too: its session would be overwritten and stay attached,
+    unreferenced, for the supervisor's lifetime."""
+    supervisor = bs.CDPSupervisor(task_id="reattach-race", cdp_url="ws://127.0.0.1:9222")
+    attaches: list[str] = []
+
+    async def cdp(method, params=None, *, session_id=None, timeout=10.0):
+        await asyncio.sleep(0)  # yield like a real round trip, so the two calls interleave
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": [{"targetId": "T-live", "type": "page", "url": "https://x/"}]}}
+        if method == "Target.attachToTarget":
+            attaches.append(params["targetId"])
+            return {"result": {"sessionId": f"S{len(attaches)}"}}
+        raise AssertionError(f"unexpected CDP call {method}")
+
+    async def _noop(*_a, **_k):
+        pass
+
+    supervisor._cdp = cdp
+    supervisor._enable_page_domains = _noop
+    supervisor._install_dialog_bridge = _noop
+
+    async def both():
+        await asyncio.gather(supervisor._reattach_lost_page("T-gone"), supervisor._reattach_lost_page("T-gone"))
+
+    asyncio.run(both())
+    assert attaches == ["T-live"]
+    assert supervisor._page_session_id == "S1"
+    assert supervisor._reattaching is False

@@ -20,8 +20,8 @@ from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
-    _requires_bearer_auth,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _model_name_is_minimax_adaptive,
+    _normalize_base_url_text, _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
@@ -172,8 +172,9 @@ def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length
 def _supports_adaptive_thinking(model: str) -> bool:
     """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
     adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
-    Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
-    return _model_name_is_kimi_family(model) or (
+    Kimi/Moonshot and MiniMax M3.1+, whose Anthropic-compatible endpoints implement the adaptive
+    contract (``output_config.effort``)."""
+    return _model_name_is_kimi_family(model) or _model_name_is_minimax_adaptive(model) or (
         _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
     )
 
@@ -671,7 +672,8 @@ def build_anthropic_kwargs(
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
-    # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking
+    # endpoints support manual thinking for M3/M2.x; M3.1+ is adaptive (effort, default max, and
+    # thinking cannot be disabled — omission is the only "off" it accepts). Haiku does NOT support extended thinking
     # — skip entirely. Kimi / Moonshot models also use adaptive thinking: their Anthropic-compatible
     # endpoints (api.moonshot.cn/anthropic, api.kimi.com/coding) accept ``thinking.type="adaptive"`` +
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the

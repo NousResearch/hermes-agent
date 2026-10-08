@@ -466,6 +466,39 @@ def test_no_session_bound_keeps_the_shared_scratch_dir(tmp_path, monkeypatch):
     assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch")
 
 
+def test_engaged_gateway_unset_context_never_borrows_foreign_env_mirror(tmp_path, monkeypatch):
+    """Blocker 1 regression: an engaged gateway host whose CURRENT task has no bound session
+    (ContextVar ``_UNSET``) must not borrow the process ``os.environ`` mirror -- it is
+    last-writer-wins and may belong to a CONCURRENT session.  Such a task falls back to the
+    shared scratch root; only a plain CLI/cron (never engaged) may trust the env mirror."""
+    import gateway.session_context as sc
+    saved_engaged = sc._session_context_engaged
+    sc._session_context_engaged = True  # a concurrent multi-session host is engaged
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SESSION_ID", "foreign-gateway-session")
+    try:
+        # The task context was never bound here: no lane is invented from the mirror.
+        assert session_scratch_dir() is None
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert apply_scratch_tmp_env(env) is True
+        assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+        assert "session-" not in env["TMPDIR"]
+        # Even a child env whose HERMES_SESSION_ID was copied from os.environ must stay on
+        # the shared root: the mirror may name another concurrent session.
+        child = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "foreign-gateway-session"}
+        assert apply_scratch_tmp_env(child) is True
+        assert child["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+        # But a BOUND session in THIS task still gets its own lane (mirror stays ignored).
+        assert sc._SESSION_ID.get() is sc._UNSET
+        sc._SESSION_ID.set("bound-session-id")
+        try:
+            assert session_scratch_dir() == _lane_dir(tmp_path, "bound-session-id")
+        finally:
+            sc._SESSION_ID.set(sc._UNSET)
+    finally:
+        sc._session_context_engaged = saved_engaged
+
+
 def test_scratch_scope_can_be_pinned_to_shared(tmp_path, monkeypatch):
     """HERMES_SCRATCH_SCOPE=shared restores the unscoped layout for operators who script against
     one fixed temp dir."""

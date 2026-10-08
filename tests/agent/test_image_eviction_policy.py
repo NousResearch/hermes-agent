@@ -17,6 +17,7 @@ from agent.image_eviction_policy import (
     OUTBOUND_IMAGE_LIMIT,
     outbound_image_retire_count,
 )
+import itertools
 
 MB = 1_000_000
 
@@ -64,5 +65,5 @@ def test_quantum_shrinks_to_the_fit_window_for_heavy_carriers():
     counts = [outbound_image_retire_count([3] * n, 0) for n in range(window + 1, window + 10)]
     assert all(c > 0 for c in counts)
     assert all(3 * (n - c) <= OUTBOUND_IMAGE_LIMIT for n, c in zip(range(window + 1, window + 10), counts))
-    moves = sum(a != b for a, b in zip(counts, counts[1:]))
+    moves = sum(a != b for a, b in itertools.pairwise(counts))
     assert moves <= len(counts) // (window - OUTBOUND_IMAGE_FLOOR)

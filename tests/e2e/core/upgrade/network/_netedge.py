@@ -291,7 +291,7 @@ class _SiteHandler(http.server.BaseHTTPRequestHandler):
     site_host: str
     hits: list[Hit]
 
-    def log_message(self, format, *args) -> None:  # noqa: A002 - quiet
+    def log_message(self, format, *args) -> None:
         pass
 
     def _read_body(self) -> bytes:

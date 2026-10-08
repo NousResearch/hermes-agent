@@ -95,6 +95,9 @@ const VERSION =
 // major stays within three digits — one regex matching the Python grammar.
 const ARCHIVE_REF = /^rc\.(?:[1-9]\d*)-v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/
 
+// Published channel builds may still carry these retired bundle environment keys.
+const RETIRED_BUNDLE_ENV_KEYS = new Set(['HERMES_SKIP_INTRO'])
+
 function parseChannelJson(body: string): unknown {
   const parsed: unknown = JSON.parse(body)
   // JSON.parse discards duplicate members; scan validated JSON tokens to keep
@@ -371,10 +374,14 @@ function request(fields: Fields): ChannelRequest {
     'HERMES_DESKTOP_USER_DATA_DIR',
     'HERMES_SHARED_AUTH_DIR',
     'HERMES_GUEST_ONBOARDING',
-    'HERMES_SKIP_INTRO'
+    'HERMES_PREVIEW_FULL_CONNECTORS'
   ])
 
   for (const key of environment.keys()) {
+    if (RETIRED_BUNDLE_ENV_KEYS.has(key)) {
+      continue
+    }
+
     if (!allowed.has(key)) {
       throw new Error('Invalid bundle environment name')
     }

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import update_cmd_fleet as fleet
+from hermes_cli import update_cmd_fleet_verify as fleet_verify
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import (
     RuntimeRecord,
@@ -61,8 +62,8 @@ def external_profile_host(tmp_path, monkeypatch):
     monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
     live = {root.resolve(): 1111, other_home.resolve(): 4242}
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda home: live.get(Path(home).resolve()))
-    monkeypatch.setattr(fleet, "_time", SimpleNamespace(sleep=lambda _s: None, monotonic=time.monotonic))
-    monkeypatch.setattr(fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_time", SimpleNamespace(sleep=lambda _s: None, monotonic=time.monotonic))
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     return SimpleNamespace(other_checkout=other_checkout)
@@ -79,7 +80,7 @@ def test_symlinked_external_profile_gateway_does_not_fail_update(external_profil
     plan = UpdatePlan(runtimes=[_gateway("default", 1111), _gateway("work", 4242)])
     update_receipt.begin_update_receipt()
 
-    fleet._verify_fleet_after_update(
+    fleet_verify._verify_fleet_after_update(
         _restart_outcome(), _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True,
     )
 
@@ -94,20 +95,22 @@ def test_symlinked_external_profile_gateway_does_not_fail_update(external_profil
 
 
 def test_external_profile_does_not_mask_a_missed_own_gateway(external_profile_host):
-    """The root's own gateway missed by the restart phase still fails the update."""
+    """The root's own gateway missed by the restart phase is still an owed restart."""
     plan = UpdatePlan(runtimes=[_gateway("default", 1111), _gateway("work", 4242)])
     restart = _restart_outcome()
     restart.restarted_services.clear()
     update_receipt.begin_update_receipt()
 
-    with pytest.raises(SystemExit) as exc:
-        fleet._verify_fleet_after_update(
-            restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True,
-        )
+    # Contract C3: no longer SystemExit(1); the miss is flagged and owed instead.
+    fleet_verify._verify_fleet_after_update(
+        restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True,
+    )
 
-    assert exc.value.code == 1
-    outcomes = {o["profile"]: o["outcome"] for o in update_receipt.read_latest_receipt()["runtime_outcomes"]}
+    assert restart.incomplete
+    receipt = update_receipt.read_latest_receipt()
+    outcomes = {o["profile"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert outcomes == {"default": "unaccounted", "work": "external"}
+    assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
 
 
 def test_external_requires_verified_pid_evidence():

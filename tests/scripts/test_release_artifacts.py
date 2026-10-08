@@ -15,8 +15,8 @@ import hermes_yaml
 import pytest
 
 from scripts.bundles.release_artifacts import materialize, record, stamp_matches
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
-from tests.scripts.test_stable_release import https_origin  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
+from tests.scripts.test_stable_release import https_origin
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
 

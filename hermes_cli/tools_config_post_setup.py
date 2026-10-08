@@ -13,6 +13,11 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
+from tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
+
+_LOCAL_STT_MODEL_SUMMARY = ", ".join(
+    f"{model} (default)" if model == DEFAULT_LOCAL_MODEL else model for model in STT_MODEL_CATALOG["local"]
+)
 
 
 def _info_lines(*lines: str) -> None:
@@ -120,7 +125,7 @@ def _python_hook(module, extra, label, installing, on_install=(), always=()) -> 
 _PYTHON_POST_SETUP_HOOKS: dict = {
     "faster_whisper": _python_hook(
         "faster_whisper", "stt-whisper", "faster-whisper", "Installing faster-whisper (model ~150MB downloads on first use)...",
-        on_install=("Model sizes: tiny, base (default), small, medium, large-v3",
+        on_install=(f"Model sizes: {_LOCAL_STT_MODEL_SUMMARY}",
                     "Change via stt.local.model in config.yaml")),
     "kittentts": _python_hook(
         "kittentts", "kittentts", "kittentts", "Installing kittentts (~25-80MB model, CPU-only)...",
@@ -327,7 +332,7 @@ def _run_post_setup(post_setup_key: str):
     _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
 
 
-def valid_post_setup_keys() -> Set[str]:
+def valid_post_setup_keys() -> set[str]:
     """Return the set of post-setup keys declared by any visible provider (``TOOL_CATEGORIES`` plus
     plugin-registered providers). This is the allowlist ``post-setup`` and the dashboard endpoint
     validate against, so a caller cannot drive ``_run_post_setup`` with an arbitrary key."""
@@ -335,7 +340,7 @@ def valid_post_setup_keys() -> Set[str]:
         TOOL_CATEGORIES, _plugin_browser_providers, _plugin_image_gen_providers,
         _plugin_video_gen_providers, _plugin_web_search_providers)
 
-    keys: Set[str] = set()
+    keys: set[str] = set()
     for cat in TOOL_CATEGORIES.values():
         keys.update(ps for prov in cat.get("providers", []) if (ps := prov.get("post_setup")))
     for builder in (_plugin_web_search_providers, _plugin_image_gen_providers,

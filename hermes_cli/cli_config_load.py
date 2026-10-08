@@ -25,7 +25,7 @@ def _cli():
     return cli
 
 
-def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> List[Dict[str, Any]]:
+def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> list[dict[str, Any]]:
     """Load prefill messages (JSON array) from *file_path*; missing/empty -> [].
 
     Relative paths resolve against *base_dir*, defaulting to the CLI's hermes home.
@@ -50,7 +50,7 @@ def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> List
         return []
 
 
-def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
+def _resolve_prefill_messages_file(config: dict[str, Any]) -> str:
     """Prefill file path: env, then top-level ``prefill_messages_file``, then legacy ``agent.*``."""
     agent_cfg = config.get("agent", {})
     return (
@@ -208,7 +208,7 @@ def _cli_config_defaults():
     }
 
 
-def _merge_file_config(defaults: Dict[str, Any], file_config: Dict[str, Any]) -> None:
+def _merge_file_config(defaults: dict[str, Any], file_config: dict[str, Any]) -> None:
     """Overlay a parsed config file onto *defaults* in place (model normalization, deep merge, legacy keys)."""
     # model: string (new format) or dict (old format with default/base_url)
     if "model" in file_config:
@@ -241,7 +241,7 @@ def _merge_file_config(defaults: Dict[str, Any], file_config: Dict[str, Any]) ->
         defaults["agent"]["max_turns"] = file_config["max_turns"]
 
 
-def load_cli_config() -> Dict[str, Any]:
+def load_cli_config() -> dict[str, Any]:
     """~/.hermes/config.yaml (else ./cli-config.yaml) over built-in defaults; env vars win.
 
     ``HERMES_IGNORE_USER_CONFIG=1`` skips the user config entirely (``.env`` still loads).

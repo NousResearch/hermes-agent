@@ -10,7 +10,7 @@ underlying ``resolve_runtime_provider`` (real provider-catalog I/O)
 runs once per distinct slot, not once per create() iteration.
 """
 
-import types  # noqa: F401  (used by _fake_response)
+import types
 
 import pytest
 

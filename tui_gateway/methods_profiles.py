@@ -5,6 +5,7 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import logging
 import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -289,14 +290,16 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
-               "previous_names": list(p.previous_names or []), "role": p.role}
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
-    # session, so clients must not append it to SOUL.md.
-    return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+    # session, so clients must not append it to SOUL.md. install_id (same value as /api/status)
+    # lets a multi-connection client prove WHICH machine answered a routed list.
+    from hermes_cli.install_identity import get_install_id
+    return _ok(rid, {"profiles": out, "bot_mode_protocol": True, "install_id": _try(lambda: get_install_id() or "", "")})
 
 
 @method("profiles.create")
@@ -460,12 +463,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": False})
 
 
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
-
-
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
     """Copy the launch ``name`` file into the profile (0600) when it exists and ``wanted(src, dst)``."""
     src, dst = launch_home / name, path / name
@@ -588,6 +585,11 @@ def _describe_toolsets(cfg):
     return toolsets_out, pinned_set
 
 
+def _bots_title(ui_meta: dict):
+    bots = ui_meta.get("hermes-bots")
+    return bots.get("title") if isinstance(bots, dict) else None
+
+
 def _configure_ui_meta(profile_dir, params, applied) -> None:
     """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
@@ -615,6 +617,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 return
             current = existing.get("ui_meta")
             current = current if isinstance(current, dict) else {}
+            old_title = _bots_title(current)
             for key, value in incoming.items():
                 if value is None:
                     current.pop(key, None)
@@ -630,6 +633,13 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
+            if _bots_title(current) != old_title:
+                # A client writing another machine's bot title lands here; the Desktop's
+                # `[bot-meta win=…]` desktop.log line at the same time names the window.
+                logging.getLogger(__name__).info(
+                    "ui_meta hermes-bots title for profile %s: %r -> %r (revision %s)",
+                    params.get("name") or profile_dir.name, old_title, _bots_title(current),
+                    revisions.get("hermes-bots"))
     except Exception:
         applied["ui_meta"] = False
 

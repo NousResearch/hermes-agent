@@ -22,7 +22,7 @@ import { $connection } from '@/store/session'
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
 import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
-import { composerPlainText } from '../rich-editor'
+import { caretOffsetInEditor, composerPlainText } from '../rich-editor'
 import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
@@ -41,11 +41,13 @@ vi.mock('@assistant-ui/react', () => ({
 interface ProbeHarnessProps {
   activeQueueSessionKey: string | null
   onLayoutSnapshot: (attachments: ComposerAttachment[]) => void
+  /** Optional pre-paint text probe: called with the composer's mirrored text in the layout phase. */
+  onTextSnapshot?: (text: string) => void
   sessionId: string
 }
 
-function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, sessionId }: ProbeHarnessProps) {
-  useComposerDraft({
+function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, onTextSnapshot, sessionId }: ProbeHarnessProps) {
+  const { draftRef } = useComposerDraft({
     activeQueueSessionKey,
     focusKey: null,
     inputDisabled: false,
@@ -60,6 +62,7 @@ function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, sessionId }: Pr
   // performs at render time — observes the OUTGOING session's attachments.
   useLayoutEffect(() => {
     onLayoutSnapshot(mainComposerScope.$attachments.get())
+    onTextSnapshot?.(draftRef.current)
   })
 
   return null
@@ -113,6 +116,60 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     // By the layout phase the scope must already be B's (empty) — a submit
     // fired the instant B renders must never ship session A's attachment.
     expect(snapshots[0]).toEqual([])
+  })
+
+  it("swaps the draft TEXT before paint: the layout phase of session B never observes A's draft (#66662 review)", () => {
+    // The attachment-scope test above pins the layout-phase guarantee for
+    // chips; this pins it for the TEXT. The review on #62586 (carried through
+    // #128476) observed that an assertion made after flushSync returns proves
+    // the eventual swap but not that the previous draft could not be painted
+    // first: a passive useEffect restore would let the browser paint session
+    // B's view with session A's text still loaded. The deterministic pre-paint
+    // probe is a useLayoutEffect that runs synchronously after the DOM commit —
+    // exactly the last moment before the browser may paint. If the restore
+    // lived in a passive effect, the probe would observe A's text here.
+    stashSessionDraft('session-A', 'draft typed in session A', [])
+    stashSessionDraft('session-B', 'draft typed in session B', [])
+
+    const textSnapshots: string[] = []
+
+    const { rerender } = render(
+      <ProbeHarness
+        activeQueueSessionKey="session-A"
+        onLayoutSnapshot={() => undefined}
+        onTextSnapshot={t => textSnapshots.push(t)}
+        sessionId="session-A"
+      />
+    )
+
+    // Mount restored A's draft — the seeded precondition, same as the
+    // attachment test.
+    expect(mockComposerApi.setText).toHaveBeenCalledWith('draft typed in session A')
+
+    mockComposerApi.setText.mockClear()
+    textSnapshots.length = 0
+
+    act(() => {
+      rerender(
+        <ProbeHarness
+          activeQueueSessionKey="session-B"
+          onLayoutSnapshot={() => undefined}
+          onTextSnapshot={t => textSnapshots.push(t)}
+          sessionId="session-B"
+        />
+      )
+    })
+
+    // Layout phase of B's switch render: the draft must already be B's. A
+    // passive (useEffect) restore leaves A's text in place at this instant —
+    // the browser would paint it first.
+    expect(textSnapshots[0]).toBe('draft typed in session B')
+
+    // The restore also reached the composer core in the same commit.
+    expect(mockComposerApi.setText).toHaveBeenCalledWith('draft typed in session B')
+
+    clearSessionDraft('session-A')
+    clearSessionDraft('session-B')
   })
 
   it('carries a pre-session draft onto the session the fresh chat is re-homed to, before its runtime id is known', () => {
@@ -424,6 +481,84 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
 
     remount.unmount()
+  })
+})
+
+describe('useComposerDraft — same-draft scope rekey preserves only the focused caret (#120942)', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('lineage-root')
+    clearSessionDraft('runtime-tip')
+    markActiveComposer('main')
+  })
+
+  function renderDraft(scope: string) {
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function DraftHarness({ activeScope }: { activeScope: string }) {
+      draft = useComposerDraft({
+        activeQueueSessionKey: activeScope,
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: activeScope
+      })
+
+      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+    }
+
+    const rendered = render(<DraftHarness activeScope={scope} />)
+
+    return {
+      get draft() {
+        return draft
+      },
+      rerender: (activeScope: string) => rendered.rerender(<DraftHarness activeScope={activeScope} />)
+    }
+  }
+
+  it('keeps the caret when reconciliation rekeys an unchanged focused draft', () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    stashSessionDraft('runtime-tip', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor.firstChild!, 6)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    // Focus routing may transiently belong elsewhere during reconnect even
+    // though this contentEditable is still the browser's active element.
+    markActiveComposer('tile:reconnecting')
+    act(() => view.rerender('runtime-tip'))
+
+    expect(view.draft.editorRef.current).toBe(editor)
+    expect(document.activeElement).toBe(editor)
+    expect(composerPlainText(editor)).toBe('alpha beta')
+    expect(caretOffsetInEditor(editor)).toBe(6)
+  })
+
+  it('still sends programmatic mutations to the end instead of preserving a stale caret', () => {
+    stashSessionDraft('lineage-root', 'alpha beta', [])
+    const view = renderDraft('lineage-root')
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor.firstChild!, 2)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    markActiveComposer('main')
+
+    act(() => view.draft.insertText('gamma'))
+
+    expect(composerPlainText(editor)).toBe('alpha beta\ngamma')
+    expect(caretOffsetInEditor(editor)).toBe(composerPlainText(editor).length)
   })
 })
 

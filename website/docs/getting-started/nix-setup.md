@@ -187,6 +187,13 @@ tool handlers execute, including calls through plugins and code-execution tools.
 This is not an operating-system capability sandbox: allowing `terminal` or code
 execution still grants the programs and files accessible to the instance user.
 
+For kanban workers, include `"kanban"` alongside their work toolsets in the
+service policy (or permit a composite containing its lifecycle tools). A worker
+must be able to complete, block, and heartbeat. The dispatcher refuses to spawn
+one when that lifecycle is denied or its policy cannot be resolved; worker schema
+construction also rejects a missing lifecycle instead of silently stripping it.
+Ordinary non-worker sessions can keep kanban disallowed.
+
 ### Container-aware CLI
 
 :::info

@@ -8817,28 +8817,29 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     root/active-profile config or a profile whose top-level ``toolsets`` entry
     is only the kanban orchestrator surface. ``model_tools`` still appends the
     task-scoped kanban lifecycle tools when ``HERMES_KANBAN_TASK`` is set.
+    Refuse a worker whose service policy denies that lifecycle; resolution
+    failures must not silently start a worker with fallback toolsets.
     """
-    if not hermes_home:
-        return None
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
+        from toolsets import KANBAN_WORKER_LIFECYCLE_TOOLS, get_allowed_toolsets, resolve_toolset
 
         token = set_hermes_home_override(hermes_home)
         try:
-            cfg = load_config()
+            cfg = load_config_readonly()
+            allowed = get_allowed_toolsets(cfg)
+            if allowed is not None:
+                permitted = {tool for toolset in allowed for tool in resolve_toolset(toolset)}
+                if not KANBAN_WORKER_LIFECYCLE_TOOLS <= permitted:
+                    raise RuntimeError("kanban worker service policy denies its completion/block/heartbeat lifecycle")
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
         finally:
             reset_hermes_home_override(token)
         return toolsets or None
     except Exception as exc:
-        _log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
-        )
-        return None
+        raise RuntimeError(f"refusing to spawn kanban worker for HERMES_HOME={hermes_home!r}: {exc}") from exc
 
 
 _retagged_workspace_roots: set[str] = set()
@@ -8920,6 +8921,7 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -9026,7 +9028,6 @@ def _default_spawn(
         # the classic mis-set that stalls a board).
         if task.provider_override:
             cmd.extend(["--provider", task.provider_override])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([

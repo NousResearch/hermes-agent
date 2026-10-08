@@ -145,6 +145,11 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 ]
 
 
+# Workers cannot safely start if any of their terminal lifecycle is unavailable.
+KANBAN_WORKER_LIFECYCLE_TOOLS = frozenset({
+    "kanban_complete", "kanban_block", "kanban_heartbeat",
+})
+
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {

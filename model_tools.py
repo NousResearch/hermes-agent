@@ -31,6 +31,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry, tool_error
 from toolsets import (
+    KANBAN_WORKER_LIFECYCLE_TOOLS,
     get_allowed_toolsets,
     resolve_toolset,
     restrict_toolsets,
@@ -315,6 +316,13 @@ def get_tool_definitions(
         Filtered list of OpenAI-format tool definitions.
     """
     allowed_toolsets = get_allowed_toolsets()
+    if (
+        os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
+        and allowed_toolsets is not None
+    ):
+        permitted = {tool for toolset in allowed_toolsets for tool in resolve_toolset(toolset)}
+        if not KANBAN_WORKER_LIFECYCLE_TOOLS <= permitted:
+            raise RuntimeError("kanban worker service policy denies its completion/block/heartbeat lifecycle")
     effective_enabled_toolsets = restrict_toolsets(enabled_toolsets, allowed_toolsets)
 
     # Fast path: memoized result when the caller doesn't need stdout prints.
@@ -391,7 +399,7 @@ def _compute_tool_definitions(
     tools_to_include: set = set()
 
     if enabled_toolsets is not None:
-        effective_enabled_toolsets = list(enabled_toolsets)
+        effective_enabled_toolsets = restrict_toolsets(list(enabled_toolsets), allowed_toolsets)
         if (
             os.environ.get("HERMES_KANBAN_TASK")
             and not _is_delegated_child_context()
@@ -403,10 +411,6 @@ def _compute_tool_definitions(
             # (for token/cost reasons), but that should not strip the kanban
             # worker's completion/block/heartbeat surface.
             effective_enabled_toolsets.append("kanban")
-        effective_enabled_toolsets = restrict_toolsets(
-            effective_enabled_toolsets,
-            allowed_toolsets,
-        )
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -475,6 +479,12 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
+    # Worker lifecycle reinstatement cannot grant tools outside the service
+    # ceiling, including when a permitted composite owns the lifecycle tools.
+    if allowed_toolsets is not None:
+        permitted = {tool for toolset in allowed_toolsets for tool in resolve_toolset(toolset)}
+        tools_to_include.intersection_update(permitted)
+
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
@@ -483,6 +493,11 @@ def _compute_tool_definitions(
     # other tools by name — otherwise the model sees tools mentioned in
     # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
+    if (
+        os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
+        and not KANBAN_WORKER_LIFECYCLE_TOOLS <= available_tool_names
+    ):
+        raise RuntimeError("kanban worker is missing its completion/block/heartbeat lifecycle tools")
 
     # Rebuild execute_code schema to only list sandbox tools that are actually
     # available.  Without this, the model sees "web_search is available in

@@ -980,6 +980,13 @@ class _CodexResponseAssembler:
                 # must not evict unrelated calls, even when no alias matches.
                 pending_keys = [key for key, pending in self.pending_function_calls.items()
                                 if _event_field(pending["item"], "call_id") == done_call_id]
+                # An announcement that carried no call_id cannot contradict this one, so the
+                # positional match argument events use is the only evidence left for it.
+                if not pending_keys:
+                    pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                    if pending_key is not None and not _event_field(
+                            self.pending_function_calls[pending_key]["item"], "call_id"):
+                        pending_keys = [pending_key]
                 announced_sequence, announced_index = None, None
             else:
                 # Without a stable call_id, retain item-id then index association,

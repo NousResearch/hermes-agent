@@ -158,6 +158,8 @@ def test_done_call_coalesces_all_pending_aliases_in_announced_order(done_id):
                  id='call_id_over_conflicting_item_and_index'),
     pytest.param({'call_id': 'call_a'}, {'id': 'fc_a', 'call_id': 'call_new'}, 0, False,
                  id='unmatched_call_id_cannot_evict_by_item_or_index'),
+    pytest.param({}, {'id': 'fc_done', 'call_id': 'call_a'}, 0, True,
+                 id='call_id_first_seen_on_done_confirms_by_index'),
     *[pytest.param({'call_id': 'call_a'}, {**fields, 'call_id': 'call_a'}, 1, True,
                    id=f'{label}_item_id_uses_call_id')
       for label, fields in [('missing', {}), ('null', {'id': None}),

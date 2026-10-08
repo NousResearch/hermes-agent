@@ -305,6 +305,35 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         session.pop("one_turn_model_restore", None)
 
 
+def _snapshot_global_config() -> dict:
+    """Pre-write bytes of every config.yaml a ``--global`` switch writes, keyed by path (None =
+    the file did not exist). ``persist_model_selection`` writes ``get_config_path()`` and
+    ``_write_config_key`` the active profile's file; usually one path. A file that could not be
+    read is left out, so a rollback never writes back something it did not capture."""
+    from pathlib import Path
+    from hermes_cli.config import get_config_path
+    snapshot: dict = {}
+    for path in {Path(get_config_path()), Path(_active_config_path())}:
+        try:
+            snapshot[path] = path.read_bytes()
+        except FileNotFoundError:
+            snapshot[path] = None
+        except OSError:
+            continue
+    return snapshot
+
+
+def _restore_global_config(snapshot: dict) -> None:
+    """Put each captured config.yaml back byte for byte (best effort, never raises)."""
+    from utils import atomic_write_bytes
+    for path, data in snapshot.items():
+        with contextlib.suppress(Exception):
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic_write_bytes(path, data)
+
+
 def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
@@ -344,35 +373,53 @@ def _apply_model_switch(
     records_composer_override = (
         pin_session_override and isinstance(session, dict) and not one_turn
         and not persist_global and session.get("follow_profile_config"))
-    had_composer_profile = "composer_override_profile" in session
-    previous_composer_profile = session.get("composer_override_profile")
+    rollback_keys = ("model_override", "create_reasoning_override", "one_turn_model_restore",
+                     "composer_override_profile")
+    missing = object()
+    session_snapshot = {
+        key: copy.deepcopy(session[key]) if key in session else missing for key in rollback_keys
+    }
     if records_composer_override:
         profile_model, profile_provider = _config_model_target()
         session["composer_override_profile"] = {
             "model": profile_model, "provider": profile_provider}
+    runtime_snapshot = _snapshot_agent_model_runtime(agent) if agent else None
+    # --global writes config.yaml (model keys, then agent.reasoning_effort) inside the
+    # transaction; a later failure must not leave the next process on the rejected model.
+    config_snapshot = _snapshot_global_config() if persist_global else {}
     try:
         if agent:
             # Provenance must exist before this transaction persists the switched runtime.
             _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+        # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
+        # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
+        # every same-profile session in one process, so os.environ would leak the switch to all.
+        if pin_session_override and isinstance(session, dict) and not one_turn:
+            session["model_override"] = {
+                "model": result.new_model, "provider": result.target_provider,
+                "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
+        if persist_global:
+            from hermes_cli.model_switch import persist_model_selection
+            persist_model_selection(result)
+        if reasoning_effort:
+            _apply_switch_reasoning(
+                sid, session, agent, reasoning_effort,
+                persist_global=persist_global, one_turn=one_turn)
     except Exception:
-        if records_composer_override:
-            if had_composer_profile:
-                session["composer_override_profile"] = previous_composer_profile
+        for key, value in session_snapshot.items():
+            if value is missing:
+                session.pop(key, None)
             else:
-                session.pop("composer_override_profile", None)
+                session[key] = value
+        _restore_global_config(config_snapshot)
+        if agent:
+            _restore_agent_model_runtime(agent, runtime_snapshot)
+            # The failed transaction may already have written the switched runtime to state.db.
+            # Best effort restores that durable row without hiding the original failure.
+            with contextlib.suppress(Exception):
+                _persist_live_session_runtime(session)
         raise
-    # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
-    # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
-    # every same-profile session in one process, so os.environ would leak the switch to all.
-    if pin_session_override and isinstance(session, dict) and not one_turn:
-        session["model_override"] = {
-            "model": result.new_model, "provider": result.target_provider,
-            "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
-    if persist_global:
-        from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
-    if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    # Telemetry stays outside the rollback boundary: counting a committed switch must not undo it.
     if count_switch:
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 

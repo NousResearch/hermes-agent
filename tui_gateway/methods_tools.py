@@ -408,7 +408,6 @@ def _(rid, params: dict) -> dict:
         _refresh_session_agent()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1
-
     # LEADER (won the non-blocking acquire) runs the full reload. FOLLOWER waits, then — still
     # holding the lock — coalesces only if a reload COMPLETED meanwhile (generation advanced
     # ⇒ leader didn't throw) AND it loaded the requested revision; otherwise it re-runs.

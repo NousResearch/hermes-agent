@@ -196,9 +196,17 @@ export function resolveNewSessionCwd(profile?: string): string {
   }
 
   // No project in scope: whatever the chat is about, a detached one lands in the sidebar's Home bucket
-  // every time. The project owning the profile workspace is where this session will actually work, so
-  // it beats a default that is empty on a stock install — same tier as the configured dir (config, not
-  // the focused session's remembered cwd, which stays deliberately ignored).
+  // every time. A configured default dir is the user saying where new chats go, so it still wins; only
+  // when there is none does the project owning the profile workspace — where this session will actually
+  // work — stand in for it (still config, never the focused session's remembered cwd, which stays
+  // deliberately ignored).
+  const configured = workspaceCwdForNewSession()
+
+  if (configured) {
+    return configured
+  }
+
+  // The project owning the profile workspace is where this session will actually work.
   const workspaceProject = projectOwningProfileWorkspace()
 
   if (workspaceProject) {
@@ -1062,14 +1070,20 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
       }
     }
 
-    // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
-    // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
-    // worth reporting rather than leaving the caller to look at an unchanged sidebar.
-    const recorded = await gatewayRequestOn<{ accepted?: unknown }>(
-      context.gateway,
-      'projects.record_repos',
-      projectParams({ discovery_policy: policy, repos }, context.profile)
-    )
+    // A scan that never ran — nothing configured to walk — must not be RECORDED either: `record_repos`
+    // replaces the cache, so the empty list a no-roots scan would send wipes the last real scan.
+    let recorded: { accepted?: unknown } | undefined
+
+    if (willScan || !policy.enabled) {
+      // `accepted: false` is the backend saying the policy the scan ran under is not the one it holds —
+      // its own config moved, or this side's copy is stale. Either way nothing was recorded, which is
+      // worth reporting rather than leaving the caller to look at an unchanged sidebar.
+      recorded = await gatewayRequestOn<{ accepted?: unknown }>(
+        context.gateway,
+        'projects.record_repos',
+        projectParams({ discovery_policy: policy, repos }, context.profile)
+      )
+    }
 
     if (state.generation !== generation) {
       return { reason: 'skipped' }

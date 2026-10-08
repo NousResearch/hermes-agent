@@ -375,7 +375,7 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
         except (AttributeError, TypeError):
             setattr(request, "_hermes_room_run_authority", authority)
         scope = room_run_scope(claims)
-        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims))
+        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims), claims=claims)
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",

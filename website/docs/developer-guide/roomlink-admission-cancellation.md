@@ -37,6 +37,14 @@ even after the live reservation has expired or been pruned. A retained legacy
 reservation also refuses a new unbound home until the owner names its predecessor.
 Older records lacking authenticated predecessor coordinates remain conservative.
 
+Peer reservations supersede every member of a room on the target profile, so a
+shared room/target/profile origin and epoch record fences all those members too.
+It is committed before the reservation changes. A member without a successor
+invitation still refuses captured work from the old epoch, and its terminal
+cancellations can compact. Retirement remains per member: retiring one member
+does not disable another at the same epoch. New members may join the current home;
+their first hidden session keeps that home as its own anchor for future moves.
+
 The watermark proves that an old authority cannot admit new work. It does **not**
 prove that an individual old task never executed. When a request reaches this
 boundary after its exact receipt was compacted, `run_history_retired` is an

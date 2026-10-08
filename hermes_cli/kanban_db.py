@@ -3645,13 +3645,14 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
+        effective_body = body if body is not None else existing["body"]
+        effective_assignee = assignee if assignee is not None else existing["assignee"]
         _validate_pr_task_identity_transition(
-            existing_body=existing["body"], replacement_body=body,
+            existing_body=existing["body"], replacement_body=effective_body,
         )
-        if assignee is not None:
-            _validate_pr_task_assignee_authority(
-                body=body if body is not None else existing["body"], assignee=assignee,
-            )
+        _validate_pr_task_assignee_authority(
+            body=effective_body, assignee=effective_assignee,
+        )
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
         changed_fields: list[str] = []
@@ -3755,6 +3756,8 @@ def decompose_triage_task(
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
             return None
+        if is_atomic_pr_automation_task(body=root_row["body"]):
+            raise ValueError("atomic PR automation task must retain its typed exact-head owner")
         _validate_pr_task_assignee_authority(body=root_row["body"], assignee=root_assignee)
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)

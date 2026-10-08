@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -637,3 +638,86 @@ def test_ordinary_task_does_not_require_profile_authority_metadata(kanban_home):
         )
 
         assert kb.get_task(conn, task_id).assignee == "ordinary-worker"
+
+
+@pytest.mark.parametrize("body, owner, updates, rejection", [
+    (_pr_body(), "writer", {"title": "Clarified repair scope"}, None),
+    (_pr_body(), "writer", {"assignee": "other-writer"}, None),
+    (_pr_body(action="verify_ci_receipt"), "reader", {"title": "Clarified verification"}, None),
+    ("Unspecified report.", "reader", {"body": _pr_body()}, "read-only profile"),
+    ("Unspecified report.", "writer", {"body": _pr_body()}, None),
+    ("Unspecified report.", "ordinary-worker", {"title": "Clarified ordinary task"}, None),
+])
+def test_specification_validates_effective_body_and_owner_atomically(
+    kanban_home, body, owner, updates, rejection,
+):
+    _write_profile(kanban_home, "writer", "write")
+    _write_profile(kanban_home, "other-writer", "write")
+    _write_profile(kanban_home, "reader", "read_only")
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="Original scope", body=body, assignee=owner, triage=True,
+        )
+        if rejection:
+            with pytest.raises(ValueError, match=rejection):
+                kb.specify_triage_task(conn, task_id, author="specifier", **updates)
+        else:
+            assert kb.specify_triage_task(conn, task_id, author="specifier", **updates)
+
+        task = kb.get_task(conn, task_id)
+        assert task.body == (body if rejection else updates.get("body", body))
+        assert task.assignee == (owner if rejection else updates.get("assignee", owner))
+        assert task.title == ("Original scope" if rejection else updates.get("title", "Original scope"))
+        assert task.status in ({"triage"} if rejection else {"todo", "ready"})
+        events = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'specified'",
+            (task_id,),
+        ).fetchone()[0]
+        assert events == (0 if rejection else 1)
+
+
+@pytest.mark.parametrize("body, atomic", [
+    (_pr_body(), True),
+    (_pr_body(action="verify_ci_receipt"), True),
+    ("Split this ordinary task.", False),
+])
+def test_database_decomposition_preserves_atomic_root_and_graph(
+    kanban_home, body, atomic,
+):
+    _write_profile(kanban_home, "writer", "write")
+    _write_profile(kanban_home, "other-writer", "write")
+
+    with kbc.connect() as conn:
+        root_id = kb.create_task(
+            conn, title="Root scope", body=body, assignee="writer", triage=True,
+        )
+        before = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("tasks", "task_links", "task_events", "task_comments")
+        }
+        children = [{"title": "Bounded child", "body": "Ordinary work.", "parents": []}]
+        if atomic:
+            with pytest.raises(ValueError, match="atomic PR automation"):
+                kb.decompose_triage_task(
+                    conn, root_id, root_assignee="other-writer", children=children,
+                    author="decomposer", auto_promote=False,
+                )
+            assert {
+                table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in before
+            } == before
+        else:
+            child_ids = kb.decompose_triage_task(
+                conn, root_id, root_assignee="other-writer", children=children,
+                author="decomposer", auto_promote=False,
+            )
+            assert len(child_ids) == len(children)
+            assert conn.execute(
+                "SELECT parent_id FROM task_links WHERE child_id = ?", (root_id,),
+            ).fetchone()[0] == child_ids[0]
+
+        root = kb.get_task(conn, root_id)
+        assert root.body == body
+        assert root.assignee == ("writer" if atomic else "other-writer")
+        assert root.status == ("triage" if atomic else "todo")

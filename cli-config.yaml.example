@@ -758,6 +758,17 @@ compression:
   # the local trigger is unavailable, automatic mode uses 200000.
   codex_responses_compact_threshold: null
 
+  # Anthropic on-demand compaction as the summary writer (default: false).
+  # When true, on the direct Anthropic API (API key or Claude subscription
+  # OAuth) with a model that supports it (Opus/Sonnet 4.6+, Haiku 5.5, Fable,
+  # Mythos), the compression summary is written by the conversation's own model
+  # over exactly the last request it answered (beta compact-2026-09-04): that
+  # request's prompt cache is read back and the summarizer sees the whole
+  # conversation, its earlier thinking included. Hermes still keeps the head and
+  # the recent tail verbatim. Requires prompt caching; any other route, a stale
+  # cache or a failure uses auxiliary.compression as before.
+  anthropic_native: false
+
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
   # Head messages are NEVER summarized — they survive every compression

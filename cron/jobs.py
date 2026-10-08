@@ -3238,7 +3238,8 @@ def _restore_unclaimed_slot(job: Dict[str, Any], scan: _DueScan) -> Optional[str
     return slot
 
 
-def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float) -> bool:
+def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float,
+                      executions_conn: Optional[Any] = None) -> bool:
     """Decide whether one enabled, non-terminal job fires this tick, persisting any repairs.
     Ordering matters: recover missing next_run_at, repair timezone shifts, re-arm stale-error
     recurring jobs; then once due: re-anchor stale cron instants, fast-forward missed recurring
@@ -3266,7 +3267,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     manual_run = job.get("manual_run_at") == next_run
     from cron.occurrences import completed_occurrence, scheduled_instant
 
-    if not manual_run and completed_occurrence(job, next_run):
+    if not manual_run and completed_occurrence(job, next_run, conn=executions_conn):
         new_next = d.recompute_next() if recurring else None
         if new_next:
             scan.persist(job["id"], next_run_at=new_next)
@@ -3336,24 +3337,42 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         jobs = [j for j in jobs if scan.find(j.get("id")) is not None]
 
     due = []
-    for job in jobs:
-        # Per-job containment: one malformed record must never abort the whole scan. Normalization
-        # above repairs known shapes; this catches FUTURE variants so healthy siblings still
-        # run/persist.
+    # One read connection for the whole scan: completed_occurrence() used to open and close
+    # executions.db once per enabled job per tick, and since nothing holds the DB between ticks
+    # every close was the last-connection WAL checkpoint (#133883). Opened only when the scan has
+    # candidates; a failed open falls back to the per-call transaction path.
+    executions_conn = None
+    if jobs:
         try:
-            if is_terminal_job(job) and not _is_recoverable_error_job(job):
-                continue
-            if not job.get("enabled", True):
-                continue
-            if _has_pause_marker(job):
-                _self_disable_half_paused(job, scan)
-                continue
-            if _evaluate_due_job(job, scan, run_claim_ttl):
-                due.append(job)
+            from cron.executions import _connect
+            executions_conn = _connect()
         except Exception:
-            logger.exception(
-                "Skipping malformed cron job %r during due scan",
-                job.get("name") or job.get("id") or "?")
+            executions_conn = None
+    try:
+        for job in jobs:
+            # Per-job containment: one malformed record must never abort the whole scan. Normalization
+            # above repairs known shapes; this catches FUTURE variants so healthy siblings still
+            # run/persist.
+            try:
+                if is_terminal_job(job) and not _is_recoverable_error_job(job):
+                    continue
+                if not job.get("enabled", True):
+                    continue
+                if _has_pause_marker(job):
+                    _self_disable_half_paused(job, scan)
+                    continue
+                if _evaluate_due_job(job, scan, run_claim_ttl, executions_conn=executions_conn):
+                    due.append(job)
+            except Exception:
+                logger.exception(
+                    "Skipping malformed cron job %r during due scan",
+                    job.get("name") or job.get("id") or "?")
+    finally:
+        if executions_conn is not None:
+            try:
+                executions_conn.close()
+            except Exception:
+                logger.debug("Failed to close shared due-scan executions connection", exc_info=True)
 
     if scan.needs_save:
         try:

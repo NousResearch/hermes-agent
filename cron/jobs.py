@@ -810,8 +810,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         return _cron_schedule(
             schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression")
 
-    # ISO timestamp (contains T or looks like date)
-    if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
+    # ISO timestamp (digit-T-digit separator or leading date). A bare "T" check misrouted
+    # uppercase durations like "30 MINUTES" / "in 5 MINUTES" here.
+    if re.search(r'\dT\d', schedule) or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
             # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):

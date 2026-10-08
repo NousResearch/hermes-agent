@@ -455,23 +455,52 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 
 
 class _FakeStream:
-    """Always-readable input stream that yields trivial frames."""
+    """Callback input stream, the shape PortAudio hands the detector.
 
-    def __init__(self, **_kw):
+    A callback stream is never read: the fake pushes device-sized blocks through the
+    callback from a pusher thread while it is "recording" (``start()`` .. ``close()``),
+    and reports itself inactive once the device is gone — what the macOS ``-50``
+    leaves behind.
+    """
+
+    block = 12    # device block size; the capture assembles these into capture frames
+    value = 0     # sample value delivered
+    interval = 0.005
+
+    def __init__(self, callback=None, **_kw):
+        self.callback = callback
         self.closed = False
+        self._stop = threading.Event()
+        self._pusher = None
+
+    @property
+    def active(self):
+        return self._pusher is not None and self._pusher.is_alive()
 
     def start(self):
-        pass
+        self._stop.clear()
+        self._pusher = threading.Thread(target=self._pump, daemon=True)
+        self._pusher.start()
 
-    def read(self, n):
-        time.sleep(0.01)
-        return [0] * n, False
+    def _pump(self):
+        while not self._stop.wait(self.interval):
+            self.push(self.block)
+
+    def push(self, n, value=None):
+        """Deliver one block through the callback exactly as the audio host would."""
+        if self.callback is None or self.closed:
+            return
+        self.callback(_Frame([self.value if value is None else value] * n), n, None, None)
 
     def stop(self):
-        pass
+        self._stop.set()
+
+    def abort(self):
+        self._stop.set()
 
     def close(self):
         self.closed = True
+        self._stop.set()
 
 
 class _FakeEngine:
@@ -498,7 +527,11 @@ def _fake_audio(monkeypatch):
 
 
 class _Frame(list):
-    """List with numpy-ish abs()/max() so the silence probe sees real peaks."""
+    """List with numpy-ish abs()/max()/slice/copy so the silence probe sees real peaks.
+
+    The capture slices and copies device blocks to assemble a frame, so this fake stays
+    a ``_Frame`` through both, the way a numpy array keeps its type.
+    """
 
     def __abs__(self):
         return _Frame(abs(x) for x in self)
@@ -506,32 +539,33 @@ class _Frame(list):
     def max(self):
         return max(self) if self else 0
 
+    def __getitem__(self, item):
+        value = super().__getitem__(item)
+        return _Frame(value) if isinstance(item, slice) else value
+
+    def copy(self):
+        return _Frame(self)
+
 
 class _SilentStream(_FakeStream):
-    """Stream that always yields near-zero frames (dead macOS mic)."""
+    """Callback stream that delivers near-zero blocks (dead macOS mic)."""
 
-    def read(self, n):
-        time.sleep(0.005)
-        return _Frame([0] * n), False
+    value = 0
 
 
 class _LoudStream(_FakeStream):
-    """Stream that yields audible frames."""
+    """Callback stream that delivers audible blocks."""
 
-    def read(self, n):
-        time.sleep(0.005)
-        return _Frame([500] * n), False
+    value = 500
 
 
 def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch):
     opened = []
-    reads = []
     processed = []
 
     class _NativeRateStream(_LoudStream):
-        def read(self, n):
-            reads.append(n)
-            return super().read(n)
+        # Device blocks that do NOT divide the capture frame: the capture must assemble.
+        block = 5
 
     class _RecordingEngine(_FakeEngine):
         def process(self, frame):
@@ -564,11 +598,14 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
     try:
         assert opened[0]["device"] == "Microphone Array"
         assert opened[0]["samplerate"] == 48000
-        assert opened[0]["blocksize"] == 12
+        # Never an explicit blocksize: it re-sizes the CoreAudio device buffer under any
+        # other live input stream on macOS and stops it (-50 from AudioUnitRender).
+        assert "blocksize" not in opened[0]
+        assert opened[0]["callback"] is not None
         deadline = time.monotonic() + 2.0
         while not processed and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert reads[0] == 12
+        # 5- and 12-sample device blocks in, exact 4-sample engine frames out.
         assert len(processed[0]) == 4
         assert processed[0].tolist() == [500] * 4
         assert det.input_device_details == {
@@ -678,28 +715,25 @@ def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
     assert ww.stop_listening(owner=owner) is True
 
 
-def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monkeypatch):
-    """A PortAudio device that never delivers samples (#117096) must not wedge pause().
+def test_wedged_device_halts_without_a_read_and_aborts_before_close(monkeypatch):
+    """A device that never delivers a block (#117096) must not wedge pause().
 
-    ``read(n)`` on such a device blocks forever; the detector must never call it
-    while ``read_available`` is short, must return from pause() promptly once the
-    stop event is set, and must ``abort()`` the stream before ``close()``.
+    Nothing reads a callback stream, so a silent device starves a queue instead of
+    pinning a blocking ``read()``: pause() returns on the drain timeout, and the
+    capture is still ``abort()``-ed before ``close()`` so a host call stuck inside
+    PortAudio is released.
     """
     class _WedgedStream(_FakeStream):
-        read_available = 0
-
         def __init__(self, **kw):
             super().__init__(**kw)
             self.calls = []
-            self.read_calls = 0
 
-        def read(self, n):
-            self.read_calls += 1
-            time.sleep(30)  # a real wedged ALSA/PipeWire read never returns
-            return [0] * n, False
+        def _pump(self):
+            self._stop.wait(30)  # a real wedged device never delivers a block
 
         def abort(self):
             self.calls.append("abort")
+            self._stop.set()
 
         def stop(self):
             self.calls.append("stop")
@@ -721,104 +755,42 @@ def test_wedged_stream_halts_without_blocking_read_and_aborts_before_close(monke
     time.sleep(0.2)
     t0 = time.monotonic()
     det.pause()
-    assert time.monotonic() - t0 < 1.5, "pause() must not wait out the join timeout"
+    assert time.monotonic() - t0 < 2.0, "pause() must not wait out the join timeout"
     assert det.running is False
-    stream = streams[0]
-    assert stream.read_calls == 0, "read() must not be entered while read_available < frame_length"
-    assert stream.calls[:2] == ["abort", "close"]
+    assert streams[0].calls[:2] == ["abort", "close"]
 
 
-def test_starved_read_available_falls_back_to_blocking_read(monkeypatch, caplog):
-    """A stream that never advances read_available (#118552, Windows DirectSound) must
-    not spin in the poll guard forever: after the stall window it warns once, then
-    reads blocking — audio flows on such devices, so frames keep arriving."""
-    class _StarvedStream(_FakeStream):
-        read_available = 0
+def test_silently_stopped_stream_is_detected_and_reopened(monkeypatch):
+    """The macOS ``-50`` shape: the host stops the stream mid-run without raising.
 
-        def __init__(self, **kw):
-            super().__init__(**kw)
-            self.read_calls = 0
-
-        def read(self, n):
-            self.read_calls += 1
-            time.sleep(0.01)
-            return [0] * n, False
+    Nothing reads a callback stream, so without this check the reader waits on an empty
+    queue, deaf, until the user toggles the wake word. The detector must notice the
+    stream went inactive, reopen the microphone through its recovery path, and keep
+    listening instead of silently dropping out of wake-word mode.
+    """
+    class _DiesStream(_FakeStream):
+        def _pump(self):
+            self.push(self.block, 500)  # one block, then the host kills the stream
+            self._stop.set()
 
     streams = []
 
     def _stream(**kw):
-        streams.append(_StarvedStream(**kw))
+        streams.append(_DiesStream(**kw))
         return streams[-1]
 
-    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
-    monkeypatch.setattr(ww, "_READ_STALL_FALLBACK_SECONDS", 0.1)
-    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
-    with caplog.at_level("WARNING", logger="tools.wake_word"):
-        det.start()
-        assert det.running is True
+    monkeypatch.setattr(ww, "_import_audio",
+                        lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    detector = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
+    detector.start()
+    try:
         deadline = time.monotonic() + 3
-        while streams and streams[0].read_calls < 5 and time.monotonic() < deadline:
+        while len(streams) < 2 and time.monotonic() < deadline:
             time.sleep(0.02)
-    assert streams[0].read_calls >= 5, "must block-read frames once read_available is starved"
-    warnings = [r for r in caplog.records if "falling back to blocking reads" in r.message]
-    assert len(warnings) == 1, "the stall fallback warns exactly once per capture"
-    det.pause()
-    assert det.running is False
-
-
-def test_starved_and_wedged_read_is_released_by_halt_abort(monkeypatch):
-    """Worst case for the #118552 fallback: read_available is starved AND the blocking
-    read truly wedges. pause() must join out, abort the capture to unblock the reader,
-    and leave ``running`` truthful — the #117096 guarantee survives the fallback."""
-    class _StarvedWedgedStream(_FakeStream):
-        read_available = 0
-
-        def __init__(self, **kw):
-            super().__init__(**kw)
-            self.read_calls = 0
-            self.calls = []
-            self._unblock = threading.Event()
-
-        def read(self, n):
-            self.read_calls += 1
-            self._unblock.wait(30)  # blocks like a wedged PortAudio read; abort releases
-            return [0] * n, False
-
-        def abort(self):
-            self.calls.append("abort")
-            self._unblock.set()
-
-        def stop(self):
-            self.calls.append("stop")
-
-        def close(self):
-            self.calls.append("close")
-            self.closed = True
-
-    streams = []
-
-    def _stream(**kw):
-        streams.append(_StarvedWedgedStream(**kw))
-        return streams[-1]
-
-    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
-    monkeypatch.setattr(ww, "_READ_STALL_FALLBACK_SECONDS", 0.1)
-    monkeypatch.setattr(ww, "_HALT_JOIN_SECONDS", 0.2)
-    det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
-    det.start()
-    assert det.running is True
-    deadline = time.monotonic() + 3
-    while streams and streams[0].read_calls < 1 and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert streams[0].read_calls == 1, "starved guard must have fallen back into read()"
-    t0 = time.monotonic()
-    det.pause()
-    assert time.monotonic() - t0 < 2.5, "pause() must abort the wedged read, not block on it"
-    stream = streams[0]
-    assert "abort" in stream.calls, "halt must abort the capture to release the reader"
-    if det._thread is not None:
-        det._thread.join(timeout=2)
-    assert det.running is False
+        assert len(streams) >= 2, "a stream that stopped on its own must be reopened"
+    finally:
+        detector.pause()
+    assert detector.running is False
 
 
 def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
@@ -843,8 +815,10 @@ def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
 
 def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     class _FailingStream(_FakeStream):
-        def read(self, _n):
-            raise OSError("device disconnected")
+        """A device that dies right after opening: no frames, stream never active."""
+
+        def start(self):
+            pass
 
     fake_sd = types.SimpleNamespace(InputStream=lambda **kw: _FailingStream(**kw))
     engine = _FakeEngine(fire=False)

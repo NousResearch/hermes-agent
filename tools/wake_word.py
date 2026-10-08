@@ -14,6 +14,7 @@ from pm import install_hint
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -45,6 +46,8 @@ _READ_POLL_SECONDS = 0.05  # slice between read_available polls; bounds halt lat
 # blocking read (see ``_Capture.read``).
 _READ_STALL_FALLBACK_SECONDS = 2.0
 _HALT_JOIN_SECONDS = 2.0
+_LOCAL_INPUT_PROBE_TIMEOUT_SECONDS = 5.0
+_LOCAL_INPUT_PROBE_TTL_SECONDS = 5.0
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -64,6 +67,30 @@ _PROVIDERS: Dict[str, tuple[str, str]] = {
     **{k: ("_OpenWakeWordEngine", "wake-openwakeword") for k in ("openwakeword", "oww", "local")},
 }
 _PROVIDER_PREFERENCE = ("openwakeword", "sherpa", "porcupine")
+
+_LOCAL_INPUT_PROBE_CODE = """
+import numpy
+import sounddevice as sd
+
+def channels(device):
+    if isinstance(device, dict):
+        return int(device.get("max_input_channels") or 0)
+    return int(getattr(device, "max_input_channels", 0) or 0)
+
+devices = sd.query_devices()
+if isinstance(devices, dict):
+    ready = channels(devices) > 0
+else:
+    ready = any(channels(device) > 0 for device in devices)
+if not ready:
+    try:
+        ready = channels(sd.query_devices(None, "input")) > 0
+    except Exception:
+        pass
+print("1" if ready else "0")
+"""
+_local_input_probe_lock = threading.Lock()
+_local_input_probe_cache: tuple[float, bool] = (0.0, False)
 
 
 class WakeWordInUse(RuntimeError):
@@ -157,7 +184,7 @@ def resolve_capture_mode(cfg: Optional[Dict[str, Any]] = None, *, prefer_client:
     raw = str(_get(cfg, "capture") or "auto").strip().lower()
     if raw in ("client", "remote", "external"):
         return "client"
-    return "client" if raw != "local" and prefer_client and not _local_input_device_ready() else "local"
+    return "client" if raw != "local" and prefer_client and not _local_input_device_ready_isolated() else "local"
 
 
 def _input_channels(info: Any) -> int:
@@ -177,6 +204,46 @@ def _local_input_device_ready() -> bool:
                 or _input_channels(sd.query_devices(None, "input")) > 0)
     except Exception:
         return False
+
+
+def _run_local_input_device_probe() -> bool:
+    """Query PortAudio in a child so a native failure cannot terminate Hermes."""
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        from pm.environments import project_python
+        from tools.environments.local import build_subprocess_env
+
+        root = Path(__file__).resolve().parents[1]
+        python = Path(sys.executable) if sys.prefix != sys.base_prefix else project_python(root)
+        result = subprocess.run(
+            [str(python), "-I", "-c", _LOCAL_INPUT_PROBE_CODE],
+            check=False,
+            encoding="utf-8",
+            env=build_subprocess_env(strip_launch_profile=True),
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_LOCAL_INPUT_PROBE_TIMEOUT_SECONDS,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+def _local_input_device_ready_isolated() -> bool:
+    """Return a short-lived, crash-contained result for automatic capture selection."""
+    global _local_input_probe_cache
+    now = time.monotonic()
+    with _local_input_probe_lock:
+        checked_at, ready = _local_input_probe_cache
+        if now - checked_at < _LOCAL_INPUT_PROBE_TTL_SECONDS:
+            return ready
+        ready = _run_local_input_device_probe()
+        _local_input_probe_cache = (time.monotonic(), ready)
+        return ready
 
 
 def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
@@ -371,6 +438,8 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     deps_ok = pm.available(feature)
     platform_ok = deps_ok or supported(feature)
     lazy_ok = lazy_installs_allowed()
+    capture_mode = resolve_capture_mode(cfg)
+    local_capture = capture_mode == "local"
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
     # feature's deps are installed. On a fresh install (deps missing, lazy
@@ -378,7 +447,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     # ``pm.ensure_import()`` and the stream-open surfaces any real audio
     # problem. Gating ``available`` on the probe here made the lazy-install
     # path unreachable (the probe always failed before ensure() could run).
-    audio_ok = _audio_available() if deps_ok else False
+    audio_ok = _audio_available() if deps_ok and local_capture else False
     key_ok = True
     # The full wake loop is wake → record → STT → agent → TTS. Arming without
     # either end configured gives a mic that hears you and then does nothing
@@ -398,7 +467,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
         hint = install_hint(feature)
-    elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
+    elif deps_ok and local_capture and not audio_ok:
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
     elif not stt_ok or not tts_ok:
         missing = " and ".join(
@@ -406,8 +475,6 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
         )
         hint = (f"Wake word needs {missing} configured — run `hermes tools` "
                 f"(Voice section) or see the voice-mode docs.")
-
-    capture_mode = resolve_capture_mode(cfg)
 
     # Client capture needs deps (engine) but not a server-side PortAudio device.
     if capture_mode == "client":
@@ -422,7 +489,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     return {
         "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
-        "local_input_available": _local_input_device_ready() if deps_ok else False,
+        "local_input_available": _local_input_device_ready() if deps_ok and local_capture else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,
         "phrase": wake_phrase(cfg), "hint": hint,
     }
@@ -906,11 +973,12 @@ def audio_is_silent() -> bool:
     return (det := _current_detector()) is not None and det.audio_silent
 
 
-def get_input_device_status(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return configured/active PortAudio input diagnostics for status UIs."""
+def get_input_device_status(cfg: Optional[Dict[str, Any]] = None, *, probe_local: bool = True) -> Dict[str, Any]:
+    """Return active input details, or configured local diagnostics when requested."""
     if (det := _current_detector()) is not None:
         return dict(det.input_device_details)
-    return _describe_input_device(_input_device(cfg if cfg is not None else load_wake_word_config()))
+    selector = _input_device(cfg if cfg is not None else load_wake_word_config())
+    return _describe_input_device(selector) if probe_local else {"selector": selector}
 
 
 def get_last_match() -> Optional[tuple[str, str]]:

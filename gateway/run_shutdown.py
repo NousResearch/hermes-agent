@@ -28,6 +28,7 @@ from gateway.restart import (
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
+from gateway.run_shutdown_awaited import awaited_reply_count
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
@@ -799,11 +800,9 @@ class GatewayShutdownMixin:
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
-        return (
-            self._running_agent_count(), self._active_cron_job_count(),
-            self._active_api_run_count(), self._active_deferred_agent_worker_count(),
-        )
+        """``(agents, cron, api, deferred, awaited)`` — the five sources the drain waits on."""
+        return (self._running_agent_count(), self._active_cron_job_count(), self._active_api_run_count(),
+                self._active_deferred_agent_worker_count(), awaited_reply_count(self))
 
     async def _drain_active_agents(
         self, timeout: float, cron_timeout: Optional[float] = None
@@ -822,21 +821,21 @@ class GatewayShutdownMixin:
                 last_counts, last_status_at = counts, now
 
         # Cron/API/deferred work lives outside ``_running_agents``; fold it in or it is killed unwarned.
-        _cron0, _api0, _deferred0 = last_counts[1:]
+        _cron0, _api0, _deferred0, _awaited0 = last_counts[1:]
         _maybe_update_status(force=True)
-        if not self._running_agents and not (_cron0 or _api0 or _deferred0):
+        if not self._running_agents and not (_cron0 or _api0 or _deferred0 or _awaited0):
             return snapshot, False
-        # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
-        # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
-        # On ``restart_drain_timeout``'s 0 default they were killed after 0.00s (#82161, #132989).
+        # Cron runs, api_server runs and awaited A2A replies ride the cron floor: a chat turn is announced+resumable,
+        # but a killed cron run is a permanent failure and a killed /v1 run or A2A task fails a caller blocked on its
+        # result. On ``restart_drain_timeout``'s 0 default they were killed after 0.00s (#82161, #132989).
         started = loop.time()
         deadline = started + timeout
         cron_deadline = started + (timeout if cron_timeout is None else cron_timeout)
 
         def _still_draining() -> bool:
             now = loop.time()
-            agents, cron, api, deferred = self._drain_work_counts()
-            return bool(((agents or deferred) and now < deadline) or ((cron or api) and now < cron_deadline))
+            agents, cron, api, deferred, awaited = self._drain_work_counts()
+            return bool(((agents or deferred) and now < deadline) or ((cron or api or awaited) and now < cron_deadline))
 
         # Both budgets at 0 = an expired deadline (loop unentered), so timed_out still comes from real state.
         while _still_draining():
@@ -1895,6 +1894,7 @@ class GatewayShutdownMixin:
         )
         _cron_at_start = self._active_cron_job_count()
         _api_at_start = self._active_api_run_count()
+        _awaited_at_start = awaited_reply_count(self)
         _deferred_at_start = ctx.deferred_count()
         # Cron floor clamped to the watchdog leash; getattr-guard for bare shutdown-path doubles.
         _cron_drain_cfg = getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)
@@ -1907,11 +1907,11 @@ class GatewayShutdownMixin:
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
-        if (_cron_at_start or _api_at_start) and _cron_timeout > timeout:
+        if (_cron_at_start or _api_at_start or _awaited_at_start) and _cron_timeout > timeout:
             logger.info(
-                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s) — waiting up to "
-                "%.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
-                _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
+                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s), %d awaited A2A reply(ies) — waiting "
+                "up to %.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
+                _cron_at_start, _api_at_start, _awaited_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
         _drain_started_at = time.monotonic()
         ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)

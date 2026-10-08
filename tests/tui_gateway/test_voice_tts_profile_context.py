@@ -3,6 +3,8 @@
 import queue
 import threading
 
+import pytest
+
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tui_gateway import methods_voice
 
@@ -49,3 +51,41 @@ def test_streaming_tts_worker_keeps_routed_profile_context(tmp_path, monkeypatch
         "streaming-TTS worker must keep the routed profile Context instead of "
         "falling back to the launch HERMES_HOME"
     )
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_tts_lease_worker_keeps_routed_profile_context(tmp_path, monkeypatch, active):
+    """Both async lease operations must use the calling profile's home and secrets."""
+    from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
+    from tools import tts_tool_lifecycle as lifecycle
+
+    launch_home = tmp_path / "launch"
+    served_home = tmp_path / "served"
+    launch_home.mkdir()
+    served_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("VOICE_TTS_PROFILE_TEST_TOKEN", "launch-only")
+
+    seen = []
+    completed = threading.Event()
+
+    def record_lease(lease):
+        seen.append((lease, get_hermes_home(), get_secret("VOICE_TTS_PROFILE_TEST_TOKEN")))
+        completed.set()
+        return {"leases": 1}
+
+    monkeypatch.setattr(lifecycle, "acquire_tts_lease", record_lease)
+    monkeypatch.setattr(lifecycle, "release_tts_lease", record_lease)
+
+    home_token = set_hermes_home_override(served_home)
+    secret_token = set_secret_scope(
+        {"VOICE_TTS_PROFILE_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
+    )
+    try:
+        methods_voice._tts_lease_async("tui:voice-tts", active)
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+
+    assert completed.wait(5.0), "TTS lease worker did not reach the lifecycle boundary"
+    assert seen == [("tui:voice-tts", served_home, "served-only")]

@@ -26,6 +26,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "process_is_in_job",
     "bounded_git_probe",
     "bounded_probe_run",
     "selected_git_env",
@@ -272,6 +273,46 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+def process_is_in_job() -> bool:
+    """True when this process sits inside a Windows Job Object; False elsewhere.
+
+    Uses ``IsProcessInJob(GetCurrentProcess(), NULL, &result)`` via ctypes, so the
+    post-update restart watcher can detect the Electron/Tauri/updater Job Object
+    that would tear down a plain-Popen respawn (#127089). Returns False on
+    non-Windows and on any probe failure (fail closed to the existing
+    breakaway -> non-breakaway Popen chain).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import contextlib
+        import ctypes
+
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+        kernel32 = getattr(windll, "kernel32", None)
+        if kernel32 is None:
+            return False
+        # Best-effort restype pinning: real Win32 functions accept it, test
+        # fakes (plain Python methods) do not — neither may fail the probe.
+        with contextlib.suppress(Exception):
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        with contextlib.suppress(Exception):
+            kernel32.IsProcessInJob.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+            ]
+        with contextlib.suppress(Exception):
+            kernel32.IsProcessInJob.restype = ctypes.c_int
+        result = ctypes.c_int(0)
+        ok = kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(result))
+        if not ok:
+            return False
+        return bool(result.value)
+    except Exception:
+        return False
 
 
 # Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes

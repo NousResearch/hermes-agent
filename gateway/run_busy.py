@@ -23,9 +23,18 @@ from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from utils import is_truthy_value
+
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
+
+
+def busy_ack_env_enabled() -> bool:
+    """``HERMES_GATEWAY_BUSY_ACK_ENABLED`` over the shared truthy set (``1/true/yes/on``). Unset or
+    blank keeps the documented default (on); only an explicit falsy value silences the busy ack."""
+    raw = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "").strip()
+    return is_truthy_value(raw) if raw else True
 
 
 def approval_input_words(input_key: str) -> Tuple[str, ...]:
@@ -881,7 +890,7 @@ class GatewayBusySessionMixin:
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+        if not busy_ack_env_enabled():
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 

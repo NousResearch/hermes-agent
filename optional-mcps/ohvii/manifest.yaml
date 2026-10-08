@@ -2,7 +2,7 @@
 manifest_version: 1
 
 name: ohvii
-description: "Find homes with your AI, then use Ohvii to carry the purchase from listing to close."
+description: "Find homes with your AI, then use a free Ohvii account to carry the purchase from listing to close."
 source: https://ohvii.com/developers
 
 transport:
@@ -26,7 +26,7 @@ suggest:
     - "What do I need to complete before closing, and what’s due next?"
 
 post_install: |
-  Sign in to your Ohvii account in the browser and review the requested permissions.
+  Sign in to your free Ohvii account in the browser and review the requested permissions.
   You can start authorization with: hermes mcp login ohvii
   Restart your Hermes session after connecting.
   Ask: Help me prepare an offer for this home.

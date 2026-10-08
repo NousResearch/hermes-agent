@@ -3672,7 +3672,9 @@ def held_archive_watermark(
     *stale_raises*: the newest exact held row being inactive means another compaction already committed.
     Under the in-place lease that cannot overlap a live compaction, so the lease watermark is returned; a
     lease-less caller (prune, micro-compaction) passes ``True`` and gets :class:`StaleHeldHistory` instead,
-    because for it the fallback would publish a stale generation beside the winner.
+    because for it the fallback would publish a stale generation beside the winner. It also catches the
+    generation change an id/activity check cannot see: an in-place prune rewrites a row's body under its
+    own id, so ``stale_raises`` additionally compares the held bodies against the stored ones.
     """
     if watermark is None:
         return None
@@ -3698,6 +3700,19 @@ def held_archive_watermark(
         if stale_raises:
             raise StaleHeldHistory(f"held row {newest_held} of session {session_id} is no longer active")
         return watermark
+    if stale_raises:
+        # An IN-PLACE commit (the proactive prune) keeps every row id and activity flag, so the liveness
+        # check above cannot see it. The stored bodies are the only trace: a held row whose active row now
+        # says something else belongs to a generation this caller never saw, and publishing the held copy
+        # would republish the pre-rewrite text over the winner (#124102).
+        rewritten_of = getattr(session_db, "rewritten_held_row_ids", None)
+        if callable(rewritten_of):
+            pairs = [(m["_row_id"], m.get("content")) for m in messages
+                     if isinstance(m, dict) and _exact_id(m, False) is not None]
+            rewritten = rewritten_of(session_id, pairs)
+            if rewritten:
+                raise StaleHeldHistory(
+                    f"held row {min(rewritten)} of session {session_id} was rewritten in place")
     return min(newest_held, watermark)
 
 

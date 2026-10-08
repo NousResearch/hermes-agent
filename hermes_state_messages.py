@@ -715,6 +715,26 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
+    def rewritten_held_row_ids(self, session_id: str, held: List[Tuple[int, Any]]) -> List[int]:
+        """Ids among *held* ``(row_id, content)`` pairs whose ACTIVE row no longer stores that content.
+
+        An in-place commit (the proactive prune's ``rewrite_pruned_rows``) changes what a row says and
+        keeps its id and its ``active`` flag, so an id/activity staleness check cannot see it. A
+        lease-less writer holding the pre-rewrite bodies must: publishing them archives rows it never
+        compared and republishes the stale text over the newer generation (#124102). Absent or inactive
+        rows are NOT reported — that is the activity check's job and it has its own fallback rules.
+        """
+        ids = [int(row_id) for row_id, _ in held]
+        if not session_id or not ids:
+            return []
+        stored = {
+            int(row["id"]): row["content"] for row in self._read_all(
+                f"SELECT id, content FROM messages WHERE session_id = ? AND active = 1 "
+                f"AND id IN ({_placeholders(ids)})", (session_id, *ids))
+        }
+        return [int(row_id) for row_id, content in held
+                if int(row_id) in stored and stored[int(row_id)] != self._encode_content(content)]
+
     def _carry_parent_timestamps(self, conn, parent_session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Adopt the durable parent row's timestamp onto carried handoff rows so the re-inserted child row keeps
         the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the

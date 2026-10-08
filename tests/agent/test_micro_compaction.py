@@ -952,3 +952,29 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_generation_rewritten_in_place_aborts_a_lease_less_pass(tmp_path, mode):
+    """An in-place prune keeps every row id and activity flag, so the id/activity staleness check is
+    blind to it. A second lease-less surface still holding the pre-prune bodies must abort anyway:
+    publishing them archives rows it never compared and republishes the pruned-away text over the
+    winner, undoing the prune (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, held = _held_session(tmp_path, mode)
+    # Another surface commits a prune in place: same ids, same activity, different bodies.
+    rewritten = [m for m in db.get_resume_conversations("s")[0] if m.get("role") == "tool"][:1] or [
+        m for m in db.get_resume_conversations("s")[0] if m.get("role") == "assistant"][:1]
+    assert rewritten, "fixture has no rewritable row"
+    original = dict(rewritten[0])
+    db.rewrite_pruned_rows("s", [(original, {**original, "content": "[pruned by the other surface]"})])
+    before = [m["content"] for m in db.get_messages_as_conversation("s")]
+
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
+
+    assert result is held
+    assert [m["content"] for m in db.get_messages_as_conversation("s")] == before

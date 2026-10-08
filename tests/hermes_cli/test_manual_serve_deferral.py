@@ -10,7 +10,7 @@ from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_cmd_fleet_verify as fleet_verify
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
+from hermes_cli.update_serve_obligations import defer_manual_serve, record_respawn_failure, retain_receipt_manual_serves, warn_pending_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -259,3 +259,51 @@ def test_launchd_serve_row_never_pessimize_gateway_coverage():
         kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
     receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
     assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}
+
+
+def _write_pending_marker(pid: int = 900, *, respawn_failed: bool = False) -> "Path":
+    directory = get_hermes_home() / "serve_restart_pending"
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / f"{pid}-{float(1000.0).hex()}.json"
+    row = {"kind": "serve", "profile": "default", "pid": pid, "create_time": 1000.0}
+    if respawn_failed:
+        row["respawn_failed"] = True
+    marker.write_text(json.dumps(row), encoding="utf-8")
+    return marker
+
+
+def test_failed_respawn_marker_names_the_remedy(monkeypatch, capsys):
+    """#134995: a marker whose respawn failed must name the remedy, not
+    claim the stopped process may still serve pre-update code."""
+    marker = _write_pending_marker()
+    assert record_respawn_failure(900) is True
+    assert json.loads(marker.read_text(encoding="utf-8-sig"))["respawn_failed"] is True
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: None)
+    warn_pending_manual_serves()
+    warning = capsys.readouterr().out
+    assert "serve [default]: auto-restart failed" in warning
+    assert "may still serve pre-update code" not in warning
+
+
+def test_confirmed_gone_pid_discharges_a_failed_respawn_marker(monkeypatch, capsys):
+    """#134995: a provably dead pid discharges the marker, failed or not,
+    because the pre-update-code risk dies with the process."""
+    marker = _write_pending_marker(respawn_failed=True)
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
+    warn_pending_manual_serves()
+    assert not marker.exists()
+    assert "900" not in capsys.readouterr().out
+
+
+def test_respawn_failure_is_recorded_on_the_pending_marker(monkeypatch, capsys):
+    """#134995: the update path records a failed argv respawn on the marker
+    it booked, so the next startup warning names the remedy."""
+    from hermes_cli import dashboard_procs as procs
+    from hermes_cli import main_dashboard as dash
+    marker = _write_pending_marker()
+    monkeypatch.setattr(procs, "_filter_dashboard_respawn_candidates", lambda candidates: [c[1] for c in candidates])
+    monkeypatch.setattr(dash, "_respawn_dashboard_processes", lambda commands: list(commands))
+    unrecovered = procs._restart_killed_backends(
+        [900], {}, {}, {900: ["hermes", "serve", "--port", "8772"]}, {900: None})
+    assert unrecovered == [900]
+    assert json.loads(marker.read_text(encoding="utf-8-sig"))["respawn_failed"] is True

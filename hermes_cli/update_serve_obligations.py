@@ -13,6 +13,24 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _replace_marker(target: Path, row: dict) -> None:
+    """Write ``row`` to ``target`` atomically: temp file, then rename.
+
+    One immutable file per incarnation avoids read/merge/write races between
+    CLI startups."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(row, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
     """Transfer an identified manual runtime to its own durable restart reminder."""
     from hermes_cli.process_identity import _pid_alive_matches
@@ -41,22 +59,31 @@ def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
         directory.mkdir(parents=True, exist_ok=True)
         row = {"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid, "create_time": created}
         target = directory / f"{pid}-{float(created).hex()}.json"
-        # One immutable file per incarnation avoids read/merge/write races between CLI startups.
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
-                temporary = Path(handle.name)
-                json.dump(row, handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        _replace_marker(target, row)
         return True
     except (OSError, ValueError, TypeError) as exc:
         logger.debug("Could not preserve manual serve obligation: %s", exc)
         return False
+
+
+def record_respawn_failure(pid: int) -> bool:
+    """Mark a stopped backend's pending marker as a failed respawn.
+
+    The updater knows the moment the replayed child exits inside the grace
+    window; without the flag the startup warning keeps claiming the stopped
+    process may still serve pre-update code, when in fact the backend is down
+    and only a manual relaunch brings it back (#134995)."""
+    directory = get_hermes_home() / "serve_restart_pending"
+    marked = False
+    for path in sorted(directory.glob(f"{pid}-*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8-sig"))
+            row["respawn_failed"] = True
+            _replace_marker(path, row)
+            marked = True
+        except (OSError, ValueError, TypeError) as exc:
+            logger.debug("Could not mark respawn failure for %s: %s", path.name, exc)
+    return marked
 
 
 def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
@@ -100,6 +127,9 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
             row = json.loads(path.read_text(encoding="utf-8-sig"))
             if _pid_alive_matches(row["pid"], row["create_time"]) is False:
                 path.unlink(missing_ok=True)
+                continue
+            if row.get("respawn_failed"):
+                print(f"  ⚠ {row['kind']} [{row['profile']}]: auto-restart failed; relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)
                 continue
             print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
             print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)

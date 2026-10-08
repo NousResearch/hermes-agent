@@ -745,7 +745,11 @@ def _restart_killed_backends(
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
     failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:
-        unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
+        not_back = [p for p in killed if pid_cmdline.get(p) in failed_cmds]
+        unrecovered.extend(not_back)
+        from hermes_cli.update_serve_obligations import record_respawn_failure
+        for p in not_back:
+            record_respawn_failure(p)
     if failed_restarts or unrecovered:
         print("  Restart anything not auto-restarted when you're ready:\n    hermes dashboard --port <port>")
     return unrecovered

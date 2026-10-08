@@ -570,6 +570,51 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_heal_does_not_rewrite_binding_after_failed_cas(tmp_path):
+    """A concurrent explicit route change wins over a stale compression-tip heal."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="parent-session", source="telegram", user_id="208214988")
+    session_db.end_session("parent-session", end_reason="compression")
+    session_db.create_session(
+        session_id="child-session", source="telegram", user_id="208214988",
+        parent_session_id="parent-session",
+    )
+    session_db.create_session(
+        session_id="user-selected-session", source="telegram", user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="parent-session",
+    )
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+
+    def reject_stale_switch(*_args, **_kwargs):
+        session_db.bind_telegram_topic(
+            chat_id="208214988", thread_id="17585", user_id="208214988",
+            session_key=topic_key, session_id="user-selected-session",
+        )
+        return None
+
+    runner.session_store.switch_session = MagicMock(side_effect=reject_stale_switch)
+    runner._sync_telegram_topic_binding = MagicMock()
+
+    resolved = await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    assert resolved is snapshot
+    cast(MagicMock, runner.session_store.switch_session).assert_called_once()
+    cast(MagicMock, runner._sync_telegram_topic_binding).assert_not_called()
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "user-selected-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

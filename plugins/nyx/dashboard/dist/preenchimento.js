@@ -47,8 +47,8 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
   uniform sampler2D tNormal, tDepth;
   uniform mat4 uInvMVP, uInvProj;
   uniform vec2 uRes;
-  uniform float uTime, uC, uPensa, uFala, uExpo, uDens;
-  const float U = ${U.toFixed(4)}, Y0 = ${Y0.toFixed(1)}, AX = ${AX.toFixed(2)}, CEL = ${CEL.toFixed(3)};
+  uniform float uTime, uC, uPensa, uFala;
+  const float U = ${U.toFixed(4)}, Y0 = ${Y0.toFixed(1)}, AX = ${AX.toFixed(2)}, CEL = ${CEL.toFixed(3)}, BRILHO = 1.3;
   const vec3 DEEP = ${vec3(paleta.DEEP)}, BLUE = ${vec3(paleta.BLUE)}, CYAN = ${vec3(paleta.CYAN)}, WHITE = ${vec3(paleta.WHITE)}, GOLD = ${vec3(paleta.GOLD)};
 
   vec4 hash43(vec3 p) {                        // 4 números em [0, 1) por célula (hash sem seno, estável em float)
@@ -84,7 +84,7 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     if (abs(parte - pt) > 0.05) return 0.0;
     vec2 ab = b - a;
     float d = length(q - (a + ab * clamp(dot(q - a, ab) / dot(ab, ab), 0.0, 1.0)));
-    return peso * exp(-(d * d) / 4.84);
+    return peso * exp(-(d * d) / 9.68);            // σ = 2,2 px, como o espalhamento das marcas no modo partículas
   }
   float marcas(vec3 P, float parte) {
     if (P.z < (parte > 0.94 ? 60.0 : -10.0)) return 0.0;
@@ -95,16 +95,19 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
   void main() {
     vec2 uv = gl_FragCoord.xy / uRes;
     float dep = texture2D(tDepth, uv).r;
-    if (dep >= 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-    vec4 g = texture2D(tNormal, uv);
-    vec3 n = normalize(g.xyz * 2.0 - 1.0);
-    float parte = g.a;
-    vec4 ndc = vec4(uv * 2.0 - 1.0, dep * 2.0 - 1.0, 1.0);
+    // o ponto da pele em px da foto, reconstruído em todo px (no fundo cai no plano de trás): fwidth precisa de
+    // P nos 4 px do quadradinho, então ele vem antes de qualquer retorno
+    vec4 ndc = vec4(uv * 2.0 - 1.0, min(dep, 0.999999) * 2.0 - 1.0, 1.0);
     vec4 vp = uInvProj * ndc;
     vp.xyz /= vp.w;
     vec4 op = uInvMVP * ndc;
     op.xyz /= op.w;
-    vec3 P = vec3(op.x / U, Y0 - op.y / U, op.z / U);   // o ponto da pele em px da foto
+    vec3 P = vec3(op.x / U, Y0 - op.y / U, op.z / U);
+    float pe = max(length(fwidth(P)), 1e-3);           // px de pele por px de tela (de raspão, muitos)
+    if (dep >= 1.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    vec4 g = texture2D(tNormal, uv);
+    vec3 n = normalize(g.xyz * 2.0 - 1.0);
+    float parte = g.a;
 
     // a luz: a mesma do modo partículas (recorte, luz de cima, profundidade)
     float fd = dot(n, normalize(-vp.xyz));
@@ -130,11 +133,11 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
     float ouro = (cabeca && P.z > 40.0 && P.y > 400.0 && P.y < 700.0) ? exp(-((P.x / 46.0) * (P.x / 46.0) + ((P.y - 548.0) / 50.0) * ((P.y - 548.0) / 50.0))) : 0.0;
     float vd = vis * dens;
 
-    // os pontos: cada célula da grade tem um ponto sorteado no miolo dela (raio até 1,15 célula), então basta
-    // olhar as 27 vizinhas. O px de tela é uma amostra da pele no centro dele, então a média sai certa mesmo de
-    // raspão; pe (px de pele por px de tela) só suaviza a borda de cada ponto, limitado pra ele não inchar
+    // os pontos: cada célula da grade tem um ponto sorteado no miolo dela ([0,25; 0,75] da célula, mais o tremor
+    // de 0,1), então um ponto de uma célula a duas de distância fica a pelo menos 1,15 célula de P: tudo que um
+    // ponto toca (raio + borda suave) cabe em 1,15 célula e basta olhar as 27 vizinhas. O px de tela é uma
+    // amostra da pele no centro dele, então a média sai certa mesmo de raspão
     vec3 base = floor(P / CEL) - 1.0;
-    float pe = max(length(fwidth(P)), 1e-3);
     vec3 acc = vec3(0.0);
     for (int i = 0; i < 27; i++) {
       vec3 cel = base + vec3(float(i % 3), float((i / 3) % 3), float(i / 9));
@@ -146,10 +149,10 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
       if (fract(q.z * 91.7) > visP) continue;
       vec4 h = hash43(cel);
       float sd = q.x;
-      float r = CEL * (conta ? 1.05 : 0.6 + 0.35 * h.w);
+      float r = CEL * (conta ? 0.8 : 0.6 + 0.25 * h.w);
       vec3 c = (cel + 0.25 + 0.5 * h.xyz) * CEL
              + 0.1 * CEL * vec3(sin(uTime * (0.4 + sd * 0.5) + sd * 40.0), cos(uTime * (0.33 + sd * 0.4) + sd * 27.0), sin(uTime * 0.37 + sd * 19.0));
-      float aa = 0.35 * min(pe, 1.5);
+      float aa = min(0.35 * min(pe, 1.5), 1.15 * CEL - r);
       float cob = smoothstep(r + aa, r - aa, length(P - c));
       if (cob <= 0.0) continue;
       float tc = fract(h.w * 13.7);
@@ -160,7 +163,9 @@ function shaderPreencher({ U, Y0, AX, paleta, queixo, marcas }) {
       float boca = dourado ? 1.0 + uFala * (0.7 + 0.6 * sin(uTime * 9.0 + sd * 3.0)) : 1.0;   // falando: o dourado pulsa
       acc += cor * b * (0.7 + 0.5 * visP) * tw * boca * cob;
     }
-    gl_FragColor = vec4(acc * mix(0.28, 1.15, k) * 0.42 * uExpo * 1.4 * uDens, 1.0);
+    // exposição fixa, calibrada na tela cheia pra dar o mesmo brilho do modo partículas. Lá a exposição muda com a
+    // tela (compensa a sobreposição, que cresce quando a figura encolhe); aqui cada px amostra a pele e não muda
+    gl_FragColor = vec4(acc * mix(0.28, 1.15, k) * BRILHO, 1.0);
   }`;
 }
 
@@ -181,7 +186,7 @@ export function criarPreenchimento({ renderer, camera, malha, uniforms, forma })
       ...uniforms,
       tNormal: { value: gbuf.texture }, tDepth: { value: gbuf.depthTexture },
       uInvMVP: { value: new THREE.Matrix4() }, uInvProj: { value: camera.projectionMatrixInverse },
-      uRes: { value: new THREE.Vector2(1, 1) }, uDens: { value: 1 },
+      uRes: { value: new THREE.Vector2(1, 1) },
     },
   });
   const quadro = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);

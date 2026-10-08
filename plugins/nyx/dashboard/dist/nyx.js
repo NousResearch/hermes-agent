@@ -455,8 +455,9 @@ function gerarMalha({ recuo = 2.5, guia = false } = {}) {
   };
   const casca = (T, ya, yb, pt) => {
     const base = pos.length / 3;
-    let linhas = 0;
-    for (let y = ya; y <= yb + 1e-6; y += PY, linhas++) {
+    const linhas = Math.ceil((yb - ya) / PY) + 1;      // espaçadas por igual, a última exatamente em yb (a ponta do queixo)
+    for (let i = 0; i < linhas; i++) {
+      const y = ya + (yb - ya) * i / (linhas - 1);
       let r = rowR(T, y); const w = r[0], d = r[1], c = r[2];
       r = rowR(T, y - 0.5); const wa = r[0], da = r[1], ca = r[2];
       r = rowR(T, y + 0.5); const wb = r[0], db = r[1], cb = r[2];
@@ -752,7 +753,9 @@ export function montar(el, { densidade = 1, modo = 'particulas' } = {}) {
   const bytes = { uInf: { value: new THREE.Vector3(2, 1, 1.5) } };   // busto e franja guardam brilho/semente/tamanho em bytes
   let preenchimento = null;
   if (preencher) {
-    const marcas = MARCAS.map(([T, curva, porPx]) => [T === HEAD ? PARTE.cabeca : PARTE.corpo, curva, porPx / 16]);
+    // peso de cada marca no pico: porPx pontos por px de curva espalhados com σ = 2,2 px, sobre ~2,15 pontos por px²,
+    // pela metade: com o mesmo peso do modo partículas os pontos do preenchimento viram linha
+    const marcas = MARCAS.map(([T, curva, porPx]) => [T === HEAD ? PARTE.cabeca : PARTE.corpo, curva, 0.5 * porPx / (2.2 * Math.sqrt(2 * Math.PI)) / 2.15]);
     preenchimento = criarPreenchimento({
       renderer, camera, malha, uniforms, forma: { U, Y0, AX, paleta: { DEEP, BLUE, CYAN, WHITE, GOLD }, queixo: QUEIXO, marcas },
     });
@@ -866,8 +869,10 @@ export function montar(el, { densidade = 1, modo = 'particulas' } = {}) {
       controls.dispose();
       scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
       preenchimento?.descartar();
+      bloom.dispose();
       composer.dispose?.();
       renderer.dispose();
+      renderer.forceContextLoss();             // libera o contexto já: trocar de modo monta um renderer novo
       renderer.domElement.remove();
     },
   };

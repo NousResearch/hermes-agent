@@ -19,7 +19,8 @@ from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholde
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
-from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
+from agent.message_sanitization import (
+    _repair_tool_call_arguments, _salvage_truncated_tool_args, _sanitize_surrogates)
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
@@ -1028,7 +1029,10 @@ def _clone_message_for_send(msg):
 
 def _canonicalize_api_tool_calls(api_messages) -> None:
     """Canonicalize tool-call argument JSON on the send-path copy (copy-on-write for the
-    dicts it touches; persisted history untouched)."""
+    dicts it touches; persisted history untouched). Unrepairable args keep their
+    STREAMED PREFIX on the send copy when one can be salvaged (a dropped long
+    write_file must not become a bare ``{}`` the model retries blind against);
+    the persisted history keeps the model's raw bytes either way."""
     for am in api_messages:
         tcs = am.get("tool_calls")
         if not tcs:
@@ -1040,7 +1044,17 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                 try:
                     args = _canonicalize_tool_call_arguments(fn["arguments"])
                 except Exception:
-                    args = _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?"))
+                    raw = fn["arguments"]
+                    name = fn.get("name", "?")
+                    salvaged = _salvage_truncated_tool_args(raw) if isinstance(raw, str) else None
+                    if salvaged is not None:
+                        logger.warning(
+                            "Salvaged truncated tool_call arguments for %s on the send copy: "
+                            "kept %d streamed bytes, dropped the partial tail (was: %s)",
+                            name, len(salvaged), (raw or "")[:200])
+                        args = salvaged
+                    else:
+                        args = _repair_tool_call_arguments(raw, name)
                 # Copy-on-write as defense in depth: callers may pass shallow copies, and
                 # writing into a shared tc["function"] rewrote the stored turn with "{}"
                 # on the unrepairable path (#80498).

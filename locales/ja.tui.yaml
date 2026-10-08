@@ -216,6 +216,7 @@ connectors.link.waiting: "ブラウザでの操作完了を待っています…
 connectors.loading: "アカウントを読み込み中…"
 connectors.notice.browserDidNotOpen: "ブラウザが開きませんでした。上のリンクをコピーしてください。"
 connectors.notice.connected: "{0} アカウント {1} が接続されました。"
+connectors.notice.nameBeforeReconnect: "先にこのアカウントに名前を付けてから (r)、再接続してください。"
 connectors.notice.nameInvalid: "1〜32 文字の英小文字、数字、- を使い、先頭は英字か数字にしてください。"
 connectors.notice.nameTaken: "その名前はすでに使われています。"
 connectors.notice.notConnected: "{0} に接続できませんでした。もう一度お試しください。"

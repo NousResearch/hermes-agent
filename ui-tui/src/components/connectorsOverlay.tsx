@@ -8,8 +8,10 @@ import type {
   ConnectorsListResult
 } from '@hermes/shared/gateway-events'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useState } from 'react'
 
+import { $overlayState, hasPromptOpen, patchOverlayState } from '../app/overlayStore.js'
 import {
   accountName,
   accountRowText,
@@ -37,6 +39,11 @@ const ACCOUNT_OWNER = { type: 'account' } as const
 // The gateway's answer for a name another account of the same app already holds.
 const ALIAS_TAKEN = 4090
 const UNKNOWN_OPERATION = 4004
+
+// Transport hiccups are retried; a coded refusal (access, auth, ownership) ends the wait.
+const isRetryable = (e: unknown): boolean =>
+  !(e instanceof JsonRpcGatewayError) || e.code === undefined || e.code >= 5000
+
 const SETTLED_STATES = new Set(['connected', 'expired', 'failed', 'not_connected', 'skipped'])
 
 const placeholderTarget: ConnectionOperationTarget = {
@@ -49,10 +56,10 @@ const placeholderTarget: ConnectionOperationTarget = {
 type Stage =
   | { kind: 'addApp'; apps: string[]; idx: number }
   | { kind: 'addName'; app: string; draft: string }
-  | { kind: 'confirm'; row: ConnectorAccountRow }
   | {
       kind: 'link'
       app: string
+      deadlineAt: number
       name: string
       opId: string
       reconnect: boolean
@@ -83,12 +90,18 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   const [notice, setNotice] = useState('')
   const [err, setErr] = useState('')
 
+  // An agent question or a confirm owns the keyboard while it is up.
+  const promptOpen = hasPromptOpen(useStore($overlayState))
+
+  // The TUI's gateway serves one profile, so account calls carry no `profile`; a launch home outside
+  // the profiles root reports `custom`, which no profile lookup can resolve.
+  const call = <R,>(method: string, params: Record<string, unknown>) => gw.request<R>(method, params)
+
   const { stdout } = useStdout()
   const width = clampOverlayWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6)), maxWidth)
 
   const load = () =>
-    gw
-      .request<ConnectorAccountsResult>('connectors.accounts', {})
+    call<ConnectorAccountsResult>('connectors.accounts', {})
       .then(r => {
         setRows(r?.accounts ?? [])
         setErr('')
@@ -115,12 +128,11 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       .finally(() => setBusy(false))
   }
 
-  // `name` is what the user sees; only a named account is addressed by alias.
-  const startConnect = (app: string, alias: null | string, reconnect: boolean, name = alias ?? app) =>
+  const startConnect = (app: string, alias: string, reconnect: boolean, name = alias) =>
     run(
       () =>
-        gw.request<ConnectorsConnectResult>('connectors.connect', {
-          ...(alias ? { alias } : {}),
+        call<ConnectorsConnectResult>('connectors.connect', {
+          alias,
           connectors: [app],
           owner: ACCOUNT_OWNER,
           reconnect
@@ -133,7 +145,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
           return target ? finishLink(target, name) : setStage({ kind: 'list' })
         }
 
-        setStage({ app, kind: 'link', name, opId: r.op_id, reconnect, target })
+        setStage({ app, deadlineAt: r.deadline_at, kind: 'link', name, opId: r.op_id, reconnect, target })
       }
     )
 
@@ -152,6 +164,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   const linkOp = stage.kind === 'link' ? stage.opId : ''
   const linkApp = stage.kind === 'link' ? stage.app : ''
   const linkName = stage.kind === 'link' ? stage.name : ''
+  const linkDeadline = stage.kind === 'link' ? stage.deadlineAt : 0
 
   useEffect(() => {
     if (!linkOp) {
@@ -162,8 +175,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     let timer: NodeJS.Timeout | undefined
 
     const tick = () =>
-      gw
-        .request<ConnectionOperationStatus>('connectors.operation.status', { op_id: linkOp, owner: ACCOUNT_OWNER })
+      call<ConnectionOperationStatus>('connectors.operation.status', { op_id: linkOp, owner: ACCOUNT_OWNER })
         .then(snapshot => {
           const target = snapshot?.targets?.[0] ?? null
 
@@ -178,25 +190,37 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
           }
 
           setStage(current => (current.kind === 'link' && current.opId === linkOp ? { ...current, target } : current))
-          timer = setTimeout(tick, POLL_MS)
+          schedule()
         })
         .catch((e: unknown) => {
           if (stopped) {
             return
           }
 
-          // The operation closed between polls (settled or expired): read the accounts instead.
-          if (e instanceof JsonRpcGatewayError && e.code === UNKNOWN_OPERATION) {
-            setStage({ kind: 'list' })
-            void load()
-
-            return
+          if (isRetryable(e)) {
+            return schedule()
           }
 
-          timer = setTimeout(tick, POLL_MS)
+          // The operation closed between polls (settled or expired): the list is the answer.
+          setStage({ kind: 'list' })
+          setErr(e instanceof JsonRpcGatewayError && e.code === UNKNOWN_OPERATION ? '' : rpcErrorMessage(e))
+          void load()
         })
 
-    timer = setTimeout(tick, POLL_MS)
+    // The operation settles itself at its deadline; past it there is nothing left to wait for.
+    function schedule() {
+      if (linkDeadline && Date.now() / 1000 > linkDeadline) {
+        setStage({ kind: 'list' })
+        setNotice(T.connectors.notice.notConnected(linkApp))
+        void load()
+
+        return
+      }
+
+      timer = setTimeout(tick, POLL_MS)
+    }
+
+    schedule()
 
     return () => {
       stopped = true
@@ -207,7 +231,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
   const openAddApp = () =>
     run(
-      () => gw.request<ConnectorsListResult>('connectors.list', { owner: ACCOUNT_OWNER }),
+      () => call<ConnectorsListResult>('connectors.list', { owner: ACCOUNT_OWNER }),
       r => {
         const apps = [...new Set((r?.connectors ?? []).map(row => row.connector))].sort()
 
@@ -225,7 +249,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
     run(
       () =>
-        gw.request<ConnectorAccountRow>('connectors.accounts.rename', {
+        call<ConnectorAccountRow>('connectors.accounts.rename', {
           alias: name,
           connection_id: row.connection_id
         }),
@@ -250,13 +274,26 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
   const remove = (row: ConnectorAccountRow) =>
     run(
-      () => gw.request('connectors.accounts.remove', { connection_id: row.connection_id }),
+      () => call('connectors.accounts.remove', { connection_id: row.connection_id }),
       () => {
         setStage({ kind: 'list' })
         setNotice(T.connectors.notice.removed(row.connector, accountName(row)))
         void load()
       }
     )
+
+  // Reconnect is addressed by name: without one the backend could only answer for the app as a whole.
+  const reconnect = (row: ConnectorAccountRow) => {
+    if (isRetired(row)) {
+      return setNotice(T.connectors.notice.retiredNoReconnect)
+    }
+
+    if (!row.alias) {
+      return setNotice(T.connectors.notice.nameBeforeReconnect)
+    }
+
+    startConnect(row.connector, row.alias, true)
+  }
 
   const listKey = (ch: string, key: KeyLike) => {
     if (key.escape || ch === 'q') {
@@ -290,13 +327,19 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     }
 
     if (ch === 'x') {
-      return setStage({ kind: 'confirm', row: selected })
+      const row = selected
+
+      return patchOverlayState({
+        confirm: {
+          danger: true,
+          onConfirm: () => remove(row),
+          title: T.connectors.remove.confirm(row.connector, accountName(row))
+        }
+      })
     }
 
     if (ch === 'c') {
-      return isRetired(selected)
-        ? setNotice(T.connectors.notice.retiredNoReconnect)
-        : startConnect(selected.connector, selected.alias ?? null, true, accountName(selected))
+      return reconnect(selected)
     }
   }
 
@@ -320,6 +363,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   const linkKey = (current: Extract<Stage, { kind: 'link' }>, key: KeyLike & { return: boolean }) => {
     if (key.escape) {
       setStage({ kind: 'list' })
+      void load()
 
       return setNotice(T.connectors.notice.stopped)
     }
@@ -330,7 +374,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   }
 
   useInput((ch, key) => {
-    if (busy) {
+    if (busy || promptOpen) {
       return
     }
 
@@ -351,13 +395,6 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
 
       case 'addApp':
         return addAppKey(stage, key)
-
-      case 'confirm':
-        if (ch === 'y' || ch === 'Y') {
-          return remove(stage.row)
-        }
-
-        return setStage({ kind: 'list' })
 
       case 'link':
         return linkKey(stage, key)
@@ -399,7 +436,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
           <TextInput
             color={t.color.text}
             columns={Math.max(20, width - 4)}
-            focus={!busy}
+            focus={!busy && !promptOpen}
             onChange={draft =>
               setStage(current =>
                 current.kind === 'rename' || current.kind === 'addName' ? { ...current, draft } : current
@@ -452,9 +489,6 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         <Text color={t.color.muted}>
           {showRetired ? T.connectors.retiredShown(view.retired) : T.connectors.retiredFolded(view.retired)}
         </Text>
-      ) : null}
-      {stage.kind === 'confirm' ? (
-        <Text color={t.color.warn}>{T.connectors.remove.confirm(stage.row.connector, accountName(stage.row))}</Text>
       ) : null}
       {footer}
       <OverlayHint t={t}>{T.connectors.hint}</OverlayHint>

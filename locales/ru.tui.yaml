@@ -216,6 +216,7 @@ connectors.link.waiting: "Ожидаем завершения в браузер�
 connectors.loading: "загрузка аккаунтов…"
 connectors.notice.browserDidNotOpen: "Браузер не открылся. Скопируйте ссылку выше."
 connectors.notice.connected: "Аккаунт {0} «{1}» подключён."
+connectors.notice.nameBeforeReconnect: "Сначала задайте имя этой учётной записи (r), затем подключите её заново."
 connectors.notice.nameInvalid: "Используйте 1-32 строчные латинские буквы, цифры или -, начиная с буквы или цифры."
 connectors.notice.nameTaken: "Это имя уже занято."
 connectors.notice.notConnected: "{0} не подключился. Попробуйте ещё раз."

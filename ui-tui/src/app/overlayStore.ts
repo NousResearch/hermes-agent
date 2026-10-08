@@ -134,6 +134,11 @@ export const SENSITIVE_PROMPTS = ['sudo', 'secret', 'vaultUnlock', 'vaultSaveLog
 export const hasSensitivePrompt = (overlay: Pick<OverlayState, (typeof SENSITIVE_PROMPTS)[number]>): boolean =>
   SENSITIVE_PROMPTS.some(key => Boolean(overlay[key]))
 
+/** The agent's questions and confirms, which take the keyboard from any open panel. */
+export const PROMPT_KEYS = ['approval', 'clarify', 'confirm', 'connection', ...SENSITIVE_PROMPTS] as const
+
+export const hasPromptOpen = (overlay: OverlayState): boolean => PROMPT_KEYS.some(key => Boolean(overlay[key]))
+
 export const getOverlayState = () => $overlayState.get()
 
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>

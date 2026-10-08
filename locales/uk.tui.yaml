@@ -216,6 +216,7 @@ connectors.link.waiting: "Очікуємо завершення в браузе�
 connectors.loading: "завантаження облікових записів…"
 connectors.notice.browserDidNotOpen: "Браузер не відкрився. Скопіюйте посилання вище."
 connectors.notice.connected: "Обліковий запис {0} «{1}» підключено."
+connectors.notice.nameBeforeReconnect: "Спершу назвіть цей обліковий запис (r), потім підключіть його знову."
 connectors.notice.nameInvalid: "Використовуйте 1-32 малі латинські літери, цифри або -, починаючи з літери чи цифри."
 connectors.notice.nameTaken: "Це ім'я вже використовується."
 connectors.notice.notConnected: "{0} не підключився. Спробуйте ще раз."

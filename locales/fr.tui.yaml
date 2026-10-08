@@ -216,6 +216,7 @@ connectors.link.waiting: "En attente de la fin de l'opération dans le navigateu
 connectors.loading: "chargement des comptes…"
 connectors.notice.browserDidNotOpen: "Le navigateur ne s'est pas ouvert. Copiez le lien ci-dessus."
 connectors.notice.connected: "Le compte {0} {1} est connecté."
+connectors.notice.nameBeforeReconnect: "Nommez d'abord ce compte (r), puis reconnectez-le."
 connectors.notice.nameInvalid: "Utilisez 1 à 32 lettres minuscules, chiffres ou -, en commençant par une lettre ou un chiffre."
 connectors.notice.nameTaken: "Ce nom est déjà utilisé."
 connectors.notice.notConnected: "{0} ne s'est pas connecté. Réessayez."

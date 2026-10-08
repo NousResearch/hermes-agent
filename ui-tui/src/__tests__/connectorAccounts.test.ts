@@ -6,6 +6,7 @@ import {
   applyConnectionUpdate,
   resetConnectionOperationsForTests
 } from '../app/connectionOperationStore.js'
+import { getOverlayState, hasPromptOpen, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { accountRowText, accountView, nameProblem } from '../domain/connectorAccounts.js'
 
 const row = (over: Partial<ConnectorAccountRow> & { disabled?: boolean }): ConnectorAccountRow =>
@@ -64,5 +65,20 @@ describe('settled connection lines', () => {
     } as unknown as ConnectionUpdatePayload)
 
     expect(lines).toEqual(['gmail (work): connected', 'Hermes named this gmail account work. Rename it anytime.'])
+  })
+})
+
+describe('panels yield the keyboard to prompts', () => {
+  afterEach(resetOverlayState)
+
+  it('counts an agent question or a confirm as open, and the accounts panel alone as not', () => {
+    patchOverlayState({ connectors: true })
+    expect(hasPromptOpen(getOverlayState())).toBe(false)
+
+    patchOverlayState({ confirm: { onConfirm: () => undefined, title: 'Remove?' } })
+    expect(hasPromptOpen(getOverlayState())).toBe(true)
+
+    patchOverlayState({ clarify: { choices: null, question: 'Which?', requestId: 'r1' } as never, confirm: null })
+    expect(hasPromptOpen(getOverlayState())).toBe(true)
   })
 })

@@ -216,6 +216,7 @@ connectors.link.waiting: "브라우저에서 완료하기를 기다리는 중…
 connectors.loading: "계정 불러오는 중…"
 connectors.notice.browserDidNotOpen: "브라우저가 열리지 않았어요. 위 링크를 복사하세요."
 connectors.notice.connected: "{0} 계정 {1}이(가) 연결됐어요."
+connectors.notice.nameBeforeReconnect: "먼저 이 계정의 이름을 지정한 다음(r) 다시 연결하세요."
 connectors.notice.nameInvalid: "영문 소문자, 숫자, - 중 1-32자를 사용하고, 문자나 숫자로 시작하세요."
 connectors.notice.nameTaken: "이미 사용 중인 이름이에요."
 connectors.notice.notConnected: "{0}에 연결하지 못했어요. 다시 시도하세요."

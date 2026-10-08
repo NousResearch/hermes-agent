@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -77,6 +77,18 @@ _RESETS_IN_RE = re.compile(
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
+# Wall-clock reset grammar: "resets 12:30pm (America/Chicago)" — Claude subscription session/
+# weekly limits name the reopen as a time in an EXPLICIT zone, not a delta. The zone is
+# required (an unnamed "resets 5pm" is someone's local clock; guessing can be hours wrong)
+# and unknown zones fail open to the pre-existing behavior. Interpreted as the NEXT
+# occurrence of that wall-clock time, with a just-past tolerance: an error that surfaces a
+# minute after the stated instant must not inflate the wait by a whole day.
+_RESETS_CLOCK_RE = re.compile(
+    r"resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^()\s]{3,64})\)",
+    re.IGNORECASE,
+)
+_RESET_CLOCK_JUST_PAST_TOLERANCE_S = 30 * 60.0
+_RESET_CLOCK_MAX_S = 24 * 3600.0
 
 
 def _quota_reset_seconds(m: "re.Match[str]") -> float:
@@ -90,14 +102,56 @@ def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
 
 
+def _resets_clock_seconds(m: "re.Match[str]") -> Optional[float]:
+    """Seconds until the NEXT occurrence of the wall-clock reset named in an explicit zone.
+
+    "resets 12:30pm (America/Chicago)" / "resets 5pm (UTC)": Claude's subscription session and
+    weekly limits say when the window reopens as a local wall-clock time, which the delta
+    grammars above cannot read — without this the cooldown arms a generic 60s, the primary is
+    "restored" a minute later, and every turn re-burns a full-context 429. The zone is parsed
+    via ``zoneinfo``; an unknown zone (or an impossible 12h time) returns None so the caller
+    keeps its pre-existing behavior. A parsed instant already in the past is read as the NEXT
+    day's window EXCEPT within a small tolerance — an error that surfaces seconds after the
+    stated minute ("resets 12:30pm" read at 12:30:05) means the window has just reopened, and
+    must not wait ~24h. The result is capped at a day.
+    """
+    try:
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        meridiem = m.group(3).lower()
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= hour <= 12 or not 0 <= minute <= 59:
+        return None
+    hour = hour % 12 + (12 if meridiem == "pm" else 0)
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(m.group(4))
+    except Exception:
+        return None  # Unknown/invalid zone name: fail open to the delta grammars / default backoff.
+    now = datetime.now(tz)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    delay = (target - now).total_seconds()
+    if delay < 0:
+        if -delay <= _RESET_CLOCK_JUST_PAST_TOLERANCE_S:
+            delay = 0.0  # Just passed: the window is reopening now, not tomorrow.
+        else:
+            target += timedelta(days=1)
+            delay = (target - now).total_seconds()
+    return min(delay, _RESET_CLOCK_MAX_S)
+
+
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
 # a body carrying both describes a short throttle inside a long quota window, and the
-# shorter explicit wait is the one the provider actually asks for.
+# shorter explicit wait is the one the provider actually asks for. The wall-clock grammar
+# rides last: a delta and an absolute time in one body describe the same instant, and the
+# delta is unambiguous about whose clock.
 RETRY_DELAY_PATTERNS = (
     (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_SECONDS_FIELD_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_RE, _resets_in_seconds),
+    (_RESETS_CLOCK_RE, _resets_clock_seconds),
 )
 
 

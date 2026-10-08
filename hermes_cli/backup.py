@@ -1279,9 +1279,8 @@ def _create_quick_snapshot_locked(
     manifest: Dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
     # #68805: track protected DB files skipped for size — they are snapshot
-    # incompleteness just like a failed copy, so pruning must be suppressed
-    # to preserve the older complete snapshot that may contain the only
-    # recoverable database.
+    # incompleteness just like a failed copy, so pruning must keep the older
+    # snapshot that may contain the only recoverable copy of that database.
     oversized_skipped: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
@@ -1422,16 +1421,16 @@ def _create_quick_snapshot_locked(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture OR was
-    # skipped for size — either way the snapshot is incomplete and the older
-    # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
-    if not incomplete:
-        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
-    else:
+    # #68805: when a present DB failed to capture OR was skipped for size the
+    # snapshot is incomplete, so the newest older copy of each omitted DB is
+    # kept as its recovery source. Stale partial snapshots that add no recovery
+    # coverage are still pruned: they hold .env/auth.json copies and must stay
+    # bounded even when every run omits the same DB.
+    omitted_dbs = failed_dbs + oversized_skipped
+    if omitted_dbs:
         if oversized_skipped:
             print(
-                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
+                "  ⚠ Keeping latest recovery copy: DB file(s) skipped for size: "
                 + ", ".join(oversized_skipped)
             )
             logger.warning(
@@ -1439,11 +1438,16 @@ def _create_quick_snapshot_locked(
                 ", ".join(oversized_skipped),
             )
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
-            "recovery source",
+            "Snapshot incomplete because %d DB(s) failed to capture "
+            "and/or %d were oversized — keeping the latest recovery copy "
+            "of each omitted DB",
             len(failed_dbs), len(oversized_skipped),
         )
+    _prune_quick_snapshots(
+        root,
+        keep=_QUICK_DEFAULT_KEEP if keep is None else keep,
+        preserve_recovery_for=omitted_dbs,
+    )
 
     logger.info(
         "quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
@@ -2153,8 +2157,17 @@ def restore_cron_jobs_all_profiles(
     return restored
 
 
-def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    *,
+    preserve_recovery_for: Optional[List[str]] = None,
+) -> int:
+    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted.
+
+    ``preserve_recovery_for`` names DB files the newest snapshot omitted (#68805):
+    the newest snapshot whose manifest still holds each one is kept past the limit.
+    """
     if not root.exists():
         return 0
 
@@ -2168,8 +2181,27 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
         reverse=True,
     )
 
+    retained = set(dirs[:keep])
+    missing = set(preserve_recovery_for or ())
+    for d in dirs:
+        if not missing:
+            break
+        try:
+            with open(d / "manifest.json", encoding="utf-8-sig") as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not inspect snapshot %s for recovery copies: %s", d.name, exc)
+            continue
+        files = meta.get("files") if isinstance(meta, dict) else None
+        covered = missing.intersection(files) if isinstance(files, dict) else set()
+        if covered:
+            retained.add(d)
+            missing -= covered
+
     deleted = 0
-    for d in dirs[keep:]:
+    for d in dirs:
+        if d in retained:
+            continue
         try:
             shutil.rmtree(d)
             deleted += 1

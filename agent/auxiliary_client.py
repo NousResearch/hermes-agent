@@ -3720,11 +3720,15 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(
+    provider: str, exc: Exception, *, failed_api_key: str = "", model: Optional[str] = None,
+) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
+    another process already rotated (current() would be None). ``model`` is the model the failed
+    request named: a per-model rate limit (Anthropic 429) benches that (key, model) pair only, so
+    an aux-model 429 never takes the key away from the main model.
     """
     normalized = _normalize_aux_provider(provider)
     try:
@@ -3736,13 +3740,13 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     status_code = getattr(exc, "status_code", None)
 
-    def _rotate(fallback_status: int) -> bool:
+    def _rotate(fallback_status: int, failed_model: Optional[str] = None) -> bool:
         error_context: Dict[str, Any] = {"message": str(exc)}
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
-            error_context=error_context, api_key_hint=failed_api_key or None,
+            error_context=error_context, api_key_hint=failed_api_key or None, model=failed_model,
         )
         if next_entry is None:
             return False
@@ -3757,7 +3761,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     if _is_payment_error(exc):
         return _rotate(402)
     if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
-        return _rotate(429)
+        return _rotate(429, model)
     return False
 
 
@@ -7784,6 +7788,7 @@ def _ladder_credential_rungs(
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
+    _request_model = kwargs.get("model") or route.resolved_model or route.final_model
     # Gate on the narrowed error: a connection failure from the retry above arrives here
     # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
@@ -7796,7 +7801,8 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key,
+                                  model=_request_model):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
@@ -7807,7 +7813,7 @@ def _ladder_credential_rungs(
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(pool_provider, retry2_err, model=_request_model)
                     first_err = retry2_err
                 else:
                     raise

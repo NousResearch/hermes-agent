@@ -102,8 +102,8 @@ def _wait_for_link(start, app: str) -> dict[str, Any]:
         target = snapshot["targets"][0]
         url = target.get("connect_url")
         if url and not printed_url:
-            print(url)
-            print("Open this link in your browser to finish.")
+            print(url, flush=True)
+            print("Open this link in your browser to finish.", flush=True)
             printed_url = True
         if target.get("state") in _DONE_STATES or snapshot.get("settled_at") is not None:
             return target
@@ -183,10 +183,11 @@ def _rename(args) -> int:
     return 0
 
 
-def _pick_account(app: str, alias: str | None) -> dict[str, Any]:
+def _pick_account(app: str, alias: str | None, *, retired: bool = False) -> dict[str, Any]:
+    """``retired``: a retired account may be picked by name (removal); a repair never targets one."""
     rows = _app_accounts(app)
     if alias:
-        return _match_named(app, [r for r in rows if not r.get("disabled")], alias)
+        return _match_named(app, [r for r in rows if retired or not r.get("disabled")], alias)
     live_rows = [r for r in rows if not r.get("disabled")]
     if len(live_rows) == 1:
         return live_rows[0]
@@ -199,7 +200,7 @@ def _disconnect(args) -> int:
     from tools.connectors.portal.client import PortalConnectorClient
 
     app = args.app.strip().lower()
-    row = _pick_account(app, args.alias)
+    row = _pick_account(app, args.alias, retired=True)
     name = _account_name(row)
     if not args.yes:
         if not sys.stdin.isatty():

@@ -137,8 +137,8 @@ If the agent leaves it out when several accounts are named, or names one that do
 Manage accounts in any of these places:
 
 - The desktop app's **Connectors** page.
-- The TUI: `/connectors` (see [Slash Commands](../reference/slash-commands.md#tools--skills)).
-- The CLI: `hermes connectors` (see [CLI Commands](../reference/cli-commands.md#hermes-connectors)).
+- The TUI: `/connectors` (see [Slash Commands](../../reference/slash-commands.md#tools--skills)).
+- The CLI: `hermes connectors` (see [CLI Commands](../../reference/cli-commands.md#hermes-connectors)).
 - [Nous Portal](https://portal.nousresearch.com).
 
 ---

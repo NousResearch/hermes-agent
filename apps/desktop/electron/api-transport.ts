@@ -37,8 +37,21 @@ import http from 'node:http'
 import https from 'node:https'
 
 // JSON pool: many small concurrent calls (session lists, config, prompts).
-const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
-const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
+//
+// maxSockets is deliberately NOT the typical direct-TCP value (50+). When the
+// transport is an SSH mux (remote backends), all logical sockets multiplex
+// over ONE physical SSH connection: the mux serialises channel handling, so
+// ~10 concurrent channels is the observed saturation point. Exceeding it
+// queues requests behind each other, turning a healthy 0.3s round-trip into
+// 4-9s latency that the retry policy then amplifies into a connection storm
+// (conns 10 to 22, channels 3 to 11, self-resolving after ~50s). 12 leaves
+// headroom above the healthy steady-state (~10 conns) while staying below
+// the mux saturation knee, and is equally safe for direct TCP (HTTP JSON
+// payloads are small; 12 concurrent sockets suffice for interactive rates).
+const MAX_JSON_CONCURRENCY = 12
+
+const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: MAX_JSON_CONCURRENCY })
+const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: MAX_JSON_CONCURRENCY })
 
 // Download pool: few long-lived streaming bodies. Isolated from the JSON pool
 // so saturating it with large file downloads can't block interactive calls.

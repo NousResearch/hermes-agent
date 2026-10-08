@@ -13,19 +13,6 @@ def _agent_persisting(override):
     return agent
 
 
-def _live_agent():
-    """FIXTURE: an agent carrying a session store so repair_message_sequence runs the LIVE
-    user fold. These are upstream in-base tests (``87cefde203``) whose bare-list fold
-    expectation conflicts with #63298's wire-boundary contract (bare repair surfaces stay
-    verbatim); re-targeted to the live fold where the merged-override machinery lives.
-    Assertions byte-unchanged. Contract fork — maintainers may flip."""
-
-    class _Agent:
-        _session_db = True
-
-    return _Agent()
-
-
 def test_replay_flush_row_keeps_prefix_and_exact_api_sidecar():
     from agent.model_metadata import estimate_messages_tokens_rough
     from gateway.message_timestamps import strip_leading_message_timestamps
@@ -37,7 +24,7 @@ def test_replay_flush_row_keeps_prefix_and_exact_api_sidecar():
         {"role": "user", "content": "please deploy build 42 to staging"},
         {"role": "user", "content": wire},
     ]
-    assert repair_message_sequence(_live_agent(), messages) == 1
+    assert repair_message_sequence(None, messages) == 1
     merged_wire = messages[1]["content"]
     # The recorded prefix is bookkeeping: the estimate prices only the row's content.
     assert estimate_messages_tokens_rough([messages[1]]) == estimate_messages_tokens_rough(
@@ -61,7 +48,7 @@ def test_empty_gateway_timestamp_turn_preserves_all_unanswered_rows_on_live_and_
         messages = [{"role": "assistant", "content": "previous response"}]
         messages.extend({"role": "user", "content": text} for text in prior)
         messages.append({"role": "user", "content": clean})
-        assert repair_message_sequence(_live_agent(), messages) == len(prior)
+        assert repair_message_sequence(None, messages) == len(prior)
         expected = "\n\n".join(prior)
         assert messages[1]["content"] == expected
         agent = _agent_persisting(clean)

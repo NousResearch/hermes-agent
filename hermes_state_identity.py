@@ -99,9 +99,9 @@ def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
 def _stable_tool_key(row: Any) -> Optional[Tuple[Any, ...]]:
     """Display-dedupe key of a tool-calling assistant row built from its stable call ids instead of the arguments a
     prune rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` for
-    every other row and for an incomplete id set, so the caller keeps the full content key: a tool RESULT row keeps
-    its payload in the key, because folding the archived full output into its pruned stub would drop the original
-    from compacted history and transcript exports, and distinct id-less calls never merge."""
+    every other row and for an incomplete id set, so the caller keeps the full content key. Tool RESULT rows with
+    a durable uid use their occurrence identity in the display projection, which keeps the full original rather
+    than a pruned stub; legacy results without a uid keep the payload key, so distinct id-less calls never merge."""
     if row["role"] != "assistant":
         return None
     calls = _json_or(row["tool_calls"] or "[]", [], "Failed to deserialize tool_calls, falling back to []")
@@ -109,3 +109,29 @@ def _stable_tool_key(row: Any) -> Optional[Tuple[Any, ...]]:
     if call_ids and all(call_ids):
         return ("assistant", None, row["timestamp"], row["tool_call_id"], call_ids, row["tool_name"])
     return None
+
+
+# Version the display layout separately from payload and model-history storage.
+_TOOL_DISPLAY_VERSION_KEY = "tool_display_identity_version"
+_TOOL_DISPLAY_VERSION_SQL = (
+    f"SELECT 1 FROM state_meta WHERE key = '{_TOOL_DISPLAY_VERSION_KEY}' AND value = '1' LIMIT 1")
+
+
+def _tool_display_uid(row: Any) -> Optional[str]:
+    """Fold tool-result copies by durable occurrence uid, leaving uid-less legacy rows alone."""
+    return (row["message_uid"] or None) if row["role"] == "tool" and "message_uid" in row.keys() else None
+
+
+def _display_row_priority(row: Any) -> Tuple[int, int, int]:
+    """Keep the original tool output; other display events still prefer active/newest rows."""
+    return (0, -row["id"], row["id"]) if _tool_display_uid(row) else (row["active"], row["id"], row["id"])
+
+
+def _display_row_order_sql(alias: str = "", *, has_message_uid: bool = True) -> str:
+    """SQL equivalent of the display representative priority, including old read-only schemas."""
+    prefix = f"{alias}." if alias else ""
+    if not has_message_uid:
+        return f"{prefix}active DESC, {prefix}id DESC"
+    tool = f"{prefix}role = 'tool' AND NULLIF({prefix}message_uid, '') IS NOT NULL"
+    return (f"CASE WHEN {tool} THEN 0 ELSE {prefix}active END DESC, "
+            f"CASE WHEN {tool} THEN -{prefix}id ELSE {prefix}id END DESC")

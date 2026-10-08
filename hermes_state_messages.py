@@ -23,7 +23,8 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json,
+    _tool_display_uid, _display_row_priority, _display_row_order_sql, _TOOL_DISPLAY_VERSION_SQL)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -279,7 +280,7 @@ class SessionMessagesMixin:
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
-            "display_metadata": display_metadata,
+            "display_metadata": display_metadata, "message_uid": message_uid_or_none(msg),
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
@@ -1184,6 +1185,9 @@ class SessionMessagesMixin:
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
+        # Pruning changes the payload, not the durable tool-result occurrence.
+        if tool_uid := _tool_display_uid(row):
+            return ("tool", tool_uid)
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
@@ -1206,8 +1210,8 @@ class SessionMessagesMixin:
 
     def _dedupe_display_generations(self, rows):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
-        into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
-        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
+        into each generation). Keep the original tool result, and otherwise prefer the live row, then the newest.
+        The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
         seen: Dict[Tuple[Any, ...], Any] = {}
         first_id: Dict[Tuple[Any, ...], int] = {}
         for row in rows:
@@ -1215,7 +1219,7 @@ class SessionMessagesMixin:
                 continue
             key = self._display_dedupe_key(row)
             cur = seen.get(key)
-            if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
+            if cur is None or _display_row_priority(row) > _display_row_priority(cur):
                 seen[key] = row
             first_id[key] = min(first_id.get(key, row["id"]), row["id"])
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
@@ -1229,14 +1233,14 @@ class SessionMessagesMixin:
         without inheriting it) leaves one logical message in two ``display_order`` groups,
         and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
         recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
-        on one definition of a logical message; the live copy wins its group via the read
-        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        on one definition of a logical message. Reads use the same representative priority
+        to preserve original tool outputs. Writes only on drift."""
         first_id: Dict[bytes, int] = {}
         last_id = 0
         while True:
             rows = conn.execute(
                 "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                "display_kind, display_metadata, display_order, display_identity "
+                "display_kind, display_metadata, display_order, display_identity, message_uid "
                 "FROM messages INDEXED BY idx_messages_session_id "
                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                 "ORDER BY id LIMIT 1000",
@@ -1261,6 +1265,8 @@ class SessionMessagesMixin:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
+        if "message_uid" in columns and self._read_one(_TOOL_DISPLAY_VERSION_SQL) is None:
+            return False  # An unfinished layout upgrade cannot trust the payload-based tool index.
         if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
             return True
         if getattr(self, "read_only", False):
@@ -1278,7 +1284,7 @@ class SessionMessagesMixin:
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool) -> List[Any]:
         """Project a legacy read-only display page without retaining transcript payloads."""
-        representatives: Dict[bytes, Tuple[int, int]] = {}
+        representatives: Dict[bytes, Tuple[int, int, int]] = {}
         with self._read_ctx() as conn:
             conn.execute("BEGIN")
             try:
@@ -1287,9 +1293,10 @@ class SessionMessagesMixin:
                     ("idx_messages_session_id",),
                 ).fetchone() is not None
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                uid_column = "message_uid" if "message_uid" in self._message_column_names(conn) else "NULL AS message_uid"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    f"display_kind, display_metadata, {uid_column} FROM messages {index_hint} "
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:
@@ -1297,14 +1304,14 @@ class SessionMessagesMixin:
                         continue
                     identity = self._display_identity(self._display_dedupe_key(row))
                     current = representatives.get(identity)
-                    candidate = (row["active"], row["id"])
+                    candidate = _display_row_priority(row)
                     if current is None or candidate > current:
                         representatives[identity] = candidate
                 rows.close()
 
                 identities = list(representatives)
                 identities = identities[::-1][offset:][:limit][::-1] if latest else identities[offset:][:limit]
-                selected_ids = [representatives[identity][1] for identity in identities]
+                selected_ids = [representatives[identity][-1] for identity in identities]
                 selected = {}
                 for start in range(0, len(selected_ids), 900):
                     chunk = selected_ids[start:start + 900]
@@ -1346,6 +1353,8 @@ class SessionMessagesMixin:
                                 offset: int = 0, latest: bool = False):
         """One display-history projection for normal reads and transactional verification."""
         direction = "DESC" if latest else "ASC"
+        order = _display_row_order_sql("candidate", has_message_uid=any(
+            r[1] == "message_uid" for r in conn.execute("PRAGMA table_info(messages)")))
         return conn.execute(
             f"""WITH page AS (
                    SELECT display_order FROM messages
@@ -1359,7 +1368,7 @@ class SessionMessagesMixin:
                    WHERE candidate.session_id = ?
                      AND candidate.display_order = page.display_order
                      AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
-                   ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                   ORDER BY {order} LIMIT 1
                )
                ORDER BY page.display_order ASC""",
             (session_id, -1 if limit is None else limit, offset, session_id),

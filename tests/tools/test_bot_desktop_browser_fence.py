@@ -204,3 +204,30 @@ def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypa
     res = vault._eval_js_secret("default", "fill()")
     assert res["success"] is False and res["error_type"] == "human_has_control"
     assert evaluated == ["fill()"], "the credential must not reach the page under a human lease"
+
+
+def test_explicit_manual_otp_dispatch_keeps_the_human_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+    from tools.registry import registry
+
+    task_id = "otp-merge"
+    monkeypatch.setitem(browser._active_sessions, browser._last_session_key(task_id), {
+        "session_name": task_id, "cdp_url": None, "features": {"local": True},
+    })
+    calls: list[tuple[str, str, bool]] = []
+
+    def enter_code(handle: str, task_id: str, *, manual: bool = False) -> str:
+        calls.append((handle, task_id, manual))
+        return json.dumps({"success": True})
+
+    monkeypatch.setattr(vault, "browser_vault_enter_code", enter_code)
+    args = {"handle": "vault_fixture", "manual": True}
+    raw = registry.dispatch("browser_vault_enter_code", args, task_id=task_id)
+    assert isinstance(raw, str) and json.loads(raw)["success"] is True
+    assert calls == [("vault_fixture", task_id, True)]
+
+    lease.acquire("human")
+    refused = registry.dispatch("browser_vault_enter_code", args, task_id=task_id)
+    assert isinstance(refused, str) and json.loads(refused)["code"] == "human_has_control"
+    assert len(calls) == 1, "manual entry must not bypass the human's screen ownership"

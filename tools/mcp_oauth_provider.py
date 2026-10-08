@@ -87,8 +87,14 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
-                 trust_prm_resource: bool = False, **kwargs: Any):
+    def __init__(
+        self,
+        *args: Any,
+        token_user_agent: str | None = None,
+        oauth_flow: str = "browser",
+        trust_prm_resource: bool = False,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
@@ -215,7 +221,8 @@ class HermesProviderMixin:
             await super()._validate_resource_match(prm)
         except OAuthFlowError as exc:
             self._hermes_logger.warning(
-                "MCP OAuth: accepting protected-resource metadata despite: %s (oauth.trust_prm_resource)", exc)
+                "MCP OAuth: accepting protected-resource metadata despite: %s (oauth.trust_prm_resource)",
+                exc)
 
     def _prepare_token_request(self, request):
         """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,

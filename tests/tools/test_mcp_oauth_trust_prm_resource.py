@@ -14,6 +14,7 @@ Fail-closed contract under test:
   the advertised canonical resource.
 - A matching PRM is accepted with or without the flag (no regression on the normal path).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -32,10 +33,12 @@ SERVER_URL = "https://tenant.example/mcp"
 CANONICAL_PRM = ProtectedResourceMetadata.model_validate({
     "resource": "https://app.example/mcp",
     "authorization_servers": ["https://app.example"],
-    "scopes_supported": ["mcp"]})
+    "scopes_supported": ["mcp"],
+})
 MATCHING_PRM = ProtectedResourceMetadata.model_validate({
     "resource": "https://tenant.example/mcp",
-    "authorization_servers": ["https://tenant.example"]})
+    "authorization_servers": ["https://tenant.example"],
+})
 
 
 def _provider(tmp_path, monkeypatch, *, trust: bool) -> HermesMCPOAuthProvider:
@@ -45,9 +48,12 @@ def _provider(tmp_path, monkeypatch, *, trust: bool) -> HermesMCPOAuthProvider:
         server_name="srv",
         server_url=SERVER_URL,
         client_metadata=OAuthClientMetadata(
-            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")], client_name="Hermes Agent"),
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
         storage=HermesTokenStorage("srv"),
-        trust_prm_resource=trust)
+        trust_prm_resource=trust,
+    )
 
 
 @pytest.mark.asyncio
@@ -86,16 +92,23 @@ def test_build_provider_kwargs_reads_the_flag(monkeypatch, tmp_path):
     from tools.mcp_oauth_provider import build_provider_kwargs
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    mo._configure_callback_port = lambda cfg, storage: (cfg.__setitem__("_resolved_port", 12345), 12345)[1]
+    mo._configure_callback_port = lambda cfg, storage: (
+        cfg.__setitem__("_resolved_port", 12345),
+        12345,
+    )[1]
     mo._maybe_preregister_client = lambda *a, **k: None
-    kwargs = build_provider_kwargs({"trust_prm_resource": True}, HermesTokenStorage("srv"), ssh_proxy_hint=False)
+    kwargs = build_provider_kwargs(
+        {"trust_prm_resource": True}, HermesTokenStorage("srv"), ssh_proxy_hint=False
+    )
     assert kwargs["trust_prm_resource"] is True
     kwargs = build_provider_kwargs({}, HermesTokenStorage("srv"), ssh_proxy_hint=False)
     assert kwargs["trust_prm_resource"] is False
 
 
 def test_humanize_error_names_the_opt_in():
-    msg = ("Protected resource https://app.example/mcp does not match expected "
-           "https://tenant.example/mcp")
+    msg = (
+        "Protected resource https://app.example/mcp does not match expected "
+        "https://tenant.example/mcp"
+    )
     humanized = humanize_oauth_registration_error("srv", OAuthFlowError(msg))
     assert humanized is not None and "trust_prm_resource" in humanized

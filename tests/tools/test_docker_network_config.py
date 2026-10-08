@@ -50,7 +50,7 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     monkeypatch.setattr(backends, "_create_environment", _fake_create)
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
     monkeypatch.setattr(terminal_tool, "_select_image", lambda *a, **k: "img")
-    monkeypatch.setattr(terminal_tool, "_resolve_task_host_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_task_host_cwd", lambda *a, **k: (None, None))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})

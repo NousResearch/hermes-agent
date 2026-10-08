@@ -199,6 +199,7 @@ def ensure_task_env(task_id: Optional[str] = None):
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
         _get_env_config, _last_activity, _resolve_container_task_id,
         _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
+        _warn_refused_cwd_mount,
     )
     config = _get_env_config()
     env_type = config["env_type"]
@@ -224,11 +225,13 @@ def ensure_task_env(task_id: Optional[str] = None):
         existing = get_active_env(effective_task_id)
         if existing is not None:
             return existing
+        host_cwd, _refusal = _resolve_task_host_cwd(config, task_id)
+        _warn_refused_cwd_mount(config, task_id, host_cwd)
         try:
             new_env = _create_configured_env(
                 config, env_type, image=image, cwd=config["cwd"],
                 timeout=config["timeout"], task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
+                host_cwd=host_cwd,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(

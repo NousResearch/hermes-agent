@@ -581,7 +581,10 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
 
 
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind into *task_id*'s container.
+    """``(host_cwd, refused_reason)`` policy for *task_id*'s container — callers use
+    ``[0]``; the reason names why a configured ``docker_mount_cwd_to_workspace: true``
+    produced no bind (surfaced by ``_warn_refused_cwd_mount`` so the refusal stops
+    being a silent no-op).
 
     Single owner of the cwd-mount policy for every creation site. Shared-
     container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
@@ -597,19 +600,53 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     ``/workspace`` is already claimed, is the volume mount, not this override.
     """
     if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
-        return None
+        return None, None
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
+        return config.get("host_cwd"), None
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
-    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
-        return None
+    if overrides.get("cwd_source") == "process":
+        return None, (
+            "docker_mount_cwd_to_workspace is enabled, but the configured terminal.cwd is a "
+            "process-global launch artifact; per-session isolation only mounts a workspace "
+            "attached to this session. Attach the directory as the session workspace, or add "
+            "it under terminal.docker_volumes."
+        )
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None, (
+            "docker_mount_cwd_to_workspace is enabled, but this session has no attached "
+            "workspace to mount. Pick a project directory for the session, or configure "
+            "terminal.docker_volumes."
+        )
     candidate = os.path.abspath(os.path.expanduser(candidate))
     # Must exist on the host and not already be an in-container path.
-    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
-        return None
-    return candidate
+    if not os.path.isdir(candidate):
+        return None, (
+            f"docker_mount_cwd_to_workspace is enabled, but the session workspace "
+            f"{candidate!r} does not exist on the host, so no bind mount was created."
+        )
+    if candidate.startswith(("/workspace", "/root")):
+        return None, (
+            f"docker_mount_cwd_to_workspace is enabled, but the session workspace "
+            f"{candidate!r} is a path inside the container, not a host mount source."
+        )
+    return candidate, None
+
+
+def _warn_refused_cwd_mount(config: Dict[str, Any], task_id: Optional[str], host_cwd: Optional[str]) -> None:
+    """Log WHY the configured cwd→/workspace bind did not happen (#94454).
+
+    Under per-session isolation the refusal itself is deliberate (leaking a previous
+    session's directory into a fresh container is the bug the isolation fixed);
+    what was missing is the signal — the container silently fell back to a
+    throwaway overlay with the working directory invisible to the agent.
+    """
+    if host_cwd is not None or not config.get("docker_mount_cwd_to_workspace"):
+        return
+    _resolved, reason = _resolve_task_host_cwd(config, task_id)
+    if reason:
+        logger.warning("Docker workspace mount skipped for task %s: %s", task_id or "default", reason)
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -1116,7 +1153,8 @@ def _plan_execution(
 
     cwd = coerce_ssh_remote_cwd(
         overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
-    host_cwd = _resolve_task_host_cwd(config, task_id)
+    host_cwd, _refusal = _resolve_task_host_cwd(config, task_id)
+    _warn_refused_cwd_mount(config, task_id, host_cwd)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the

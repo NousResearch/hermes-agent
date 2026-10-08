@@ -385,6 +385,9 @@ def compress_after_tool_results(
             # conversation_history: rows already carry _DB_PERSISTED_MARKER, and on a
             # stale in-place flag the helper could seed unpersisted rows.
             if _pruned_n and _pruned_msgs is not messages:
+                from agent.compaction_events import publish_prune
+
+                publish_prune(agent, messages, _pruned_msgs, _pruned_n)
                 messages = _pruned_msgs
                 # A committed prune is a content-loss boundary like compaction: demoted skill_view /
                 # read_file bodies survive only as one-line markers, so the repeat-read dedup must

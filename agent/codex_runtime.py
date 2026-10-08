@@ -254,10 +254,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
     if not force:
         # Hermes-forced compactions are recorded by their compress_context attempt; this one Codex ran alone.
         from agent.compaction_events import publish_provider_native
-        publish_provider_native(
-            session_id=getattr(agent, "session_id", None) or "",
-            compression_count=getattr(compressor, "compression_count", None),
-        )
+        publish_provider_native(agent)
     return True
 
 

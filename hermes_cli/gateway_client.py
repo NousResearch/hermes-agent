@@ -13,6 +13,10 @@ class GatewayClientError(ValueError):
     pass
 
 
+class GatewayRPCError(GatewayClientError):
+    """A received owner refusal, distinct from an ambiguous transport failure."""
+
+
 class GatewayClient:
     def __init__(self, websocket):
         self.websocket = websocket
@@ -42,7 +46,7 @@ class GatewayClient:
                         reason = frame["error"].get("message", "request_failed")
                         if not isinstance(reason, str) or not reason.replace("_", "").isalnum() or len(reason) > 80:
                             reason = "request_failed"
-                        future.set_exception(GatewayClientError(reason))
+                        future.set_exception(GatewayRPCError(reason))
                     else:
                         future.set_result(frame.get("result", {}))
                 elif "method" in frame:

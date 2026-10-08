@@ -3179,27 +3179,7 @@ def _save_compose_deliver(
         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
 
-def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Optional[str]) -> None:
-    """Shutdown already wrote last_status, so mark_job_run is skipped (a second call would skip a
-    fire or auto-delete the job); an unsent notice is recorded via update_job instead."""
-    if delivery_error:
-        try:
-            # The gateway shutdown already wrote last_status for this run, so mark_job_run is skipped below
-            # — but it could not know that the notice we just tried to send never left the process (the
-            # adapters were torn down first, #82232). Record the delivery failure on its own via update_job:
-            # mark_job_run also advances next_run_at and the repeat counter, and running that a second time
-            # for one run would skip a fire or auto-delete the job early.
-            from cron.jobs import update_job
-            update_job(job["id"], {"last_delivery_error": delivery_error})
-        except Exception as _rec_err:
-            logger.debug(
-                "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
-    finish_execution(
-        execution_id, success=False,
-        error="Interrupted by gateway shutdown before terminal completion.")
-
-
-def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
+def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str, *, recovered=False) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
     if not d.should_deliver and job.get("last_delivery_queued"):
@@ -3256,7 +3236,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
-    finish_execution(
+    from functools import partial
+    from cron.executions import recover_receipted_execution
+    finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else finish_execution
+    finish(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
     if job.get("last_delivery_queued"):
         # A drain that settled before this run's own bookkeeping landed found nothing to fence on.
@@ -3513,7 +3496,8 @@ def _run_one_job_body(
                 return True
 
         if _consume_interrupted_flag(job["id"], execution_token):
-            _finish_interrupted_run(job, execution_id, delivery_error)
+            from cron.scheduler_bookkeeping import finish_interrupted_run
+            finish_interrupted_run(job, execution_id, delivery_error)
             return True
 
         return _finish_completed_run(d, fire_owner, execution_id)

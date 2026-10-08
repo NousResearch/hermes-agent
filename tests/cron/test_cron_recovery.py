@@ -17,7 +17,7 @@ def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     with jobs.use_cron_store(tmp_path / 'cron'):
-        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local')
+        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='telegram:123')
         db = SessionDB(tmp_path / 'state.db')
         runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()), adapters={})
         authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
@@ -122,7 +122,7 @@ def test_recovered_receipt_settles_the_departed_firers_execution_row(tmp_path, m
         finally:
             db.close()
         settled = executions.get_execution(fire)
-        assert (settled['status'], settled['delivery_outcome']) == ('completed', 'queued')
+        assert (settled['status'], settled['delivery_outcome']) == ('completed', 'suppressed')
         assert executions.recover_interrupted_executions() == 0
         assert executions.get_execution(fire)['status'] == 'completed'
 
@@ -146,8 +146,10 @@ def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, m
                 result = await asyncio.to_thread(
                     scheduler_authority.run_canonical_job, jobs.get_job(job['id']), execution_id='fire')
                 assert result[0] is False and 'invalid_params' in result[3]
-                assert not scheduler_authority.journal_path(job['id'], 'fire').exists()
+                # Keep the definitive refusal until terminal bookkeeping, including a firing-process crash.
+                assert scheduler_authority.journal_path(job['id'], 'fire').exists()
                 await asyncio.to_thread(scheduler_authority.reconcile_pending)
+                assert not scheduler_authority.journal_path(job['id'], 'fire').exists()
             finally:
                 session_cron.unbind_owner(authority)
         try:

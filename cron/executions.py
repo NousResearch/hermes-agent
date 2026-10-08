@@ -352,6 +352,32 @@ def finish_execution(
     return record
 
 
+def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None):
+    """Settle a verified canonical receipt after owner loss, including its unknown audit row.
+
+    Terminal verdicts stay immutable. A live foreign firing process still owns its bookkeeping.
+    """
+    now = _hermes_now().isoformat()
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT process_id, pid, process_started_at FROM executions
+               WHERE id=? AND job_id=? AND status IN ('claimed','running','unknown')""",
+            (execution_id, job_id)).fetchone()
+        if row is None or (row['process_id'] != _PROCESS_ID
+                           and _owner_is_live(int(row['pid']), row['process_started_at'])):
+            return None
+        conn.execute(
+            """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
+               handoff_started_at=NULL, delivery_outcome=? WHERE id=?""",
+            ('completed' if success else 'failed', now, None if success else (str(error) if error else 'unknown failure'),
+             delivery_outcome, execution_id))
+        _prune_unlocked(conn)
+        record = _fetch(conn, execution_id)
+    _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    record_cron_finish(record, delivery_outcome)
+    return record
+
+
 def settle_delivery_outcome(execution_id: str, outcome: str) -> bool:
     """Replace a terminal attempt's ``queued`` delivery outcome with the drain's real one.
 

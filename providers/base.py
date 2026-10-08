@@ -118,6 +118,12 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # True when this provider's client returns a real stream iterator for
+    # ``stream=True`` requests, so the main loop may stream it and get per-chunk
+    # stale detection. Deliberately opt-in: the ``external_process`` gate in
+    # ``agent.turn_api_call._should_stream`` exists because ACP-style clients
+    # hand back a non-iterable completion object (#125095).
+    supports_streaming: bool = False
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

@@ -156,13 +156,19 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
   }) + '\n')
 }
 
+/** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */
+function hostReceipt(out, product) {
+  const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+  return saved.schema === 1 && saved.product === product
+    && saved.platform === process.platform && saved.arch === process.arch
+    && saved.node === process.versions.node ? saved : null
+}
+
 export function productCurrent({ source, product, out, prepared }) {
   try {
-    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
-    const paths = prepared ?? preparedPaths(saved.inputs)
-    return saved.schema === 1 && saved.product === product
-      && saved.platform === process.platform && saved.arch === process.arch
-      && saved.node === process.versions.node
+    const saved = hostReceipt(out, product)
+    const paths = saved && (prepared ?? preparedPaths(saved.inputs))
+    return !!saved
       // The pre-build gate, unlike recordProduct, must also see the clock. A restamp
       // that lands after the build (a racing write-build-stamp, or a second builder
       // that reached extraResources first) leaves dist baking one builtAt while the
@@ -183,10 +189,9 @@ export function productCurrent({ source, product, out, prepared }) {
  *  the renderer such a product carries is still the one these inputs compile to. */
 export function rendererCurrent(out, inputs) {
   try {
-    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    const saved = hostReceipt(out, 'desktop')
     const unstamped = list => JSON.stringify(list.filter(({ name }) => name !== 'stamp'))
-    return saved.schema === 1 && saved.product === 'desktop'
-      && saved.platform === process.platform && saved.arch === process.arch && saved.node === process.versions.node
+    return !!saved
       && saved.inputs.sourceHash === inputs.sourceHash
       && unstamped(saved.inputs.prepared) === unstamped(inputs.prepared)
       && saved.outputHash === outputHash(out)

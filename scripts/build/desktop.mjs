@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, readdirSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { bundleElectronMain } from '../../apps/desktop/scripts/bundle-electron-main.mjs'
+import { bundleElectronMain, electronOutputs } from '../../apps/desktop/scripts/bundle-electron-main.mjs'
 import { checkDistBuilt } from '../../apps/desktop/scripts/assert-dist-built.mjs'
 import { classifyNativeBinary } from '../../apps/desktop/scripts/stage-native-deps.mjs'
 import { copyNativeTree } from '../../apps/desktop/scripts/prepared-native-deps.mjs'
@@ -28,8 +28,9 @@ function validateNativeTree(nativeDeps, platform) {
 // Only main/preload bake the install stamp (bundleElectronMain); the renderer is a function of
 // the source tree, icons and native inputs alone. A new commit with no desktop change therefore
 // leaves the published renderer valid: reuse it when the receipt proves those inputs and the
-// output bytes are unchanged, and rebuild only what carries the stamp.
-const stampedOutputs = new Set(['electron-main.mjs', 'electron-preload.js', 'preview-guest-preload.js'])
+// output bytes are unchanged, and rebuild only what carries the stamp. The native trees are
+// recopied from nativeDeps below either way.
+const notReused = new Set([...Object.values(electronOutputs), 'node_modules', 'native'])
 
 /** Pure desktop compilation. out is the dist directory, not the source app. */
 export async function buildDesktop({ source, out, icons, stamp, nativeDeps, typecheck = false, platform = process.platform }) {
@@ -47,10 +48,11 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
   if (!existsSync(join(publicIcons, 'apple-touch-icon.png'))) throw new Error(`Missing desktop icon: ${join(publicIcons, 'apple-touch-icon.png')}`)
   validateNativeTree(resolve(nativeDeps), platform)
   const inputs = buildInputs(source, 'desktop', { icons: publicIcons, stamp, nativeDeps })
-  const reuse = rendererCurrent(out, inputs)
+  // A typechecked build must run the check: a reused renderer never passed through tsc here.
+  const reuse = !typecheck && rendererCurrent(out, inputs)
   await withProduct(out, async (product, scratch) => {
     if (reuse) {
-      cpSync(out, product, { recursive: true, filter: file => !stampedOutputs.has(relative(out, file)) })
+      cpSync(out, product, { recursive: true, filter: file => !notReused.has(relative(out, file).split(sep)[0]) })
     } else await compileRenderer(product, scratch)
     // The receipt must carry the clock this output BAKED, not whatever the live
     // stamp says by now: electron-builder copies that live file into the bundle

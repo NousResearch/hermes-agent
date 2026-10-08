@@ -2,6 +2,7 @@
 
 import logging
 import json
+import queue
 import sys
 import threading
 import types
@@ -13,6 +14,7 @@ import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
+    InjectedMessage,
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -2076,6 +2078,45 @@ class TestThreadToolWhitelist:
 
 class TestPluginContext:
     """Tests for the PluginContext facade."""
+
+    @staticmethod
+    def _make_context(*, busy: bool = False) -> tuple[PluginContext, types.SimpleNamespace]:
+        cli = types.SimpleNamespace(
+            _agent_running=busy,
+            _pending_input=queue.Queue(),
+            _interrupt_queue=queue.Queue(),
+        )
+        manager = types.SimpleNamespace(_cli_ref=cli)
+        manifest = PluginManifest(name="test_plugin", version="0.1.0")
+        return PluginContext(manifest, manager), cli
+
+    def test_inject_message_default_behavior_remains_visible_when_idle(self):
+        ctx, cli = self._make_context(busy=False)
+
+        assert ctx.inject_message("hello") is True
+        assert cli._pending_input.get_nowait() == "hello"
+
+    def test_inject_message_hidden_message_is_wrapped_when_idle(self):
+        ctx, cli = self._make_context(busy=False)
+
+        assert ctx.inject_message("hidden event", visible=False) is True
+
+        item = cli._pending_input.get_nowait()
+        assert isinstance(item, InjectedMessage)
+        assert item.content == "hidden event"
+        assert item.visible is False
+        assert item.preview is None
+
+    def test_inject_message_hidden_message_is_wrapped_when_busy(self):
+        ctx, cli = self._make_context(busy=True)
+
+        assert ctx.inject_message("hidden interrupt", visible=False) is True
+
+        item = cli._interrupt_queue.get_nowait()
+        assert isinstance(item, InjectedMessage)
+        assert item.content == "hidden interrupt"
+        assert item.visible is False
+        assert item.preview is None
 
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):

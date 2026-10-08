@@ -154,6 +154,117 @@ def test_unacknowledged_interrupt_message_is_requeued_not_dropped():
     assert agent.clear_calls >= 1
 
 
+def test_hidden_unacknowledged_interrupt_preserves_envelope_and_suppresses_preview():
+    from hermes_cli.plugins import InjectedMessage
+    import cli as _cli_mod
+
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id)
+    cli.agent = agent
+
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    cli._interrupt_queue.put(InjectedMessage("SECRET_HIDDEN_EVENT", visible=False))
+    printed = []
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True), \
+         patch.object(_cli_mod, "_cprint", side_effect=lambda text, *a, **k: printed.append(str(text))):
+        cli.chat("original")
+
+    assert agent.interrupt_calls == ["SECRET_HIDDEN_EVENT"]
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    assert len(queued) == 1
+    assert isinstance(queued[0], InjectedMessage)
+    assert queued[0].content == "SECRET_HIDDEN_EVENT"
+    assert queued[0].visible is False
+    assert not any("SECRET_HIDDEN_EVENT" in item for item in printed)
+
+
+def test_hidden_acknowledged_interrupt_preserves_envelope_and_suppresses_preview():
+    from hermes_cli.plugins import InjectedMessage
+    import cli as _cli_mod
+
+    class _AckAgent(_StubAgent):
+        def run_conversation(self, **kwargs):
+            time.sleep(self.turn_seconds)
+            return {
+                "final_response": "interrupted",
+                "messages": [
+                    {"role": "user", "content": "original"},
+                    {"role": "assistant", "content": "interrupted"},
+                ],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": self._interrupt_message,
+                "partial": True,
+                "response_previewed": True,
+            }
+
+    cli = _make_cli()
+    agent = _AckAgent(cli.session_id)
+    cli.agent = agent
+
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    cli._interrupt_queue.put(InjectedMessage("SECRET_HIDDEN_EVENT", visible=False))
+    printed = []
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True), \
+         patch.object(_cli_mod, "_cprint", side_effect=lambda text, *a, **k: printed.append(str(text))):
+        cli.chat("original")
+
+    assert agent.interrupt_calls == ["SECRET_HIDDEN_EVENT"]
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    assert len(queued) == 1
+    assert isinstance(queued[0], InjectedMessage)
+    assert queued[0].content == "SECRET_HIDDEN_EVENT"
+    assert queued[0].visible is False
+    assert not any("SECRET_HIDDEN_EVENT" in item for item in printed)
+
+
+def test_hidden_interrupt_clarify_race_is_parked_without_unwrapping():
+    from hermes_cli.plugins import InjectedMessage
+
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id, turn_seconds=0.2)
+    cli.agent = agent
+
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    hidden = InjectedMessage("SECRET_HIDDEN_EVENT", visible=False)
+    cli._interrupt_queue.put(hidden)
+    cli._clarify_state = object()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    assert agent.interrupt_calls == []
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    assert queued == [hidden]
+
+
 
 
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():

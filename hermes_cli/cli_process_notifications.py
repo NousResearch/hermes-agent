@@ -2,6 +2,60 @@
 
 
 class CLIProcessNotificationsMixin:
+    def _is_injected_message(self, value) -> bool:
+        """Return True when a queued item is a plugin-injected message envelope."""
+        try:
+            from hermes_cli.plugins import InjectedMessage
+            return isinstance(value, InjectedMessage)
+        except Exception:
+            return False
+
+    def _unwrap_queued_input(self, value):
+        """Return ``(content, visible, preview)`` for queue payloads.
+
+        Normal user input is visible and previews as itself. ``InjectedMessage``
+        keeps its visibility metadata until the UI path decides whether to render
+        it, then unwraps to raw content for command/chat/model handling.
+        """
+        if self._is_injected_message(value):
+            preview = value.preview if value.preview is not None else value.content
+            return value.content, bool(value.visible), preview
+        return value, True, value
+
+    def _combine_queued_inputs(self, items: list):
+        """Combine interrupt queue payloads without leaking hidden previews."""
+        text_parts: list[str] = []
+        image_parts: list = []
+        visible_previews: list[str] = []
+        saw_injected = False
+
+        for item in items:
+            content, visible, preview = self._unwrap_queued_input(item)
+            saw_injected = saw_injected or self._is_injected_message(item)
+            if isinstance(content, tuple):
+                part_text, part_images = content
+                text_parts.append(str(part_text))
+                image_parts.extend(part_images or [])
+            else:
+                text_parts.append(str(content))
+            if visible:
+                visible_previews.append(str(preview))
+
+        combined_text = "\n".join(text_parts)
+        combined_payload = (combined_text, image_parts) if image_parts else combined_text
+        if not saw_injected:
+            return combined_payload, True, combined_text
+
+        from hermes_cli.plugins import InjectedMessage
+
+        combined_visible = bool(visible_previews)
+        combined_preview = "\n".join(visible_previews) if visible_previews else ""
+        return (
+            InjectedMessage(content=combined_payload, visible=combined_visible, preview=combined_preview),
+            combined_visible,
+            combined_preview,
+        )
+
     def _owns_process_notification(self, event: dict) -> bool:
         """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
         event_key = str(event.get("session_key") or "")
@@ -85,4 +139,3 @@ class CLIProcessNotificationsMixin:
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query
-

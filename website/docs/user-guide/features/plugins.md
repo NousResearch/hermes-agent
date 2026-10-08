@@ -103,7 +103,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
-| Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
+| Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=..., visible=True)` - see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml — prompted during `hermes plugins install` |
@@ -919,21 +919,30 @@ ctx.inject_message(
         "user_name": "Desk Orchestrator",
     },
 )
+
+# Hidden live-CLI injection
+ctx.inject_message(
+    "Webhook event received. Check the latest app state and continue.",
+    role="user",
+    visible=False,
+)
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None, visible: bool = True) -> bool`
 
 In CLI mode:
 
 - If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
 - If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
+- If `visible=False`, the message is still sent to the model but is not rendered as a submitted user message in the live CLI UI.
 - Returns `True` if the message was queued successfully.
 
 In gateway mode:
 
-- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- Pass `session_key` to target an existing gateway session. It is the stable routing key, not the CLI session ID. Pass `origin` instead to start or continue a session for a chat/thread.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
+- `visible` only affects live classic-CLI rendering; gateway injections are delivered through the gateway session.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
 - Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
 - Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.

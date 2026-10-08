@@ -219,6 +219,13 @@ def _backstop_eligible(provider, error: str, *, exhausted: bool | None = None) -
     ``auto`` with a key routes keyed, so no ring, so no exhaustion). A ``free`` pin therefore means
     "prefer the free endpoint", and the backstop makes that preference survive a dry free tier.
     That single reachable population is also why the feature ships opt-in.
+
+    Scope — Exa, Parallel and Keenable only. Firecrawl's ``_use_keyless_ring()`` short-circuits on
+    ``FIRECRAWL_API_KEY`` / ``FIRECRAWL_API_URL`` before consulting the tier, so a keyed Firecrawl
+    install never rides the ring and a keyless one has no key to fall back to: ring-engaged and
+    key-available are mutually exclusive for it. A keyed Firecrawl failure therefore goes to the
+    keyless rescue instead. Making a ``free`` pin reach the Firecrawl ring is a separate change to
+    that provider's routing, not to this gate.
     """
     if provider is None or not _keyed_backstop_enabled():
         return False

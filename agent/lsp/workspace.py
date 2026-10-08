@@ -2,7 +2,8 @@
 
 1. **Workspace gate** — LSP only runs when the cwd (or the edited file) sits inside a git
    worktree, so gateway users on user-home cwd's never spawn daemons.
-2. **nearest_root** — the per-server project-root walk: up from a start path looking for marker
+2. **Workspace trust** — whether a server may load code the project itself ships.
+3. **nearest_root** — the per-server project-root walk: up from a start path looking for marker
    files (``pyproject.toml``, ``Cargo.toml``, ...), optionally bailing if an exclude marker
    shows up first.
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import AbstractSet, Iterable, Iterator, Optional, Set, Tuple
 
 logger = logging.getLogger("agent.lsp.workspace")
 
@@ -133,7 +134,7 @@ def nearest_root(
     return None
 
 
-def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> Tuple[Optional[str], bool]:
+def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> tuple[Optional[str], bool]:
     """Return ``(workspace_root, gated_in)`` for a file.  The cwd's worktree wins when the file is
     inside it; otherwise the file's own worktree is the fallback anchor (monorepos / unrelated
     checkouts).  ``(None, False)`` when neither is in a git worktree."""
@@ -153,12 +154,51 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
     return None, False
 
 
+def operator_workspace_roots() -> set[str]:
+    """Git worktrees the operator pointed Hermes at: the launch dir and the surface-set workspace
+    (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``hermes -w``'s worktree, a gateway's
+    ``terminal.cwd``).  The agent's ``cd`` moves neither (it only moves the terminal's cwd).  A repo at
+    or above ``$HOME`` never counts: a dotfiles repo would trust every directory below it."""
+    from agent.runtime_cwd import resolve_agent_cwd
+    from gateway.session_context import get_session_env
+    from tools.terminal_scope import TerminalPolicyUnavailable
+    from utils import is_truthy_value
+    # Work the model can schedule has no operator anchor: a kanban worker is launched in (with
+    # TERMINAL_CWD =) the task's workspace and a cron run's session cwd is the job's workdir, and the
+    # kanban_create / cronjob tools let the model pick both.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return set()
+    anchors = [os.getcwd]
+    if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+        anchors.append(resolve_agent_cwd)
+    home = normalize_path("~")
+    roots: set[str] = set()
+    for anchor in anchors:
+        try:
+            root = find_git_worktree(str(anchor()))
+        except (OSError, TerminalPolicyUnavailable):  # a deleted cwd; a profile whose terminal policy failed
+            continue
+        if root is not None and not is_inside_workspace(home, root):
+            roots.add(root)
+    return roots
+
+
+def is_trusted_workspace(root: str, trusted_roots: Iterable[str], operator_roots: AbstractSet[str]) -> bool:
+    """True iff a language server may load code the project at ``root`` ships (its own interpreter,
+    TypeScript SDK, config files, build scripts): ``root`` is inside an ``lsp.trusted_workspaces``
+    entry, or belongs to one of the ``operator_workspace_roots`` worktrees.  A nested clone inside
+    such a worktree has its own ``.git`` and is not trusted: the agent may have fetched it."""
+    if any(is_inside_workspace(root, t) for t in trusted_roots):
+        return True
+    return find_git_worktree(root) in operator_roots
+
+
 def clear_cache() -> None:
     """Clear the workspace-resolution cache (on service shutdown, so re-init doesn't see stale results)."""
     _workspace_cache.clear()
 
 
 __all__ = [
-    "find_git_worktree", "is_inside_workspace", "nearest_root", "normalize_path", "resolve_workspace_for_file",
-    "clear_cache",
+    "find_git_worktree", "is_inside_workspace", "is_trusted_workspace", "nearest_root", "normalize_path",
+    "operator_workspace_roots", "resolve_workspace_for_file", "clear_cache",
 ]

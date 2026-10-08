@@ -167,10 +167,6 @@ def _modal_row(config, feats):
     return None
 
 
-def _home_assistant_row(config, feats):
-    return ("Smart Home (Home Assistant)", True, None) if _setup.get_env_value("HASS_TOKEN") else None
-
-
 def _spotify_row(config, feats):
     # OAuth via hermes auth spotify — check auth.json, not env vars
     try:
@@ -196,7 +192,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _home_assistant_row, _spotify_row, _skills_hub_row, _always_on_rows)
+    _modal_row, _spotify_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):
@@ -271,4 +267,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

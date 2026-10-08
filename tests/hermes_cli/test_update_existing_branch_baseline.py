@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import update_cmd
-from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
+from tests.hermes_cli.test_update_target_identity import git, update_tree
 
 
 def init_repo(root, monkeypatch):
@@ -276,3 +276,47 @@ def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch
     assert git(root, "rev-parse", "HEAD") == upstream_tip
     assert git(root, "rev-parse", "main") == upstream_tip
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_a_refused_branch_switch_prints_the_refusal_not_a_missing_branch(checkout, capsys):
+    """CP0's commit point refused (no marker can be written): the user used to read "Branch 'main'
+    does not exist locally or on origin." above the real reason (review C8)."""
+    from hermes_cli import update_cmd_commit
+    from hermes_cli._early_recovery import interrupted_pull_marker
+
+    root, old, _tip = checkout
+    update_cmd_commit.begin_update_attempt()
+    interrupted_pull_marker(root).mkdir()
+    try:
+        with pytest.raises(SystemExit):
+            prepare(root)
+    finally:
+        update_cmd_commit.begin_update_attempt()
+
+    out = capsys.readouterr().out
+    assert "could not arm the update" in out and "does not exist" not in out
+    assert git(root, "rev-parse", "HEAD") == old
+
+
+def test_a_torn_branch_switch_leaves_the_autostash_parked(checkout, monkeypatch, capsys):
+    """A switch that stopped part-way keeps its marker for the next launch's restore; re-applying the
+    autostash onto that half-written tree mixed the user's edits into git's partial writes (C8)."""
+    from hermes_cli._early_recovery import interrupted_pull_marker
+
+    root, _old, _tip = checkout
+    (root / "cli.py").write_text("value = 'local edit'\n", encoding="utf8")
+    restored = []
+    monkeypatch.setattr(update_cmd._m(), "_restore_stashed_changes", lambda *a, **k: restored.append(a))
+
+    def torn_switch(git_cmd, branch, target_ref, *, pre, stash):
+        interrupted_pull_marker(root).write_text(f"pid=1\npre={pre}\ntarget={pre}\nstash={stash}\n",
+                                                 encoding="utf-8")
+        return subprocess.CompletedProcess(["checkout", branch], 1, "", "error: unable to write file cli.py")
+
+    monkeypatch.setattr(update_cmd, "_switch_branch_at_commit_point", torn_switch)
+    with pytest.raises(SystemExit):
+        prepare(root)
+
+    out = capsys.readouterr().out
+    assert restored == [], "the autostash was re-applied onto a torn tree"
+    assert "Local changes preserved in stash" in out and "does not exist" not in out

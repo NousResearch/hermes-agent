@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -36,17 +35,19 @@ from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
+from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
+from hermes_cli.local_runtime.gguf import split_parts
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_JOBS: Dict[str, Dict[str, Any]] = {}
+_JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
-_RUNNING: Dict[str, Dict[str, Any]] = {}
+_RUNNING: dict[str, dict[str, Any]] = {}
 # One quickstart at a time: the job sequences installs, downloads, a server bounce and a config write — two
 # racing runs would interleave all four. Held for the job's lifetime, released in the worker.
 _QUICKSTART_LOCK = threading.Lock()
@@ -98,7 +99,7 @@ class SideloadBody(BaseModel):
     path: str                   # absolute path to a .gguf on this machine
 
 
-def _human_gb(n: int | float) -> str:
+def _human_gb(n: float) -> str:
     return f"{n / (1 << 30):.1f} GB"
 
 
@@ -111,7 +112,7 @@ def _http_error(status: int, prefix: str = ""):
     """Map any exception to ``HTTPException(status, f"{prefix}{exc}")``."""
     try:
         yield
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=status, detail=f"{prefix}{exc}") from exc
 
 
@@ -120,7 +121,7 @@ def _quiet(fn: Callable[[], Any], default: Any, *, warn: str | None = None, debu
     warning with the exception (%s), ``debug`` a debug line with traceback; silent otherwise."""
     try:
         return fn()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if warn:
             logger.warning(warn, exc)
         if debug:
@@ -129,7 +130,7 @@ def _quiet(fn: Callable[[], Any], default: Any, *, warn: str | None = None, debu
 
 
 # ── jobs ─────────────────────────────────────────────────────
-def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
+def _job(kind: str, target: str, model_id: str | None = None) -> dict[str, Any]:
     job = {
         "job_id": uuid.uuid4().hex[:12], "kind": kind, "target": target,
         "model_id": model_id,       # catalog id for downloads; None otherwise
@@ -161,7 +162,7 @@ def _rate_and_eta(samples: "collections.deque[tuple[float, int]]", done: int,
     return rate, None
 
 
-def _record_rate(job: Dict[str, Any], done: int) -> None:
+def _record_rate(job: dict[str, Any], done: int) -> None:
     """Refresh the job's smoothed rate + ETA from the sample it just reported.
 
     Samples live on the running entry, not the job, so the wire payload stays
@@ -184,7 +185,7 @@ def _record_rate(job: Dict[str, Any], done: int) -> None:
         job["eta_seconds"] = eta
 
 
-def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
+def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
@@ -202,13 +203,13 @@ def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _check_job_pause(job: Dict[str, Any]) -> None:
+def _check_job_pause(job: dict[str, Any]) -> None:
     pause = _RUNNING.get(job["job_id"], {}).get("pause")
     if pause is not None and pause.is_set():
         raise DownloadPaused("download paused")
 
 
-def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
+def _step(job: dict[str, Any], phase: str, detail: str) -> None:
     with _JOBS_LOCK:
         if job.get("phase") in _DOWNLOAD_PHASES and phase not in _DOWNLOAD_PHASES:
             _check_job_pause(job)
@@ -216,12 +217,12 @@ def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
         job["detail"] = detail
 
 
-def _finish(job: Dict[str, Any], detail: str) -> None:
+def _finish(job: dict[str, Any], detail: str) -> None:
     # The worker publishes terminal status after releasing its resources.
     _step(job, "done", detail)
 
 
-def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
+def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
                on_exit: Callable[[], None] | None = None, download_label: str | None = None,
                resumable: bool = False) -> None:
     """One worker per job. Pauses retain ownership; terminal outcomes release it."""
@@ -237,7 +238,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
                 _refresh_runtime("post-download runtime refresh skipped")
         except DownloadPaused:
             status = "paused"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if fail_msg:
                 logger.warning(fail_msg, exc)
             status = "error"
@@ -269,7 +270,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
             job["status"] = "running"
             job["error"] = None
         try:
-            threading.Thread(target=_run, daemon=True, name=name).start()
+            spawn_context_thread(_run, name=name).start()
         except Exception:
             _RUNNING.pop(job["job_id"], None)
             if on_exit is not None:
@@ -291,7 +292,7 @@ def _refresh_runtime(skip_msg: str) -> None:
     _quiet(bootstrap.refresh_local_runtime, None, debug=skip_msg)
 
 
-def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payload: dict | None = None) -> Any:
+def _router_request(endpoint: dict[str, Any], path: str, *, timeout: float, payload: dict | None = None) -> Any:
     """Call the local router (base_url minus ``/v1``) with its bearer key; GET (no payload) -> parsed JSON, POST -> None."""
     headers = {"Authorization": f"Bearer {endpoint.get('api_key', '')}"}
     data = None
@@ -362,13 +363,13 @@ def _start_local_server(config: dict, fail_detail: str):
     return sup
 
 
-def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_detail: str, skip_msg: str) -> None:
+def _ensure_server(job: dict[str, Any], config: dict, model_id: str, *, fail_detail: str, skip_msg: str) -> None:
     """Start the local server if needed and self-heal a stale router: the model list is spawn-only, so a
     server started before ``model_id`` finished downloading can't serve it — bounce it when it doesn't know it."""
     _step(job, "starting-server", "Starting the local server")
     sup = _start_local_server(config, fail_detail)
 
-    def rescan_if_unknown(known: Dict[str, Any]) -> None:
+    def rescan_if_unknown(known: dict[str, Any]) -> None:
         if model_id not in known:
             job["detail"] = "Refreshing the local server"
             bootstrap.refresh_local_runtime()
@@ -382,22 +383,22 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
     endpoint = _state_endpoint()
     if endpoint is not None:
 
-        def _known_models() -> Dict[str, Any]:
+        def _known_models() -> dict[str, Any]:
             data = (_router_request(endpoint, "/models", timeout=10) or {}).get("data", [])
             return {m.get("id"): m for m in data}
 
         _quiet(lambda: rescan_if_unknown(_known_models()), None, debug=skip_msg)
 
 
-def _assign_default(job: Dict[str, Any], model_id: str) -> None:
+def _assign_default(job: dict[str, Any], model_id: str) -> None:
     """Make ``model_id`` the main model via the same machinery as /api/model/set."""
     _step(job, "setting-default", "Making it your default")
     web_deps.late("_apply_model_assignment_sync", "hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
 
 
 # ── downloads: ranged parallel streams ───────────────────────
-def _hf_url(repo: str, path: str) -> str:
-    return f"https://huggingface.co/{repo}/resolve/main/{path}"
+def _hf_url(repo: str, path: str, revision: str = "main") -> str:
+    return f"https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
 
 def _model_id_for(gguf: Path) -> str:
@@ -406,30 +407,31 @@ def _model_id_for(gguf: Path) -> str:
 
 
 def _variant_files_on_disk(model_id: str) -> "list[Path]":
-    """Every local file of a staged model: all split parts plus catalog-declared assets (mmproj/draft) when present."""
+    """Every local file of a staged model: all split parts plus catalog-declared assets (mmproj/draft/MTP head) when present."""
     files = [p for p in bootstrap.models_dir().glob("*.gguf") if _model_id_for(p) == model_id]
     hit = catalog.find_entry_for_model(model_id)
-    assets = (hit[0].mmproj, hit[0].draft) if hit is not None else ()
+    assets = (hit[0].mmproj, hit[0].draft, hit[0].mtp_head) if hit is not None else ()
     files += [bootstrap.assets_dir() / a.local_name for a in assets
               if a is not None and (bootstrap.assets_dir() / a.local_name).exists()]
     return files
 
 
 def _download_plan(entry, variant) -> list:
-    """Everything a variant needs: split parts + mmproj/draft assets, as (url, dest, bytes) tuples."""
-    plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
-    plan += [(_hf_url(entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
-             for a in (entry.mmproj, entry.draft) if a is not None]
+    """Everything a variant needs: split parts + mmproj/draft/MTP head assets, as (url, dest, bytes) tuples."""
+    plan = [(_hf_url(entry.repo, a.path, a.revision), bootstrap.models_dir() / a.local_name, a.size_bytes)
+            for a in variant.files]
+    plan += [(_hf_url(a.repo or entry.repo, a.path, a.revision), bootstrap.assets_dir() / a.local_name, a.size_bytes)
+             for a in (entry.mmproj, entry.draft, entry.mtp_head) if a is not None]
     return plan
 
 
-def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
+def _run_download_plan(job: dict[str, Any], plan: list, label: str) -> None:
     """The downloader counts completed files and every part of this plan."""
     _step(job, "downloading", f"Downloading {label}")
     _download_job(job, plan)
 
 
-def _download_progress_hook(job: Dict[str, Any]):
+def _download_progress_hook(job: dict[str, Any]):
     def tick(done: int, total: int, ranges: dict) -> None:
         with _JOBS_LOCK:
             job.update(done_bytes=done, total_bytes=total or None, ranges=ranges)
@@ -437,24 +439,24 @@ def _download_progress_hook(job: Dict[str, Any]):
     return tick
 
 
-def _download_job(job: Dict[str, Any], plan) -> None:
+def _download_job(job: dict[str, Any], plan) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
     running = _RUNNING.get(job["job_id"], {})
     dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"))
     dl.run(progress=_download_progress_hook(job))
 
 
-def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, Any]]":
+def _loaded_models(running: dict[str, Any]) -> "tuple[dict[str, str], dict[str, Any]]":
     """Resident models right now, plus how each is placed (granted window from the child, spill facts from
     the preset decision) — the difference between 'fast' and 'why is my CPU busy', so it must be inspectable.
     'loading' is its own state (a 20-GB load in flight is the most important thing the pane can show)."""
     data = _router_request(running, "/models", timeout=3)
     loaded = {m["id"]: m.get("status", {}).get("value", "unknown") for m in data.get("data", [])
               if m.get("status", {}).get("value") in ("loaded", "ready", "loading")}
-    placement: Dict[str, Any] = {}
+    placement: dict[str, Any] = {}
     decisions = presets.read_preset_decisions()
     for model_id, state in loaded.items():
-        facts: Dict[str, Any] = {}
+        facts: dict[str, Any] = {}
         plan = decisions.get(model_id)
         if plan is not None:
             facts.update(window=plan.window, window_label=_k_label(plan.window), spilled=plan.spilled)
@@ -468,11 +470,10 @@ def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, 
     return loaded, placement
 
 
-def _staged_row(gguf: Path) -> Dict[str, Any]:
+def _staged_row(gguf: Path) -> dict[str, Any]:
     model_id = _model_id_for(gguf)
-    # Split models: report the whole variant's bytes, not one part's.
-    hit = catalog.find_entry_for_model(model_id)
-    size = hit[1].size_bytes if hit is not None else gguf.stat().st_size
+    # A split model is every part on disk; its first file can be a metadata stub of a few MB.
+    size = sum(p.stat().st_size for p in split_parts(gguf) or [gguf])
     return {"id": model_id, "size_bytes": size, "size_label": _human_gb(size)}
 
 
@@ -525,16 +526,18 @@ def local_models_status():
 
 # ── hardware: what this machine can do ───────────────────────
 def _nvidia_smi_facts() -> dict:
-    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts)."""
-    smi_exe = hardware._nvidia_smi_path()
-    if not smi_exe:
+    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts).
+
+    Reads the shared cached query: one nvidia-smi spawn per poll window, hidden on Windows,
+    instead of a second bare one per request (#101895, #120262)."""
+    query = hardware._cached_nvidia_gpu_query()
+    if query is None:
         return {}
-    smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
-    if smi.returncode != 0 or not smi.stdout.strip():
-        return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    return dict(
+        gpu_name=query["gpu_name"],
+        gpu_util_percent=query["gpu_util_percent"],
+        vram_used_bytes=query["used_bytes"],
+    )
 
 
 @router.get("/api/local-models/hardware")
@@ -561,18 +564,18 @@ _QUANT_REASONS = {
 _QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larger than GPU memory, runs slower"
 
 
-def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
+def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> dict[str, Any]:
     choice = catalog.select_variant(entry, budget)
     # Any variant of this family on disk counts as downloaded.
     dl = next((v for v in entry.variants if v.model_id in staged_ids
                and all(dest.is_file() for _, dest, _ in _download_plan(entry, v))), None)
-    row: Dict[str, Any] = {
+    row: dict[str, Any] = {
         "id": entry.id, "display_name": entry.display_name, "description": entry.description,
         "native_context": entry.n_ctx_train, "native_context_label": _k_label(entry.n_ctx_train),
         "recommended": entry.id == recommended,
         "recommended_reason": recommended_reason if entry.id == recommended else None,
         "downloaded": dl is not None, "downloaded_model_id": dl.model_id if dl else None,
-        "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp, "vision": entry.mmproj is not None,
+        "downloaded_quant": dl.quant if dl else None, "mtp": entry.mtp_capable, "vision": entry.mmproj is not None,
         # Day-0 architectures need the llama.cpp release where their support landed: True gates
         # download/activate until the engine updates, but the row still renders (visible + explained beats hidden).
         "needs_engine": _engine_too_old(entry.min_engine),
@@ -633,7 +636,7 @@ def local_models_catalog():
 
 
 # ── runtime install (job) ────────────────────────────────────
-def _runtime_progress_hook(job: Dict[str, Any]):
+def _runtime_progress_hook(job: dict[str, Any]):
     """PM owns byte accounting; stages describe work without resetting it."""
     phases = {
         "download": ("downloading-runtime", "Downloading the local engine"),
@@ -647,7 +650,7 @@ def _runtime_progress_hook(job: Dict[str, Any]):
     return hook
 
 
-def _install_engine_job(job: Dict[str, Any], backend: str):
+def _install_engine_job(job: dict[str, Any], backend: str):
     _step(job, "installing-runtime", "Preparing the pinned local engine")
     return binaries.ensure_engine(
         backend, progress=_runtime_progress_hook(job),
@@ -741,8 +744,8 @@ async def local_models_delete(model_id: str):
         path.unlink(missing_ok=True)
     # Growth state dies with the model: a re-download starts back at its zero-spill window, not a stale grown one.
     _quiet(lambda: growth.clear_window_override(model_id), None, debug="window-override clear skipped")
-    threading.Thread(target=_refresh_runtime, args=("post-delete runtime refresh skipped",), daemon=True,
-                     name="lr-post-delete").start()
+    spawn_context_thread(_refresh_runtime, args=("post-delete runtime refresh skipped",),
+                         name="lr-post-delete").start()
     return {"ok": True}
 
 
@@ -773,6 +776,17 @@ def _quickstart_target(body: QuickstartBody, budget):
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))
 
 
+def _repriced_quickstart(job: dict[str, Any], body: QuickstartBody, variant):
+    """Re-pick once the engine is installed, before any bytes are committed: a Vulkan/HIP GPU's
+    type and size come from that engine's own device probe, so the preflight price was a guess."""
+    entry, picked = _quickstart_target(body, hardware.probe_budget(planning=True))
+    if picked.model_id != variant.model_id:
+        with _JOBS_LOCK:
+            job.update(target=entry.display_name, model_id=entry.id)
+    plan = _download_plan(entry, picked)
+    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
+
+
 @router.post("/api/local-models/quickstart")
 def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
@@ -791,9 +805,11 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
         raise HTTPException(status_code=409, detail="Setup is already running")
     job = _job("quickstart", entry.display_name, model_id=entry.id)
     def _run():
+        nonlocal entry, variant, download_plan
         if need_runtime and binaries.installed_engine(backend) is None:
             _install_engine_job(job, backend)
-        if need_download:
+            entry, variant, download_plan = _repriced_quickstart(job, body, variant)
+        if download_plan:
             # Each phase has its own complete download plan. Resume within a
             # phase retains counters until PM reports the durable bytes.
             if job["phase"] != "downloading":

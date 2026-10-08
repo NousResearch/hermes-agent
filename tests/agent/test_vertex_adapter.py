@@ -83,7 +83,7 @@ def vertex_adapter(monkeypatch):
     va = importlib.reload(va)
     va._creds_cache.clear()
     # Neutralize config.yaml by default; individual tests re-patch _vertex_config.
-    monkeypatch.setattr(va, "_vertex_config", lambda: {})
+    monkeypatch.setattr(va, "_vertex_config", dict)
     return va
 
 

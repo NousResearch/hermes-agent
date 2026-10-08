@@ -137,7 +137,7 @@ class TestStuckProbeNeverBlocksCallers:
         def caller():
             try:
                 results.append(env_probe.get_environment_probe_line())
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 errors.append(exc)
 
         threads = [_threading.Thread(target=caller, daemon=True) for _ in range(4)]

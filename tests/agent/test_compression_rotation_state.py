@@ -145,7 +145,7 @@ class TestGoalMigratesOnRotation:
         # Set a persistent goal on the parent via the real persistence path.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
             (tmp_path / ".hermes").mkdir(exist_ok=True)
-            import hermes_cli.goals as goals
+            from hermes_cli import goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):
@@ -1073,9 +1073,9 @@ class TestFallbackStreakFollowsRotation:
             side_effect=_fallback_compress,
         ):
             compressor.compression_count = 1
-            setattr(agent, "context_compressor", compressor)
+            agent.context_compressor = compressor
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
-        child = getattr(agent, "session_id")
+        child = agent.session_id
 
         assert child != parent
         assert compressor._fallback_compression_streak == 1
@@ -1177,16 +1177,9 @@ class TestAutomaticCompressionStateRefreshAfterLock:
 
 
 class TestGateLevelGuardRefresh:
-    """The unblock direction must work from the should_compress() pre-gates.
+    """The pre-gate uses the measured ineffective count, not summary type."""
 
-    compress_context refreshes durable guards internally, but the automatic
-    paths (preflight/turn gates) consult should_compress() first — if a stale
-    in-memory fallback streak (which has no expiry timer) blocks there, the
-    refresh inside compress_context is never reached and the agent stays
-    blocked forever.
-    """
-
-    def test_should_compress_unblocks_after_another_agent_clears_streak(
+    def test_durable_fallback_streak_does_not_block_should_compress(
         self,
         refresh_state_db: SessionDB,
     ):
@@ -1197,11 +1190,8 @@ class TestGateLevelGuardRefresh:
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._fallback_compression_streak == 2
 
-        # Another agent's healthy boundary clears the durable breaker.
-        db.set_compression_fallback_streak(session_id, 0)
-
+        # A previous run's fallback streak is diagnostic, so it never blocks.
         assert compressor.should_compress(10**9) is True
-        assert compressor._fallback_compression_streak == 0
 
 
 
@@ -1466,7 +1456,7 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
+                if k not in {"_row_id", "timestamp", "message_uid", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
             }
             for m in compressed
         ] == expected
@@ -1741,7 +1731,7 @@ class TestTodoSnapshotScaffoldingTails:
         db.create_session(session_id, source="telegram")
         agent = _build_agent_with_db(db, session_id, platform="telegram")
         pending_task = "- [ ] pending-task. Continue after the next compaction"
-        getattr(agent, "context_compressor").compress.return_value = [
+        agent.context_compressor.compress.return_value = [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "assistant", "content": "acknowledged"},
             {

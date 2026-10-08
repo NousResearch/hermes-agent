@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-import tools.terminal_tool as terminal_tool
-import tui_gateway.server as server
+from tools import terminal_tool
+from tui_gateway import server
 
 
 def _git(cwd, *args):
@@ -140,10 +140,26 @@ def test_an_unrelated_repo_is_not_a_move(session, repo_with_worktree, tmp_path):
     assert session["cwd"] == str(repo)
 
 
-def test_an_explicit_workspace_is_never_overridden(session, repo_with_worktree):
-    """A user-chosen cwd must survive even a legitimate same-repo worktree move."""
+def test_a_session_created_in_a_checkout_still_follows_its_agent(session, repo_with_worktree):
+    """The reported bug: an agent told to make a worktree and work in it left the chat on `main`.
+
+    ``session.create`` marks `explicit_cwd` for ANY session whose cwd exists on disk, so every
+    desktop session starts that way — a cwd the chat merely STARTED in is not a pin.
+    """
     repo, worktree = repo_with_worktree
     session["explicit_cwd"] = True
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(worktree)
+
+
+def test_a_deliberately_moved_workspace_is_never_overridden(session, repo_with_worktree):
+    """A workspace the chat was MOVED to (folder picker / project switch) survives a same-repo
+    worktree settle: only another deliberate move re-homes it."""
+    repo, worktree = repo_with_worktree
+    server._set_session_cwd(session, str(repo))  # what session.cwd.set / workspace.move do
+    assert session["cwd_pinned"] is True
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False

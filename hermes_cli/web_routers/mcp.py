@@ -109,6 +109,7 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
 @router.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
+    from hermes_cli.mcp_catalog import record_mcp_install
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
     try:
@@ -116,7 +117,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _run():
+    def _save() -> bool:
         # _save_mcp_server does its own load→mutate→save; the duplicate-name
         # check sits under the same lock span so a concurrent add can't slip
         # between check and save.
@@ -133,10 +134,18 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
-            if not _save_mcp_server(name, server_config):
-                raise HTTPException(
-                    status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
-                )
+            return _save_mcp_server(name, server_config)
+
+    def _run():
+        saved = _save()
+        # Outside the config mutation lock: a cold first metric call costs imports + catalog loads.
+        with _profile_scope(body.profile or profile):
+            record_mcp_install("url" if server_config.get("url") else "local", None,
+                               "success" if saved else "failed", failure_class=None if saved else "config_rejected")
+        if not saved:
+            raise HTTPException(
+                status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
+            )
 
     try:
         await asyncio.to_thread(_run)
@@ -207,7 +216,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     # An `auth: oauth` server that serves tools/list anonymously would probe OK
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
@@ -386,7 +395,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     return await asyncio.to_thread(_run)
 
 
-def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str, Any]:
+def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str, Any]:
     auth = entry.auth
     transport = entry.transport
     install = entry.install
@@ -428,10 +437,9 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
 
 
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
+async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``. Opt-in app
-    signals describe this backend machine, never the client or terminal sandbox."""
+    entry annotated with installed/enabled state for ``profile``."""
     with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
         from hermes_cli import mcp_catalog
 
@@ -457,36 +465,7 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
         diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
     except Exception:
         pass
-    result = {"entries": entries, "diagnostics": diagnostics}
-    if detect_apps:
-        import sys
-
-        try:
-            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
-
-            applications = {}
-            for entry in entries:
-                labels = (entry["suggest"] or {}).get("applications") or [
-                    entry["name"].replace("-", " ").replace("_", " ")
-                ]
-                try:
-                    applications[entry["name"]] = validate_applications(labels)
-                except ValueError:
-                    # Catalog identifiers allow more than app labels; one unusable
-                    # inference must not suppress valid observations for other entries.
-                    applications[entry["name"]] = []
-
-            # Keep backend-local filesystem work off the event loop and profile lock.
-            detected = await asyncio.to_thread(discover_catalog_apps, applications)
-        except Exception:
-            _log.warning("Backend application discovery unavailable")
-            detected = {"matches": {}, "discovery": {
-                "scope": "backend", "status": "unavailable", "platform": sys.platform,
-            }}
-        for entry in entries:
-            entry["detected_apps"] = detected["matches"].get(entry["name"], [])
-        result["discovery"] = detected["discovery"]
-    return result
+    return {"entries": entries, "diagnostics": diagnostics}
 
 
 @router.post("/api/mcp/catalog/install")

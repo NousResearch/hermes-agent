@@ -55,7 +55,7 @@ MAX_TRACKED_FILES = 64
 _WRITE_ERRORS = (BrokenPipeError, ConnectionResetError, OSError)
 _LIVE_STATES = {"starting", "running"}
 
-_CLIENT_CAPABILITIES: Dict[str, Any] = {
+_CLIENT_CAPABILITIES: dict[str, Any] = {
     "window": {"workDoneProgress": True},
     "workspace": {"configuration": True, "workspaceFolders": True,
                   "didChangeWatchedFiles": {"dynamicRegistration": True}, "diagnostics": {"refreshSupport": False}},
@@ -84,7 +84,7 @@ def file_uri(path: str) -> str:
     return "file://" + quote(abs_path, safe="/:")
 
 
-def _folder(root: str) -> Dict[str, str]:
+def _folder(root: str) -> dict[str, str]:
     """Build an LSP ``WorkspaceFolder`` for ``root``."""
     return {"name": os.path.basename(root.rstrip(os.sep)) or root, "uri": file_uri(root)}
 
@@ -99,7 +99,7 @@ def uri_to_path(uri: str) -> str:
     return os.path.normpath(unquote(raw))
 
 
-def _end_position(text: str) -> Dict[str, int]:
+def _end_position(text: str) -> dict[str, int]:
     """LSP Position at the end of ``text`` (for a whole-document replace range)."""
     if not text:
         return {"line": 0, "character": 0}
@@ -119,8 +119,8 @@ class _DocState:
     publishDiagnostics get exact tagging; others are credited with the current version at receipt."""
     version: int = 0
     text: str = ""
-    push: List[Dict[str, Any]] = field(default_factory=list)
-    pull: List[Dict[str, Any]] = field(default_factory=list)
+    push: list[dict[str, Any]] = field(default_factory=list)
+    pull: list[dict[str, Any]] = field(default_factory=list)
     push_version: int = -1
     pull_version: int = -1
     seed_seen: bool = False
@@ -139,15 +139,15 @@ class LSPClient:
     """One server process + one workspace root.  ``start()`` → ``open_file()`` → ``wait_for_diagnostics()`` →
     ``diagnostics_for()`` → ``shutdown()``."""
 
-    def __init__(self, *, server_id: str, workspace_root: str, command: List[str],
-                 env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None,
-                 initialization_options: Optional[Dict[str, Any]] = None,
+    def __init__(self, *, server_id: str, workspace_root: str, command: list[str],
+                 env: Optional[dict[str, str]] = None, cwd: Optional[str] = None,
+                 initialization_options: Optional[dict[str, Any]] = None,
                  seed_diagnostics_on_first_push: bool = False) -> None:
         self.server_id = server_id
         self.workspace_root = workspace_root
         # Roots this server serves.  Single-root servers only ever hold ``workspace_root``;
         # multi-root servers (pyright) grow this via ``add_workspace_folder`` instead of a second process.
-        self.workspace_folders: List[str] = [workspace_root]
+        self.workspace_folders: list[str] = [workspace_root]
         self._command = list(command)
         self._env = env
         self._cwd = cwd or workspace_root
@@ -157,16 +157,16 @@ class LSPClient:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
         # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
-        self._stderr_tail: List[str] = []
+        self._stderr_tail: list[str] = []
         self._exit_code: Optional[int] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._cleanup_lock = asyncio.Lock()
         self._next_id: int = 0
-        self._pending: Dict[int, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future] = {}
 
         # Server → client requests; anything else gets method-not-found.  Capability (un)registration
         # and diagnostic refresh are acknowledged but not acted on: we re-pull on every touch anyway.
-        self._request_handlers: Dict[str, Callable[[Any], Awaitable[Any]]] = {
+        self._request_handlers: dict[str, Callable[[Any], Awaitable[Any]]] = {
             "window/workDoneProgress/create": self._handle_null,
             "workspace/configuration": self._handle_workspace_configuration,
             "client/registerCapability": self._handle_null,
@@ -175,11 +175,11 @@ class LSPClient:
             "workspace/diagnostic/refresh": self._handle_null,
         }
         # Server → client notifications; others (showMessage, $/progress) are dropped.
-        self._notification_handlers: Dict[str, Callable[[Any], None]] = {
+        self._notification_handlers: dict[str, Callable[[Any], None]] = {
             "textDocument/publishDiagnostics": self._handle_publish_diagnostics,
         }
 
-        self._docs: Dict[str, _DocState] = {}  # keyed by absolute path (NOT URI)
+        self._docs: dict[str, _DocState] = {}  # keyed by absolute path (NOT URI)
         self._state: str = "stopped"
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
         self._stopping: bool = False
@@ -248,6 +248,7 @@ class LSPClient:
 
     async def _spawn(self) -> None:
         from agent.delegation_context import delegated_child_subprocess_env
+        from tools.environments.local import hermes_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
             cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
@@ -256,10 +257,12 @@ class LSPClient:
             # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.
             # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
             # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
+            # Language servers are third-party binaries a write_file can start: they get the
+            # scrubbed env (no gateway tokens, no provider keys), plus their own configured env.
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:], limit=_STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=delegated_child_subprocess_env({**os.environ, **(self._env or {})}), cwd=self._cwd,
+                env=delegated_child_subprocess_env({**hermes_subprocess_env(), **(self._env or {})}), cwd=self._cwd,
                 start_new_session=True, creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as e:
@@ -310,7 +313,7 @@ class LSPClient:
 
     def failure_details(self) -> str:
         """Exit status + last stderr lines for a failed spawn/initialize; empty for a live server."""
-        parts: List[str] = []
+        parts: list[str] = []
         if exit_desc := self._describe_exit():
             parts.append(exit_desc)
         if self._stderr_tail:
@@ -350,7 +353,7 @@ class LSPClient:
             if unexpected_close:
                 await self._cleanup_process()
 
-    def _workspace_folders(self) -> List[Dict[str, str]]:
+    def _workspace_folders(self) -> list[dict[str, str]]:
         return [_folder(r) for r in self.workspace_folders]
 
     async def add_workspace_folder(self, root: str) -> None:
@@ -402,7 +405,7 @@ class LSPClient:
                     pass
                 try:
                     await self._send_notification("exit", None)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
                 # Signalling right after ``exit`` races the server's own exit: needless SIGTERM
                 # noise for well-behaved servers and, on Darwin, a reaped-and-reused PID target.
@@ -514,7 +517,7 @@ class LSPClient:
         else:
             try:
                 reply = make_response(req_id, await handler(msg.get("params")))
-            except Exception as e:  # noqa: BLE001 — protocol must not blow up
+            except Exception as e:
                 logger.warning("[%s] request handler %s failed: %s", self.server_id, method, e)
                 reply = make_error_response(req_id, -32000, f"handler failed: {e}")
         await self._send_reply(reply)
@@ -525,7 +528,7 @@ class LSPClient:
             return
         try:
             handler(msg.get("params"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("[%s] notification handler %s failed: %s", self.server_id, method, e)
 
     # ---- built-in server-→-client request handlers ----
@@ -608,7 +611,7 @@ class LSPClient:
             return 0
         # pop + reinsert refreshes LRU recency (dicts are insertion-ordered).
         self._docs[abs_path] = self._docs.pop(abs_path)
-        change: Dict[str, Any] = {"text": text}
+        change: dict[str, Any] = {"text": text}
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
         new_version = doc.version + 1
@@ -738,7 +741,7 @@ class LSPClient:
                 continue
             await self._await_push(min(remaining, 0.5))
 
-    def diagnostics_for(self, path: str, *, fresh_only: bool = False) -> List[Dict[str, Any]]:
+    def diagnostics_for(self, path: str, *, fresh_only: bool = False) -> list[dict[str, Any]]:
         """Merged + deduped push/pull diagnostics for one file.  With ``fresh_only=True`` a store only
         contributes once its version tag has caught up to the document's — report paths must use this
         so "stale" and "clean" aren't conflated."""
@@ -750,9 +753,9 @@ class LSPClient:
         return _dedupe(push, pull)
 
 
-def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen: Set[str] = set()
-    out: List[Dict[str, Any]] = []
+def _dedupe(*lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
     for d in (d for lst in lists for d in lst if isinstance(d, dict)):
         if (key := _diagnostic_key(d)) not in seen:
             seen.add(key)
@@ -760,7 +763,7 @@ def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _diagnostic_key(d: Dict[str, Any]) -> str:
+def _diagnostic_key(d: dict[str, Any]) -> str:
     """Content-equality key: severity + code + source + message + range.  Shared with the manager's
     cross-edit delta filter (``_diag_key``) so both layers agree on identity.  Range is included so an
     identical error at a second site still surfaces as new (the manager line-shifts its baseline first)."""

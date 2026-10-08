@@ -62,7 +62,6 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
         received.append(event)
         started.set()
         await release.wait()
-        return None
 
     adapter.set_message_handler(handler)
     # A remembered topic must not redirect the watched session or introduce an
@@ -103,7 +102,6 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
     async def handler(event):
         event._heartbeat_execution_started = True  # fake agent execution boundary
-        return None
 
     adapter.set_message_handler(handler)
     for state in (runner._running_agents, adapter._active_sessions, adapter._pending_messages):
@@ -117,3 +115,71 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     await asyncio.gather(*adapter._background_tasks)
     assert HeartbeatManager("heartbeat-session").state.fire_count == 1
     assert runner._queue_depth(key, adapter=adapter) == 0
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poller, monkeypatch):
+    """`hermes pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
+    identical paused notices in 5h); the tick fires normally after `hermes resume`."""
+    from agent import estop
+
+    runner, adapter, watch, key, clock = poller
+    runner._is_user_authorized = lambda source: True
+    sent, received = [], []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True, message_id="wire-1")
+
+    async def real_gateway(event):
+        received.append(event)
+        return await runner._handle_message(event)
+
+    monkeypatch.setattr(adapter, "send", send)
+    adapter.set_message_handler(real_gateway)
+    clock.now += 900
+    original = HeartbeatManager("heartbeat-session").state.to_json()
+    estop.engage(reason="maintenance")
+    for _ in range(3):
+        await runner._heartbeat_poll_once(watch)
+        await asyncio.gather(*adapter._background_tasks)
+    assert (received, sent) == ([], [])
+    assert HeartbeatManager("heartbeat-session").state.to_json() == original
+
+    async def agent_turn(event):
+        event._heartbeat_execution_started = True  # fake agent execution boundary
+        received.append(event)
+
+    estop.disengage()
+    adapter.set_message_handler(agent_turn)
+    await runner._heartbeat_poll_once(watch)
+    await asyncio.gather(*adapter._background_tasks)
+    assert len(received) == 1
+    assert HeartbeatManager("heartbeat-session").state.fire_count == 1
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(poller, monkeypatch):
+    from agent import estop
+
+    runner, adapter, watch, key, clock = poller
+    source = watch[key][0]
+    runner._is_user_authorized = lambda source: True
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        return SendResult(success=True, message_id="wire-1")
+
+    monkeypatch.setattr(adapter, "send", send)
+    adapter.set_message_handler(runner._handle_message)
+    estop.engage(reason="maintenance")
+    heartbeat = runner._synthetic_prompt_event(source, "check status")
+    heartbeat._heartbeat_session_id = "heartbeat-session"
+    await adapter.handle_message(heartbeat)
+    await asyncio.gather(*adapter._background_tasks)
+    assert sent == []
+
+    await adapter.handle_message(MessageEvent(text="are you there?", source=source))
+    await asyncio.gather(*adapter._background_tasks)
+    assert len(sent) == 1 and estop.paused_reply() in sent[0]

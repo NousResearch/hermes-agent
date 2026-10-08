@@ -226,7 +226,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     try:
         # Full checkout identity when git can answer; the birth-certificate
         # minimum below only when it cannot (or the tree is read-only).
-        identified = write_source_stamp(root)
+        identified = write_source_stamp(root, adopted=True)
     except OSError as exc:
         # A read-only tree (nix-like layouts without their own stamp)
         # must not crash the boot — it just stays unadopted.
@@ -282,7 +282,7 @@ def step_provision_runtimes() -> dict:
             else:
                 pm.ensure(name, explicit=True)
             refreshed.append(name)
-        except Exception as exc:  # noqa: BLE001 — one tool must not stop the rest
+        except Exception as exc:
             logger.warning("provision_runtimes: %s failed: %s", name, exc)
             errors.append(f"{name}: {exc}")
     if errors:

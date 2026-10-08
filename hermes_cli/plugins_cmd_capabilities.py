@@ -107,6 +107,11 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
         plugin_capability_granted,
     )
     console = _pc()._console()
+    if name is not None:
+        hit = _pc()._find_plugin_entry(name)
+        if hit is None:
+            _pc()._fail(console, _pc()._unknown_plugin_message(name))
+        name = hit[5] or hit[0]
     rows = []
     for entry in _pc()._discover_all_plugins():
         key = entry[5] or entry[0]

@@ -296,8 +296,8 @@ def _run_bg_seed(monkeypatch, agent, *, warm):
     """
     import threading
 
-    import agent.memory_provider as memory_provider
-    import hermes_cli.nous_account as nous_account
+    from agent import memory_provider
+    from hermes_cli import nous_account
     from agent import credits_tracker
 
     release_worker = threading.Event()

@@ -202,7 +202,7 @@ def _shared_transport_cls():
         See #10933.
         """
 
-        __slots__ = ("_inner", "_closed")
+        __slots__ = ("_closed", "_inner")
 
         def __init__(self, inner: Any) -> None:
             self._inner = inner

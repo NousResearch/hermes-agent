@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
@@ -389,7 +389,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
     hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     root, b = two_homes
     (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")

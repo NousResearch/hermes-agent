@@ -65,7 +65,7 @@ def _download(dest: Path, force: bool = False) -> Path:
         BULK_URL,
         headers={"User-Agent": "hermes-agent osint-investigation skill"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=120) as resp:
         tmp = zip_path.with_suffix(".zip.tmp")
         with open(tmp, "wb") as fh:
             while True:

@@ -63,7 +63,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self):
         if self.require_auth and "Authorization" not in self.headers:
             self._send(401, {})
             return
@@ -97,7 +97,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {})
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self):
         if self.path == "/v1/chat/completions":
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
@@ -203,6 +203,22 @@ def test_backend_selection(vendor, os_name, expected):
     assert select_backend(vendor, os_name=os_name) == expected
 
 
+@pytest.mark.parametrize(("gpu_class", "expected"), [
+    ("intel", "intel"),
+    ("amd", "amd"),
+    ("none", None),
+    ("unknown", None),
+])
+def test_auto_vendor_detection_uses_host_gpu_class(monkeypatch, gpu_class, expected):
+    from hermes_cli.local_runtime import bootstrap, hardware
+    from hermes_platform.host import facts
+
+    monkeypatch.setattr(hardware, "_cached_nvidia_gpu_query", lambda: None)
+    monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
+
+    assert bootstrap._detect_gpu_vendor() == expected
+
+
 # ── supervisor contracts (stubbed; no GPU) ───────────────────
 
 
@@ -230,7 +246,7 @@ def test_touch_generate_scans_reasoning_content(stub_server, tmp_path):
     sup = _make_supervisor(tmp_path, port)
 
     class ReasoningHandler(handler):  # type: ignore[valid-type]
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             if self.path == "/v1/chat/completions":
                 self._send(200, {"choices": [{"message": {
                     "role": "assistant", "content": "",
@@ -468,18 +484,24 @@ def test_resolution_kicks_boot_when_no_thread_is_booting(tmp_path, monkeypatch):
 def test_boot_in_flight_real_gate(tmp_path, monkeypatch):
     """_boot_in_flight exercised FOR REAL (the previous regression test
     monkeypatched it — and the real one threw TypeError on every call,
-    silently disabling the boot wait). Enabled + installed PM engine
-    -> True; either missing -> False."""
+    silently disabling the boot wait). Enabled + an installed PM engine for
+    the CONFIGURED backend -> True; either missing -> False."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli.local_runtime import endpoint as ep
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: None)
+    installed: set[str] = set()
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto", **_: object() if backend in installed else None)
 
     enabled = {"local_runtime": {"enabled": True}}
     assert ep._boot_in_flight(enabled) is False
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine", lambda: object())
+    installed.add("auto")
     assert ep._boot_in_flight(enabled) is True
     # Disabled -> False even when installed.
     assert ep._boot_in_flight({"local_runtime": {"enabled": False}}) is False
+    # An explicit backend is the engine that boots: only the Vulkan build installed must count.
+    installed.clear()
+    installed.add("vulkan")
+    assert ep._boot_in_flight({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is True
 
 
 def test_idle_sweep_unloads_idle_models(tmp_path, monkeypatch, stub_server):
@@ -915,11 +937,10 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
         def start(self, timeout_s=120):
             spawns.append(1)
             _time.sleep(0.3)  # widen the window the other caller races into
-            path = sup_mod.state_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({
-                "base_url": self.base_url, "api_key": self.api_key, "pid": os.getpid(),
-            }), encoding="utf-8")
+            # A bare legacy ``{pid}`` record is no longer adoptable (a live PID is not evidence);
+            # publish what a real router publishes so the second caller can adopt it.
+            _write_current_process_state(
+                sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
 
     monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
 
@@ -962,3 +983,43 @@ def test_ensure_local_runtime_proceeds_when_boot_lock_is_unwritable(tmp_path, mo
 
     assert result is None  # no exception escaped
     assert any("boot lock unavailable" in rec.getMessage() for rec in caplog.records)
+
+
+def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
+    """The managed server is shared by every profile the process hosts: its budget is priced on the
+    engine being booted, never re-read from whichever profile's config the thread happens to see."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap, hardware
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "_SERVING_ENGINE", None)
+    models = bootstrap.models_dir()
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "test.gguf").touch()
+    vulkan = SimpleNamespace(backend="vulkan", tag="b1", binary=tmp_path / "llama-server")
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda backend="auto": vulkan if backend == "vulkan" else None)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                        lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
+    priced: list = []
+    monkeypatch.setattr(bootstrap, "_generate_presets",
+                        lambda mdir, path: priced.append(hardware._configured_engine()) or path)
+    monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
+
+    class _NoStart:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("health timeout")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _NoStart)
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is None
+    assert priced == [vulkan]
+    assert bootstrap.serving_engine() is None  # a failed boot serves nothing

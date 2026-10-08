@@ -28,7 +28,9 @@ _announced_unavailable: set = set()   # keys: (server_id, binary_path_or_name)
 _announced_no_root: set = set()       # keys: (server_id, file_path)
 _announced_skipped: set = set()       # keys: (server_id, workspace_root)
 _announced_excluded: set = set()      # keys: (server_id, workspace_root)
-_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root, _announced_skipped, _announced_excluded)
+_announced_untrusted: set = set()     # keys: (server_id, workspace_root)
+_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root, _announced_skipped, _announced_excluded,
+                _announced_untrusted)
 
 
 def _short_path(file_path: str) -> str:
@@ -48,7 +50,7 @@ def _emit(server_id: str, level: int, message: str) -> None:
     event_log.log(level, "lsp[%s] %s", server_id, message)
 
 
-def _emit_once(bucket: set, key: Tuple, server_id: str, level: int, first: str, repeat: str) -> None:
+def _emit_once(bucket: set, key: tuple, server_id: str, level: int, first: str, repeat: str) -> None:
     """Log *first* at *level* the first time *key* is seen, *repeat* at DEBUG thereafter."""
     with _announce_lock:
         is_first = key not in bucket
@@ -133,7 +135,16 @@ def log_root_excluded(server_id: str, workspace_root: str, file_path: str, *, in
                f"skipping {_short_path(file_path)}: {workspace_root} excluded")
 
 
-def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
+def log_untrusted_skipped(server_id: str, workspace_root: str, file_path: str) -> None:
+    """``server_id`` is not safe in an untrusted workspace and ``workspace_root`` is not trusted.
+    INFO once per root (a deliberate gate must not look like a clean file), DEBUG thereafter."""
+    _emit_once(_announced_untrusted, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipped: untrusted workspace {workspace_root} ({_short_path(file_path)}); "
+               "add it to lsp.trusted_workspaces to run this server there",
+               f"skipped: untrusted workspace {workspace_root}")
+
+
+def log_reaped(keys: list[tuple[str, str]], idle_timeout: float) -> None:
     """Idle clients were reaped.  INFO, one line per sweep.
 
     Also forgets the ``log_active`` announcement for those keys so a respawn
@@ -145,7 +156,7 @@ def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
     _emit("reaper", logging.INFO, f"reaped {len(keys)} idle client(s) after {idle_timeout:.0f}s: {summary}")
 
 
-def log_released(keys: List[Tuple[str, str]], reason: str) -> None:
+def log_released(keys: list[tuple[str, str]], reason: str) -> None:
     """Clients were shut down because their workspace went away (worktree released or root deleted).
     INFO, one line per event; forgets the ``log_active`` announcement like :func:`log_reaped`."""
     with _announce_lock:
@@ -163,6 +174,7 @@ def reset_announce_caches() -> None:
 
 __all__ = [
     "event_log", "log_clean", "log_disabled", "log_active", "log_diagnostics", "log_no_project_root",
-    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded", "log_reaped",
+    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded",
+    "log_untrusted_skipped", "log_reaped",
     "reset_announce_caches",
 ]

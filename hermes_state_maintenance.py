@@ -25,7 +25,7 @@ def _like(value: str) -> str:
     return f"%{_escape_like(value.lower())}%"
 
 
-def _cwd_prefix_filter(value: str) -> Tuple[List[str], list]:
+def _cwd_prefix_filter(value: str) -> tuple[list[str], list]:
     from hermes_state_sessions import _cwd_prefix_clause
     clause, params = _cwd_prefix_clause(value)
     return [clause], list(params)
@@ -91,6 +91,22 @@ def _continued_ancestors_sql(candidates_where: str) -> str:
             ") SELECT id FROM kept")
 
 
+# A pin covers the whole conversation, but a store can hold a pinned segment whose later
+# continuations were published unpinned; those still belong to the pinned chat.
+_PINNED_TAIL_SQL = ("WITH RECURSIVE tail(id) AS ("
+                    " SELECT c.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id"
+                    f" WHERE COALESCE(p.pinned, 0) = 1 AND {_CONTINUATION_EDGE_SQL}"
+                    " UNION"
+                    " SELECT c.id FROM tail t JOIN sessions p ON p.id = t.id JOIN sessions c ON c.parent_session_id = p.id"
+                    f" WHERE {_CONTINUATION_EDGE_SQL}"
+                    ") SELECT id FROM tail")
+
+
+def _not_pinned_sql(alias: str = "s") -> str:
+    """Predicate sparing pinned rows and the unpinned continuations a pinned segment covers."""
+    return f"COALESCE({alias}.pinned, 0) = 0 AND {alias}.id NOT IN ({_PINNED_TAIL_SQL})"
+
+
 class SessionMaintenanceMixin:
     """Retention pruning, stale-session archiving and VACUUM policy for SessionDB."""
 
@@ -137,11 +153,11 @@ class SessionMaintenanceMixin:
         return False
 
     def sweep_orphaned_sessions(
-        self, *, max_idle_seconds: float, sources: Tuple[str, ...] = ("tui", "desktop", "subagent"),
-        exclude_ids: Tuple[str, ...] = (), exclude_pinned: bool = False,
+        self, *, max_idle_seconds: float, sources: tuple[str, ...] = ("tui", "desktop", "subagent"),
+        exclude_ids: tuple[str, ...] = (), exclude_pinned: bool = False,
         heartbeat_staleness_seconds: Optional[float] = None,
         heartbeat_ownership_grace_seconds: Optional[float] = None, respect_gateway_heartbeats: bool = True,
-    ) -> List[str]:
+    ) -> list[str]:
         """Close session rows orphaned by a dead gateway process (its in-process disconnect grace timer died
         with it, leaving ``ended_at IS NULL`` forever).  Rows of ``sources`` whose ``started_at`` AND
         canonical last activity are both older than ``max_idle_seconds`` get
@@ -170,9 +186,9 @@ class SessionMaintenanceMixin:
         if not (hb_grace is not None and hb_grace >= 0):
             hb_grace = hb_staleness
         cutoff = (now := time.time()) - max_idle_seconds
-        pin_scope = " AND COALESCE(pinned, 0) = 0" if exclude_pinned else ""
+        pin_scope = f" AND {_not_pinned_sql('sessions')}" if exclude_pinned else ""
         orphan_predicate = f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
-        heartbeat_params: Tuple[float, ...] = ()
+        heartbeat_params: tuple[float, ...] = ()
         if respect_gateway_heartbeats:
             orphan_predicate += (" AND NOT EXISTS (SELECT 1 FROM gateway_heartbeats h WHERE"
                                  " h.last_heartbeat >= ? AND h.started_at <= sessions.started_at + ?)")
@@ -197,7 +213,7 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
+                            lineage_tips_only: bool = False, **filters) -> tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
         (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
@@ -222,10 +238,10 @@ class SessionMaintenanceMixin:
             clauses.append(f"s.archived = {int(archived)}")
         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
         if not include_pinned:
-            clauses.append("COALESCE(s.pinned, 0) = 0")
+            clauses.append(_not_pinned_sql())
         return " AND ".join(clauses), params
 
-    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> Tuple[str, list]:
+    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> tuple[str, list]:
         """Translate the legacy age window into the shared activity filter, then build WHERE.
         ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
         is unmatched."""
@@ -244,7 +260,7 @@ class SessionMaintenanceMixin:
         return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
-                              whole_lineages: bool = False, **filters) -> List[Dict[str, Any]]:
+                              whole_lineages: bool = False, **filters) -> list[dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
         = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
         where, params = self._prune_where(older_than_days, source, filters, whole_lineages=whole_lineages)
@@ -255,10 +271,15 @@ class SessionMaintenanceMixin:
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
 
-    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
-                            **filters) -> int:
-        """Count-only :meth:`list_prune_candidates` (CLI reports spared pinned sessions)."""
+    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None, *,
+                            pinned_only: bool = False, **filters) -> int:
+        """Count-only :meth:`list_prune_candidates`; ``pinned_only`` counts rows carrying the pin
+        itself, not the continuations it protects (CLI reports spared pinned sessions)."""
+        if pinned_only:
+            filters["include_pinned"] = True
         where, params = self._prune_where(older_than_days, source, filters)
+        if pinned_only:
+            where += " AND COALESCE(s.pinned, 0) = 1"
         return int(self._read_one(f"SELECT COUNT(*) FROM sessions s WHERE {where}", params)[0])
 
     def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
@@ -282,7 +303,7 @@ class SessionMaintenanceMixin:
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
-        pin_clause = "AND s.pinned = 0" if exclude_pinned else ""
+        pin_clause = f"AND {_not_pinned_sql()}" if exclude_pinned else ""
         rows = self._read_all(
             f"""
             SELECT s.id FROM sessions s
@@ -294,7 +315,8 @@ class SessionMaintenanceMixin:
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
-            self.set_session_archived(row[0], True)
+            # Sweep provenance: a later compression/resume of this lineage un-hides it (#117713).
+            self._auto_archive_lineage(row[0])
         return len(rows)
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
@@ -330,7 +352,7 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return count
 
-    def _page_pragmas(self, names: Tuple[str, ...], fail_msg: str) -> Optional[list]:
+    def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:
         """Integer PRAGMAs over the existing connection (never a byte probe); None + debug log on failure."""
         try:
             with self._read_ctx() as conn:
@@ -400,7 +422,7 @@ class SessionMaintenanceMixin:
         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
         sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
         min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
         state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
         ``min_vacuum_interval_days`` throttle and also requires ``freelist_count / page_count`` >
@@ -420,7 +442,7 @@ class SessionMaintenanceMixin:
         Messaging and UI sources are never touched here. See #54189.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended
             # session; auto_prune=false is the disable switch, not a negative bound.

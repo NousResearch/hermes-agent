@@ -161,6 +161,17 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_unicode_normalized_preserves_each_matches_own_unicode(self):
+        """Each normalized match keeps ITS typographic characters; the regions were
+        once concatenated, which spliced both matches' text into every replacement."""
+        content = "Price \u2018old\u2019\u2014ready\nPrice 'old'\u2014ready\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Price 'old'--ready", "Price 'new'--ready", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert strategy == "unicode_normalized"
+        assert new == "Price \u2018new\u2019\u2014ready\nPrice 'new'\u2014ready\n"
+
     def test_self_overlapping_pattern_non_overlapping_matches(self):
         """Self-overlapping patterns must produce non-overlapping spans.
 
@@ -395,6 +406,49 @@ class TestEscapeDriftGuard:
         assert count == 1
 
 
+class TestNewlineLiteralDrift:
+    """A line break escaped one extra time arrives as literal backslash + n.
+    The escape_normalized / context_aware strategies still match it, and
+    new_string's literal \\n would be written verbatim, corrupting the file."""
+
+    def _assert_rejected(self, content, old_string, new_string, **kw):
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string, **kw)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+        assert new == content
+
+    def test_drifted_line_break_rejected(self):
+        self._assert_rejected(
+            'def greet():\n    print("hi")\n',
+            'def greet():\\n    print("hi")',
+            'def greet():\\n    print("hello")')
+
+    def test_legitimate_backslash_n_in_code_applies(self):
+        """Non-exact match (indent differs) on code that really contains "\\n"."""
+        content = 'def greet():\n    print("hi\\n")\n    return 1\n'
+        new, count, _, err = fuzzy_find_and_replace(
+            content,
+            'def greet():\n  print("hi\\n")\n  return 1',
+            'def greet():\n  print("hello\\n")\n  return 1')
+        assert err is None and count == 1
+        assert 'print("hello\\n")' in new
+
+    def test_drift_next_to_legitimate_backslash_n_rejected(self):
+        """One drifted line break plus a "\\n" the code really has: the
+        file-side literal must not mask the drifted one."""
+        self._assert_rejected(
+            'def greet():\n    message = build_greeting_message("hi\\n")\n    return message\n',
+            'def greet():\\n    message = build_greeting_message("hi\\n")\n    return message',
+            'def greet():\\n    message = build_greeting_message("hello\\n")\n    return message')
+
+    def test_drift_rejected_under_replace_all(self):
+        self._assert_rejected(
+            "x = 1\ny = 2\n\nx = 1\ny = 2\n",
+            "x = 1\\ny = 2",
+            "x = 1\\ny = 3",
+            replace_all=True)
+
+
 class TestFindClosestLines:
     def setup_method(self):
         from tools.fuzzy_match import find_closest_lines
@@ -512,15 +566,17 @@ class TestEscapeNormalizedNewString:
         assert "\\t" not in new
 
     def test_carriage_return_in_new_string_unescaped(self):
-        """File has real CR, model sends literal \\r in new_string."""
+        """File has real CR, model sends literal \\r in new_string. Line breaks
+        stay real: a literal \\n alongside would be newline drift, which
+        TestNewlineLiteralDrift covers."""
         content = "line1\r\nline2\r\n"
-        old_string = "line1\\r\\nline2\\r\\n"
-        new_string = "replaced\\r\\n"
+        old_string = "line1\\r\nline2\\r\n"
+        new_string = "replaced\\r\n"
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
         assert strategy == "escape_normalized"
-        assert "replaced\r" in new
+        assert "replaced\r\n" in new
 
     def test_newline_in_new_string_NOT_unescaped(self):
         """``\\n`` is intentionally left alone — newlines serialize correctly
@@ -637,7 +693,7 @@ class TestBackslashDoublingDrift:
     """Regression tests for the backslash-run doubling guard.
 
     Live failure (Windows, Aug 2026): the model sent old_string/new_string
-    whose backslash runs were JSON-escaped one extra time (file had ``\``
+    whose backslash runs were JSON-escaped one extra time (file had ``\\``
     where the args had ``\\``). The context_aware strategy matched the
     region anyway and wrote new_string verbatim, doubling every backslash
     in a Windows path inside a Python string literal. The guard must block
@@ -699,7 +755,7 @@ class TestBackslashDoublingDrift:
         assert b * 4 not in result
 
     def test_single_prose_backslash_not_blocked(self):
-        """A lone ``\`` vs ``\\`` in prose is too weak a signal to block."""
+        """A lone ``\\`` vs ``\\`` in prose is too weak a signal to block."""
         b = "\\"
         content = "text with one " + b + " backslash here\nanother line\n"
         old = "text with one " + b * 2 + " backslash here\nanother line"

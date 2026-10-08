@@ -2,13 +2,7 @@ name: laso-finance
 repo: https://github.com/LasoFinance/hermes-plugin
 sha: 8a046544307af690f04277bcb04929e5d1d58970
 image: https://raw.githubusercontent.com/LasoFinance/hermes-plugin/8a046544307af690f04277bcb04929e5d1d58970/assets/banner.png
-description: 'Spend USDC in the real world from Hermes: prepaid cards, gift cards, push-to-card,
-  Venmo/PayPal and bank payouts, through the Laso Finance API. Native plugin, standard library
-  only. Sign-in is the OAuth device flow (link and code handed to the human, approved on any
-  device), so there is no key to paste and it works over SSH and the messaging gateway. Every tool
-  that moves money or mints a credential goes through the Hermes approval gate first. Disclosure —
-  the tools move real funds from the user''s Laso account; all traffic goes to laso.finance only;
-  the approved key is saved as LASO_API_KEY in ~/.hermes/.env.'
+description: "Spend USDC in the real world from Hermes: prepaid cards, gift cards, push-to-card, Venmo/PayPal and bank payouts, through the Laso Finance API. Native plugin, standard library only. Sign-in is the OAuth device flow (link and code handed to the human, approved on any device), so there is no key to paste and it works over SSH and the messaging gateway. Every tool that moves money or mints a credential goes through the Hermes approval gate first. Disclosure — the tools move real funds from the user's Laso account and agent wallet; 19 money-moving or credential-minting tools ask for Hermes approval first, but approvals.mode off / yolo, or approvals.cron_mode/unattended_mode approve, let them run without a prompt; laso_buy_with_saved_card is not prompted in Hermes (Laso requires a passkey approval on the holder's device before an order); all traffic goes to laso.finance only; the approved key is saved as LASO_API_KEY in the profile's .env and removed when Laso rejects it."
 maintainer: LasoFinance
 tier: community
 category: tools

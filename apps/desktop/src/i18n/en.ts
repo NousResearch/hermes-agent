@@ -1171,7 +1171,8 @@ export const en: Translations = {
       noRoots: 'Nothing to scan: set a Working Directory above, or add a discovery root.',
       noBridge: 'This build cannot read the local disk, so there is nothing to scan.',
       rejected: 'The backend refused the scan: its discovery settings differ from this page.',
-      failed: 'The scan failed. Try again.'
+      failed: 'The scan failed. Try again.',
+      failedWith: (detail: string) => `The scan failed: ${detail}`
     },
     poolLimits: {
       warmBotBackendsAria: 'Warm bot backends',

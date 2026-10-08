@@ -25,7 +25,8 @@ vi.mock('@/i18n', () => ({
           noRoots: 'Nothing to scan: set a Working Directory above, or add a discovery root.',
           noBridge: 'This build cannot read the local disk, so there is nothing to scan.',
           rejected: 'The backend refused the scan: its discovery settings differ from this page.',
-          failed: 'The scan failed. Try again.'
+          failed: 'The scan failed. Try again.',
+          failedWith: (detail: string) => `The scan failed: ${detail}`
         }
       }
     }
@@ -72,6 +73,24 @@ describe('RepoScanSetting', () => {
 
     await waitFor(() =>
       expect(screen.getByText('Nothing to scan: set a Working Directory above, or add a discovery root.')).toBeTruthy()
+    )
+  })
+
+  it('quotes the error when the scan throws', async () => {
+    mocks.scan.mockResolvedValue({
+      detail: "invalid params for projects.record_repos: discovery_policy.nestedd: Extra inputs are not permitted",
+      reason: 'failed'
+    })
+
+    render(<RepoScanSetting />)
+    fireEvent.click(screen.getByRole('button', { name: 'Scan now' }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'The scan failed: invalid params for projects.record_repos: discovery_policy.nestedd: Extra inputs are not permitted'
+        )
+      ).toBeTruthy()
     )
   })
 

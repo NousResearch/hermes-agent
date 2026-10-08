@@ -908,8 +908,9 @@ export type RepoScanOutcome =
   | { found: number; reason: 'ok' }
   /** `disabled`: the setting is off. `no-roots`: nothing configured to walk. `no-bridge`: no local git
    *  bridge in this build. `rejected`: the backend holds a different policy. `skipped`: this run was a
-   *  repeat, or a newer scan took over. `failed`: anything else. */
-  | { reason: 'disabled' | 'failed' | 'no-bridge' | 'no-roots' | 'rejected' | 'skipped' }
+   *  repeat, or a newer scan took over. `failed`: anything else, with the error it threw — the gateway
+   *  names the exact key it refused, so "the scan failed" alone is not worth reporting. */
+  | { detail?: string; reason: 'disabled' | 'failed' | 'no-bridge' | 'no-roots' | 'rejected' | 'skipped' }
 
 export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome> {
   if (isDesktopFsRemoteMode()) {
@@ -960,8 +961,8 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
 
   try {
     context = await activeProjectsContext()
-  } catch {
-    return { reason: 'failed' }
+  } catch (error) {
+    return { detail: error instanceof Error ? error.message : String(error), reason: 'failed' }
   }
 
   const scan = desktopGit()?.scanRepos
@@ -1045,10 +1046,10 @@ export async function scanAndRecordRepos(force = false): Promise<RepoScanOutcome
     }
 
     return willScan ? { found: repos.length, reason: 'ok' } : { reason: 'no-roots' }
-  } catch {
+  } catch (error) {
     state.completedSignature = undefined
 
-    return { reason: 'failed' }
+    return { detail: error instanceof Error ? error.message : String(error), reason: 'failed' }
   } finally {
     state.runningSignature = undefined
 

@@ -553,6 +553,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
     if not file_path:
         _attach_lint_findings(result, target, before=content)
+    elif target.suffix.lower() == ".md":
+        _attach_lint_findings(result, skill_dir / "SKILL.md")
     return result
 
 
@@ -616,9 +618,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
     result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
-    # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
-    # that crosses the line so the review fork sees it in the same turn.
-    if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
+    # Support Markdown can introduce navigation risks outside references/ as well.
+    if (file_path.startswith("references/") or target.suffix.lower() == ".md") and (skill_dir / "SKILL.md").exists():
         _attach_lint_findings(result, skill_dir / "SKILL.md")
     return result
 

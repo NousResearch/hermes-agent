@@ -626,12 +626,20 @@ holds a small set of files named by topic (a decision table, a recipe, provider 
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
 
-`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on `references/`
-writes and returns its findings in the tool result. Three rules exist specifically for this shape:
+`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on supporting Markdown
+writes and patches (plus other `references/` writes) and returns its findings in the tool result. Three rules exist specifically for this shape:
 `incident-log-shape` (a body dense in PR/issue numbers), `references-sprawl` (more
 than 60 reference files), and `oversized-body` (a `SKILL.md` body past ~24k chars — `skill_view`
 loads the whole file and it stays in context for the rest of the session). They warn; they never
 block a write.
+
+Two navigation warnings help keep support documents discoverable. `reference-toc` warns
+when a supporting Markdown file exceeds 100 lines without a Contents or Table of Contents
+heading (or a list of section anchor links) in its first 40 lines. `reference-depth` warns
+when a support document is reachable only through another support file: link it directly
+from `SKILL.md`. Relative Markdown links, fragments, and skill-owned inline paths are
+recognized. Private files and directories whose names begin with `_` are excluded. These
+findings are advisory and do not prevent creating or updating a skill.
 
 ### Actions
 

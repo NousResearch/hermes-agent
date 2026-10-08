@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import unquote
 
 from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 
@@ -194,17 +195,101 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
                         "Merge same-topic files into one rule set and drop incident narration.")
 
 
+
+# Keep navigation visible to readers that only load the first screen of a support file.
+_REFERENCE_TOC_LINE_LIMIT = 100
+_REFERENCE_TOC_PREFIX_LINES = 40
+_CONTENTS_HEADING = re.compile(
+    r"^\s{0,3}#{1,6}\s+(?:table\s+of\s+)?contents\s*:?[\s#]*$", re.I)
+_CONTENTS_ITEM = re.compile(
+    r"^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?\[[^\]]+\]\(#[^)]+\)")
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))")
+_SUPPORT_PATH = re.compile(r"(?:references|templates|assets|scripts|examples)/[\w./-]+\.md")
+
+
+def _has_reference_toc(lines: List[str]) -> bool:
+    fence = None
+    items = 0
+    for line in lines[:_REFERENCE_TOC_PREFIX_LINES]:
+        stripped = line.lstrip()
+        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker:
+            token = marker.group(0)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        if _CONTENTS_HEADING.match(line):
+            return True
+        if _CONTENTS_ITEM.match(line):
+            items += 1
+    return items >= 2
+
+
+def _linked_support_files(text: str, base: Path, files: Dict[Path, str]) -> set[Path]:
+    targets = [m.group(1) or m.group(2) for m in _MARKDOWN_LINK.finditer(text)]
+    targets += re.findall(r"`([^`\n]+\.md(?:#[^`\n]*)?)`", text)
+    targets += _SUPPORT_PATH.findall(text)
+    linked = set()
+    for target in targets:
+        target = unquote(target.split("#", 1)[0].split("?", 1)[0])
+        candidate = (base / target).resolve()
+        if candidate in files:
+            linked.add(candidate)
+    return linked
+
+
+def _check_reference_docs(body: str, skill_dir: Path) -> Iterator[LintFinding]:
+    root = skill_dir.resolve()
+    files: Dict[Path, str] = {}
+    contents: Dict[Path, str] = {}
+    for path in sorted(skill_dir.rglob("*.md")):
+        rel = path.relative_to(skill_dir)
+        if rel.as_posix() == "SKILL.md" or any(p.startswith(("_", ".")) for p in rel.parts):
+            continue
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="ignore")
+        except OSError:
+            continue
+        files[resolved] = rel.as_posix()
+        contents[resolved] = text
+        lines = text.splitlines()
+        if len(lines) > _REFERENCE_TOC_LINE_LIMIT and not _has_reference_toc(lines):
+            yield _warn("reference-toc", f"'{rel.as_posix()}' has {len(lines)} lines; add a Contents "
+                        f"heading or anchor list in the first {_REFERENCE_TOC_PREFIX_LINES} lines "
+                        "so a partial read can find the remaining sections.")
+    direct = _linked_support_files(body, root, files)
+    reached = set()
+    pending = list(direct)
+    while pending:
+        current = pending.pop()
+        if current in reached:
+            continue
+        reached.add(current)
+        pending.extend(_linked_support_files(contents[current], current.parent, files) - reached)
+    for path in sorted(reached - direct):
+        yield _warn("reference-depth", f"'{files[path]}' is only linked through another support file; "
+                    "link it directly from SKILL.md so readers can discover it in one step.")
+
+
 def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:
     """Lint raw SKILL.md *content*.
 
     ``skill_dir`` enables on-disk checks (name/dir match, dangling links, POSIX
-    gating, forbidden files); without it only content checks run, which is what
+    gating, forbidden files, reference navigation); without it only content checks run, which is what
     the create path needs before the file exists.
     """
     frontmatter, body = parse_frontmatter(content)
     findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_body(body, skill_dir))
     if skill_dir is not None:
         findings += _check_files(frontmatter, skill_dir)
+        findings += _check_reference_docs(body, skill_dir)
     return findings
 
 

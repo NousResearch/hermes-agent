@@ -360,6 +360,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    # Ghost-assignee guard (validate_assignee_exists): refuse here, before any
+    # row is written, so the card can never rust in `skipped_nonspawnable` on a
+    # profile nobody can dispatch.
+    try:
+        kb.validate_assignee_exists(args.assignee)
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -399,6 +406,19 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         return _err(f"kanban swarm: {exc}", 2)
     if not workers:
         return _err("kanban swarm: at least one --worker is required", 2)
+    # Ghost-assignee guard for every profile the swarm graph would pin:
+    # workers, verifier (required by the parser), synthesizer, and the root
+    # card's creator. Better refused here than half-frozen in
+    # `skipped_nonspawnable` after the fact.
+    try:
+        kb.validate_assignee_exists(args.verifier)
+        kb.validate_assignee_exists(args.synthesizer)
+        if args.created_by:
+            kb.validate_assignee_exists(args.created_by)
+        for spec in workers:
+            kb.validate_assignee_exists(spec.profile)
+    except ValueError as exc:
+        return _err(f"kanban swarm: {exc}", 2)
     with kbc.connect_closing() as conn:
         created = ks.create_swarm(
             conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,
@@ -572,6 +592,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
+    # Ghost-assignee guard: a card re-parked on a profile nobody can dispatch
+    # must be refused with the roster, not rust in `skipped_nonspawnable`.
+    if profile is not None:
+        try:
+            kb.validate_assignee_exists(profile)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     return _ok_or_err(ok, f"no such task: {args.task_id}",
@@ -608,6 +635,12 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
+    # Ghost-assignee guard, same contract as _cmd_assign ("none" = unassign passes).
+    if profile is not None:
+        try:
+            kb.validate_assignee_exists(profile)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
     return _ok_or_err(

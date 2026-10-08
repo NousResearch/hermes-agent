@@ -253,10 +253,6 @@ export function ProjectOverviewRow({
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
-      // The project's own row, marked apart from the wrapper `data-sessions-project` sits on (which
-      // also holds its session rows): a project drag reads THIS as "the project itself" and the rest
-      // of its region as its root.
-      data-project-row={project.id}
       label={
         <>
           {project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}

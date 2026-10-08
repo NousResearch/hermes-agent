@@ -76,6 +76,22 @@ describe('the reorder pin', () => {
     expect(over(pin, 300)).toBe('a')
   })
 
+  it('keeps the sensor pointer each pass saw, for the drag events that cannot report it', () => {
+    const pin = createReorderPin(() => null)
+
+    pin.detect(at(60))
+
+    // `pointerCoordinates` is the activation point plus the pointer's OWN movement. A drag event's
+    // `delta` is the scroll-adjusted one instead, so a list that auto-scrolls under a still pointer
+    // would place its chip and frame off the pointer by however far it had scrolled.
+    expect(pin.pointer).toEqual({ x: 100, y: 60 })
+
+    // A keyboard pass must not leave the previous drag's pointer behind for the next one.
+    pin.detect(at(60, null))
+
+    expect(pin.pointer).toBeNull()
+  })
+
   it('leaves a keyboard drag to the list — no pointer, nothing to resolve', () => {
     const slot = vi.fn<ReorderSlotResolver>(() => 'c')
 

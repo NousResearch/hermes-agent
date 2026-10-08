@@ -19,15 +19,14 @@ describe('createDropClickSwallow', () => {
     vi.restoreAllMocks()
   })
 
-  /** A project shaped like the real ones: a wrapper carrying `blockAttr` (the region a drop lands in),
-   *  holding the project's own row carrying `rowAttr`, plus one of its session rows. */
-  const projectRow = (blockAttr: string, rowAttr: string, id: string) => {
+  /** A project shaped like the real ones: a wrapper carrying `blockAttr` (the area a drop lands in),
+   *  holding the project's own row, plus one of its session rows. */
+  const projectRow = (blockAttr: string, id: string) => {
     const block = document.createElement('div')
     const row = document.createElement('button')
     const onActivate = vi.fn()
 
     block.setAttribute(blockAttr, id)
-    row.setAttribute(rowAttr, id)
     row.addEventListener('click', onActivate)
 
     const session = document.createElement('button')
@@ -65,7 +64,7 @@ describe('createDropClickSwallow', () => {
   it('eats the click that lands anywhere in the region the nest took', () => {
     const swallow = createDropClickSwallow()
     const dragged = draggedSession()
-    const target = projectRow('data-sessions-project', 'data-project-row', 'p2')
+    const target = projectRow('data-sessions-project', 'p2')
 
     swallow.arm(dragged.row, target.block)
     fireEvent.click(target.row)
@@ -84,8 +83,8 @@ describe('createDropClickSwallow', () => {
   it('leaves a click on any other row alone — one drag must not eat the next click', () => {
     const swallow = createDropClickSwallow()
     const dragged = draggedSession()
-    const target = projectRow('data-sessions-project', 'data-project-row', 'p2')
-    const unrelated = projectRow('data-sessions-project', 'data-project-row', 'p3')
+    const target = projectRow('data-sessions-project', 'p2')
+    const unrelated = projectRow('data-sessions-project', 'p3')
 
     swallow.arm(dragged.row, target.block)
     fireEvent.click(unrelated.row)
@@ -95,7 +94,7 @@ describe('createDropClickSwallow', () => {
 
   it('does not arm at all when a drag ended with neither a row nor a target', () => {
     const swallow = createDropClickSwallow()
-    const other = projectRow('data-sessions-project', 'data-project-row', 'p9')
+    const other = projectRow('data-sessions-project', 'p9')
 
     swallow.arm(null, null)
     fireEvent.click(other.row)
@@ -105,8 +104,8 @@ describe('createDropClickSwallow', () => {
 
   it('re-arms for the new target on the next drag, never a stale one', () => {
     const swallow = createDropClickSwallow()
-    const first = projectRow('data-sessions-project', 'data-project-row', 'p2')
-    const second = projectRow('data-sessions-project', 'data-project-row', 'p3')
+    const first = projectRow('data-sessions-project', 'p2')
+    const second = projectRow('data-sessions-project', 'p3')
 
     // Two drags in a row, the first one's click never delivered (a release the browser did not turn
     // into a click). The second drag's swallow must cover the second target, not resurrect the first.

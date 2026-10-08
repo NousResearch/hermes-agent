@@ -32,9 +32,22 @@ def _abort(agent, error):
 @pytest.mark.parametrize("errors,expected", [
     ([_error("79.9"), _error("79.9")], 1),
     ([_error("79.9"), _error("83.7")], 1),
+    *[(
+        [template.format(elapsed="79.9"), template.format(elapsed="83.7")], 1,
+    ) for template in (
+        "Codex auxiliary Responses stream produced no output within 60.0s (no-progress timeout, {elapsed}s elapsed)",
+        "Auxiliary chat stream produced no output within 60.0s (no-progress timeout, {elapsed}s elapsed)",
+        "Auxiliary chat stream stalled: no new output for 60.0s ({elapsed}s elapsed, timed out)",
+    )],
     ([_error("79.9"), _error("83.7").replace("60.0s", "90.0s")], 2),
     ([_error("79.9"), "HTTP 401", "HTTP 403"], 3),
     (["other service (79.9s elapsed)", "other service (83.7s elapsed)"], 2),
+    ([_error("79.9"), _error("83.7").replace("elapsed)", "elapsed, timed out)")], 2),
+    (["Codex auxiliary Responses stream exceeded 600.0s hard ceiling",
+      "Codex auxiliary Responses stream exceeded 900.0s hard ceiling"], 2),
+    ([_error("79.9") + " provider detail", _error("83.7") + " provider detail"], 2),
+    ([_error("79.9").replace("elapsed", "elapsed, HTTP 401"),
+      _error("83.7").replace("elapsed", "elapsed, HTTP 401")], 2),
     ([None, None], 1),
 ])
 def test_abort_warning_identity(monkeypatch, errors, expected):
@@ -47,6 +60,37 @@ def test_abort_warning_identity(monkeypatch, errors, expected):
     assert len(attempts) == len(errors)
     assert agent._last_compression_summary_warning == (errors[-1] or "unknown error")
     assert (errors[0] or "unknown error") in agent.warnings[0]
+
+
+@pytest.mark.parametrize("producer", ["codex", "chat"])
+@pytest.mark.parametrize("progress", [False, True])
+def test_real_watchdog_messages_keep_warning_episode(monkeypatch, producer, progress):
+    from agent import auxiliary_client, auxiliary_stream_watchdog
+
+    monkeypatch.setattr(auxiliary_client.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(cc, "_emit_aborted_attempt_telemetry", lambda *args: None)
+    if producer == "codex":
+        guard = auxiliary_client._CodexStreamGuard(None, 300, no_progress_timeout=60)
+        if progress:
+            guard.saw_content.set()
+        message = guard.timeout_message
+    else:
+        guard = auxiliary_stream_watchdog.ChatStreamWatchdog(None, 60)
+        guard.first_token_window = 60
+        guard.saw_progress = progress
+        message = lambda: str(guard.timeout_error())
+    agent = _agent()
+    for now in (179.9, 183.7):
+        monkeypatch.setattr(auxiliary_client.time, "monotonic", lambda: now)
+        _abort(agent, message())
+    assert len(agent.warnings) == 1
+    assert agent._last_compression_summary_warning == message()
+    if producer == "codex":
+        guard.no_progress_timeout = 90
+    else:
+        guard.window = guard.first_token_window = 90
+    _abort(agent, message())
+    assert len(agent.warnings) == 2
 
 
 def test_new_session_rearms_warning(monkeypatch):

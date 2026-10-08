@@ -3520,11 +3520,11 @@ def _finish_compaction_boundary(
 
 def _compression_abort_warning_key(agent: Any, error: str) -> tuple:
     """Separate a retry's diagnostic duration from its bounded warning identity."""
-    # Only the known stream-guard suffix is volatile. HTTP codes, configured
-    # deadlines and arbitrary provider messages must remain distinguishable.
-    stable_error = error
-    if error.startswith("Codex auxiliary Responses stream stalled: no new output for "):
-        stable_error = re.sub(r" \([0-9]+(?:\.[0-9]+)?s elapsed\)$", "", error)
+    # Normalize elapsed time only in known watchdog messages, not configured windows.
+    stable_error = re.sub(
+        r"^((?:Codex auxiliary Responses|Auxiliary chat) stream (?:stalled: no new output for|produced no output within) "
+        r"[0-9]+(?:\.[0-9]+)?s \((?:no-progress timeout, )?)[0-9]+(?:\.[0-9]+)?s elapsed((?:, timed out)?\))$",
+        r"\1<elapsed>\2", error)
     telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
     route = (None, None)
     attempt_id = getattr(agent, "_compression_attempt_id", None)

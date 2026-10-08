@@ -220,6 +220,23 @@ export function shouldRePinOnTranscriptReload(opts: { sessionSwitched: boolean; 
   return opts.sessionSwitched || !opts.settledNonEmpty
 }
 
+// True when the settled-load intent (bottom, or a remembered reading distance) may
+// be applied in this commit. A reader who moved the viewport themselves owns it:
+// applying the intent re-pins them to the target — measured live at #132776 as a
+// 1982 → 8649 px write on a settled transcript change while the reader sat still.
+export function shouldApplyLoadIntent(opts: {
+  paneVisible: boolean
+  readerOwnsViewport: boolean
+  restoreFromBottom: number | null
+  liveKind: 'bottom' | 'offset'
+}): boolean {
+  if (!opts.paneVisible || opts.readerOwnsViewport) {
+    return false
+  }
+
+  return opts.restoreFromBottom == null || opts.liveKind === 'bottom'
+}
+
 export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
   let frameId: number | null = null
   let framePending = false
@@ -1504,7 +1521,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     windowCommitRef.current = null
 
     // Apply load intent in the commit, without spending an unchanged anchor.
-    if (paneVisible && (restoreFromBottom == null || liveScrollStateRef.current.kind === 'bottom')) {
+    // A reader who moved the viewport themselves owns it: applying the intent here
+    // re-pins them to the remembered target (bottom = scrollHeight - clientHeight)
+    // and that write is what drags them down mid-read — the live-measured jump in
+    // #132776 (1982 → 8649 px on a settled transcript change). The gated branch
+    // below only covers the parked-offset write; this call is the one that lands first.
+    if (
+      shouldApplyLoadIntent({
+        paneVisible,
+        readerOwnsViewport: readerOwnsViewportRef.current,
+        restoreFromBottom,
+        liveKind: liveScrollStateRef.current.kind
+      })
+    ) {
       applyRestoreRef.current?.()
     }
 

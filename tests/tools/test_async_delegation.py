@@ -749,6 +749,44 @@ def test_gateway_formatter_renders_async_block():
     assert "Investigate flaky test" in txt
 
 
+def _dispatch_line(text):
+    return next((ln for ln in text.splitlines() if ln.startswith("Dispatched:")), "")
+
+
+def test_batch_dispatch_age_tracks_delivery_time_not_runtime():
+    """A consolidated batch delivered long after completion must print the
+    dispatch-to-delivery age, not the unit's own runtime: the parenthetical says
+    "ago", which the reader resolves against delivery time. Pre-fix, a 22h-late
+    delivery still claimed "(4m32s ago)" — the batch's runtime."""
+    now = time.time()
+    evt = _make_async_evt(
+        is_batch=True,
+        dispatched_at=now - (22 * 3600 + 272),
+        completed_at=now - 22 * 3600,
+        duration_seconds=272.0,
+        total_duration_seconds=272.0,
+        results=[{"task_index": 0, "status": "completed", "summary": "ok"}],
+        goals=["investigate the report"],
+    )
+    text = format_process_notification(evt)
+    assert text is not None
+    assert "ASYNC DELEGATION BATCH COMPLETE" in text
+    line = _dispatch_line(text)
+    assert "(22h4m ago)" in line, line
+    assert "4m32s ago" not in line
+
+
+def test_single_dispatch_age_immediate_render_still_shows_runtime():
+    """On the normal immediate-delivery path the parenthetical keeps its meaning:
+    rendered at once, the dispatch age equals the runtime."""
+    now = time.time()
+    evt = _make_async_evt(dispatched_at=now - 100.5, completed_at=now - 1.0)
+    text = format_process_notification(evt)
+    assert text is not None
+    line = _dispatch_line(text)
+    assert "(1m40s ago)" in line or "(1m39s ago)" in line, line
+
+
 def test_gateway_cli_origin_event_left_unrouted():
     """An empty session_key (CLI origin) is left without routing fields."""
     from gateway.run import GatewayRunner

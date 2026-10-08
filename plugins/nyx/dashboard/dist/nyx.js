@@ -1,6 +1,6 @@
 // Nyx — avatar de partículas do Hermes (módulo ES carregado pelo painel do dashboard).
 //
-// Em repouso só o busto: ~3 milhões de pontos de luz, em pontilhismo (a luz vira densidade de pontos).
+// Em repouso só o busto: ~3 milhões de pontos de luz em pontilhismo, cheio por dentro, contorno só por pontos.
 // Os eventos do Hermes (barramento do plugin) dirigem o resto:
 //   pensando        → a galáxia nasce do crânio pra fora (3 braços em espiral, disco inclinado)
 //   ferramenta      → um cometa sai do disco e orbita a cabeça enquanto a ferramenta roda
@@ -150,10 +150,10 @@ function insideBody(x, y, z) {                // px; a parte de baixo da mandíb
 const AX = 832.5;                             // eixo da figura na foto
 const QUEIXO = [[832, 649], [850, 646], [870, 640.5], [890, 630.5], [910, 615.5], [930, 602], [950, 584], [966, 558]];
 const MARCAS = [                              // [tabela, curva, pontos a mais por px de curva]
-  [HEAD, QUEIXO, 18],                                                                    // contorno do queixo
-  [BODY, [[957, 600], [956, 700], [957, 780], [961, 800], [973, 820], [995, 840], [1003, 846]], 18],   // lado do pescoço → trapézio
-  [BODY, [[878, 662], [872, 720], [862, 780], [850, 840], [838, 892]], 9],               // esternocleidomastoide até o esterno
-  [BODY, [[930, 849], [970, 851], [1003, 846], [1052, 840], [1100, 828], [1150, 820], [1195, 823]], 18],  // clavícula
+  [HEAD, QUEIXO, 14],                                                                    // contorno do queixo
+  [BODY, [[957, 600], [956, 700], [957, 780], [961, 800], [973, 820], [995, 840], [1003, 846]], 16],   // lado do pescoço → trapézio
+  [BODY, [[878, 662], [872, 720], [862, 780], [850, 840], [838, 892]], 8],               // esternocleidomastoide até o esterno
+  [BODY, [[930, 849], [970, 851], [1003, 846], [1052, 840], [1100, 828], [1150, 820], [1195, 823]], 16],  // clavícula
 ];
 const queixoY = (ax) => {                     // y do contorno do queixo na meia-largura |x| (px)
   const x = AX + Math.abs(ax);
@@ -172,9 +172,10 @@ function sombraPescoco(x, y, z) {
     const dq = y - queixoY(x);
     if (dq > 0 && dq < 50) s *= 0.15 + 0.85 * suave(4, 50, dq);
   }
-  if (y > 650 && y < 905) {
-    const meia = 40 - 34 * (y - 650) / 255;      // o V: ~40 px de meia-largura sob o queixo, fecha no esterno
-    s *= 0.22 + 0.78 * suave(meia * 0.55, meia * 1.2, Math.abs(x));
+  if (y > 650 && y < 880) {
+    const meia = 40 - 28 * (y - 650) / 230;      // o V: ~40 px de meia-largura sob o queixo, fecha no esterno
+    const forca = 0.55 * (1 - suave(780, 880, y));   // e some aos poucos, senão vira um risco escuro no peito
+    s *= 1 - forca * (1 - suave(meia * 0.55, meia * 1.2, Math.abs(x)));
   }
   return s;
 }
@@ -203,15 +204,15 @@ function naOrelha(sg, t, r) {
 }
 
 // O busto é pontilhismo: milhões de pontos na superfície, espalhados por igual (faixa a faixa de y, em
-// intervalos de arco de mesma área, com sorteio dentro de cada intervalo), e o shader decide quais aparecem
-// pela luz do lugar (VS_BUSTO): o tom vira densidade de pontos, não brilho de linha. Por cima, correntinhas
-// de contas (os riscos pontilhados da foto) e as marcas do pescoço como faixas um pouco mais densas.
+// intervalos de arco de mesma área, com sorteio dentro de cada intervalo), mais um miolo de pontos soltos
+// no volume, e o shader decide quais aparecem pela luz do lugar (VS_BUSTO). Por cima, correntinhas de
+// contas (os riscos pontilhados da foto) e as marcas do pescoço como faixas um pouco mais densas.
 // Cada ponto guarda a normal da superfície; cabeça e pescoço não se atravessam.
 // Tudo vai direto pra arrays tipados (posição, cor em bytes, brilho/semente/tamanho, normal em bytes).
-const PONTOS = 3000000, CONTAS = 45000, VAO_CONTA = 5.5;
+const PONTOS = 3000000, MIOLO = 90000, CONTAS = 45000, VAO_CONTA = 5.5;
 function gerarBusto(densidade) {
   const { rnd, gauss } = criarAleatorio(7);
-  const cap = Math.ceil((PONTOS + CONTAS + 120000) * densidade) + 60000;
+  const cap = Math.ceil((PONTOS + MIOLO + CONTAS + 120000) * densidade) + 60000;
   // 3 milhões de pontos: tudo que dá vai em bytes (cor, normal e [brilho/2, semente, tamanho/1,5], que o
   // shader desfaz com uInf); só a posição fica em float. ~21 bytes por ponto
   const pos = new Float32Array(cap * 3), col = new Uint8Array(cap * 3), inf = new Uint8Array(cap * 3), nor = new Int8Array(cap * 3);
@@ -262,9 +263,9 @@ function gerarBusto(densidade) {
     const arco = new Float64Array(M + 1);
     let sobra = 0;
     for (let f = 0; f < areas.length; f++) {
-      const y0 = ya + f * H, quer = areas[f] / soma * total * densidade + sobra, k = Math.floor(quer);
-      sobra = quer - k;
-      if (!k) continue;
+      const y0 = ya + f * H, quer = areas[f] / soma * total * densidade + sobra, k0 = Math.floor(quer);
+      sobra = quer - k0;
+      if (!k0) continue;
       const [w, d] = rowR(T, y0 + H / 2);
       for (let j = 1; j <= M; j++) {
         const ph = (j - 0.5) / M * 6.283185, a = w * Math.cos(ph), b = d * Math.sin(ph);
@@ -275,6 +276,10 @@ function gerarBusto(densidade) {
       r = rowR(T, yc - 1); const w0 = r[0], d0 = r[1], c0 = r[2];
       r = rowR(T, yc); const c = r[2];
       const dw = (w1 - w0) / 2, dd = (d1 - d0) / 2, dc = (c1 - c0) / 2;
+      // quanto a superfície estica por px de y depende de φ: onde os ombros abrem, estica nos lados e não no
+      // meio do peito. Sorteia a mais e aceita cada ponto pelo esticão local, senão o peito ganha uma faixa clara
+      const estMedia = Math.sqrt(1 + 0.5 * (dw * dw + dd * dd) + dc * dc), estMax = Math.sqrt(1 + dw * dw + (Math.abs(dc) + Math.abs(dd)) ** 2);
+      const k = Math.round(k0 * estMax / estMedia);
       for (let i = 0, j = 0; i < k; i++) {
         let u = (i + rnd()) / k + giro;
         if (u >= 1) u -= 1;
@@ -283,7 +288,8 @@ function gerarBusto(densidade) {
         while (j < M - 1 && arco[j + 1] < sArc) j++;
         const ph = (j + (sArc - arco[j]) / (arco[j + 1] - arco[j] || 1)) * 6.283185 / M, y = y0 + rnd() * H;
         // a casca e a normal, como em naCasca, mas com a linha da faixa já calculada (aqui roda milhões de vezes)
-        const sn = Math.sin(ph), cs = Math.cos(ph), ayz = dc + dd * cs, apx = w * cs, apz = -d * sn;
+        const sn = Math.sin(ph), cs = Math.cos(ph), ayz = dc + dd * cs, apx = w * cs, apz = -d * sn, ayx = dw * sn;
+        if (rnd() * estMax > Math.sqrt(1 + ayx * ayx + ayz * ayz)) continue;
         let nx = -apz, ny = ayz * apx - dw * sn * apz, nz = apx;
         const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1, t = -0.5 + (rnd() - rnd()) * 1.4;
         nx /= nl; ny /= nl; nz /= nl;
@@ -291,7 +297,7 @@ function gerarBusto(densidade) {
         const px = w * sn + nx * t, pz = c + d * cs + nz * t;
         if (fora(px, y, pz) || (y > 932 && rnd() > fadeY(y)) || rnd() > sombra(px, y, pz)) continue;
         const g = ouro(px, y, pz), dourado = g > 0 && rnd() < g;
-        put(px, y - ny * t, pz, nx, ny, nz, (0.9 + 0.4 * rnd()) * (dourado ? 0.8 : ganho), 0.45 + 0.15 * rnd(), dourado ? GOLD : corPonto());   // tamanho < 0,75: o shader lê ≥ 0,75 como conta
+        put(px, y - ny * t, pz, nx, ny, nz, (0.7 + 0.3 * rnd()) * (dourado ? 0.8 : ganho), 0.45 + 0.15 * rnd(), dourado ? GOLD : corPonto());   // tamanho < 0,75: o shader lê ≥ 0,75 como conta
       }
     }
   };
@@ -348,14 +354,32 @@ function gerarBusto(densidade) {
       feitas += Math.max(1, feitasAqui);
     }
   };
+  // miolo: pontos soltos dentro do volume, fatia a fatia pela área da elipse. Sem normal (aparecem sempre);
+  // de frente somam mais onde o corpo é mais grosso, então o meio fica cheio e não oco
+  const miolo = (T, total, fora) => {
+    const ya = T === HEAD ? 143 : 520, yb = T === HEAD ? 649 : 940, cum = [];
+    let soma = 0;
+    for (let y = ya; y < yb; y++) { const r = rowR(T, y + 0.5); soma += r[0] * r[1]; cum.push(soma); }
+    for (let i = 0; i < total * densidade; i++) {
+      const v = rnd() * soma;
+      let lo = 0, hi = cum.length - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < v) lo = m + 1; else hi = m; }
+      const y = ya + lo + rnd(), r = rowR(T, y), q = Math.sqrt(rnd()) * 0.97, a = rnd() * 6.283185;
+      const x = r[0] * q * Math.sin(a), z = r[2] + r[1] * q * Math.cos(a);
+      if (fora(x, y, z) || (y > 932 && rnd() > fadeY(y))) continue;
+      put(x, y, z, 0, 0, 0, 0.5 + 0.25 * rnd(), 0.45 + 0.15 * rnd(), rnd() < 0.35 ? DEEP : rnd() < 0.7 ? BLUE : CYAN);
+    }
+  };
   const semSombra = () => 1;
+  miolo(HEAD, MIOLO * 0.4, insideBody);
+  miolo(BODY, MIOLO * 0.6, insideHead);
   pontilhar(HEAD, PONTOS * 0.4, insideBody, semSombra, 1);
   pontilhar(BODY, PONTOS * 0.6, insideHead, sombraPescoco, 1.3);   // na foto pescoço e ombros brilham mais que o rosto
   correntes(HEAD, CONTAS * 0.42, insideBody, semSombra, 1);
   correntes(BODY, CONTAS * 0.58, insideHead, sombraPescoco, 1.1);
   // marcas da foto, medidas como cristas de brilho (lado direito, px da foto; o esquerdo é o espelho): uma
-  // faixa de ~5 px de pontos fracos ao longo da curva. São do tamanho das contas, então o filtro de luz deixa
-  // mais deles aparecerem: a marca se lê como um pontilhado discreto, não como linha
+  // faixa de ~5 px com mais pontos ao longo da curva, que passam pelo mesmo filtro de luz do resto: a marca
+  // aparece só como um adensamento discreto, não como linha
   for (const [T, curva, porPx] of MARCAS) {
     for (const sg of [-1, 1]) {
       for (let i = 0; i < curva.length - 1; i++) {
@@ -366,13 +390,13 @@ function gerarBusto(densidade) {
           const xp = (x0 + (x1 - x0) * t + ux * o - AX) * sg, y = y0 + (y1 - y0) * t + uy * o;
           const w = rowR(T, y)[0], ph = Math.asin(Math.max(-1, Math.min(1, xp / Math.max(1, w))));
           const p = naCasca(T, y, ph, -0.5 + gauss() * 0.6);
-          put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, 0.45 + 0.2 * rnd(), 0.76 + 0.08 * rnd(), rnd() < 0.7 ? CYAN : WHITE);
+          put(p.x, y + p.dy, p.z, p.nx, p.ny, p.nz, 0.7 + 0.3 * rnd(), 0.45 + 0.15 * rnd(), rnd() < 0.7 ? CYAN : BLUE);
         }
       }
     }
   }
   // orelhas: faixas de pontos na hélice (mais densa), na antélice e na concha (rala). Sem normal: a orelha é
-  // fina e se vê das duas faces, então o filtro de luz trata ela como meio-tom fixo
+  // fina e se vê das duas faces, então todos os pontos dela aparecem
   for (const sg of [-1, 1]) {
     const faixa = (qtd, r0, dr, ta, tb, b, cor) => {
       for (let i = 0; i < qtd * densidade; i++) {
@@ -380,9 +404,9 @@ function gerarBusto(densidade) {
         put(x + sg * gauss() * 1.2, y, z, 0, 0, 0, b * (0.8 + 0.4 * rnd()), 0.45 + 0.15 * rnd(), cor());
       }
     };
-    faixa(20000, 0.95, 0.04, -0.7 * Math.PI, 0.75 * Math.PI, 1.0, () => (rnd() < 0.45 ? WHITE : CYAN));   // hélice
-    faixa(2500, 0.6, 0.03, -0.25 * Math.PI, 0.65 * Math.PI, 0.9, () => CYAN);                           // antélice
-    faixa(1500, 0.45, 0.25, -Math.PI, Math.PI, 0.6, () => (rnd() < 0.6 ? DEEP : BLUE));                  // concha
+    faixa(2500, 0.95, 0.05, -0.7 * Math.PI, 0.75 * Math.PI, 0.6, () => (rnd() < 0.25 ? WHITE : CYAN));   // hélice
+    faixa(500, 0.6, 0.03, -0.25 * Math.PI, 0.65 * Math.PI, 0.8, () => CYAN);                           // antélice
+    faixa(400, 0.45, 0.25, -Math.PI, Math.PI, 0.6, () => (rnd() < 0.6 ? DEEP : BLUE));                  // concha
   }
   return { n, pos, col, inf, nor };
 }
@@ -455,30 +479,28 @@ const VS_COMUM = `
 const VS_BUSTO = VS_COMUM + `
   attribute vec3 aNor;
   void main() {
-    // pontilhismo: a luz do lugar vira densidade. Cada ponto tem um limiar próprio (tirado da semente) e só
-    // aparece se a fração visível dali passar dele; os que aparecem têm quase o mesmo brilho. De frente fica
-    // ~2% dos pontos (separados, dá pra contar), no raspão e com luz de cima quase todos (a borda e o volume),
-    // o lado de trás quase some. A orelha não tem normal: meio-tom fixo.
-    float vis = 0.2, branco = 0.0, raspao = 1.0, frente = 1.0;
+    // pontilhismo: cada ponto tem um limiar próprio (tirado da semente) e só aparece se a fração visível
+    // dali passar dele; os que aparecem têm quase o mesmo brilho. A fração muda pouco com a luz (de frente
+    // ~12%, de raspão ~23%): o busto fica cheio de pontos e o contorno sai do acúmulo deles, não de uma
+    // linha clara. Pontos sem normal (o miolo e a orelha) aparecem sempre.
+    float vis = 1.0, raspao = 1.0, frente = 1.0;
     if (dot(aNor, aNor) > 0.25) {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       vec3 nv = normalize(normalMatrix * aNor);
       float fd = dot(nv, normalize(-mv.xyz));
-      float luz = mix(2.0, 0.22, pow(abs(fd), 0.55));   // luz de recorte: só o raspão acende de verdade
+      float luz = mix(2.0, 0.22, pow(abs(fd), 0.55));   // luz de recorte
       luz *= 0.85 + 0.45 * max(0.0, nv.y);            // luz de cima: alto da cabeça, testa e topo dos ombros
       if (fd < 0.0) luz *= 0.12;
       frente = step(0.0, fd);
       float l = clamp(luz / 2.0, 0.0, 1.0);
-      // bem de raspão a superfície se empilha em poucos px (de perfil, o topo do ombro inteiro): menos pontos
-      // ali, e menos ainda atrás do centro da cabeça, senão estoura em branco
-      vis = pow(l, 1.7) * mix(0.3, 1.0, smoothstep(0.0, 0.25, abs(fd))) * mix(0.35, 1.0, smoothstep(-2.3, 2.1, mv.z - uC));
+      // bem de raspão a superfície se empilha em poucos px: menos pontos ali, e menos atrás do centro
+      vis = (0.11 + 0.12 * l) * mix(0.3, 1.0, smoothstep(0.0, 0.25, abs(fd))) * mix(0.35, 1.0, smoothstep(-2.3, 2.1, mv.z - uC));
       float ouroG = step(0.9, color.r) * step(color.b, 0.3) * step(0.0, fd);
-      vis = mix(vis, max(vis, 0.3), ouroG);           // o dourado é luz própria do rosto: não some de frente
-      branco = smoothstep(0.5, 0.05, fd) * step(0.0, fd) * (1.0 - ouroG) * 0.35;  // a borda da foto é quase branca
-      raspao = mix(0.35, 1.0, smoothstep(0.0, 0.5, abs(fd)));   // bem de raspão os pontos se empilham: cada um brilha menos
+      vis = mix(vis, max(vis, 0.3), ouroG);           // o dourado é luz própria do rosto
+      raspao = mix(0.35, 1.0, smoothstep(0.0, 0.5, abs(fd)));   // de raspão cada ponto brilha menos
     }
     vis = mix(vis, 0.25 + 0.75 * vis, step(0.75, INF.z) * frente);   // contas e marcas (pontos maiores) aparecem mais, só do lado de cá
-    fimDoPonto(position, INF.y, INF.x * (0.7 + 0.5 * vis) * raspao, mix(color, vec3(0.72, 0.9, 1.0), branco));
+    fimDoPonto(position, INF.y, INF.x * (0.7 + 0.5 * vis) * raspao, color);
     if (fract(INF.y * 91.7) > vis) esconder();
   }`;
 const VS_BRACOS = VS_COMUM + `
@@ -593,7 +615,7 @@ export function montar(el, { densidade = 1 } = {}) {
 
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.18, 0.05, 0.4);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.12, 0.05, 0.45);
   composer.addPass(bloom);
   const ajustar = () => {
     const w = Math.max(1, el.clientWidth), h = Math.max(1, el.clientHeight);

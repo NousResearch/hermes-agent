@@ -393,7 +393,7 @@ def resolve_startup_model_route(
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
                   for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
@@ -410,7 +410,15 @@ def resolve_startup_model_route(
     # A selected named endpoint may require its own vendor/model spelling. Do not
     # reinterpret that vendor as a registry route and lose both the custom identity
     # and the model prefix (#123997). Explicit aliases/colon routes above still win.
-    if not prefix.lower().startswith("custom:") and _clean(current_provider).lower() == custom_provider_slug(prefix):
+    current = _clean(current_provider).lower()
+    selected_aliases = set()
+    for key, entry in (user_providers or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        display = str(entry.get("name") or key)
+        if current == custom_provider_slug(display, str(key)):
+            selected_aliases.update(custom_provider_aliases(display, str(key)))
+    if prefix.lower() in selected_aliases or current == custom_provider_slug(prefix):
         return StartupModelRoute(model=raw, provider=_clean(current_provider))
 
     if current_provider:

@@ -99,6 +99,20 @@ def test_aggregator_probe_failure_does_not_lose_selected_custom(custom_config, m
     ) == StartupModelRoute("nvidia/fixture-model", "custom:nvidia")
 
 
+def test_selected_custom_provider_accepts_its_display_name_alias():
+    providers = {
+        "endpoint-key": {
+            "name": "vendor-alias",
+            "base_url": "https://custom.example.invalid/v1",
+        }
+    }
+    assert resolve_startup_model_route(
+        "vendor-alias/fixture-model",
+        current_provider="custom:endpoint-key",
+        user_providers=providers,
+    ) == StartupModelRoute("vendor-alias/fixture-model", "custom:endpoint-key")
+
+
 def test_foreign_configured_slash_route_still_switches(custom_config):
     assert resolve_startup_model_route(
         "nvidia/fixture-model", current_provider="custom:other",

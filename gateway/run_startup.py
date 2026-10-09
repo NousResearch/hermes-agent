@@ -1730,11 +1730,18 @@ class GatewayStartupMixin:
         disabled once its credential is removed), and the route — not the primary's home — is its
         delivery grant, so it is matched by exact platform+profile and must name a concrete chat. A
         route with no destination (a catch-all such as ``telegram-fallback``) never qualifies, so the
-        first entry is never assumed to be the home. Returns ``None`` when no such route exists; the
-        caller then keeps its fail-closed home resolution."""
+        first entry is never assumed to be the home.
+
+        Routes arrive most-specific-first, so a guild-scoped route (``guild_id`` + ``chat_id``) sorts
+        ahead of a plain DM one. A handoff carries no guild context to authorise a guild-scoped route,
+        so a context-free route (no ``guild_id``) is preferred when both exist; a guild-scoped route
+        is used only when it is the sole destination (e.g. Discord, where a channel route always
+        carries a guild). Returns ``None`` when no such route exists; the caller then keeps its
+        fail-closed home resolution."""
         if not profile_name:
             return None
         platform_value = getattr(platform, "value", str(platform))
+        candidates = []
         for route in (getattr(self.config, "profile_routes", None) or []):
             if not getattr(route, "enabled", True):
                 continue
@@ -1742,15 +1749,20 @@ class GatewayStartupMixin:
                 continue
             if str(getattr(route, "platform", "")).lower() != platform_value:
                 continue
-            chat_id = getattr(route, "chat_id", None) or getattr(route, "user_id", None)
-            if not chat_id:
+            if not (getattr(route, "chat_id", None) or getattr(route, "user_id", None)):
                 continue
-            return HomeChannel(
-                platform=platform, chat_id=str(chat_id),
-                name=getattr(route, "name", None) or "Home",
-                thread_id=str(route.thread_id) if getattr(route, "thread_id", None) else None,
-            )
-        return None
+            candidates.append(route)
+        if not candidates:
+            return None
+        route = next(
+            (r for r in candidates if not getattr(r, "guild_id", None)), candidates[0],
+        )
+        chat_id = getattr(route, "chat_id", None) or getattr(route, "user_id", None)
+        return HomeChannel(
+            platform=platform, chat_id=str(chat_id),
+            name=getattr(route, "name", None) or "Home",
+            thread_id=str(route.thread_id) if getattr(route, "thread_id", None) else None,
+        )
 
     async def _handoff_resolve_destination(
         self, row: dict[str, Any], profile_name: Optional[str]

@@ -390,3 +390,61 @@ async def test_secondary_profile_keeps_its_own_home_with_real_resolver(monkeypat
         assert captured["session_key"].startswith("agent:medicina:")
     finally:
         reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_satellite_route_picker_prefers_a_guild_free_route(monkeypatch, tmp_path):
+    """Routes arrive most-specific-first, so a guild route sorts ahead of a DM one — but a handoff
+    carries no guild context, so the context-free route must win."""
+    sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, _ = _satellite_runner(monkeypatch)
+        runner.config.profile_routes = [
+            # guild-scoped (guild_id + chat_id) sorts ahead of the plain DM route
+            ProfileRoute(name="butler-guild", platform="telegram", profile="butler",
+                         guild_id="g123", chat_id="999", bot_profile=None),
+            ProfileRoute(name="butler-dm", platform="telegram", profile="butler",
+                         chat_id="6719571041", bot_profile=None),
+        ]
+        runner._profile_failed_platforms = {}
+        primary = runner.adapters[Platform.TELEGRAM]
+
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name="butler",
+        )
+
+        assert primary.create_handoff_thread.await_args.args[0] == "6719571041", (
+            "a context-free (DM) route must win over a guild-scoped one the handoff cannot validate"
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.asyncio
+async def test_satellite_route_picker_falls_back_to_a_guild_route(monkeypatch, tmp_path):
+    """When a guild-scoped route is the ONLY destination (e.g. a Discord channel), it is used."""
+    sat_home = _write_satellite_home(tmp_path, {"telegram": {"enabled": True}})
+
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        runner, _ = _satellite_runner(monkeypatch)
+        runner.config.profile_routes = [
+            ProfileRoute(name="butler-guild", platform="telegram", profile="butler",
+                         guild_id="g123", chat_id="999", bot_profile=None),
+        ]
+        runner._profile_failed_platforms = {}
+        primary = runner.adapters[Platform.TELEGRAM]
+
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name="butler",
+        )
+
+        assert primary.create_handoff_thread.await_args.args[0] == "999", (
+            "a guild-scoped route is the destination when it is the only one"
+        )
+    finally:
+        reset_hermes_home_override(token)

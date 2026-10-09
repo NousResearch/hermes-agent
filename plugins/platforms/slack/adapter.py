@@ -61,6 +61,10 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+try:
+    from .adapter_slash import _rewrite_known_bang_command
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_slash import _rewrite_known_bang_command  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -398,33 +402,6 @@ def _slack_mention_detection_text(event: dict) -> str:
     blocks = event.get("blocks")
     extra = [m for m in _collect_slack_block_mentions(blocks) if m not in flat] if blocks else []
     return (flat.strip() + "\n" + " ".join(extra)).strip() if extra else flat
-
-
-def _rewrite_known_bang_command(text: str, prefix: str = "") -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form.
-
-    Mirrors the native-slash surface: with a namespace prefix configured
-    (e.g. ``myorg-``), bang commands carry the same prefix (``!myorg-stop``)
-    and it is stripped before dispatch. Unprefixed bangs stay plain text so
-    two namespaced apps sharing a channel do not both execute ``!stop``.
-    """
-    if not text.startswith("!"):
-        return text
-    try:
-        from hermes_cli.commands import is_gateway_known_command
-        first_token = text[1:].split(maxsplit=1)[0]
-        cmd_name = first_token.split("@", 1)[0].lower()
-        rest = text[1:]
-        if prefix:
-            if not cmd_name.startswith(prefix):
-                return text
-            cmd_name = cmd_name[len(prefix) :]
-            rest = rest[len(prefix) :]
-        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-            return "/" + rest
-    except Exception:  # pragma: no cover - defensive
-        pass
-    return text
 
 
 def _slack_permalink_path(channel_id: str | None, message_ts: str | None) -> str:
@@ -6091,9 +6068,6 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slash_command(self, command: dict) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or
         ``/hermes <subcommand> [args]``; other text after ``/hermes`` is a regular message."""
-        slash_name = (command.get("command") or "").lstrip("/").strip()
-        raw_text = str(command.get("text") or "")
-        text = raw_text
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")

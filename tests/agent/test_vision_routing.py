@@ -280,3 +280,116 @@ model:
             assert vision_tools.check_video_requirements() is False  # no aux client resolves
             assert vision_tools.check_vision_requirements() is True
             assert bt_install.check_browser_vision_requirements() is True
+
+
+class TestVisionFallbackDropsDeadProviderModel:
+    """#94780: when the configured auxiliary.vision provider cannot be
+    resolved and call_llm falls back to the auto chain, the failed
+    provider's model must NOT travel with it. The bare slug reaches the
+    main provider's endpoint, which rejects the format and masks the dead
+    provider behind a cryptic 400. Mirrors the non-vision auto fallback,
+    which already passes no model for exactly this reason."""
+
+    def _run_call_llm(self, isolated_home, monkeypatch):
+        from unittest.mock import patch
+
+        import agent.auxiliary_client as ac
+
+        _write_config(isolated_home, """
+model:
+  provider: openrouter
+  default: anthropic/claude-sonnet-4
+auxiliary:
+  vision:
+    provider: opencode-go
+    model: kimi-k3
+""")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        captured = {"auto_models": []}
+
+        class _FakeClient:
+            base_url = "https://openrouter.ai/api/v1"
+
+        def fake_resolve(provider=None, model=None, *, base_url=None,
+                         api_key=None, async_mode=False, main_runtime=None):
+            if provider == "opencode-go":
+                return "opencode-go", None, None
+            if provider == "auto":
+                captured["auto_models"].append(model)
+                return "openrouter", _FakeClient(), "anthropic/claude-sonnet-4"
+            return provider, _FakeClient(), model
+
+        with patch.object(ac, "resolve_vision_provider_client", side_effect=fake_resolve), \
+             patch.object(ac, "_set_relay_auxiliary_route"), \
+             patch.object(ac, "_build_call_kwargs", return_value={"model": "x", "messages": []}), \
+             patch.object(ac, "_relay_sync_completion", return_value={"ok": True}), \
+             patch.object(ac, "_validate_llm_response", return_value={"ok": True}):
+            ac._call_llm_impl(
+                "vision",
+                messages=[{"role": "user", "content": [{"type": "image_url"}]}],
+            )
+        return captured
+
+    def test_auto_fallback_carries_no_model(self, isolated_home, monkeypatch):
+        captured = self._run_call_llm(isolated_home, monkeypatch)
+        assert captured["auto_models"], "auto fallback must fire"
+        assert all(m is None for m in captured["auto_models"]), (
+            "the dead provider's model must not be forwarded into the auto chain"
+        )
+
+    def _run_async_call_llm(self, isolated_home, monkeypatch):
+        import asyncio
+
+        from unittest.mock import patch
+
+        import agent.auxiliary_client as ac
+
+        _write_config(isolated_home, """
+model:
+  provider: openrouter
+  default: anthropic/claude-sonnet-4
+auxiliary:
+  vision:
+    provider: opencode-go
+    model: kimi-k3
+""")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        captured = {"auto_models": []}
+
+        class _FakeClient:
+            base_url = "https://openrouter.ai/api/v1"
+
+        def fake_resolve(provider=None, model=None, *, base_url=None,
+                         api_key=None, async_mode=False, main_runtime=None):
+            if provider == "opencode-go":
+                return "opencode-go", None, None
+            if provider == "auto":
+                captured["auto_models"].append(model)
+                return "openrouter", _FakeClient(), "anthropic/claude-sonnet-4"
+            return provider, _FakeClient(), model
+
+        async def fake_relay(*a, **k):
+            return {"ok": True}
+
+        with patch.object(ac, "resolve_vision_provider_client", side_effect=fake_resolve), \
+             patch.object(ac, "_set_relay_auxiliary_route"), \
+             patch.object(ac, "_build_call_kwargs", return_value={"model": "x", "messages": []}), \
+             patch.object(ac, "_relay_async_completion", side_effect=fake_relay), \
+             patch.object(ac, "_validate_llm_response", return_value={"ok": True}):
+            asyncio.run(ac._async_call_llm_impl(
+                "vision",
+                messages=[{"role": "user", "content": [{"type": "image_url"}]}],
+            ))
+        return captured
+
+    def test_async_auto_fallback_carries_no_model(self, isolated_home, monkeypatch):
+        # The async twin reaches the same shared _resolve_call_client with
+        # async_mode=True; a regression there would not be caught by the
+        # sync test above.
+        captured = self._run_async_call_llm(isolated_home, monkeypatch)
+        assert captured["auto_models"], "async auto fallback must fire"
+        assert all(m is None for m in captured["auto_models"]), (
+            "the dead provider's model must not be forwarded into the async auto chain"
+        )

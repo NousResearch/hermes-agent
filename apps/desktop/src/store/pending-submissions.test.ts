@@ -1,5 +1,8 @@
-import { beforeEach, expect, it } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 
+import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
+import { handleSessionInfoEvent } from '@/app/session/hooks/use-message-stream/gateway-event/session-info'
+import type { GatewayEventContext } from '@/app/session/hooks/use-message-stream/gateway-event/types'
 import { applyRuntimeInfo } from '@/app/session/hooks/use-session-actions/utils'
 import { isSteerableEntry } from '@/store/composer-queue'
 
@@ -92,4 +95,39 @@ it('never lets a stale queue snapshot repaint an admission already seen started 
   reconcilePendingSubmissions('mono', [{ admission_id: 'b', status: 'started', user: 'lost' }])
   reconcilePendingSubmissions('mono', [{ admission_id: 'b', status: 'unknown', user: 'lost' }])
   expect(getQueuedPrompts('mono').map(entry => [entry.id, entry.serverStatus])).toEqual([['b', 'unknown']])
+})
+
+it('a delayed older empty snapshot never retires a receipt a newer frame still lists; a current one does', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const queued = { admission_id: 'q', input_id: 'in-q', status: 'queued', text: 'still waiting', sequence: 1 }
+
+  // The owner's resume answer, through the production snapshot projection.
+  const snapshot = (lastSequence: number, pending: unknown[]) => applyRuntimeInfo(protocol.result('session.resume', { session_id: 'fenced' },
+    { session_id: 'fenced', stored_session_id: 'fenced', revision: 1, execution_generation: 1, replay_epoch: 'e1', last_sequence: lastSequence, pending, info: {} }).info,
+  { foreground: false })
+
+  // The live pending fanout at seq 10, through the canonical normalizer and the session.info handler.
+  const live = { type: 'session.info', session_id: 'fenced', seq: 10, replay_epoch: 'e1', profile: 'default',
+    payload: { stored_session_id: 'fenced', pending: [queued], revision: 1 } as Record<string, unknown> }
+
+  protocol.event(live)
+  handleSessionInfoEvent({
+    deps: { activeGatewayProfile: 'default', activeSessionIdRef: { current: null }, hydrateFromStoredSession: vi.fn(),
+      lastCwdInfoSessionRef: { current: null }, queryClient: { invalidateQueries: vi.fn() }, refreshHermesConfig: vi.fn(),
+      scheduleSessionsRefresh: vi.fn(), sessionInterrupted: () => false, sessionStateByRuntimeIdRef: { current: new Map() },
+      updateSessionState: vi.fn(state => state), upsertToolCall: vi.fn() },
+    event: live, explicitSid: 'fenced', fromActiveSource: () => true, isActiveEvent: false, occurredAt: Date.now() / 1000,
+    payload: live.payload, scheduleConfigRefresh: vi.fn(), sessionId: 'fenced'
+  } as unknown as GatewayEventContext)
+  expect(getQueuedPrompts('fenced').map(entry => [entry.id, entry.serverStatus])).toEqual([['q', 'queued']])
+
+  // A resume answer read at seq 7 arrives late and lists nothing: it predates the queued frame.
+  snapshot(7, [])
+  expect(readPendingSubmissions('fenced').q?.status).toBe('queued')
+  expect(getQueuedPrompts('fenced').map(entry => [entry.id, entry.serverStatus])).toEqual([['q', 'queued']])
+
+  // A current snapshot (seq 12) without it is the authority's word: the receipt retires.
+  snapshot(12, [])
+  expect(readPendingSubmissions('fenced').q?.status).toBe('retired')
+  expect(getQueuedPrompts('fenced')).toEqual([])
 })

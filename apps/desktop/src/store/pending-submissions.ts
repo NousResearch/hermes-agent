@@ -12,6 +12,16 @@ interface PendingSubmission {
   text: string
   displayText?: string
   status?: string
+  /** Where in the session's event order the owner last listed this admission as pending. */
+  seen?: PendingSnapshotFence
+}
+
+/** A canonical pending snapshot's place in its session's event order: the replay epoch and the
+ *  event sequence it reflects (a live `session.info` frame's own seq, or a resume snapshot's
+ *  `last_sequence`, both read under the owner's event-stream lock). */
+export interface PendingSnapshotFence {
+  epoch: string
+  sequence: number
 }
 
 const entryKey = (session: string, id: string) => `${ENTRY_PREFIX}${JSON.stringify([session, id])}`
@@ -108,10 +118,19 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
   return { receipts, admissionByInput }
 }
 
+// Only a snapshot at least as new as the one that last listed an admission proves it left the
+// pending set. An OLDER snapshot of the same numbering (a delayed resume answer, a replayed frame)
+// predates it; its absence there says nothing. A different epoch is a later numbering (owner
+// restart, evicted ring): sequences cannot be compared, and the current owner is authoritative.
+// An unfenced snapshot (legacy shape) keeps the previous absence rule.
+const predates = (fence: PendingSnapshotFence | undefined, seen: PendingSnapshotFence | undefined) =>
+  Boolean(fence && seen && fence.epoch === seen.epoch && fence.sequence < seen.sequence)
+
 function projectQueue(
   current: QueuedPromptEntry[],
   receipts: Map<string, PendingSubmission>,
-  admissionByInput: Map<string, string>
+  admissionByInput: Map<string, string>,
+  stillPending: Set<string>
 ): QueuedPromptEntry[] {
   const next: QueuedPromptEntry[] = []
 
@@ -124,7 +143,7 @@ function projectQueue(
       }
 
       receipts.delete(receipt.id)
-    } else if (!entry.serverStatus) {
+    } else if (!entry.serverStatus || stillPending.has(entry.id)) {
       next.push(entry)
     }
   }
@@ -145,11 +164,12 @@ function projectQueue(
   return next
 }
 
-function updateKnownReceipts(known: Record<string, PendingSubmission>, value: RawReceipts): void {
+function updateKnownReceipts(known: Record<string, PendingSubmission>, value: RawReceipts, fence?: PendingSnapshotFence): void {
   // Only observed server records may be retired by their later absence. The retirement is kept
   // (text dropped) so a stale snapshot that still lists the admission cannot resurrect its card.
   for (const [id, entry] of Object.entries(known)) {
-    if (entry.status && entry.status !== 'retired' && !value.some(raw => raw?.admission_id === id)) {
+    if (entry.status && entry.status !== 'retired' && !value.some(raw => raw?.admission_id === id) &&
+        !predates(fence, entry.seen)) {
       known[id] = { id, text: '', status: 'retired' }
     }
   }
@@ -162,17 +182,22 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
 
   for (const raw of value) {
     if (typeof raw?.admission_id === 'string' && !isStale(raw, known)) {
+      const previous = known[raw.admission_id]
+
       known[raw.admission_id] = {
-        ...known[raw.admission_id],
+        ...previous,
         id: raw.admission_id,
-        text: raw.user ?? known[raw.admission_id]?.text ?? '',
-        status: raw.status
+        text: raw.user ?? previous?.text ?? '',
+        status: raw.status,
+        ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
     }
   }
 }
 
-export function reconcilePendingSubmissions(key: string, value: unknown): void {
+/** Project one pending snapshot onto the session's queue. `fence` orders canonical snapshots so a
+ *  delayed older one cannot retire an admission a newer one still listed. */
+export function reconcilePendingSubmissions(key: string, value: unknown, fence?: PendingSnapshotFence): void {
   if (!Array.isArray(value)) {
     return
   }
@@ -181,13 +206,24 @@ export function reconcilePendingSubmissions(key: string, value: unknown): void {
   const known = { ...before }
   const { receipts, admissionByInput } = collectReceipts(value, known)
 
-  const current = getQueuedPrompts(key)
-  const next = projectQueue(current, receipts, admissionByInput)
+  const stillPending = new Set(Object.values(known).filter(entry =>
+    entry.status && entry.status !== 'retired' && predates(fence, entry.seen) &&
+    !value.some(raw => raw?.admission_id === entry.id)).map(entry => entry.id))
 
-  updateKnownReceipts(known, value)
+  const current = getQueuedPrompts(key)
+  const next = projectQueue(current, receipts, admissionByInput, stillPending)
+
+  updateKnownReceipts(known, value, fence)
   writeEntries(key, before, known)
 
   if (JSON.stringify(current) !== JSON.stringify(next)) {
     writeSessionQueue(key, next)
   }
+}
+
+/** The fence of a canonical frame or snapshot, when it carries a usable one. */
+export function pendingSnapshotFence(epoch: unknown, sequence: unknown): PendingSnapshotFence | undefined {
+  return typeof epoch === 'string' && epoch && typeof sequence === 'number' && Number.isFinite(sequence)
+    ? { epoch, sequence }
+    : undefined
 }

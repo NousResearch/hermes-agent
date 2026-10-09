@@ -500,8 +500,8 @@ database and the count is not reported.
 <!-- ---- iuf c1 ---- -->
 #### Install and update failure reasons
 
-Since package schema v4 (extended in place while v4 was canary-only), two existing metrics say why
-they failed. Rows recorded before the change keep their old field set and still package.
+Since package schema v4 (extended in place; additive only, so every shape already sent stays valid),
+two existing metrics say why they failed. Rows recorded before the change keep their old field set and still package.
 
 | Metric | Dimensions added | Question it answers |
 |---|---|---|
@@ -537,7 +537,7 @@ locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
 Package schemas v1, v2 and v3 remain unchanged for existing outbox files. New
 packages use v4, which adds `failure_class` to `hermes.compression.count` and
-`hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place,
+`hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place with additive values only, also after v4 shipped in a stable release,
 `failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
 former, still accepting their earlier v4 field sets), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task

@@ -72,33 +72,33 @@ Categories: `home`, `work`, `gym`, `cafe`, `outdoors`, `general`.
 
 Save a place only when the user asks, using the coordinates from the latest script output.
 
-Asynchronous dispatches and threads (memos synchronized privately via iCloud):
+Hermes Post / Inbox (asynchronous letters and memos synchronized privately via iCloud):
 
 ```bash
-# List all threads or filter those awaiting agent response
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads --pending
+# Check inbox for letters or filter those awaiting agent response
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --pending
 
-# Read full chronological messages in a thread
+# Read full chronological letters in a thread
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --thread <thread_id>
 
-# Post an agent reply to a thread
+# Post an agent reply letter to a thread
 python3 ${HERMES_SKILL_DIR}/scripts/companion.py --reply <thread_id> --message "..."
 
-# Create a new dispatch thread
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --subject "..." --message "..."
+# Create a new post/letter from the agent
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --subject "..." --message "..."
 ```
 
 ### Multi-Profile Agent Registration
 
-When Hermes runs with multiple profiles (e.g., `work`, `personal`), each profile automatically registers into `Documents/profiles.json` upon running any companion command. The iOS client reads `profiles.json` so the user can select which profile to address before sending a dispatch.
+When Hermes runs with multiple profiles (e.g., `work`, `personal`), each profile automatically registers into `Documents/profiles.json` upon running any companion command. The iOS client reads `profiles.json` so the user can select which profile to address before sending a letter.
 
 ```bash
-# Run under a specific profile and filter threads for it
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --threads --profile work --pending
+# Run under a specific profile and filter letters for it
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --profile work --pending
 
-# Create a thread addressed to a specific agent profile
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --to-profile work --subject "..." --message "..."
+# Create a letter addressed to a specific agent profile
+python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --to-profile work --subject "..." --message "..."
 ```
 
 ## Quick Reference
@@ -111,7 +111,7 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-thread --to-profile work 
 | How long in this place? | `companion.py` | `dwell_time`, `arrived_at`, `minutes_since_last_move` |
 | Sleep, workout, recovery | `companion.py --health` | `sleep_duration`, `sleep_quality`, `workout_type`, `recovery_status` |
 | Both | `companion.py --context` | the two blocks together |
-| Check dispatches | `companion.py --threads --pending` | `thread_count`, `thread_id`, `subject`, `status` |
+| Check Hermes Post / Inbox | `companion.py --inbox --pending` | `thread_count`, `thread_id`, `subject`, `status` |
 | Read/reply to thread | `companion.py --thread ID` / `--reply ID` | chronological messages, `body`, `updated_at` |
 
 `movement_reason` is why the phone accepted the last write: `moved`, `distance`, or `no_motion_reading`. `absent` means an older file from before that field existed.

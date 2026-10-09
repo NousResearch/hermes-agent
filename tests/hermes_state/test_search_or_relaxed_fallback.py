@@ -87,3 +87,28 @@ def test_relaxation_does_not_fire_for_exact_semantics_or_absent_terms(db, monkey
     monkeypatch.setattr(SessionDB, "_or_relaxed_query", staticmethod(lambda q: calls.append(q)))
     assert db.search_messages("站会 周五") == []
     assert calls == []
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("red or blue", "red OR blue"),
+    ("red not blue", "red OR blue"),
+    ("red and blue", "red OR blue"),
+    ("red OR blue", None),
+    ("red NOT blue", None),
+])
+def test_lowercase_or_not_are_plain_words_for_relaxation(query, expected):
+    """FTS5 operators are upper-case only: lower-case "or"/"not" are ordinary (filler) words and
+    must not disable the relaxed retry, while upper-case OR/NOT keep exact semantics (#135756)."""
+    assert SessionDB._or_relaxed_query(query) == expected
+
+
+@pytest.mark.parametrize("query", ["should I pick red or blue", "is it red not blue"])
+def test_natural_query_with_lowercase_or_not_recovers_via_or_retry(tmp_path, query):
+    d = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        d.create_session(session_id="s1", source="cli", model="m")
+        d.append_message("s1", role="user", content="I want to pick a color for the bike, maybe red.")
+        rows = d.search_messages(query)
+        assert rows and "red" in rows[0]["snippet"].lower()
+    finally:
+        d.close()

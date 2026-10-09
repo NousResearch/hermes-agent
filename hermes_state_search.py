@@ -881,10 +881,9 @@ class SessionSearchMixin:
         whole units: ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
         units: list[str] = []
         for raw_token in _LIKE_TOKEN_RE.findall(query):
-            upper = raw_token.upper()
-            if upper in {"OR", "NOT"}:
+            if raw_token in {"OR", "NOT"}:  # FTS5 operators are upper-case only
                 return None
-            if upper != "AND":
+            if raw_token.upper() not in _FTS_OPERATORS:  # lower-case and/or/not are filler words
                 units.append(raw_token)
         return " OR ".join(units) if len(units) >= 2 else None
 

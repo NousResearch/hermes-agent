@@ -13,6 +13,7 @@ export {
 } from './model'
 export { ProjectBackRow, ProjectOverviewRow } from './overview-row'
 export { ProjectMenu } from './project-menu'
+export { useProjectRowData } from './row-data'
 export { useGatewayProjectTree } from './use-gateway-project-tree'
 export { SidebarWorkspaceGroup } from './workspace-group'
 export {

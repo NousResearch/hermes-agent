@@ -105,6 +105,24 @@ describe('ProjectOverviewRow', () => {
     projectsStore.projectProfile.mockReset().mockReturnValue('default')
   })
 
+  // The indent follows the row's depth: the overview passes the real one, so a subproject of a
+  // subproject lands one step further in than its parent. A row rendered on its own (no depth) still
+  // indents for its `parentId`, so the nesting can never silently go flat again.
+  it('indents by depth, falling back to the parentId when no depth is passed', () => {
+    const { container } = render(
+      <>
+        <ProjectOverviewRow depth={2} project={{ ...project, id: 'p_deep' } as SidebarProjectTree} />
+        <ProjectOverviewRow project={{ ...project, id: 'p_nested', parentId: 'p_dev' } as SidebarProjectTree} />
+      </>
+    )
+
+    const indent = (id: string) =>
+      container.querySelector<HTMLElement>(`[data-sessions-project="${id}"]`)?.style.paddingLeft
+
+    expect(indent('p_deep')).toBe('1rem')
+    expect(indent('p_nested')).toBe('0.5rem')
+  })
+
   it('does not render the disclosure toggle when there is nothing to preview', () => {
     render(<ProjectOverviewRow project={project} />)
 

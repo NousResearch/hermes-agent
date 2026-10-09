@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- one new DEFAULT_CONFIG key (+ its user-facing docs) for gateway.windows_task_reconcile (#127977); this pure-data table is the canonical single home for config keys, and splitting the 3.2k-line defaults table is out of scope for this fix
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

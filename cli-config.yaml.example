@@ -1354,6 +1354,14 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Windows only: set to false when the gateway Scheduled Task is deliberately
+  # registered in your own shape (boot trigger, service-account principal,
+  # non-template launcher). Automatic start/update reconciliation then leaves
+  # the registration alone and `hermes gateway status` prints a neutral note
+  # instead of the repair hint. An explicit `hermes gateway install` still
+  # rewrites the task on demand.
+  # windows_task_reconcile: true
+
 # =============================================================================
 # Toolsets
 # =============================================================================

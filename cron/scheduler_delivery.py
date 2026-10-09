@@ -577,22 +577,8 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
-def _origin_thread_is_stale(origin: dict) -> bool:
-    """True when a Slack origin's thread is a stale creation-turn artifact. Thread-per-message
-    Slack stamps each top-level message id as the session thread (a KEY, not a location); old jobs
-    carry it as ``origin.thread_id``. Heuristic: if the origin chat IS the Slack home chat, the
-    pinned thread is that artifact and delivery goes top-level (or to the home target's thread)."""
-    if str(origin.get("platform") or "").lower() != "slack" or not origin.get("thread_id"):
-        return False
-    home_chat = _get_home_target_chat_id("slack")
-    return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)
-
-
-def _origin_delivery_thread(origin: dict):
-    """The thread a deliver=origin job should use, stale stamps dropped."""
-    if _origin_thread_is_stale(origin):
-        return _get_home_target_thread_id("slack") or None
-    return origin.get("thread_id")
+# ``_origin_thread_is_stale`` / ``origin_delivery_thread`` live in scheduler_delivery_origin.py
+# (FILE_LINES cap); the bottom-of-file ``_origin`` import re-exports them for these call sites.
 
 
 def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] = None) -> dict:
@@ -625,12 +611,18 @@ def _resolve_single_delivery_target(
 
     if deliver_value == "origin":
         if origin:
-            return {
+            target = {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
-                "thread_id": _origin_delivery_thread(origin),
+                "thread_id": _origin.origin_delivery_thread(origin),
                 "_resolved_from": "origin",  # provenance for _target_mirror_eligible
             }
+            # Thread sessions carry their parent channel: a parent-channel route must
+            # authorize this target exactly like an explicit parent:thread address (#135667).
+            parent = origin.get("parent_chat_id")
+            if parent:
+                target["parent_chat_id"] = str(parent)
+            return target
         # No origin (API/script job): fall back to a home channel instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
@@ -661,7 +653,7 @@ def _resolve_single_delivery_target(
             and str(origin.get("platform") or "").lower() == platform_key
             and str(origin.get("chat_id")) == str(chat_id)
             and origin.get("thread_id")
-            and not _origin_thread_is_stale(origin)
+            and not _origin._origin_thread_is_stale(origin)
         ):
             thread_id = origin.get("thread_id")
         return {

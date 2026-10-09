@@ -1554,7 +1554,7 @@ def command_threads(args: argparse.Namespace) -> int:
     print(f"thread_count: {len(threads)}")
     print("threads:")
     for t in threads:
-        status_label = "Awaiting Agent" if t.get("status") == "pending_agent" else str(t.get("status", "unknown"))
+        status_label = "Awaiting" if t.get("status") == "pending_agent" else str(t.get("status", "unknown"))
         count = t.get("message_count", 0)
         memo_str = "1 memo" if count == 1 else f"{count} memos"
         target_prof = t.get("target_profile", "default")

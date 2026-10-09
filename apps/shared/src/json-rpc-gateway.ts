@@ -122,6 +122,19 @@ interface SessionReplay {
   resolve: (valid: boolean) => void
 }
 
+/**
+ * Most reconnect cursors one client keeps (least recently advanced retire first). Owners keep
+ * replay rings for at most 64 sessions (`tui_gateway/event_replay.py::_REPLAY_SESSIONS_MAX`), so a
+ * cursor idle behind this many busier sessions is almost never still servable. Retiring it says
+ * so the way the owner would: a `session.replay_gap`, after which a pane still showing that
+ * session re-snapshots (exactly what `snapshot_required` asks for); nothing is silently lost.
+ */
+export const REPLAY_CURSOR_MAX = 256
+
+/** The canonical owner's typed refusal for a session it no longer has. */
+const replaySessionGone = (error: unknown): boolean =>
+  (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'not_found'
+
 export class JsonRpcGatewayClient {
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
@@ -466,7 +479,26 @@ export class JsonRpcGatewayClient {
     const prev = this.lastSeenSeq.get(sid) ?? 0
 
     if (seq > prev) {
-      this.lastSeenSeq.set(sid, seq)
+      this.advanceCursor(sid, seq)
+    }
+  }
+
+  /** Move a session's cursor to `seq` as its most recent; retire the least recently advanced. */
+  private advanceCursor(sid: string, seq: number): void {
+    this.lastSeenSeq.delete(sid)
+    this.lastSeenSeq.set(sid, seq)
+
+    for (const oldest of this.lastSeenSeq.keys()) {
+      if (this.lastSeenSeq.size <= REPLAY_CURSOR_MAX) { break }
+
+      // A replay in flight still owns its cursor; it is retired by a later advance.
+      if (this.replayHold?.has(oldest)) { continue }
+
+      const latest = this.lastSeenSeq.get(oldest)
+      const epoch = this.replayEpochBySession.get(oldest)
+      this.lastSeenSeq.delete(oldest)
+      this.replayEpochBySession.delete(oldest)
+      this.dispatchEvent({ type: 'session.replay_gap', session_id: oldest, payload: { replay_epoch: epoch, latest_seq: latest } })
     }
   }
 
@@ -595,8 +627,15 @@ export class JsonRpcGatewayClient {
           this.dispatchIfNewer({ ...event, replayed: true })
         }
       }
-    } catch {
-      // Replay is an optimization over lossy-reconnect; never surface errors.
+    } catch (error) {
+      // Replay is an optimization over lossy-reconnect; never surface errors. But the owner's
+      // `not_found` is an answer, not a lost request: the session is gone (deleted, pruned),
+      // nothing will ever replay under that cursor, and keeping it re-asked on every reconnect
+      // while each session ever observed stayed in both maps for the client's lifetime.
+      if (this.replayGeneration === replayGeneration && replaySessionGone(error)) {
+        this.lastSeenSeq.delete(sid)
+        this.replayEpochBySession.delete(sid)
+      }
     } finally {
       if (this.replayGeneration === replayGeneration) {
         this.flushReplayHold(sid, replayGeneration)
@@ -653,7 +692,7 @@ export class JsonRpcGatewayClient {
       ...[result.latest_seq, ...seqs].filter((seq): seq is number => typeof seq === 'number' && Number.isFinite(seq))
     )
 
-    this.lastSeenSeq.set(sid, head)
+    this.advanceCursor(sid, head)
   }
 
   /**
@@ -674,7 +713,7 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      this.lastSeenSeq.set(sid, seq)
+      this.advanceCursor(sid, seq)
     }
 
     this.dispatchEvent(event)

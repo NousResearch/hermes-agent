@@ -1101,6 +1101,8 @@ def my_callback(session_id: str, **kwargs):
 
 **Fires:** Post-commit only, and only when the delete actually happened (unknown ids in a bulk delete are skipped silently). Return ignored; a failing callback is logged and skipped like every other observer. The payload carries no message content — only ids, the reason, and the directory.
 
+**Delivery scope:** Process-local — the callback runs only in the process that committed the delete. It is not a durable cross-process delivery channel, and it carries no exactly-once guarantee: external side effects driven from the callback should tolerate a missed or duplicated invocation.
+
 **Return value:** Ignored.
 
 **Use cases:** Delete a per-session sidecar database or cache directory, emit "session deleted" analytics, release per-session external resources.

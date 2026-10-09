@@ -1,11 +1,13 @@
 """Dispatch/lossless-wait extension exercised through the real public capture API."""
 import asyncio
+import concurrent.futures
 import json
 import threading
 import time
 import pytest
 from tests.tools.test_browser_supervisor_capture import _FakeCDP, _wait
 from tools.browser_supervisor import _SupervisorRegistry
+from tools.browser_supervisor_capture import CapturedCDPInvalid
 
 class DelayedCDP(_FakeCDP):
     async def _handle(self, ws):
@@ -57,17 +59,15 @@ def test_unbounded_reply_retains_late_attachment_for_consumer_cleanup(pair):
 
 def test_dispatch_deadline_refuses_queued_command_after_timeout(pair):
     server, registry, sup, handle = pair
-    entered, release = threading.Event(), threading.Event()
+    entered = threading.Event()
     def block():
+        # Stall the loop past the caller's deadline but inside its +1s result grace.
         entered.set()
-        release.wait(4)
+        time.sleep(.4)
     sup._loop.call_soon_threadsafe(block)
     assert entered.wait(1)
-    try:
-        with pytest.raises(TimeoutError):
-            handle.call('Probe.expired', timeout=.03)
-    finally:
-        release.set()
+    with pytest.raises(TimeoutError):
+        handle.call('Probe.expired', timeout=.1)
     handle.call('Target.getTargets', timeout=2)
     assert 'Probe.expired' not in server.methods_on(1)
 
@@ -114,5 +114,50 @@ def test_unbounded_reply_fails_promptly_on_socket_close(pair):
     server.drop_current()
     thread.join(3)
     assert not thread.is_alive()
-    assert failures
+    assert failures and isinstance(failures[0], CapturedCDPInvalid)
 
+
+
+def test_unbounded_wait_ends_when_loop_closes_with_dispatch_queued(pair, monkeypatch):
+    server, registry, sup, handle = pair
+    import agent.async_utils as async_utils
+    # A stop racing call() can close the loop before its queued dispatch runs; the
+    # scheduled future then never resolves.
+    real = async_utils.safe_schedule_threadsafe
+    def dropped(coro, loop, **kw):
+        if coro.__qualname__ != 'CapturedCDP._send':
+            return real(coro, loop, **kw)
+        coro.close()
+        return concurrent.futures.Future()
+    monkeypatch.setattr(async_utils, 'safe_schedule_threadsafe', dropped)
+    failures = []
+    def caller():
+        try:
+            handle.call('Probe.dropped', timeout=None)
+        except BaseException as exc:
+            failures.append(exc)
+    thread = threading.Thread(target=caller)
+    thread.start()
+    registry.stop_all()
+    thread.join(4)
+    assert not thread.is_alive()
+    assert failures and isinstance(failures[0], CapturedCDPInvalid)
+
+
+@pytest.mark.parametrize('timeout', [0, -1, float('inf'), float('nan'), 1e300, True, '5'])
+def test_invalid_timeout(pair, timeout):
+    server, _, _, cap = pair
+    before = list(server.methods_on(1))
+    with pytest.raises(ValueError):
+        cap.call('Probe.invalid', timeout=timeout)
+    assert server.methods_on(1) == before
+
+
+def test_async_validator_refuses(pair):
+    server, _, _, cap = pair
+    before = list(server.methods_on(1))
+    async def check():
+        return None
+    with pytest.raises(TypeError, match='synchronously'):
+        cap.call('Probe.async', before_send=check)
+    assert server.methods_on(1) == before

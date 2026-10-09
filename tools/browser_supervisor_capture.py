@@ -125,8 +125,16 @@ class CapturedCDP:
         fut = safe_schedule_threadsafe(self._send(method, params, session_id, timeout, deadline, before_send), self._loop)
         if fut is None:
             raise self._invalid()
+        while timeout is None:
+            # Unbounded wait still ends with the loop: a closed loop drops queued callbacks.
+            try:
+                return fut.result(timeout=1.0)
+            except concurrent.futures.TimeoutError:
+                if self._loop.is_closed():
+                    fut.cancel()
+                    raise self._invalid() from None
         try:
-            return fut.result(timeout=None if timeout is None else timeout + 1.0)
+            return fut.result(timeout=timeout + 1.0)
         except concurrent.futures.TimeoutError:
             fut.cancel()
             raise TimeoutError(f"CDP {method} got no reply within {timeout}s") from None

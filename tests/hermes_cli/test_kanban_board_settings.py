@@ -81,6 +81,35 @@ def test_board_override_missing_key():
     assert kbs.board_override(cfg, "default_assignee", "tsa-mgmt") is None
 
 
+# --- malformed configured board keys (review #135651, item 3) ----------------
+
+def test_board_override_malformed_configured_key_ignored(caplog):
+    """A hand-written key that can never name a board is skipped, and a sibling
+    valid board is unaffected."""
+    kbs._MALFORMED_BOARD_KEY_WARNED.clear()
+    cfg = _cfg({"bad/slug": {"default_assignee": "worker"}, "tsa-mgmt": {"default_assignee": "ok"}})
+    with caplog.at_level(logging.WARNING):
+        assert kbs.board_override(cfg, "default_assignee", "tsa-mgmt") == "ok"
+    assert any("malformed board key" in rec.message and "bad/slug" in rec.message for rec in caplog.records)
+
+
+def test_board_override_malformed_key_warns_once(caplog):
+    kbs._MALFORMED_BOARD_KEY_WARNED.clear()
+    cfg = _cfg({"bad/slug": {"default_assignee": "worker"}})
+    with caplog.at_level(logging.WARNING):
+        kbs.board_override(cfg, "default_assignee", "tsa-mgmt")
+        kbs.board_override(cfg, "default_assignee", "tsa-mgmt")
+    assert sum("malformed board key" in rec.message for rec in caplog.records) == 1
+
+
+def test_board_override_non_string_configured_key_warns(caplog):
+    kbs._MALFORMED_BOARD_KEY_WARNED.clear()
+    cfg = {"boards": {7: {"default_assignee": "worker"}}}
+    with caplog.at_level(logging.WARNING):
+        assert kbs.board_override(cfg, "default_assignee", "tsa-mgmt") is None
+    assert any("malformed board key" in rec.message for rec in caplog.records)
+
+
 # --- effective_setting ------------------------------------------------------
 
 def test_effective_setting_board_beats_fallback():

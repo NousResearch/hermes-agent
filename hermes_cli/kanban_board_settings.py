@@ -28,6 +28,9 @@ KANBAN_BOARD_SETTING_KEYS = ("orchestrator_profile", "default_assignee")
 # ``HERMES_KANBAN_DB`` pin-collapse warning fires once per slug per process.
 _PIN_SUPPRESSED_WARNED: set[str] = set()
 
+# Hand-edited ``kanban.boards`` keys that normalize to nothing, warned once each.
+_MALFORMED_BOARD_KEY_WARNED: set[object] = set()
+
 
 def normalize_board_slug(slug: object) -> Optional[str]:
     """``kanban_db._normalize_board_slug`` (lowercase + validate); None on invalid.
@@ -61,6 +64,21 @@ def _ci_lookup(mapping: dict, wanted: str) -> object:
     return None
 
 
+def _warn_malformed_board_keys(boards: dict) -> None:
+    """Warn once per configured board key that can never name a board.
+
+    A hand-written ``kanban.boards.bad/slug`` is silently dead weight today; the
+    docs promise a warning, so surface each malformed key exactly once per
+    process (mirrors ``_PIN_SUPPRESSED_WARNED``). Valid keys are untouched.
+    """
+    for key in boards:
+        valid = isinstance(key, str) and normalize_board_slug(key) is not None
+        if valid or key in _MALFORMED_BOARD_KEY_WARNED:
+            continue
+        _MALFORMED_BOARD_KEY_WARNED.add(key)
+        logger.warning("kanban.boards: ignoring malformed board key %r", key)
+
+
 def board_override(kanban_cfg: object, key: str, board: Optional[str]) -> Optional[str]:
     """``kanban.boards.<slug>.<key>`` as a stripped string, else None.
 
@@ -71,6 +89,7 @@ def board_override(kanban_cfg: object, key: str, board: Optional[str]) -> Option
     boards = kanban_cfg.get("boards") if isinstance(kanban_cfg, dict) else None
     if not isinstance(boards, dict) or not boards:
         return None
+    _warn_malformed_board_keys(boards)
     slug = normalize_board_slug(board)
     if slug is None:
         if isinstance(board, str) and board.strip():

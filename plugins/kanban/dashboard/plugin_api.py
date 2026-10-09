@@ -1704,6 +1704,20 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
     return name
 
 
+def _ci_existing_key(mapping: dict, wanted: str) -> Optional[str]:
+    """The existing key that matches ``wanted`` case-insensitively, else None.
+
+    Reads are case-insensitive (``board_override`` / ``_ci_lookup``); writes must
+    reuse the operator's existing spelling so a hand-written ``TSA-Mgmt`` does
+    not sprout a duplicate ``tsa-mgmt`` sibling that reads as a second board.
+    """
+    lowered = wanted.strip().lower()
+    for key in mapping:
+        if isinstance(key, str) and key.strip().lower() == lowered:
+            return key
+    return None
+
+
 @router.put("/orchestration")
 def set_orchestration_settings(
     payload: OrchestrationSettingsBody, board: Optional[str] = Query(None),
@@ -1715,7 +1729,13 @@ def set_orchestration_settings(
     ``?board=<slug>`` the two profile knobs are written under
     ``kanban.boards.<slug>`` and an explicit empty string removes that board's
     override so it inherits the global again. ``auto_decompose`` /
-    ``auto_promote_children`` are not board-scoped in v1."""
+    ``auto_promote_children`` are not board-scoped in v1.
+
+    Slugs and setting keys are canonicalized on write to match the
+    case-insensitive reads: an existing ``TSA-Mgmt`` entry is reused, and any
+    case variant of ``default_assignee`` (e.g. ``Default_Assignee``) is replaced
+    by the canonical key so the entry cannot accumulate duplicates.
+    """
     with _errors_to_500("failed to load config"):
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
@@ -1731,17 +1751,20 @@ def set_orchestration_settings(
         boards = kanban_section.setdefault("boards", {})
         if not isinstance(boards, dict):
             boards = kanban_section["boards"] = {}
-        entry = boards.setdefault(board_slug, {})
+        slug_key = _ci_existing_key(boards, board_slug) or board_slug
+        entry = boards.get(slug_key)
         if not isinstance(entry, dict):
-            entry = boards[board_slug] = {}
+            entry = boards[slug_key] = {}
         for key, value in payload.model_dump(exclude_none=True).items():
             if key not in _PROFILE_SETTINGS:
                 continue  # v1: board scope covers the two profile knobs only
             name = _validated_profile_name(value, profiles_mod)
+            # Drop every case variant first (clear == write nothing), then write
+            # the canonical key so the entry holds at most one spelling.
+            for variant in [k for k in list(entry) if isinstance(k, str) and k.strip().lower() == key]:
+                entry.pop(variant, None)
             if name:
                 entry[key] = name
-            else:
-                entry.pop(key, None)  # explicit "" clears the board override
     else:
         # Field order == write order (profiles validated first, then the booleans).
         for key, value in payload.model_dump(exclude_none=True).items():

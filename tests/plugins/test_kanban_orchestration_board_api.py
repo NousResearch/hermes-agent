@@ -170,6 +170,61 @@ def test_put_board_unknown_profile_is_400(client):
     assert r.status_code == 400
 
 
+def test_put_board_reuses_existing_case_variant_slug(client, home):
+    """A hand-written ``TSA-Mgmt`` config key must be reused, not duplicated by
+    a new lowercase sibling that would read back as a different board."""
+    _make_board("tsa-mgmt")
+    _write_config(home, "kanban:\n  boards:\n    TSA-Mgmt:\n      default_assignee: planner\n")
+    r = client.put(
+        "/api/plugins/kanban/orchestration?board=tsa-mgmt",
+        json={"default_assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    boards = _read_config(home)["kanban"]["boards"]
+    assert list(boards) == ["TSA-Mgmt"]  # no duplicate slug key
+    assert boards["TSA-Mgmt"]["default_assignee"] == "worker"
+    assert r.json()["board_default_assignee"] == "worker"
+
+
+def test_put_board_canonicalizes_setting_key_variant(client, home):
+    """An entry holding ``Default_Assignee`` is replaced by the canonical key so
+    the entry cannot accumulate two spellings."""
+    _make_board("tsa-mgmt")
+    _write_config(home, "kanban:\n  boards:\n    tsa-mgmt:\n      Default_Assignee: planner\n")
+    r = client.put(
+        "/api/plugins/kanban/orchestration?board=tsa-mgmt",
+        json={"default_assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    entry = _read_config(home)["kanban"]["boards"]["tsa-mgmt"]
+    assert entry == {"default_assignee": "worker"}
+
+
+def test_put_board_clear_removes_case_variants(client, home):
+    _make_board("tsa-mgmt")
+    _write_config(home, "kanban:\n  boards:\n    TSA-Mgmt:\n      Default_Assignee: planner\n")
+    r = client.put(
+        "/api/plugins/kanban/orchestration?board=tsa-mgmt",
+        json={"default_assignee": ""},
+    )
+    assert r.status_code == 200, r.text
+    entry = _read_config(home)["kanban"]["boards"]["TSA-Mgmt"]
+    assert "Default_Assignee" not in entry
+    assert "default_assignee" not in entry
+    assert r.json()["board_default_assignee"] == ""
+
+
+def test_put_board_rebuilds_non_dict_entry(client, home):
+    _make_board("tsa-mgmt")
+    _write_config(home, "kanban:\n  boards:\n    tsa-mgmt: not-a-mapping\n")
+    r = client.put(
+        "/api/plugins/kanban/orchestration?board=tsa-mgmt",
+        json={"default_assignee": "worker"},
+    )
+    assert r.status_code == 200, r.text
+    assert _read_config(home)["kanban"]["boards"]["tsa-mgmt"] == {"default_assignee": "worker"}
+
+
 def test_unknown_board_is_404(client):
     assert client.get("/api/plugins/kanban/orchestration?board=ghost").status_code == 404
     r = client.put(

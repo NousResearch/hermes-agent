@@ -475,12 +475,37 @@ def version_satisfies(spec: str, current: str) -> bool:
     return True
 
 
+def requires_hermes_uses_calver(spec: str) -> bool:
+    """Recognize release-tag dates, not arbitrary future semver requirements.
+
+    A CalVer target is exactly YYYY.M.D (four-digit nonzero year, one/two-digit
+    month/day forming a valid calendar date). This reserves tag-shaped dates
+    in every comparator, including exclusions; it is not a satisfiability check.
+    Keep the standalone catalog validator's detection in sync.
+    """
+    from datetime import date
+
+    for clause in spec.split(","):
+        match = _VERSION_COMPARATOR_RE.match(clause.strip())
+        target = match.group(2) if match else clause.strip()
+        calendar = re.fullmatch(r"v?([1-9][0-9]{3})\.([0-9]{1,2})\.([0-9]{1,2})", target)
+        if calendar:
+            try:
+                date(*(int(part) for part in calendar.groups()))
+            except ValueError:
+                continue
+            return True
+    return False
+
+
 def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
     spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
     if not spec:
         return None
     current = running_hermes_version()
+    if requires_hermes_uses_calver(spec):
+        return f"requires hermes {spec}, running {current}; the requirement uses CalVer, but Hermes plugin requirements use the semver base-version space"
     if version_satisfies(spec, current):
         return None
     return f"requires hermes {spec}, running {current}"

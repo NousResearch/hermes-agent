@@ -97,6 +97,13 @@ def _requires_hermes_spec_valid(spec: str) -> bool:
     return True
 
 
+def _requires_hermes_version_space_valid(spec: str) -> bool:
+    """Reject malformed specs and release-tag dates, not future semver floors."""
+    from hermes_cli.plugins_manifest import requires_hermes_uses_calver
+
+    return _requires_hermes_spec_valid(spec) and not requires_hermes_uses_calver(spec)
+
+
 def _check_manifest_fields(report: ValidationReport, manifest: dict) -> None:
     missing = [
         f for f in ("name", "version", "description") if not manifest.get(f)
@@ -116,15 +123,12 @@ def _check_requires_hermes(report: ValidationReport, manifest: dict) -> None:
     if not spec:
         report.add("requires_hermes", True, "not declared")
         return
-    if _requires_hermes_spec_valid(spec):
-        report.add("requires_hermes", True, f"spec {spec!r} parses")
+    if not _requires_hermes_spec_valid(spec):
+        report.add("requires_hermes", False, f"requires_hermes spec {spec!r} does not parse")
+    elif not _requires_hermes_version_space_valid(spec):
+        report.add("requires_hermes", False, f"requires_hermes spec {spec!r} uses CalVer; Hermes plugin requirements must use the semver base-version space")
     else:
-        report.add(
-            "requires_hermes",
-            False,
-            f"requires_hermes spec {spec!r} does not parse "
-            "(expected e.g. \">=0.19\" or \">=0.19, <1.0\")",
-        )
+        report.add("requires_hermes", True, f"spec {spec!r} parses")
 
 
 def _check_config_spec(report: ValidationReport, manifest: dict) -> None:

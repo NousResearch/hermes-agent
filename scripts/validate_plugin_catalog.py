@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -90,7 +91,7 @@ README_REPO_HOSTS = ("github.com", "gitlab.com")
 REQUIRED_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
 # One comparator clause of a requires_hermes spec, e.g. ">=0.19" or "!=1.2.3".
-_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*\d+(\.\d+)*\Z")
+_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)\Z")
 
 
 def _is_allowed_image_url(url: str) -> bool:
@@ -125,6 +126,28 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
             errors.append(f"readme: true needs a repo on {list(README_REPO_HOSTS)} (the site fetches it from the pinned commit); omit it for other forges")
 
 
+def _requires_hermes_version_space_valid(spec: str) -> bool:
+    """Reject malformed clauses and YYYY.M.D calendar dates, not future semver.
+
+    Detection mirrors plugins_manifest.requires_hermes_uses_calver without
+    importing Hermes (this script must remain standalone).
+    """
+    if not spec.strip():
+        return True
+    for clause in spec.split(","):
+        match = _COMPARATOR_RE.match(clause.strip())
+        if match is None:
+            return False
+        calendar = re.fullmatch(r"([1-9][0-9]{3})\.([0-9]{1,2})\.([0-9]{1,2})", match.group(2))
+        if calendar:
+            try:
+                date(*(int(part) for part in calendar.groups()))
+            except ValueError:
+                continue
+            return False
+    return True
+
+
 def _check_requires_hermes(spec: object, errors: list[str]) -> None:
     if not isinstance(spec, str):
         errors.append(f"requires_hermes must be a string, got {type(spec).__name__}")
@@ -132,10 +155,16 @@ def _check_requires_hermes(spec: object, errors: list[str]) -> None:
     if spec.strip() == "":
         return  # empty = no constraint
     for clause in spec.split(","):
-        if not _COMPARATOR_RE.match(clause.strip()):
+        clause = clause.strip()
+        if not _COMPARATOR_RE.match(clause):
             errors.append(
-                f"requires_hermes clause {clause.strip()!r} is not a valid "
+                f"requires_hermes clause {clause!r} is not a valid "
                 "comparator spec (expected e.g. '>=0.19')"
+            )
+        elif not _requires_hermes_version_space_valid(clause):
+            errors.append(
+                f"requires_hermes clause {clause!r} uses CalVer; "
+                "Hermes requirements must use the semver base-version space"
             )
 
 

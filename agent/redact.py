@@ -581,7 +581,21 @@ _TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 
 
 def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
-    return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+    # Leading boundary: a preceding ``[A-Za-z0-9_-]`` normally blocks the match
+    # so embedded identifiers (``myglpat-…``) stay untouched. Escaped-JSON text
+    # is the exception: JSONL transcripts store newline/tab as the two-byte
+    # escapes ``\n``/``\t``, so a credential at the start of the NEXT logical
+    # line sits right after an alphanumeric byte and the plain guard swallowed
+    # its mask verbatim (issue #135822). The nested lookbehind keeps the block
+    # unless the preceding byte pair is a backslash escape indicator — every
+    # ``\n``/``\t``/``\r``/``\b``/``\f``/``\u`` form — while a plain
+    # mid-word predecessor (``myglpat-…``) still blocks. The prefix
+    # families here are self-delimiting (literal prefix + length floor), so
+    # erring toward the mask after a backslash is fail-open, not a false
+    # positive. The trailing guard is unchanged.
+    return re.compile(
+        r"(?<!(?<!\\)[A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])"
+    )
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)

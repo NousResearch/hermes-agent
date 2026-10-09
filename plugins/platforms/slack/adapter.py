@@ -2377,8 +2377,11 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
-        if team_id and team_id in self._team_clients:
-            return self._team_clients[team_id]
+        if team_id:
+            client = self._team_clients.get(team_id)
+            if client is None:
+                raise ValueError(f"Slack workspace {team_id} is not connected; refusing fallback")
+            return client
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
@@ -8711,6 +8714,30 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
+async def _slack_token_matches_workspace(token: str, team_id: str) -> bool:
+    """Verify a configured token's workspace before any standalone write."""
+    try:
+        import aiohttp
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        session_kwargs, request_kwargs = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15), **session_kwargs
+        ) as session:
+            async with session.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {token}"},
+                **request_kwargs,
+            ) as response:
+                if response.status != 200:
+                    return False
+                identity = await response.json()
+                return identity.get("ok") is True and identity.get("team_id") == team_id
+    except Exception:
+        logger.debug("Slack workspace token verification failed", exc_info=True)
+        return False
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -8737,6 +8764,10 @@ async def _standalone_send(
     ``force_document`` is accepted for signature parity but unused — Slack
     treats every upload as a generic file share.
 
+    An explicit workspace selects its saved OAuth token. If no saved mapping
+    exists, a configured token must match that workspace via ``auth.test``
+    before any text, DM-open, or upload request is made.
+
     When ``caption`` is set (single captionable MEDIA:<path> + short text), the
     text rides as ``initial_comment`` on the upload instead of a separate
     ``chat.postMessage``.
@@ -8750,6 +8781,7 @@ async def _standalone_send(
     # each token individually instead of sending the literal comma-joined
     # string, which Slack rejects as ``invalid_auth`` (#47547).
     tokens = [t.strip() for t in str(raw_token or "").split(",") if t.strip()]
+    mapped_workspace_token = False
     try:
         from hermes_constants import get_hermes_home
 
@@ -8759,18 +8791,25 @@ async def _standalone_send(
             if team_id:
                 _entry = _saved.get(team_id)
                 _tok = _entry.get("token", "") if isinstance(_entry, dict) else ""
-                if not _tok:
-                    return {"error": f"Cross-channel Slack routing refused: no token for workspace {team_id}"}
-                tokens = [_tok]
+                if _tok:
+                    tokens = [_tok]
+                    mapped_workspace_token = True
             for _entry in ([] if team_id else _saved.values()):
                 _tok = _entry.get("token", "") if isinstance(_entry, dict) else ""
                 if _tok and _tok not in tokens:
                     tokens.append(_tok)
-        elif team_id:
-            return {"error": f"Cross-channel Slack routing refused: no token file for workspace {team_id}"}
     except Exception:
         if team_id:
             return {"error": f"Cross-channel Slack routing refused: invalid token mapping for workspace {team_id}"}
+    if team_id and not mapped_workspace_token:
+        selected_token = None
+        for candidate in tokens:
+            if await _slack_token_matches_workspace(candidate, team_id):
+                selected_token = candidate
+                break
+        if selected_token is None:
+            return {"error": f"Cross-channel Slack routing refused: no verified token for workspace {team_id}"}
+        tokens = [selected_token]
     if not tokens:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
     token = tokens[0]

@@ -1398,7 +1398,7 @@ class TestSendSlackCrossWorkspaceMisroute:
                     team_id="T_WORKSPACE_B",
                 )
         # Must NOT silently post to the wrong workspace
-        mock_session.post.assert_not_called()
+        assert all(call.args[0].endswith("auth.test") for call in mock_session.post.call_args_list)
         assert "error" in result
         assert "T_WORKSPACE_B" in result["error"]
         assert "Cross-channel" in result["error"]
@@ -1412,7 +1412,7 @@ class TestSendSlackCrossWorkspaceMisroute:
                     "primary-token", "C0ANY", "hi",
                     team_id="T_UNKNOWN",
                 )
-        mock_session.post.assert_not_called()
+        assert all(call.args[0].endswith("auth.test") for call in mock_session.post.call_args_list)
         assert "error" in result
         assert "T_UNKNOWN" in result["error"]
 

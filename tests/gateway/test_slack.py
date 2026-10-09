@@ -2628,6 +2628,8 @@ class TestThreadReplyHandling:
         )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        # Model the authenticated workspace used by these event fixtures.
+        a._team_clients = {"T_TEAM": a._app.client}
         a._running = True
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
@@ -2841,6 +2843,8 @@ class TestAssistantThreadLifecycle:
         )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        # Model the authenticated workspace used by these event fixtures.
+        a._team_clients = {"T_TEAM": a._app.client}
         a._running = True
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
@@ -4326,6 +4330,8 @@ class TestThreadImageContext:
         )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        # Model the authenticated workspace used by these event fixtures.
+        a._team_clients = {"T_TEAM": a._app.client}
         a._running = True
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)

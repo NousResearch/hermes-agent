@@ -80,8 +80,9 @@ def _make_slack_adapter():
         return {"ts": "9999.0001", "ok": True}
 
     fake_client = SimpleNamespace(chat_postMessage=AsyncMock(side_effect=_chat_postMessage))
-    # _app truthiness gates send(); _get_client() falls back to _app.client.
+    # Model a connected, workspace-scoped client rather than primary fallback.
     adapter._app = SimpleNamespace(client=fake_client)
+    adapter._team_clients = {"T_WORKSPACE_B": fake_client}
     return adapter, captured
 
 

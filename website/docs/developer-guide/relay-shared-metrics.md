@@ -24,16 +24,22 @@ as a no-op compatibility alias for existing installation commands.
 > `HERMES_NEMO_RELAY_ATIF_*` settings. Those legacy variables no longer
 > configure Relay exporters themselves.
 
-On supported platforms, Hermes requires NeMo Relay 0.9 for managed provider
+On supported platforms, Hermes requires NeMo Relay 0.10 for managed provider
 and tool calls.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.9,<0.10` dependency range. The published package is built from
+bounded `>=0.10,<0.11` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
+
+Relay 0.10 requires observability configuration `version = 4`. Custom Python
+LLM execution intercepts receive `(name, request, context, next_call)`; the
+context exposes the selected request codec and, for non-streaming execution,
+the response codec. Native plugins must be rebuilt for Relay 0.10's ABI v7 and
+declare a `compat.relay` range that excludes Relay 0.9.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can

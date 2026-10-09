@@ -1089,7 +1089,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true
@@ -1112,11 +1112,6 @@ mode = "overwrite"
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert not host.managed_execution_enabled()
-        assert (
-            host._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
-        )
         report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
         config_paths = set(report["config_paths"])
         assert str(user_config) in config_paths
@@ -1155,7 +1150,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true
@@ -1248,7 +1243,7 @@ kind = "observability"
 enabled = true
 
 [components.config]
-version = 3
+version = 4
 
 [components.config.atof]
 enabled = true

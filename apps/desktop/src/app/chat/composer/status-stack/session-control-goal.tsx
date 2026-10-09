@@ -2,6 +2,9 @@ import { memo, useCallback, useState } from 'react'
 
 import { queueKickoffIfSessionBusy } from '@/app/session/hooks/use-prompt-actions/queue-if-busy'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
+import { StatusControlRow } from '@/components/chat/status-control-row'
+import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
+import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -289,142 +292,140 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
             <StatusSection
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.goalActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.goalActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
+                  <span className="inline-flex">
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        aria-haspopup="menu"
+                        aria-label={ctrl.goalActions}
+                        className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                        disabled={isBusy}
+                        onClick={event => {
+                          // Radix opens pointer interactions from pointerdown. Keyboard,
+                          // assistive-tech, and programmatic clicks have no pointer sequence.
+                          if (event.detail === 0) {
+                            setMenuOpen(true)
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'F10' && e.shiftKey) {
+                            e.preventDefault()
+                            setMenuOpen(true)
+                          }
+                        }}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="ellipsis" size="0.8rem" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </span>
                   <DropdownMenuContent align="end" className="w-44">
                     {renderMenuItems(false)}
                   </DropdownMenuContent>
                 </DropdownMenu>
               }
-              defaultCollapsed={false}
               icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}
             >
-              <div className="space-y-1.5 px-1 py-1">
-                {/* Full goal title */}
-                <div className="text-xs font-normal leading-relaxed text-foreground/92 break-words">{goal.title}</div>
-
-                {/* Optional reasons */}
+              <div>
+                <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="flag">
+                  {goal.title}
+                </StatusControlRow>
                 {!detailsOpen && goal.wait_barrier && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">
+                  <StatusControlRow>
                     {goal.wait_barrier.reason
                       ? `${ctrl.waitBarrierTitle}: ${goal.wait_barrier.reason}`
                       : ctrl.waitBarrierTitle}
-                  </div>
+                  </StatusControlRow>
                 )}
-                {!goal.wait_barrier && goal.paused_reason && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{goal.paused_reason}</div>
-                )}
+                {!goal.wait_barrier && goal.paused_reason && <StatusControlRow>{goal.paused_reason}</StatusControlRow>}
                 {!goal.wait_barrier && !goal.paused_reason && goal.last_reason && (
-                  <div className="text-[0.7rem] italic text-muted-foreground/80">{goal.last_reason}</div>
+                  <StatusControlRow>{goal.last_reason}</StatusControlRow>
                 )}
-
-                {/* View details button */}
                 {hasDetails && (
-                  <div>
+                  <StatusControlRow icon="eye">
                     <Button
                       className="text-[0.7rem] text-muted-foreground/75 hover:text-foreground/90"
                       onClick={() => setDetailsOpen(true)}
-                      size="micro"
+                      size="inline"
                       type="button"
                       variant="text"
                     >
                       {ctrl.viewDetails}
                     </Button>
-                  </div>
+                  </StatusControlRow>
                 )}
 
                 {/* Criteria subsection */}
-                <div className="mt-2 border-t border-(--ui-stroke-tertiary)/40 pt-1.5">
-                  <div className="flex items-center justify-between pb-1 text-[0.68rem] font-medium text-muted-foreground/75">
-                    <div className="flex items-center gap-1.5">
-                      <span aria-hidden="true" className={`inline-flex ${iconClass}`} data-slot="criteria-state-marker">
-                        <Codicon name="target" size="0.68rem" />
-                      </span>
-                      <span>{ctrl.criteriaHeader(goal.subgoals.length)}</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        className="text-[0.68rem] text-muted-foreground/75 hover:text-foreground/90"
-                        disabled={isBusy}
-                        onClick={openAddCriterion}
-                        size="micro"
-                        type="button"
-                        variant="text"
+                <div className="mt-1.5 border-t border-(--ui-stroke-tertiary)/40 pt-1.5">
+                  <StatusRow
+                    className="text-[0.68rem] font-medium text-muted-foreground/75"
+                    leading={
+                      <span
+                        aria-hidden="true"
+                        className="inline-flex text-muted-foreground/70"
+                        data-slot="criteria-state-marker"
                       >
-                        {ctrl.addCriterion}
-                      </Button>
-                      {goal.subgoals.length > 0 && (
+                        <Codicon name="checklist" size="0.8rem" />
+                      </span>
+                    }
+                    trailing={
+                      <div className="flex items-center gap-1">
                         <Button
-                          className="text-[0.68rem] text-muted-foreground/60 hover:text-destructive"
+                          className="text-[0.68rem] text-muted-foreground/75 hover:text-foreground/90"
                           disabled={isBusy}
-                          onClick={confirmClearCriteria}
+                          onClick={openAddCriterion}
                           size="micro"
                           type="button"
                           variant="text"
                         >
-                          {ctrl.clearCriteria}
+                          {ctrl.addCriterion}
                         </Button>
-                      )}
-                    </div>
-                  </div>
+                        {goal.subgoals.length > 0 && (
+                          <Button
+                            className="text-[0.68rem] text-muted-foreground/60 hover:text-destructive"
+                            disabled={isBusy}
+                            onClick={confirmClearCriteria}
+                            size="micro"
+                            type="button"
+                            variant="text"
+                          >
+                            {ctrl.clearCriteria}
+                          </Button>
+                        )}
+                      </div>
+                    }
+                    trailingVisible
+                  >
+                    {ctrl.criteriaHeader(goal.subgoals.length)}
+                  </StatusRow>
 
                   {goal.subgoals.length > 0 ? (
-                    <div className="space-y-1">
+                    <div>
                       {goal.subgoals.map((subgoal, idx) => {
                         const index = idx + 1
 
                         return (
-                          <div
-                            className="group/criterion flex items-start justify-between gap-1.5 rounded px-1 py-0.5 text-xs text-foreground/85 hover:bg-(--ui-control-active-background)/40"
+                          <StatusRow
+                            className="text-xs leading-4 text-foreground/85"
+                            depth={1}
                             key={`${index}-${subgoal}`}
-                          >
-                            <div className="flex min-w-0 flex-1 items-start gap-1.5 leading-relaxed">
-                              <span className="shrink-0 text-muted-foreground/60 tabular-nums">{index}.</span>
-                              <span className="break-words">{subgoal}</span>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-0.5 opacity-80 group-hover/criterion:opacity-100">
-                              <Tip label={ctrl.copyCriterion(index)}>
-                                <Button
-                                  aria-label={ctrl.copyCriterion(index)}
-                                  className="size-6 rounded text-muted-foreground/60 hover:text-foreground/90"
-                                  onClick={() => void copyCriterionText(subgoal)}
-                                  size="icon-xs"
-                                  type="button"
-                                  variant="ghost"
-                                >
-                                  <Codicon name="copy" size="0.7rem" />
-                                </Button>
-                              </Tip>
-                              <Tip label={ctrl.removeCriterion(index)}>
+                            leading={<StatusPendingIcon />}
+                            trailing={
+                              <div className="flex shrink-0 items-center gap-0.5">
+                                <Tip label={ctrl.copyCriterion(index)}>
+                                  <Button
+                                    aria-label={ctrl.copyCriterion(index)}
+                                    className="size-6 rounded text-muted-foreground/60 hover:text-foreground/90"
+                                    onClick={() => void copyCriterionText(subgoal)}
+                                    size="icon-xs"
+                                    type="button"
+                                    variant="ghost"
+                                  >
+                                    <Codicon name="copy" size="0.7rem" />
+                                  </Button>
+                                </Tip>
                                 <Button
                                   aria-label={ctrl.removeCriterion(index)}
                                   className="size-6 rounded text-muted-foreground/60 hover:text-destructive"
@@ -436,9 +437,12 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                                 >
                                   <Codicon name="close" size="0.7rem" />
                                 </Button>
-                              </Tip>
-                            </div>
-                          </div>
+                              </div>
+                            }
+                          >
+                            <span className="sr-only">{index}.</span>
+                            <span className="break-words">{subgoal}</span>
+                          </StatusRow>
                         )
                       })}
                     </div>

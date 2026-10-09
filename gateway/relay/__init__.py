@@ -4,9 +4,10 @@ EXPERIMENTAL gateway side of the "Gateway Gateway" relay design: a generic
 ``RelayAdapter`` plus the wire-serializable ``CapabilityDescriptor`` the connector
 hands it at handshake, and the production ``WebSocketRelayTransport``. The public
 API MAY CHANGE without a deprecation cycle until >=2 real Class-1 platforms have
-shaken out the schema (``docs/relay-connector-contract.md``). Activation is
+shaken out the schema (``website/docs/developer-guide/relay-connector-contract.md``). Activation is
 config-driven: the relay platform is registered when a connector relay URL is set
-(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url``), like ``gateway.proxy_url``.
+(``GATEWAY_RELAY_URL`` env or ``gateway.relay_url``), like ``gateway.proxy_url``,
+unless the effective relay platform configuration explicitly disables it.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def _load_cfg() -> dict:
         from gateway.run import _load_gateway_config  # late import to avoid cycle
 
         cfg = _load_gateway_config()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
     return cfg if isinstance(cfg, dict) else {}
 
@@ -69,8 +70,39 @@ def _env_or_cfg_url(env_var: str, cfg_key: str) -> Optional[str]:
     return _env_or_cfg(env_var, cfg_key).rstrip("/") or None
 
 
+def relay_explicitly_disabled() -> bool:
+    """``platforms.relay.enabled: false`` in the profile's YAML (user or managed).
+
+    Same files, merge and boolean normalization as the gateway loader (a malformed user
+    file drops the whole YAML layer there too), minus its env/plugin side effects, so a
+    standalone scheduler can ask without bootstrapping the gateway.
+    Mirrors the loader's ``_enabled_explicit`` rule: only a YAML ``enabled`` key is
+    authoritative — a legacy ``gateway.json`` block is advisory for relay exactly as it
+    is for every other platform, and an absent key keeps URL-only activation.
+    """
+    from gateway.config import Platform, PlatformConfig
+    from gateway.config_loader import bridge_platform_shared_keys, merge_platform_sections, read_yaml_layers
+    from hermes_constants import get_hermes_home
+
+    try:
+        cfg = read_yaml_layers(get_hermes_home())
+    except Exception:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    platforms = merge_platform_sections(cfg, gateway, {})
+    bridge_platform_shared_keys(cfg, gateway.get("platforms"), {}, platforms, [Platform.RELAY])
+    block = platforms.get("relay")
+    if not isinstance(block, dict) or not block.get("extra", {}).get("_enabled_explicit"):
+        return False
+    return not PlatformConfig.from_dict(block).enabled
+
+
 def relay_url() -> Optional[str]:
-    """The connector relay endpoint URL, or None. A non-empty value activates the relay platform."""
+    """Effective connector URL; an explicit platform disable vetoes even an env URL."""
+    if relay_explicitly_disabled():
+        return None
     return _env_or_cfg_url("GATEWAY_RELAY_URL", "relay_url")
 
 
@@ -97,6 +129,8 @@ def relay_fronted_platforms() -> set[str]:
     Same env source the live adapter's identity set comes from, so config-time
     validation (cron delivery preflight) and fire-time routing can never disagree —
     and it needs no live adapter, so a standalone scheduler can use it."""
+    if relay_explicitly_disabled():
+        return set()
     return {p for p, _ in relay_platform_identities() if p != "relay"}
 
 
@@ -108,7 +142,7 @@ def _relay_bot_ids_map() -> dict:
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("GATEWAY_RELAY_BOT_IDS is not valid JSON; treating as empty")
         return {}
 
@@ -184,7 +218,7 @@ def relay_display_name() -> Optional[str]:
             from hermes_cli.skin_engine import get_active_skin  # late import: boot-safe
 
             value = str(get_active_skin().get_branding("agent_name", "") or "").strip()
-        except Exception:  # noqa: BLE001 - branding absence must never crash boot
+        except Exception:
             value = ""
         # The stock brand is identical on every default install: forwarding it would
         # prefix every reply "**Hermes Agent:**" and shadow the connector's
@@ -270,7 +304,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
             free_response = [str(c).strip() for c in frc if str(c).strip()]
         elif isinstance(frc, str) and frc.strip():
             free_response = [c.strip() for c in frc.split(",") if c.strip()]
-    except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+    except Exception:
         pass
 
     # Same gate as the gateway's own authz_mixin DISCORD_ALLOW_BOTS bypass.
@@ -324,7 +358,7 @@ def _post_provision(
         detail = ""
         try:
             detail = (json.loads(exc.read().decode()) or {}).get("error", "")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         raise RuntimeError(
             f"connector returned HTTP {exc.code}" + (f": {detail}" if detail else "")
@@ -332,7 +366,32 @@ def _post_provision(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
 
-    if not isinstance(payload, dict) or not payload.get("secret"):
+    if not isinstance(payload, dict):
+        raise RuntimeError("connector returned an unexpected response")
+    # A response WITHOUT a secret is valid, not an error (connector F-004).
+    #
+    # `/relay/provision` used to hand the stored per-gateway secret back on every
+    # replay, to anyone who reached the endpoint with the right gatewayId. The
+    # connector now returns credential material only to a caller that proves
+    # ownership or possession, and answers `secretIssued: false` otherwise — with
+    # `secret`/`deliveryKey` absent rather than empty.
+    #
+    # Two legitimate shapes reach here, and neither is a failure:
+    #   * the SECOND and later platforms of a multi-platform boot. All platforms
+    #     share one gatewayId, so the first POST mints the secret and the rest are
+    #     replays of an unchanged binding. Raising here aborted every platform
+    #     after the first.
+    #   * a re-provision by a caller that legitimately no longer holds the secret;
+    #     `POST /relay/rotate` is the supported recovery path.
+    #
+    # Treat "no secret" as a value, and let the caller decide — it knows whether
+    # it already holds credentials. Only a malformed body is an error.
+    if not payload.get("secret") and payload.get("secretIssued") is not False:
+        # Fail closed on the discriminator itself. The ONLY credential-less shape
+        # the connector emits is literal JSON `false`. No key at all is a
+        # pre-F-004 connector (the old unexpected-response case); `true` with no
+        # secret, or any non-boolean value, is a malformed body. Accepting those
+        # would mark the platform provisioned with no credential in hand.
         raise RuntimeError("connector returned an unexpected response (no secret)")
     return payload
 
@@ -451,7 +510,7 @@ def self_provision_relay() -> bool:
 
     try:
         access_token = _resolve_relay_identity_token()
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
+    except Exception as exc:
         logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
         return False
 
@@ -459,7 +518,7 @@ def self_provision_relay() -> bool:
     # gatewayId default mirrors the enroll CLI's hostname-based slug.
     try:
         host = socket.gethostname().strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         host = ""
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
     endpoint = relay_endpoint()
@@ -490,17 +549,42 @@ def self_provision_relay() -> bool:
             )
             continue
         provisioned.append(platform)
-        # Set creds in-process on the FIRST success (the per-gateway secret
-        # authenticates the outbound WS upgrade). Never logged.
-        if not os.environ.get("GATEWAY_RELAY_SECRET"):
+        # Set creds in-process on the first response that ACTUALLY CARRIES them.
+        # Never logged.
+        #
+        # `secret` may legitimately be absent (connector F-004 — see _post_provision):
+        # only a caller that proves ownership or possession is handed credential
+        # material, and every platform after the first in a multi-platform boot is
+        # a replay of an unchanged binding. Guard on the secret being PRESENT
+        # rather than on the response having arrived, or the first withheld
+        # response writes empty strings over the real values — and because the
+        # `if` tests the same env var it writes, an empty write looks "unset" on
+        # the next pass while deliveryKey has already been clobbered.
+        if result.get("secret") and not os.environ.get("GATEWAY_RELAY_SECRET"):
             os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
-            os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
+            os.environ["GATEWAY_RELAY_SECRET"] = str(result["secret"])
             os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
 
     if not provisioned:
         logger.warning(
             "relay self-provision failed for ALL platforms (%s); gateway will boot without relay auth",
             ",".join(p for p, _ in identities),
+        )
+        return False
+
+    if not os.environ.get("GATEWAY_RELAY_SECRET"):
+        # Every platform answered, none issued a credential: the connector holds a
+        # binding for this gatewayId that this caller could prove neither ownership
+        # of nor possession of (F-004). The routes are bound but the WS upgrade
+        # will be refused, so this is NOT a provision — do not report one. The
+        # operator's recovery path is POST /relay/rotate (or pinning
+        # GATEWAY_RELAY_SECRET).
+        logger.warning(
+            "relay self-provision withheld credentials for ALL platforms (%s): the connector "
+            "holds a binding for gateway_id=%s this caller could not prove ownership of; "
+            "gateway will boot without relay auth. Recover with POST /relay/rotate or pin "
+            "GATEWAY_RELAY_SECRET",
+            ",".join(provisioned), gateway_id,
         )
         return False
 
@@ -554,7 +638,7 @@ def send_relay_policy() -> bool:
         from gateway.relay.auth import make_upgrade_token
 
         token = make_upgrade_token(gateway_id, secret)
-    except Exception as exc:  # noqa: BLE001 - boot must survive a token-build failure
+    except Exception as exc:
         logger.warning("relay policy declaration failed to build token (%s); connector keeps prior policy", exc)
         return False
 
@@ -566,7 +650,7 @@ def send_relay_policy() -> bool:
             continue
         try:
             status = _post_policy(policy_url=policy_url, token=token, policy=policy)
-        except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
+        except Exception as exc:
             logger.warning(
                 "relay policy declaration failed for platform=%s (%s); continuing", platform, exc
             )
@@ -591,9 +675,12 @@ def send_relay_policy() -> bool:
 
 def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bool:
     """Register the generic ``relay`` platform when a relay URL is configured (or
-    ``force=True`` for tests: transport-less adapter). Returns True if registered.
+    ``force=True`` for tests: transport-less adapter). Neither overrides an
+    explicit profile disable. Returns True if registered.
     With a URL the factory builds a live ``WebSocketRelayTransport``; the adapter
     negotiates the real ``CapabilityDescriptor`` at ``connect()``."""
+    if relay_explicitly_disabled():
+        return False
     resolved_url = url if url is not None else relay_url()
     if not (force or resolved_url):
         return False
@@ -650,22 +737,3 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
         )
     )
     return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
-    ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
-    """
-    entry = _relay_bot_ids_map().get(platform)
-    if isinstance(entry, dict):
-        username = entry.get("username")
-        if username:
-            return str(username).lstrip("@")
-    return None
-# ---- END PLUGIN-COMPAT ----

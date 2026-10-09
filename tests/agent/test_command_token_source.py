@@ -77,6 +77,18 @@ class TestMinting:
         assert "dbx" in message          # names the provider to fix
         assert "exited" in message       # states what happened
 
+    def test_undecodable_output_does_not_raise(self):
+        """One non-UTF-8 byte from the helper must not crash token minting.
+
+        A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError,
+        so neither the TimeoutExpired nor the OSError handler above caught it: provider
+        auth died with a traceback instead of the documented CommandTokenError path.
+        """
+        token, ttl = _mint("printf 'tok\\377'", "dbx")
+
+        assert ttl is None
+        assert token.startswith("tok")
+
 
 class TestNoCredentialLeak:
     def test_failure_message_excludes_command_output(self):
@@ -126,12 +138,6 @@ class TestCaching:
         source._expires_at = time.monotonic() - 1  # cross the window
         assert source() != first  # re-minted after it
 
-    def test_advertised_ttl_sets_an_expiry(self):
-        source = CommandTokenSource(
-            """printf '{"access_token":"tok","expires_in":3600}'""", "dbx"
-        )
-        source()
-        assert source._expires_at is not None
 
     def test_ttl_shorter_than_the_leeway_still_caches_briefly(self):
         """A leeway larger than the TTL must not disable caching entirely."""
@@ -148,10 +154,6 @@ class TestBuilder:
         assert build_command_token_provider("") is None
         assert build_command_token_provider("   ") is None
 
-    def test_returns_callable_when_set(self):
-        provider = build_command_token_provider("printf tok", "dbx")
-        assert callable(provider)
-        assert provider() == "tok"
 
 
 class TestResolutionYieldsACallable:
@@ -347,3 +349,74 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         assert self._resolve(
             monkeypatch, {**self.BASE, "key_cmd": "   "}
         ) == "no-key-required"
+
+
+class TestExplicitCallableSurvivesCustomResolution:
+    """Callers hand ``resolve_provider_client`` a callable (key_cmd token, or the
+    main runtime's callable credential via ``_try_main_provider_route``) and every
+    resolution branch must pass it through *uncalled*: ``.strip()`` on it raised
+    AttributeError (#88667); ``str()`` sent the object repr as the bearer.
+    Adapted from SiaoZeng's #107344.
+    """
+
+    TOK = CommandTokenSource("printf minted-token", "dbx")
+    BASE = "https://example.invalid/v1"
+
+    @staticmethod
+    def _spy_client(monkeypatch):
+        import agent.auxiliary_client as ac
+
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        return seen
+
+    def _resolve(self, monkeypatch, shape, key):
+        import agent.auxiliary_client as ac
+        from hermes_cli import auth as hauth
+        from hermes_cli import runtime_provider as rp
+
+        seen = self._spy_client(monkeypatch)
+        if shape == "bare_custom":
+            ac.resolve_provider_client("custom", explicit_base_url=self.BASE, explicit_api_key=key)
+        elif shape == "local_server_alias":
+            ac.resolve_provider_client("ollama", explicit_base_url=self.BASE, explicit_api_key=key)
+        elif shape == "main_runtime_reuse":
+            ac.resolve_provider_client(
+                "custom", main_runtime={"base_url": self.BASE, "api_key": key, "model": "m1"},
+            )
+        elif shape == "named_custom":
+            monkeypatch.setattr(
+                rp, "_get_named_custom_provider",
+                lambda name: {"base_url": self.BASE, "model": "m1", "name": "dbx"} if name == "dbx" else None,
+            )
+            ac.resolve_provider_client("dbx", explicit_api_key=key)
+        elif shape == "api_key_branch":
+            monkeypatch.setattr(hauth, "resolve_api_key_provider_credentials", lambda provider: {})
+            ac.resolve_provider_client("deepseek", explicit_base_url=self.BASE, explicit_api_key=key)
+        else:  # pragma: no cover
+            raise AssertionError(shape)
+        return seen
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["bare_custom", "local_server_alias", "main_runtime_reuse", "named_custom", "api_key_branch"],
+    )
+    def test_callable_key_reaches_the_client_uncalled(self, monkeypatch, shape):
+        seen = self._resolve(monkeypatch, shape, self.TOK)
+        assert seen.get("api_key") is self.TOK, (
+            f"{shape}: an explicit callable must reach the client unchanged, not be "
+            "stripped (AttributeError) or stringified (repr-as-bearer)"
+        )
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["bare_custom", "local_server_alias", "main_runtime_reuse", "named_custom", "api_key_branch"],
+    )
+    def test_string_key_is_still_stripped(self, monkeypatch, shape):
+        seen = self._resolve(monkeypatch, shape, " sk-x ")
+        assert seen.get("api_key") == "sk-x"

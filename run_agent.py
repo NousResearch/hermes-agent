@@ -308,6 +308,11 @@ class AIAgent(
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
+        injected_resource_ids = {
+            id(resource)
+            for resource in (memory_manager, session_db, credential_pool)
+            if resource is not None
+        }
         token_budget_config = self._load_preflight_token_budget_config()
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
@@ -317,8 +322,18 @@ class AIAgent(
         try:
             self._apply_runtime_token_budget(token_budget_config)
         except Exception:
-            self._restore_token_budget_runtime(token_budget_snapshot)
-            self._cleanup_failed_token_budget_initialization(token_budget_snapshot)
+            try:
+                self._restore_token_budget_runtime(token_budget_snapshot)
+            except Exception:
+                logger.debug(
+                    "failed to restore runtime after token-budget init failure",
+                    exc_info=True,
+                )
+            finally:
+                self._cleanup_failed_token_budget_initialization(
+                    token_budget_snapshot,
+                    injected_resource_ids=injected_resource_ids,
+                )
             raise
 
     def _get_session_db_for_recall(self):

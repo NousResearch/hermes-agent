@@ -1304,7 +1304,15 @@ def restore_primary_runtime(agent) -> bool:
         # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
         # again (prefix cache match).
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
-        logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
+        def publish_restore_log():
+            logger.info(
+                "Primary runtime restored for new turn: %s (%s)",
+                agent.model,
+                agent.provider,
+            )
+        defer = getattr(agent, "_defer_token_budget_effect", None)
+        if not (callable(defer) and defer(publish_restore_log)):
+            publish_restore_log()
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
         if provider_fallback_active:
@@ -2358,10 +2366,17 @@ def switch_model(
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)
-    logger.info(
-        "Model switched in-place: %s (%s) -> %s (%s)",
-        old_model, old_provider, new_model, new_provider,
-    )
+    def publish_switch_log():
+        logger.info(
+            "Model switched in-place: %s (%s) -> %s (%s)",
+            old_model,
+            old_provider,
+            new_model,
+            new_provider,
+        )
+    defer = getattr(agent, "_defer_token_budget_effect", None)
+    if not (callable(defer) and defer(publish_switch_log)):
+        publish_switch_log()
     _persist_switch_billing_route(agent)
 
 

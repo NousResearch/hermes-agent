@@ -13,17 +13,42 @@ logger = logging.getLogger(__name__)
 
 
 class TokenBudgetRuntimeMixin:
+    _TOKEN_BUDGET_BOOKKEEPING_FIELDS = (
+        "_fallback_index",
+        "_unavailable_fallback_keys",
+        "_restore_wait_logged",
+        "_rate_limit_backoff_count",
+        "_rate_limited_until",
+    )
+
     def _load_preflight_token_budget_config(self):
         """Load and validate policy before a transition can mutate runtime."""
-        from agent.token_budget_policy import validate_token_budget_policy_config
+        import copy
+
+        from agent.token_budget_policy import (
+            TokenBudgetPolicyError,
+            validate_token_budget_policy_config,
+        )
         from hermes_cli.config import load_config_readonly
+        from hermes_cli.config_read_errors import FailedConfigRead
 
         try:
-            config = load_config_readonly() or {}
-        except Exception:
-            # A reload failure is distinct from an invalid reload. Retain the
-            # last validated, non-secret policy snapshot for the transition.
-            config = getattr(self, "_token_budget_policy_config", {}) or {}
+            loaded = load_config_readonly()
+            if isinstance(loaded, FailedConfigRead):
+                raise loaded.read_error
+            config = loaded or {}
+        except Exception as exc:
+            if not bool(
+                getattr(self, "_token_budget_policy_config_validated", False)
+            ):
+                raise TokenBudgetPolicyError(
+                    "token-budget config could not be read before initialization"
+                ) from exc
+            # A reload failure is distinct from an invalid reload. Retain only
+            # a policy subtree that previously completed validation.
+            config = copy.deepcopy(
+                getattr(self, "_token_budget_policy_config", {}) or {}
+            )
             logger.debug(
                 "token-budget policy reload failed; using last known safe policy",
                 exc_info=True,
@@ -32,29 +57,13 @@ class TokenBudgetRuntimeMixin:
         return config
 
     @staticmethod
-    def _token_budget_runtime_slot_names(value):
-        """Return real slot attribute names, including inherited privates."""
-        names = []
-        for cls in type(value).__mro__:
-            slots = getattr(cls, "__slots__", ())
-            if isinstance(slots, str):
-                slots = (slots,)
-            for name in slots:
-                if name in {"__dict__", "__weakref__"}:
-                    continue
-                if name.startswith("__") and not name.endswith("__"):
-                    name = f"_{cls.__name__.lstrip('_')}{name}"
-                if name not in names:
-                    names.append(name)
-        return names
+    def _snapshot_token_budget_runtime_value(value, memo):
+        """Snapshot only owned built-in containers; every foreign object is atomic.
 
-    @staticmethod
-    def _snapshot_token_budget_runtime_value(value, memo, *, allow_opaque=False):
-        """Capture a restorable graph without cloning SDK transports or locks.
-
-        The shared ``memo`` is deliberately used for every transactional field:
-        independently copying each field loses aliases such as a reasoning and
-        transport cache pointing to the same dictionary.
+        This explicit schema deliberately never reflects over ``vars`` or
+        ``__slots__``. SDK clients, transports, locks, modules, classes and
+        callables may contain unbounded or read-only graphs and are rollback
+        resources by identity, not mutable policy state.
         """
         if value is None or isinstance(value, (bool, int, float, str, bytes)):
             return {"kind": "atom", "value": value}
@@ -66,8 +75,8 @@ class TokenBudgetRuntimeMixin:
             memo[id(value)] = node
             node["items"] = [
                 (
-                    TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(key, memo, allow_opaque=allow_opaque),
-                    TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo, allow_opaque=allow_opaque),
+                    TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(key, memo),
+                    TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo),
                 )
                 for key, item in value.items()
             ]
@@ -76,7 +85,7 @@ class TokenBudgetRuntimeMixin:
             node = {"kind": "list", "object": value, "items": []}
             memo[id(value)] = node
             node["items"] = [
-                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo, allow_opaque=allow_opaque)
+                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo)
                 for item in value
             ]
             return node
@@ -84,7 +93,7 @@ class TokenBudgetRuntimeMixin:
             node = {"kind": "set", "object": value, "items": []}
             memo[id(value)] = node
             node["items"] = [
-                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo, allow_opaque=allow_opaque)
+                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo)
                 for item in value
             ]
             return node
@@ -92,54 +101,22 @@ class TokenBudgetRuntimeMixin:
             node = {"kind": "tuple", "object": value, "items": []}
             memo[id(value)] = node
             node["items"] = [
-                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo, allow_opaque=allow_opaque)
+                TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(item, memo)
                 for item in value
             ]
             return node
-        if allow_opaque:
-            # Clients/compressors can own locks, sessions and callables. Keep
-            # those identities, but capture their writable instance state.
-            node = {"kind": "object", "object": value, "attrs": [], "slots": []}
-            memo[id(value)] = node
-            try:
-                node["attrs"] = [
-                    (
-                        name,
-                        TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(
-                            item, memo, allow_opaque=True
-                        ),
-                    )
-                    for name, item in vars(value).items()
-                ]
-            except TypeError:
-                pass
-            missing = object()
-            for name in TokenBudgetRuntimeMixin._token_budget_runtime_slot_names(value):
-                try:
-                    item = getattr(value, name)
-                except AttributeError:
-                    node["slots"].append((name, {"kind": "missing", "value": missing}))
-                else:
-                    node["slots"].append(
-                        (
-                            name,
-                            TokenBudgetRuntimeMixin._snapshot_token_budget_runtime_value(
-                                item, memo, allow_opaque=True
-                            ),
-                        )
-                    )
-            return node
-        # Configuration, prompts and cache state must be fully restorable. An
-        # opaque mutable value here makes rollback unverifiable, so fail before
-        # invoking a helper that may mutate runtime.
-        raise RuntimeError(
-            f"cannot snapshot transactional runtime state of {type(value).__name__}"
-        )
+        node = {"kind": "identity", "object": value}
+        memo[id(value)] = node
+        return node
 
     @staticmethod
     def _restore_token_budget_runtime_value(node, restored=None):
         """Restore one captured graph node in place, preserving aliases."""
-        if not isinstance(node, dict) or node.get("kind") in {"atom", "missing"}:
+        if not isinstance(node, dict) or node.get("kind") in {
+            "atom",
+            "identity",
+            "missing",
+        }:
             return
         if restored is None:
             restored = set()
@@ -154,11 +131,6 @@ class TokenBudgetRuntimeMixin:
                 TokenBudgetRuntimeMixin._restore_token_budget_runtime_value(item[1], restored)
             else:
                 TokenBudgetRuntimeMixin._restore_token_budget_runtime_value(item, restored)
-        for _, item in node.get("attrs", []):
-            TokenBudgetRuntimeMixin._restore_token_budget_runtime_value(item, restored)
-        for _, item in node.get("slots", []):
-            TokenBudgetRuntimeMixin._restore_token_budget_runtime_value(item, restored)
-
         value = node["object"]
         try:
             if kind == "dict":
@@ -178,26 +150,6 @@ class TokenBudgetRuntimeMixin:
                 value.update(
                     TokenBudgetRuntimeMixin._token_budget_runtime_snapshot_value(item) for item in node["items"]
                 )
-            elif kind == "object":
-                try:
-                    attrs = vars(value)
-                    attrs.clear()
-                    attrs.update(
-                        {
-                            name: TokenBudgetRuntimeMixin._token_budget_runtime_snapshot_value(item)
-                            for name, item in node["attrs"]
-                        }
-                    )
-                except TypeError:
-                    pass
-                for name, item in node["slots"]:
-                    if item["kind"] == "missing":
-                        try:
-                            delattr(value, name)
-                        except AttributeError:
-                            pass
-                    else:
-                        setattr(value, name, TokenBudgetRuntimeMixin._token_budget_runtime_snapshot_value(item))
         except Exception as exc:
             raise RuntimeError("cannot restore transactional runtime state") from exc
 
@@ -241,29 +193,7 @@ class TokenBudgetRuntimeMixin:
             return current == {
                 TokenBudgetRuntimeMixin._token_budget_runtime_snapshot_value(item) for item in node["items"]
             }
-        try:
-            attrs = vars(current)
-        except TypeError:
-            attrs = {}
-        for name, saved in node["attrs"]:
-            if name not in attrs or not TokenBudgetRuntimeMixin._token_budget_runtime_value_matches(
-                attrs[name], saved, seen
-            ):
-                return False
-        if len(attrs) != len(node["attrs"]):
-            return False
-        for name, saved in node["slots"]:
-            try:
-                current_slot = getattr(current, name)
-            except AttributeError:
-                if saved["kind"] != "missing":
-                    return False
-            else:
-                if saved["kind"] == "missing" or not TokenBudgetRuntimeMixin._token_budget_runtime_value_matches(
-                    current_slot, saved, seen
-                ):
-                    return False
-        return True
+        return kind == "identity"
 
     def _snapshot_token_budget_runtime(self):
         """Capture every rollback-critical field and mutable resource explicitly."""
@@ -298,6 +228,7 @@ class TokenBudgetRuntimeMixin:
             "_configured_max_tokens_captured",
             "_token_budget_status",
             "_token_budget_policy_config",
+            "_token_budget_policy_config_validated",
             "_token_budget_route_baselines",
             "_token_budget_applied_identity",
             "_primary_runtime",
@@ -315,6 +246,7 @@ class TokenBudgetRuntimeMixin:
             "_unavailable_fallback_keys",
             "_restore_wait_logged",
             "_rate_limit_backoff_count",
+            "_rate_limited_until",
             "_consecutive_stale_streams",
             "_compression_feasibility_checked",
             "_last_feasibility_notice",
@@ -325,29 +257,46 @@ class TokenBudgetRuntimeMixin:
         memo = {}
         for name in fields:
             value = values.get(name, missing)
-            critical_object = name in {
-                "client",
-                "_anthropic_client",
-                "_credential_pool",
-                "context_compressor",
-                # Runtime helpers may retain these critical identities here.
-                "_client_kwargs",
-                "_primary_runtime",
-                # Cache entries can be live transport adapters too.
-                "_transport_cache",
-            }
             captured[name] = {
                 "present": value is not missing,
                 "value": value,
                 "state": (
-                    self._snapshot_token_budget_runtime_value(
-                        value, memo, allow_opaque=critical_object
-                    )
+                    self._snapshot_token_budget_runtime_value(value, memo)
                     if value is not missing
                     else None
                 ),
             }
-        return {"missing": missing, "fields": captured}
+        compressor = values.get("context_compressor", missing)
+        compressor_fields = {}
+        if compressor is not missing and compressor is not None:
+            for name in (
+                "model",
+                "context_length",
+                "base_url",
+                "api_key",
+                "provider",
+                "api_mode",
+                "threshold_percent",
+                "threshold_tokens",
+                "max_tokens",
+                "_tail_token_budget",
+                "tail_token_budget",
+                "summary_target_ratio",
+                "model_thresholds",
+            ):
+                try:
+                    value = getattr(compressor, name)
+                except (AttributeError, TypeError):
+                    continue
+                compressor_fields[name] = {
+                    "value": value,
+                    "state": self._snapshot_token_budget_runtime_value(value, memo),
+                }
+        return {
+            "missing": missing,
+            "fields": captured,
+            "compressor_fields": compressor_fields,
+        }
 
     def _restore_token_budget_runtime(self, snapshot):
         """Restore failed transitions before retiring only replacement clients."""
@@ -380,6 +329,19 @@ class TokenBudgetRuntimeMixin:
             if not isinstance(captured, dict) or not captured.get("present"):
                 continue
             self._restore_token_budget_runtime_value(captured.get("state"), restored_nodes)
+        compressor = getattr(self, "context_compressor", None)
+        compressor_fields = snapshot.get("compressor_fields") or {}
+        if compressor is not None and isinstance(compressor_fields, dict):
+            for name, captured in compressor_fields.items():
+                try:
+                    setattr(compressor, name, captured.get("value"))
+                    self._restore_token_budget_runtime_value(
+                        captured.get("state"), restored_nodes
+                    )
+                except Exception:
+                    logger.debug(
+                        "failed to restore compressor field %s", name, exc_info=True
+                    )
 
         original_clients = {
             id(captured.get("value"))
@@ -421,6 +383,8 @@ class TokenBudgetRuntimeMixin:
         if not isinstance(fields, dict):
             return False
         for name, captured in fields.items():
+            if name in self._TOKEN_BUDGET_BOOKKEEPING_FIELDS:
+                continue
             if not isinstance(captured, dict):
                 continue
             previous = captured.get("value", missing)
@@ -434,7 +398,49 @@ class TokenBudgetRuntimeMixin:
                 return True
             if not self._token_budget_runtime_value_matches(current, captured.get("state")):
                 return True
+        compressor = getattr(self, "context_compressor", None)
+        for name, captured in (snapshot.get("compressor_fields") or {}).items():
+            try:
+                current = getattr(compressor, name)
+            except (AttributeError, TypeError):
+                return True
+            if not self._token_budget_runtime_value_matches(
+                current, captured.get("state")
+            ):
+                return True
         return False
+
+    def _snapshot_token_budget_bookkeeping(self):
+        """Capture legitimate helper progress that must survive a False result."""
+        missing = object()
+        memo = {}
+        fields = {}
+        for name in self._TOKEN_BUDGET_BOOKKEEPING_FIELDS:
+            value = vars(self).get(name, missing)
+            fields[name] = {
+                "present": value is not missing,
+                "value": value,
+                "state": (
+                    self._snapshot_token_budget_runtime_value(value, memo)
+                    if value is not missing
+                    else None
+                ),
+            }
+        return {"fields": fields}
+
+    def _restore_token_budget_bookkeeping(self, snapshot):
+        fields = snapshot.get("fields") if isinstance(snapshot, dict) else None
+        if not isinstance(fields, dict):
+            return
+        restored = set()
+        for name, captured in fields.items():
+            if captured.get("present"):
+                setattr(self, name, captured.get("value"))
+                self._restore_token_budget_runtime_value(
+                    captured.get("state"), restored
+                )
+            else:
+                vars(self).pop(name, None)
 
     @staticmethod
     def _token_budget_policy_enabled(config):
@@ -482,7 +488,9 @@ class TokenBudgetRuntimeMixin:
             if result is False:
                 self._discard_token_budget_effects()
                 if self._failed_transition_mutated_runtime(snapshot):
+                    bookkeeping = self._snapshot_token_budget_bookkeeping()
                     self._restore_token_budget_runtime(snapshot)
+                    self._restore_token_budget_bookkeeping(bookkeeping)
                 return result
             self._apply_runtime_token_budget(config)
         except Exception:
@@ -492,27 +500,88 @@ class TokenBudgetRuntimeMixin:
         self._commit_token_budget_effects()
         return result
 
-    def _cleanup_failed_token_budget_initialization(self, snapshot):
-        """Retire clients allocated by an init whose policy commit failed."""
-        fields = snapshot.get("fields") if isinstance(snapshot, dict) else None
-        if not isinstance(fields, dict):
-            return
+    def _cleanup_failed_token_budget_initialization(
+        self, snapshot, *, injected_resource_ids=()
+    ):
+        """Retire each resource owned by an initialization that never committed."""
+        injected = set(injected_resource_ids or ())
         retired = set()
-        for name in ("client", "_anthropic_client"):
-            captured = fields.get(name)
-            resource = captured.get("value") if isinstance(captured, dict) else None
-            if resource is None or id(resource) in retired:
-                continue
+
+        def close_once(resource, label):
+            if (
+                resource is None
+                or id(resource) in injected
+                or id(resource) in retired
+            ):
+                return
             retired.add(id(resource))
             close = getattr(resource, "close", None)
-            if callable(close):
+            if not callable(close):
+                return
+            try:
+                close()
+            except Exception:
+                logger.debug(
+                    "failed to close %s after token-budget init rollback",
+                    label,
+                    exc_info=True,
+                )
+
+        for name in ("client", "_anthropic_client", "_codex_session"):
+            close_once(getattr(self, name, None), name)
+        transports = getattr(self, "_transport_cache", None)
+        if isinstance(transports, dict):
+            for resource in transports.values():
+                close_once(resource, "transport")
+
+        engine = getattr(self, "context_compressor", None)
+        if engine is not None and id(engine) not in injected:
+            on_session_end = getattr(engine, "on_session_end", None)
+            if callable(on_session_end):
                 try:
-                    close()
+                    on_session_end(getattr(self, "session_id", "") or "", [])
                 except Exception:
                     logger.debug(
-                        "failed to close client after token-budget init rollback",
+                        "failed to end context engine after token-budget init rollback",
                         exc_info=True,
                     )
+
+        memory = getattr(self, "_memory_manager", None)
+        if memory is not None and id(memory) not in injected:
+            end_memory = getattr(memory, "on_session_end", None)
+            if callable(end_memory):
+                try:
+                    end_memory([])
+                except Exception:
+                    logger.debug(
+                        "failed to end memory manager after token-budget init rollback",
+                        exc_info=True,
+                    )
+            shutdown = getattr(memory, "shutdown_all", None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except Exception:
+                    logger.debug(
+                        "failed to stop memory manager after token-budget init rollback",
+                        exc_info=True,
+                    )
+
+        session_db = getattr(self, "_session_db", None)
+        if (
+            session_db is not None
+            and bool(getattr(self, "_owns_session_db", False))
+            and id(session_db) not in injected
+        ):
+            try:
+                from hermes_state_registry import release_or_close
+
+                release_or_close(session_db)
+            except Exception:
+                logger.debug(
+                    "failed to release session DB after token-budget init rollback",
+                    exc_info=True,
+                )
 
     def _snapshot_token_budget_request_state(self):
         """Capture one-shot request state that builders consume before returning."""

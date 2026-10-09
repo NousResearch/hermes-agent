@@ -666,7 +666,8 @@ class ResponsesApiTransport(ProviderTransport):
         see agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
         content hash and the xAI x-grok-conv-id header; the Codex x-client-request-id header mirrors the
         resulting body key. Keeps the cache warm across context-compression session rotation (#79017)
-        max_tokens: int | None — max_output_tokens timeout: float | None — per-request timeout forwarded to
+        max_tokens: int | None — default max_output_tokens; ephemeral_max_output_tokens: int | None —
+        one-shot continuation cap (unsupported by the ChatGPT Codex backend); timeout: float | None — per-request timeout forwarded to
         the SDK request_overrides: dict | None — extra kwargs merged in provider: str | None — provider name
         for backend-specific logic base_url: str | None — endpoint URL base_url_hostname: str | None —
         hostname for backend detection is_github_responses: bool — Copilot/GitHub models backend
@@ -783,6 +784,8 @@ class ResponsesApiTransport(ProviderTransport):
             headers = {k: v for k, v in headers.items() if v}
             if headers:
                 _merge_extra_headers(kwargs, **headers)
+        elif params.get("ephemeral_max_output_tokens") is not None:
+            kwargs["max_output_tokens"] = params["ephemeral_max_output_tokens"]
         elif params.get("max_tokens") is not None:
             kwargs["max_output_tokens"] = params["max_tokens"]
 

@@ -4,16 +4,16 @@
 
 DONE_WITH_CONCERNS
 
-The Task 1 contract is implemented and its focal and adjacent verification is green. The repository-wide suite was also launched with the official runner; its final checkpoint is recorded below because it exposes unrelated baseline/environment failures outside this task.
+The Task 1 contract and both reviewer fix waves are implemented. The focal and reconstructed adjacent verification is green. The repository-wide suite was not relaunched during the final fix wave; its earlier baseline checkpoint remains recorded below.
 
 ## Changes
 
 - Materialized the preserved token-budget policy and its offline/adversarial regression tests.
 - Added `TokenBudgetRuntimeMixin` as a narrow integration boundary instead of expanding `run_agent.py`.
 - Applied route-scoped token budgets only after provider, client, compressor, and prompt-cache initialization.
-- Made model switch, fallback activation, and primary restore transactional: failed policy application restores the complete runtime route graph.
+- Made model switch, fallback activation, and primary restore transactional: failed policy application restores explicit agent-owned route state while treating SDK resources as atomic identities.
 - Added current 0.21.5 route-side state to the rollback snapshot, including request overrides, capabilities, custom providers, credential/fallback state, and compression notices.
-- Enforced request payload caps while preserving explicit one-shot caps and provider-default cleanup when the policy is disabled.
+- Enforced request payload caps where the endpoint supports them; ChatGPT Codex consumes an explicit one-shot cap and records it as unsupported because that endpoint rejects `max_output_tokens`.
 - Kept helper compatibility by omitting optional `capabilities` and `reset_at` keywords when their value is `None`.
 - Made the preserved adversarial test file self-contained because the official per-file runner does not make sibling test modules importable.
 
@@ -41,6 +41,7 @@ The Task 1 contract is implemented and its focal and adjacent verification is gr
 ## Concerns
 
 - `GLOBAL_SUITE_BASELINE_RED`: the repository-wide suite completed but is not a clean task-specific signal in this checkout. Its 239 failures include missing optional `acp` and `anthropic` packages plus unrelated existing gateway/compression/provider failures; five additional files were flaky and passed on retry. None touched the Task 1 files, and the focused/adjacent suite is clean.
+- `CONTINUITY_RUNNER_PATH_ALIAS`: the nine-file continuity command produced **116 passed / 3 failed** in `test_compaction_prompt_rebuild.py`; each failure is the macOS runner's `/var/tmp` fixture spelling versus the resolved `/private/var/tmp` path. The other eight continuity files passed, and no continuity code is part of this delta.
 - No live configuration, runtime service, network, credential, or launchd state was changed.
 
 ## Fix round 1 — reviewer findings
@@ -58,3 +59,22 @@ The Task 1 contract is implemented and its focal and adjacent verification is gr
 3. Self-review added the cross-account baseline-removal invariant; it failed with a leaked 500K promoted baseline, then passed after physical-route baseline inheritance was implemented.
 4. Final combined focal+adjacent suite: **601 passed / 0 failed / 4 skipped** (Windows-only).
 5. Ruff, compatibility-pointer validation, and `git diff --check`: **passed**.
+
+## Final review fix wave
+
+- Replaced reflective graph traversal with an explicit snapshot schema. Built-in containers owned by the agent are restored with alias preservation; clients, transports, pools, locks, callables, classes, modules, and other foreign objects are atomic identities. Compressor rollback is limited to an explicit field allowlist.
+- Made first-initialization config read failures fail closed for both exceptions and `FailedConfigRead`; only a successfully applied/validated policy may serve as last-known-good on reload.
+- Canonicalized budget route identity with `normalize_route_base_url`, so equivalent trailing-slash routes share one baseline and removal path.
+- Split rollback-critical state from legitimate fallback bookkeeping. Actual restore/fallback `False` paths now retain chain exhaustion, unavailable entries, cooldown, and backoff while partial route mutations still roll back.
+- Made failed-init cleanup ownership-aware and unconditional even when restore raises. Agent-owned context engine, memory manager/providers, transports, sessions, clients, and session DB are retired once; injected caller resources are preserved; the original apply error remains primary.
+- Routed one-shot output state through the real mixin → builder → `ResponsesApiTransport` path. ChatGPT Codex omits the rejected field and records `unsupported`; supported Responses routes retain the explicit transport parameter.
+- Deferred switch/fallback/restore success logs until policy commit, alongside the existing staged writes and notices.
+
+### Final-wave TDD and verification
+
+1. Added the reviewer regressions and observed **43 passed / 9 failed**. The nine failures covered all six Important findings plus premature success logging.
+2. After the fixes, the runtime focal file produced **52 passed / 0 failed**; the four token-budget focal files produced **151 passed / 0 failed**.
+3. Because the original 601-file-list command was not preserved, the adjacent selection was reconstructed explicitly from config, model metadata, switch/fallback/restore, compressor, context-engine, initialization, and Codex transport/Responses tests. Across the focal and reconstructed adjacent commands: **852 passed / 0 failed / 4 skipped** (Windows-only).
+4. The exact nine-file continuity selection produced **116 passed / 3 failed** only for the pre-existing macOS `/var/tmp` versus `/private/var/tmp` fixture-path mismatch described above.
+5. Ruff over all changed Python files, `scripts/check_compat_pointers.py` (**2085 pointers**), and `git diff --check`: **passed**.
+6. No global suite was relaunched during this final wave.

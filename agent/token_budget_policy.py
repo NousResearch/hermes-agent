@@ -546,10 +546,12 @@ def _runtime_account_identity(agent: Any) -> str:
 
 def _runtime_route_identity(agent: Any) -> tuple[str, str, str, str, str]:
     """Return the exact live route+account identity used for reversible budgets."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
     return (
         str(getattr(agent, "provider", "") or "").strip().lower(),
         str(getattr(agent, "model", "") or "").strip(),
-        str(getattr(agent, "base_url", "") or "").strip(),
+        normalize_route_base_url(getattr(agent, "base_url", "")),
         str(getattr(agent, "api_mode", "") or "").strip().lower(),
         _runtime_account_identity(agent),
     )
@@ -676,6 +678,7 @@ def apply_runtime_token_budget(
         }
     else:
         agent._token_budget_policy_config = {}
+    agent._token_budget_policy_config_validated = True
     result = resolve_runtime_token_budget(
         config,
         provider=getattr(agent, "provider", ""),

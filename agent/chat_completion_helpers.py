@@ -1389,11 +1389,19 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
     ephemeral_out = _consume_ephemeral_max_output(agent)
+    if ephemeral_out is not None:
+        # ChatGPT's Codex Responses endpoint rejects max_output_tokens (400).
+        # Consume the continuation override exactly once, but make its wire
+        # disposition observable instead of pretending the cap was emitted.
+        agent._last_ephemeral_output_cap_disposition = (
+            "unsupported" if is_codex_backend else "emitted"
+        )
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
-        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+        max_tokens=agent.max_tokens,
+        ephemeral_max_output_tokens=ephemeral_out,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
@@ -1850,17 +1858,38 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     """A billing switch is a WARNING naming the profile, both models and the remedy: the gateway
     persists the turn as a transient failure otherwise, and nothing in the log says the paid
     model was refused for credits or how to fix it (#115702). Other reasons stay INFO."""
-    if reason != FailoverReason.billing:
-        logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
+    def publish():
+        if reason != FailoverReason.billing:
+            logger.info(
+                "Fallback activated: %s → %s (%s)",
+                old_model,
+                fb_model,
+                fb_provider,
+            )
+            return
+        from hermes_constants import get_hermes_home, profile_name_for_home
+
+        profile = profile_name_for_home(get_hermes_home()) or "default"
+        remedy = (
+            "hermes model"
+            if profile == "default"
+            else f"hermes -p {profile} model"
+        )
+        logger.warning(
+            "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
+            "Top up credits, or run `%s` to pick a model this account can use.",
+            profile,
+            old_model,
+            old_provider,
+            fb_model,
+            fb_provider,
+            remedy,
+        )
+
+    defer = getattr(agent, "_defer_token_budget_effect", None)
+    if callable(defer) and defer(publish):
         return
-    from hermes_constants import get_hermes_home, profile_name_for_home
-    profile = profile_name_for_home(get_hermes_home()) or "default"
-    remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
-    logger.warning(
-        "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
-        "Top up credits, or run `%s` to pick a model this account can use.",
-        profile, old_model, old_provider, fb_model, fb_provider, remedy,
-    )
+    publish()
 
 
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:

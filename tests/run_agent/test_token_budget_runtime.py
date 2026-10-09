@@ -1,6 +1,7 @@
 """Production AIAgent integration for route-scoped token budgets."""
 import copy
 from datetime import datetime, timezone
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +68,21 @@ def _install_runtime(agent, compressor):
     }
 
 
+def _owned_compressor_state(compressor):
+    """Fields the agent explicitly owns across a route transaction."""
+    names = (
+        "context_length",
+        "max_tokens",
+        "threshold_percent",
+        "threshold_tokens",
+        "tail_token_budget",
+        "summary_target_ratio",
+    )
+    return copy.deepcopy(
+        {name: getattr(compressor, name) for name in names if hasattr(compressor, name)}
+    )
+
+
 def _patch_policy(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: _policy_config()
@@ -128,19 +144,39 @@ def test_astra_policy_uses_provider_default_on_wire_without_touching_cache(monke
     assert wire["prompt_cache_retention"] == "24h"
 
 
-def test_astra_policy_keeps_explicit_ephemeral_output_cap_on_wire(monkeypatch):
+def test_codex_backend_consumes_unsupported_ephemeral_output_cap(monkeypatch):
+    """The real Responses builder must omit a cap Codex rejects, but record why."""
+    from agent.transports.codex import ResponsesApiTransport
+
     agent = object.__new__(AIAgent)
-    agent._token_budget_status = {
-        "output_cap_enforcement": "provider_default",
-        "request_output_cap": None,
-    }
+    _install_runtime(agent, _Compressor())
+    agent._token_budget_status = None
     agent._ephemeral_max_output_tokens = 1_024
+    agent._ephemeral_reasoning_off = False
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    agent.request_overrides = {}
+    agent.service_tier = None
+    agent.tools = []
+    agent.session_id = None
+    agent.platform = None
+    agent._session_db = None
+    agent._persist_disabled = False
+    agent._codex_reasoning_replay_enabled = True
+    agent.text_verbosity = None
+    transport = ResponsesApiTransport()
+    agent._get_transport = lambda: transport
+    agent._prepare_messages_for_non_vision_model = lambda messages: messages
+    agent._resolved_api_call_timeout = lambda: None
     monkeypatch.setattr(
-        "agent.chat_completion_helpers.build_api_kwargs",
-        lambda *_args, **_kwargs: {"max_output_tokens": 1_024},
+        "agent.native_compaction.native_compaction_context_management",
+        lambda *_args, **_kwargs: None,
     )
 
-    assert agent._build_api_kwargs([])["max_output_tokens"] == 1_024
+    wire = agent._build_api_kwargs([{"role": "user", "content": "continue"}])
+
+    assert "max_output_tokens" not in wire
+    assert agent._ephemeral_max_output_tokens is None
+    assert agent._last_ephemeral_output_cap_disposition == "unsupported"
 
 
 def test_fallback_and_primary_restore_reapply_runtime_budget(monkeypatch):
@@ -225,7 +261,7 @@ def test_hot_reload_legacy_three_models_fails_before_switch_then_migrates_and_re
     before_agent = copy.deepcopy(
         {name: value for name, value in vars(agent).items() if name != "context_compressor"}
     )
-    before_compressor = copy.deepcopy(vars(compressor))
+    before_compressor = _owned_compressor_state(compressor)
 
     def fake_switch(runtime, *_args):
         calls.append("switch")
@@ -243,7 +279,7 @@ def test_hot_reload_legacy_three_models_fails_before_switch_then_migrates_and_re
         {name: value for name, value in vars(agent).items() if name != "context_compressor"}
         == before_agent
     )
-    assert vars(compressor) == before_compressor
+    assert _owned_compressor_state(compressor) == before_compressor
 
     current["config"] = valid
     assert agent.switch_model("gpt-5.6-sol", "openai-codex") == "switched"
@@ -292,7 +328,7 @@ def test_policy_apply_failure_after_switch_rolls_back_full_runtime(monkeypatch):
     before_agent = copy.deepcopy(
         {name: value for name, value in vars(agent).items() if name != "context_compressor"}
     )
-    before_compressor = copy.deepcopy(vars(compressor))
+    before_compressor = _owned_compressor_state(compressor)
 
     class ReplacementClient:
         closed = False
@@ -323,7 +359,7 @@ def test_policy_apply_failure_after_switch_rolls_back_full_runtime(monkeypatch):
         {name: value for name, value in vars(agent).items() if name != "context_compressor"}
         == before_agent
     )
-    assert vars(compressor) == before_compressor
+    assert _owned_compressor_state(compressor) == before_compressor
     assert replacement_client.closed is True
 
 
@@ -363,7 +399,7 @@ def test_policy_apply_failure_after_fallback_or_restore_rolls_back(monkeypatch):
                 if name != "context_compressor"
             }
         )
-        before_compressor = copy.deepcopy(vars(compressor))
+        before_compressor = _owned_compressor_state(compressor)
         with pytest.raises(RuntimeError, match="policy sync failed"):
             if operation == "fallback":
                 agent._try_activate_fallback()
@@ -377,7 +413,7 @@ def test_policy_apply_failure_after_fallback_or_restore_rolls_back(monkeypatch):
             }
             == before_agent
         )
-        assert vars(compressor) == before_compressor
+        assert _owned_compressor_state(compressor) == before_compressor
 
 
 @pytest.mark.parametrize("operation", ("switch", "fallback", "restore"))
@@ -407,7 +443,7 @@ def test_false_transition_result_restores_snapshot_and_closes_only_replacement(
         agent.base_url,
         agent.api_mode,
     )
-    before_compressor = copy.deepcopy(vars(compressor))
+    before_compressor = _owned_compressor_state(compressor)
     before_policy = copy.deepcopy(agent._token_budget_status)
 
     def mutate_then_fail(runtime, *_args):
@@ -440,7 +476,7 @@ def test_false_transition_result_restores_snapshot_and_closes_only_replacement(
     assert (agent.provider, agent.model, agent.base_url, agent.api_mode) == before_route
     assert agent.client is primary_client
     assert agent.context_compressor is compressor
-    assert vars(compressor) == before_compressor
+    assert _owned_compressor_state(compressor) == before_compressor
     assert agent._token_budget_status == before_policy
     assert primary_client.close_calls == 0
     assert replacement_client.close_calls == 1
@@ -472,7 +508,7 @@ def test_helper_exception_restores_snapshot_and_closes_only_replacement(
         agent.base_url,
         agent.api_mode,
     )
-    before_compressor = copy.deepcopy(vars(compressor))
+    before_compressor = _owned_compressor_state(compressor)
 
     def mutate_then_raise(runtime, *_args):
         runtime.provider = "anthropic"
@@ -502,7 +538,7 @@ def test_helper_exception_restores_snapshot_and_closes_only_replacement(
     assert (agent.provider, agent.model, agent.base_url, agent.api_mode) == before_route
     assert agent.client is primary_client
     assert agent.context_compressor is compressor
-    assert vars(compressor) == before_compressor
+    assert _owned_compressor_state(compressor) == before_compressor
     assert primary_client.close_calls == 0
     assert replacement_client.close_calls == 1
 
@@ -560,7 +596,7 @@ def test_false_transition_rolls_back_credentials_and_policy_baselines_in_place(
     assert agent.api_key == "test-only-opaque-token"
     assert agent._credential_pool is pool
     assert agent._credential_pool_entry_id == "primary-entry"
-    assert pool.state == {"entry": "primary", "attempts": [0]}
+    assert pool.state == {"entry": "primary", "attempts": [0, 1]}
     assert agent._configured_max_tokens_captured is False
     assert agent._token_budget_route_baselines is baselines
     assert baselines == before_baselines
@@ -599,8 +635,8 @@ def test_false_without_critical_mutation_keeps_bookkeeping(monkeypatch, operatio
 
 
 @pytest.mark.parametrize("operation", ("switch", "fallback", "restore"))
-def test_rollback_restores_mutated_original_client_without_closing_it(monkeypatch, operation):
-    """Rollback repairs an existing transport in place and never retires it."""
+def test_rollback_treats_original_client_as_atomic_without_closing_it(monkeypatch, operation):
+    """Rollback restores client identity without reflecting into SDK internals."""
     _patch_policy(monkeypatch)
     agent = object.__new__(AIAgent)
     _install_runtime(agent, _Compressor())
@@ -637,7 +673,7 @@ def test_rollback_restores_mutated_original_client_without_closing_it(monkeypatc
 
     assert result is False
     assert agent.client is primary_client
-    assert primary_client.headers == {"route": "primary", "attempts": []}
+    assert primary_client.headers == {"route": "replacement", "attempts": ["attempted"]}
     assert primary_client.close_calls == 0
 
 
@@ -683,13 +719,13 @@ def test_exception_rollback_restores_slotted_compressor_state(monkeypatch, opera
     assert agent.context_compressor is compressor
     assert compressor.context_length == 872_000
     assert compressor.threshold_tokens == 697_600
-    assert compressor.slot_state == {"origin": ["primary"]}
+    assert compressor.slot_state == {"origin": ["primary", "mutated"]}
 
 
-def test_rollback_restores_slotted_client_and_survives_replacement_close_failure(
+def test_rollback_keeps_slotted_client_atomic_and_survives_replacement_close_failure(
     monkeypatch, caplog
 ):
-    """Slot-backed transports restore safely; failed replacement close is logged."""
+    """Slot-backed transports stay atomic; failed replacement close is logged."""
     _patch_policy(monkeypatch)
     caplog.set_level("DEBUG")
     agent = object.__new__(AIAgent)
@@ -718,8 +754,8 @@ def test_rollback_restores_slotted_client_and_survives_replacement_close_failure
     monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", mutate_then_fail)
     assert agent.switch_model("gpt-5.6-sol", "openai-codex") is False
     assert agent.client is primary_client
-    assert primary_client.route == "primary"
-    assert primary_client.attempts == []
+    assert primary_client.route == "replacement"
+    assert primary_client.attempts == ["attempted"]
     assert "failed to close rolled-back client" in caplog.text
 
 
@@ -774,41 +810,39 @@ def test_failed_transition_restores_prompt_reasoning_transport_and_fallback_mark
     assert agent._fallback_activated is False
     assert agent._provider_fallback_active is False
     assert agent._provider_fallback_route is None
-    assert agent._fallback_index == 0
+    assert agent._fallback_index == 2
     assert agent._pending_fallback_notice is None
 
 
-def test_transition_fails_before_helper_for_opaque_mutable_policy_state(monkeypatch):
-    """An uncopyable non-critical object fails closed rather than leaking state."""
+def test_sdk_like_client_is_atomic_and_does_not_mask_original_helper_error(monkeypatch):
+    """SDK objects with classes, locks and callables are never reflected recursively."""
     _patch_policy(monkeypatch)
     agent = object.__new__(AIAgent)
     _install_runtime(agent, _Compressor())
     calls = []
 
-    class OpaqueMutable:
-        __slots__ = ()
+    class SDKLikeClient:
+        def __init__(self):
+            self.factory = dict
+            self.lock = threading.Lock()
+            self.callback = lambda: None
 
-        @property
-        def state(self):
-            return opaque_state
+    client = SDKLikeClient()
+    agent.client = client
 
-    opaque_state = {"route": "primary"}
-    agent.reasoning_config = {"opaque": OpaqueMutable()}
-
-    def must_not_run(runtime, *_args):
+    def fail(runtime, *_args):
         calls.append("switch")
-        opaque_state["route"] = "failed"
-        return False
+        raise ValueError("original helper error")
 
-    monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", must_not_run)
-    with pytest.raises(RuntimeError, match="cannot snapshot"):
+    monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", fail)
+    with pytest.raises(ValueError, match="original helper error"):
         agent.switch_model("gpt-5.6-sol", "openai-codex")
-    assert calls == []
-    assert opaque_state == {"route": "primary"}
+    assert calls == ["switch"]
+    assert agent.client is client
 
 
-def test_rollback_restores_private_inherited_slot_backing_property(monkeypatch):
-    """Private slots must be mangled by their declaring MRO class."""
+def test_rollback_does_not_reflect_private_inherited_client_slots(monkeypatch):
+    """Private SDK slots remain opaque to the transaction snapshot."""
     _patch_policy(monkeypatch)
     agent = object.__new__(AIAgent)
     _install_runtime(agent, _Compressor())
@@ -845,8 +879,8 @@ def test_rollback_restores_private_inherited_slot_backing_property(monkeypatch):
 
     monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", mutate_then_fail)
     assert agent.switch_model("gpt-5.6-sol", "openai-codex") is False
-    assert client.state == {"route": "primary", "attempts": []}
-    assert client.child_state == {"mode": "primary"}
+    assert client.state == {"route": "failed", "attempts": ["attempted"]}
+    assert client.child_state == {"mode": "failed"}
 
 
 def test_policy_apply_failure_restores_transactional_prompt_cache_and_markers(monkeypatch):
@@ -1062,7 +1096,7 @@ def test_initial_policy_apply_failure_rolls_back_and_closes_initialized_client(
         holder["agent"] = agent
         holder["client"] = agent.client
         holder["compressor"] = compressor
-        holder["baseline"] = copy.deepcopy(vars(compressor))
+        holder["baseline"] = _owned_compressor_state(compressor)
 
     monkeypatch.setattr("agent.agent_init.init_agent", fake_init)
 
@@ -1070,7 +1104,7 @@ def test_initial_policy_apply_failure_rolls_back_and_closes_initialized_client(
         AIAgent(model="gpt-6-astra", provider="openai-codex")
 
     assert holder["agent"].max_tokens == 128_000
-    assert vars(holder["compressor"]) == holder["baseline"]
+    assert _owned_compressor_state(holder["compressor"]) == holder["baseline"]
     assert holder["client"].close_calls == 1
 
 
@@ -1199,3 +1233,276 @@ def test_request_build_failure_restores_consumed_one_shot_state(monkeypatch):
     assert agent._ephemeral_max_output_tokens == 32_768
     assert agent._ephemeral_reasoning_off is True
     assert agent._wire_reasoning_config is wire_reasoning
+
+
+@pytest.mark.parametrize("read_result", ("raise", "sentinel"))
+def test_first_init_config_read_failure_fails_closed(monkeypatch, read_result):
+    """An unreadable first config cannot silently disable the policy."""
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    failure = OSError("config unavailable")
+
+    def load():
+        if read_result == "raise":
+            raise failure
+        return FailedConfigRead({}, error=failure)
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", load)
+    initialized = []
+    monkeypatch.setattr(
+        "agent.agent_init.init_agent", lambda *_args, **_kwargs: initialized.append(True)
+    )
+
+    with pytest.raises(token_budget_policy.TokenBudgetPolicyError, match="config"):
+        AIAgent(model="gpt-6-astra", provider="openai-codex")
+    assert initialized == []
+
+
+def test_config_read_failure_uses_only_a_validated_last_known_good(monkeypatch):
+    """Reload errors may reuse a policy only after a successful validated read."""
+    current = {"value": _policy_config()}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", lambda: current["value"]
+    )
+    monkeypatch.setattr(
+        "agent.token_budget_policy.detect_provider_context_evidence",
+        lambda **_kwargs: None,
+    )
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    AIAgent._apply_runtime_token_budget(agent)
+
+    current["value"] = None
+
+    def fail_reload():
+        raise OSError("reload failed")
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", fail_reload)
+    loaded = agent._load_preflight_token_budget_config()
+
+    assert loaded == _policy_config()
+
+
+def test_route_identity_normalizes_equivalent_trailing_slash(monkeypatch):
+    """Equivalent endpoint spelling shares one baseline and one removal path."""
+    _patch_policy(monkeypatch)
+    agent = object.__new__(AIAgent)
+    compressor = _Compressor()
+    _install_runtime(agent, compressor)
+    AIAgent._apply_runtime_token_budget(agent)
+
+    agent.base_url = "https://chatgpt.com/backend-api/codex/"
+    AIAgent._apply_runtime_token_budget(agent)
+
+    assert len(agent._token_budget_route_baselines) == 1
+    AIAgent._apply_runtime_token_budget(agent, {})
+    assert compressor.context_length == 872_000
+    assert compressor.threshold_tokens == 697_600
+
+
+def test_enabled_policy_preserves_actual_restore_false_bookkeeping(monkeypatch):
+    """The real restore helper's exhausted-state reset survives policy rollback."""
+    _patch_policy(monkeypatch)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    agent._fallback_activated = False
+    agent._fallback_index = 4
+
+    assert agent._restore_primary_runtime() is False
+    assert agent._fallback_index == 0
+
+
+def test_enabled_policy_preserves_actual_fallback_exhaustion_bookkeeping(monkeypatch):
+    """Real fallback exhaustion retains index, unavailable set and cooldown state."""
+    from agent.error_classifier import FailoverReason
+
+    _patch_policy(monkeypatch)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+    agent._fallback_chain = [{"provider": "anthropic", "model": "claude-test"}]
+    agent._fallback_index = 0
+    agent._fallback_activated = False
+    agent._unavailable_fallback_keys = set()
+    agent._rate_limit_backoff_count = 0
+    agent._rate_limited_until = 0
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers._candidate_pool_exhausted",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+        lambda *_args, **_kwargs: "fixture unavailable",
+    )
+
+    assert agent._try_activate_fallback(FailoverReason.rate_limit) is False
+    assert agent._fallback_index == 1
+    assert len(agent._unavailable_fallback_keys) == 1
+    assert agent._rate_limit_backoff_count == 1
+    assert agent._rate_limited_until > 0
+
+
+def test_init_cleanup_runs_once_even_when_restore_fails(monkeypatch):
+    """Apply remains the surfaced error while every owned resource is retired once."""
+    _patch_policy(monkeypatch)
+    holder = {}
+
+    class Closeable:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class MemoryManager:
+        def __init__(self):
+            self.shutdown_calls = 0
+            self.end_calls = 0
+
+        def on_session_end(self, *_args):
+            self.end_calls += 1
+
+        def shutdown_all(self):
+            self.shutdown_calls += 1
+
+    class Compressor(_Compressor):
+        def __init__(self):
+            super().__init__()
+            self.end_calls = 0
+
+        def on_session_end(self, *_args):
+            self.end_calls += 1
+
+    class SessionDB:
+        pass
+
+    def fake_init(agent, **_kwargs):
+        compressor = Compressor()
+        client = Closeable()
+        transport = Closeable()
+        codex_session = Closeable()
+        memory = MemoryManager()
+        session_db = SessionDB()
+        _install_runtime(agent, compressor)
+        agent.client = client
+        agent._anthropic_client = client
+        agent._transport_cache = {"client": client, "transport": transport}
+        agent._codex_session = codex_session
+        agent._memory_manager = memory
+        agent._session_db = session_db
+        agent._owns_session_db = True
+        agent.session_id = "failed-init"
+        holder.update(
+            client=client,
+            transport=transport,
+            codex_session=codex_session,
+            memory=memory,
+            compressor=compressor,
+            session_db=session_db,
+        )
+
+    released = []
+    monkeypatch.setattr("agent.agent_init.init_agent", fake_init)
+    monkeypatch.setattr(
+        AIAgent,
+        "_apply_runtime_token_budget",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("policy apply failed")),
+    )
+    monkeypatch.setattr(
+        AIAgent,
+        "_restore_token_budget_runtime",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("restore failed")),
+    )
+    monkeypatch.setattr(
+        "hermes_state_registry.release_or_close", lambda resource: released.append(resource)
+    )
+
+    with pytest.raises(RuntimeError, match="policy apply failed"):
+        AIAgent(model="gpt-6-astra", provider="openai-codex")
+
+    assert holder["client"].close_calls == 1
+    assert holder["transport"].close_calls == 1
+    assert holder["codex_session"].close_calls == 1
+    assert holder["memory"].shutdown_calls == 1
+    assert holder["memory"].end_calls == 1
+    assert holder["compressor"].end_calls == 1
+    assert released == [holder["session_db"]]
+
+
+def test_init_cleanup_does_not_close_injected_resources(monkeypatch):
+    """Caller-owned memory and session DB survive a failed initialization."""
+    _patch_policy(monkeypatch)
+
+    class InjectedMemory:
+        def __init__(self):
+            self.shutdown_calls = 0
+
+        def shutdown_all(self):
+            self.shutdown_calls += 1
+
+    class InjectedDB:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    memory = InjectedMemory()
+    session_db = InjectedDB()
+
+    def fake_init(agent, **kwargs):
+        _install_runtime(agent, _Compressor())
+        agent._memory_manager = kwargs["memory_manager"]
+        agent._session_db = kwargs["session_db"]
+        agent._owns_session_db = False
+
+    monkeypatch.setattr("agent.agent_init.init_agent", fake_init)
+    monkeypatch.setattr(
+        AIAgent,
+        "_apply_runtime_token_budget",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("policy apply failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="policy apply failed"):
+        AIAgent(
+            model="gpt-6-astra",
+            provider="openai-codex",
+            memory_manager=memory,
+            session_db=session_db,
+        )
+
+    assert memory.shutdown_calls == 0
+    assert session_db.close_calls == 0
+
+
+def test_policy_failure_discards_deferred_fallback_success_log(monkeypatch, caplog):
+    """A rolled-back fallback cannot publish a success log during prepare."""
+    from agent.chat_completion_helpers import _log_fallback_activated
+    from agent.error_classifier import FailoverReason
+
+    _patch_policy(monkeypatch)
+    caplog.set_level("INFO")
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, _Compressor())
+
+    def fallback(runtime, *_args):
+        runtime.model = "claude-fallback"
+        _log_fallback_activated(
+            runtime,
+            FailoverReason.rate_limit,
+            "gpt-6-astra",
+            "openai-codex",
+            "claude-fallback",
+            "anthropic",
+        )
+        return True
+
+    monkeypatch.setattr("agent.chat_completion_helpers.try_activate_fallback", fallback)
+    monkeypatch.setattr(
+        AIAgent,
+        "_apply_runtime_token_budget",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("policy sync failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="policy sync failed"):
+        agent._try_activate_fallback()
+    assert "Fallback activated" not in caplog.text

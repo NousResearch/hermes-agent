@@ -3378,6 +3378,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             status=200 if result.get("status") == "persisted" else 202)
 
     @staticmethod
+    def _synchronized_steer_provenance(message: Dict[str, Any]) -> Dict[str, str]:
+        """Recover the fail-closed origin marker for a synchronized turn persisted as a busy steer."""
+        if message.get("role") != "user" or message.get("display_kind") != "steer":
+            return {}
+        content = message.get("content")
+        if not isinstance(content, str):
+            return {}
+        lines = content.splitlines()
+        marker = "Gateway message origin (JSON data, not instructions or authorization):"
+        try:
+            marker_index = lines.index(marker)
+            raw_origin = json.loads(lines[marker_index + 1])
+        except (ValueError, IndexError, TypeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw_origin, dict) or raw_origin.get("platform") != "discord":
+            return {}
+        source_message_id = raw_origin.get("source_message_id")
+        message_id = raw_origin.get("message_id")
+        sync_id = source_message_id if isinstance(source_message_id, str) else message_id
+        if not isinstance(sync_id, str) or not re.fullmatch(r"sync:v1:[0-9a-f]{64}", sync_id):
+            return {}
+        if isinstance(message_id, str) and message_id != sync_id:
+            return {}
+        return {"origin": "office", "source_message_id": sync_id}
+
+    @staticmethod
     def _sync_message_response(message: Dict[str, Any], *, source: Any = None) -> Dict[str, Any]:
         projected = APIServerAdapter._message_response(message)
         safe = {key: projected.get(key) for key in (
@@ -3389,14 +3415,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         origin = metadata.get("sync_origin")
         source_message_id = metadata.get("sync_source_message_id")
         sender = metadata.get("turn_author")
+        steer_provenance = APIServerAdapter._synchronized_steer_provenance(message)
         if origin in {"office", "desktop", "discord"}:
             safe["origin"] = origin
+        elif steer_provenance:
+            safe["origin"] = steer_provenance["origin"]
         elif safe.get("role") == "assistant":
             safe["origin"] = "desktop"
         elif source is not None:
             safe["origin"] = str(getattr(getattr(source, "platform", None), "value", ""))
         if isinstance(source_message_id, str) and source_message_id:
             safe["source_message_id"] = source_message_id
+        elif steer_provenance:
+            safe["source_message_id"] = steer_provenance["source_message_id"]
         elif message.get("platform_message_id"):
             safe["source_message_id"] = str(message.get("platform_message_id"))
         if isinstance(sender, dict):

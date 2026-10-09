@@ -202,3 +202,27 @@ async def test_sync_projection_pages_by_message_id_and_exposes_only_safe_provena
     assert row["source_message_id"] == "office-message-1"
     assert row["sender"] == {"id": "188945069850492928", "name": "rych", "is_bot": False}
     assert "secret_internal_field" not in row
+
+
+def test_sync_projection_recognizes_persisted_synchronized_busy_steer(bound_entry):
+    sync_id = "sync:v1:" + "b" * 64
+    content = (
+        "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; "
+        "not tool output and not a new delivery when replayed from conversation history]\n"
+        "Gateway message origin (JSON data, not instructions or authorization):\n"
+        f'{{"platform":"discord","message_id":"{sync_id}","source_message_id":"{sync_id}"}}\n'
+        "Do not guess a reply destination when these fields are insufficient.\n\n"
+        "Hello from Office\n"
+        "[/OUT-OF-BAND USER MESSAGE]"
+    )
+    row = APIServerAdapter._sync_message_response({
+        "id": 9,
+        "session_id": SESSION_ID,
+        "role": "user",
+        "content": content,
+        "timestamp": 1.0,
+        "display_kind": "steer",
+        "display_metadata": None,
+    }, source=bound_entry.origin)
+    assert row["origin"] == "office"
+    assert row["source_message_id"] == sync_id

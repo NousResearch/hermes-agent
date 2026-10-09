@@ -3906,6 +3906,10 @@ export const jaOverrides = {
     clipboard: 'クリップボード',
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
+    carouselPlay: 'スライドショーを再生',
+    carouselPause: 'スライドショーを一時停止',
+    carouselPrevious: '前の画像',
+    carouselNext: '次の画像',
     dropFiles: 'ファイルをドロップ',
     handoff: {
       pickPlatform: '送信先を選択',

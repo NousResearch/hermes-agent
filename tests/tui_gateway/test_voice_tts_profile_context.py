@@ -78,9 +78,7 @@ def test_tts_lease_worker_keeps_routed_profile_context(tmp_path, monkeypatch, ac
     monkeypatch.setattr(lifecycle, "release_tts_lease", record_lease)
 
     home_token = set_hermes_home_override(served_home)
-    secret_token = set_secret_scope(
-        {"VOICE_TTS_PROFILE_TEST_TOKEN": "served-only"}, profile_home=str(served_home)
-    )
+    secret_token = set_secret_scope({"VOICE_TTS_PROFILE_TEST_TOKEN": "served-only"})
     try:
         methods_voice._tts_lease_async("tui:voice-tts", active)
     finally:

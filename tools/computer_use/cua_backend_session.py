@@ -441,12 +441,17 @@ class _CuaDriverSession:
         screenshot to a temp file (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the
         multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back.
 
-        Sandboxed Bot Desktops (``terminal.backend: docker``/ssh/apptainer) get the SAME exec-prefix + env
-        wrapping ``sandbox_mcp_invocation`` uses for the MCP transport this is falling back from
-        (``_cb.sandbox_cli_invocation``) — never a bare local ``cua-driver call``, which has no DISPLAY for a
-        desktop that lives inside the sandbox. ``screenshot_out_file`` is skipped in that branch: it is a HOST
-        filesystem path, and a sandboxed driver process has its own filesystem namespace that can never see it
-        (the call still succeeds, just over the slower inline-base64 response)."""
+        Precedence mirrors ``_lifecycle_coro``'s own MCP-transport ordering: an embedded daemon (bounded/
+        unrestricted permission mode) always wins over sandbox placement, but the daemon itself is now
+        sandbox-aware (``_EmbeddedCuaDaemon.call_invocation``) — it was previously spawned unconditionally
+        on the host even when it was supposed to drive a sandboxed screen (#t_39df9245).
+
+        Sandboxed Bot Desktops (``terminal.backend: docker``/ssh/apptainer) with NO embedded daemon get the
+        SAME exec-prefix + env wrapping ``sandbox_mcp_invocation`` uses for the MCP transport this is falling
+        back from (``_cb.sandbox_cli_invocation``) — never a bare local ``cua-driver call``, which has no
+        DISPLAY for a desktop that lives inside the sandbox. ``screenshot_out_file`` is skipped in that
+        branch: it is a HOST filesystem path, and a sandboxed driver process has its own filesystem namespace
+        that can never see it (the call still succeeds, just over the slower inline-base64 response)."""
         import tempfile as _tempfile
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env
@@ -454,12 +459,7 @@ class _CuaDriverSession:
         call_args, shot_file = dict(args), None
         daemon = getattr(self, "_embedded_daemon", None)
         if daemon is not None:
-            if name == "get_window_state" and "screenshot_out_file" not in call_args:
-                fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
-                os.close(fd)
-                call_args["screenshot_out_file"] = shot_file
-            driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
-            cmd = [driver_command, "call", name, json.dumps(call_args), "--socket", daemon.socket_path]
+            cmd, child_env, shot_file = daemon.call_invocation(name, call_args)
         else:
             sandboxed = _cb.sandbox_cli_invocation(["cua-driver", "call", name, json.dumps(call_args)])
             if sandboxed is not None:

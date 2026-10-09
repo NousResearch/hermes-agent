@@ -40,10 +40,9 @@ from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
     _can_open_graphical_browser, _default_verify, _is_remote_session,
-    _nous_device_auth_timeout_message, _offer_existing_oauth_credentials,
-    _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
-    _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
-    _resolve_verify, _ssh_user_at_host)
+    _nous_device_auth_timeout_message, _offer_existing_oauth_credentials, _poll_device_token_generic,
+    _poll_for_token, _print_device_code_instructions, _print_login_success, _print_loopback_ssh_hint,
+    _prompt_yes_no, _request_device_code, _resolve_verify, _ssh_user_at_host)
 from hermes_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
@@ -52,16 +51,16 @@ from hermes_cli.auth_nous import (
     NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
     _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
     _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
-    _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
-    _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
-    _nous_invoke_jwt_status, _nous_portal_base_url, _nous_portal_env_override, _nous_shared_store_lock,
-    _nous_shared_store_path, _pool_first_oauth_status, _quarantine_nous_oauth_state,
-    _quarantine_nous_pool_entries, _read_shared_nous_state, _refresh_access_token,
-    _refresh_nous_or_quarantine, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
-    _token_fingerprint, _try_import_shared_nous_state, _validate_nous_inference_url_from_network,
-    _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
-    get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
-    resolve_nous_runtime_credentials, step_up_nous_billing_scope)
+    _heal_persisted_nous_inference_urls, _login_nous, _merge_shared_nous_oauth_state,
+    _migrate_stale_nous_portal_url, _nous_device_code_login, _nous_inference_env_override,
+    _nous_invoke_jwt_is_usable, _nous_invoke_jwt_status, _nous_portal_base_url,
+    _nous_portal_env_override, _nous_shared_store_lock, _nous_shared_store_path,
+    _pool_first_oauth_status, _quarantine_nous_oauth_state, _quarantine_nous_pool_entries,
+    _read_shared_nous_state, _refresh_access_token, _refresh_nous_or_quarantine,
+    _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store, _token_fingerprint,
+    _try_import_shared_nous_state, _validate_nous_inference_url_from_network, _write_shared_nous_state,
+    fetch_nous_models, get_nous_auth_status_local, get_nous_session_validity, persist_nous_credentials,
+    refresh_nous_oauth_from_state, resolve_nous_runtime_credentials, step_up_nous_billing_scope)
 from hermes_cli.auth_minimax import (
     _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
     _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
@@ -774,6 +773,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
         raw.setdefault("providers", {})
         if isinstance(raw.get("providers"), dict):
             _migrate_stale_nous_portal_url(raw["providers"])
+        _heal_persisted_nous_inference_urls(raw)
         return raw
 
     if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):  # legacy "systems" format

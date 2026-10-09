@@ -327,7 +327,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
         "hermes_cli.auth._nous_device_code_login",
         lambda **kwargs: {
             "portal_base_url": "https://portal.example.com",
-            "inference_base_url": "https://inference.example.com/v1",
+            "inference_base_url": "https://inference-api.nousresearch.com/v1",
             "client_id": "hermes-cli",
             "scope": "inference:invoke",
             "token_type": "Bearer",
@@ -389,7 +389,7 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert singleton["refresh_token"] == "refresh-token"
     assert singleton["agent_key"] == token
     assert singleton["portal_base_url"] == "https://portal.example.com"
-    assert singleton["inference_base_url"] == "https://inference.example.com/v1"
+    assert singleton["inference_base_url"] == "https://inference-api.nousresearch.com/v1"
 
 
 def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
@@ -404,7 +404,7 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
         "hermes_cli.auth._nous_device_code_login",
         lambda **kwargs: {
             "portal_base_url": "https://portal.example.com",
-            "inference_base_url": "https://inference.example.com/v1",
+            "inference_base_url": "https://inference-api.nousresearch.com/v1",
             "client_id": "hermes-cli",
             "scope": "inference:invoke",
             "token_type": "Bearer",

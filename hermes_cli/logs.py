@@ -1,8 +1,10 @@
 """``hermes logs`` — view and filter Hermes log files.
 
 Supports tailing, following, session filtering, level filtering,
-component filtering, and relative time ranges.  All log files live
-under ``~/.hermes/logs/``.
+component filtering, and relative time ranges.  Log files live under the
+active profile's ``logs/`` directory (``~/.hermes/logs/`` by default), except
+``update.log`` and ``desktop-update-handoff.log``, which always live under the
+shared root Hermes home's ``logs/`` directory.
 
 Usage examples::
 
@@ -233,7 +235,7 @@ def tail_log(
     ]
     filter_desc = f" [{', '.join(filter_parts)}]" if filter_parts else ""
     mode = "Ctrl+C to stop" if follow else f"last {num_lines}"
-    print(f"--- {display_hermes_home()}/logs/{filename}{filter_desc} ({mode}) ---")
+    print(f"--- {display_hermes_home(log_path.parent.parent)}/logs/{filename}{filter_desc} ({mode}) ---")
 
     for line in lines:
         print(line, end="")

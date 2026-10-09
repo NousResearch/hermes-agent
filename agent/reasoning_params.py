@@ -156,7 +156,8 @@ class ReasoningParamsMixin:
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """True when the provider enforces ``reasoning_content`` echo-back on tool-call replays (DeepSeek, Kimi,
-        MiMo thinking all 400 without it). Cached per (provider, model, base_url), invalidated by
+        MiMo thinking all 400 without it; Fireworks needs it for reasoning continuity).
+        Cached per (provider, model, base_url), invalidated by
         ``switch_model()`` / ``_try_activate_fallback()`` — called ~16× per turn.
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
@@ -168,7 +169,9 @@ class ReasoningParamsMixin:
         if cached is not None and cached[0] == key:
             return cached[1]
         result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+                  or self._needs_mimo_tool_reasoning()
+                  or matches_reasoning_echo_family("fireworks", self.provider, self.model, self.base_url)
+                  or self._reasoning_echo_opt_in())
         self._thinking_pad_cache = (key, result)
         return result
 

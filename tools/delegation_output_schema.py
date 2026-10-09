@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def coerce_output_schema(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """``(schema, None)`` when usable, ``(None, error)`` when not; ``None`` input
     passes through as ``(None, None)`` (no schema requested)."""
     if raw is None:
@@ -42,16 +42,17 @@ def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[s
     return raw, None
 
 
-def append_output_contract(context: Optional[str], schema: Dict[str, Any]) -> str:
+def append_output_contract(context: Optional[str], schema: dict[str, Any]) -> str:
     """Append the explicit output contract block to a child's context."""
     try:
         schema_text = json.dumps(schema, indent=2, ensure_ascii=False)
     except (TypeError, ValueError):
         schema_text = str(schema)
     block = ("OUTPUT CONTRACT (machine-validated):\n"
-             "Your FINAL response must be a single JSON object that validates "
-             "against this JSON Schema. No prose before or after the JSON; a "
-             "```json code fence is acceptable but not required.\n" f"{schema_text}")
+             "Your FINAL response must be ONLY the JSON value that validates against this JSON "
+             "Schema — no prose before or after it, no code fence, no explanation. Anything else "
+             "costs a correction turn and, if it fails again, is handed to the caller unvalidated.\n"
+             f"{schema_text}")
     base = (context or "").rstrip()
     return f"{base}\n\n{block}" if base else block
 
@@ -66,17 +67,24 @@ def extract_json_candidate(text: str) -> str:
         raw = raw.strip()
         if raw.lower().startswith("json\n"):
             raw = raw.split("\n", 1)[1]
+    # Try each bracket kind's outermost span, earliest opener first, and keep the first that parses:
+    # checking "{" before "[" unconditionally sliced a fenced array down to its first..last object and
+    # rejected every valid array answer.
+    spans = []
     for opener, closer in (("{", "}"), ("[", "]")):
-        if raw.startswith(opener):
-            return raw
-        start = raw.find(opener)
-        end = raw.rfind(closer)
+        start, end = raw.find(opener), raw.rfind(closer)
         if start >= 0 and end > start:
-            return raw[start : end + 1]
-    return raw
+            spans.append((start, raw[start : end + 1]))
+    for _start, candidate in sorted(spans):
+        try:
+            json.loads(candidate)
+            return candidate
+        except ValueError:
+            continue
+    return spans[0][1] if spans else raw
 
 
-def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
+def validate_output(text: str, schema: dict[str, Any]) -> tuple[bool, list[str]]:
     """``(True, [])`` or ``(False, errors)`` with strings suitable for the retry turn."""
     candidate = extract_json_candidate(text or "")
     if not candidate.strip():
@@ -98,19 +106,10 @@ def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]
     return not rendered, rendered
 
 
-def build_retry_message(errors: List[str]) -> str:
+def build_retry_message(errors: list[str]) -> str:
     """Single bounded retry turn: errors verbatim, schema deliberately NOT re-pasted."""
     error_block = "\n".join(f"- {e}" for e in errors)
     return ("Your previous final response was rejected by the output contract "
             "validator. Validation errors:\n" f"{error_block}\n\n"
             "Reply with ONLY the corrected JSON object matching the OUTPUT "
             "CONTRACT schema from your task context. No prose, no explanations.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_SCHEMA_RETRIES = 1
-# ---- END PLUGIN-COMPAT ----

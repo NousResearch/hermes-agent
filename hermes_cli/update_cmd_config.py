@@ -13,37 +13,19 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 
 def _reload_config_modules() -> None:
-    """Force-reload config modules after git pull: the updater is the PRE-pull process, so the
-    cached modules hold OLD code and ``check_config_version()`` would report "up to date" despite a
-    pulled migration. ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
-    cleanup sees symbols the update added."""
-    import importlib
-    importlib.invalidate_caches()
-    for mod_name in (
-        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
-        "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            try:
-                importlib.reload(mod)
-            except Exception as exc:
-                logger.debug("Could not reload %s for fresh post-update code: %s", mod_name, exc)
+    """Historical updater hook; migration now belongs to fresh completion Python."""
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _run_config_check_fresh() -> tuple:
-    """``(current_ver, latest_ver)`` from freshly-reloaded modules (see ``_reload_config_modules``)."""
-    from hermes_cli.update_cmd import _reload_config_modules
-    _reload_config_modules()
-    from hermes_cli.config import check_config_version
-    return check_config_version(raise_on_parse_error=True)
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
-    """Run config migration with freshly-reloaded modules; returns the results dict."""
-    from hermes_cli.update_cmd import _reload_config_modules
-    _reload_config_modules()
-    from hermes_cli.config import migrate_config
-    return migrate_config(interactive=interactive, quiet=quiet)
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch(incomplete=True)
 
 
 def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
@@ -55,38 +37,32 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the shared checkout serves every
     profile, but ``hermes update`` historically migrated only the active profile's config — siblings drifted
     versions until their gateway hit a config the new code couldn't read.
+
+    Enumeration matches pre-update snapshots (#66140): default lives at
+    ``_get_default_hermes_home()``, not under ``profiles/``, so a named-profile
+    ``hermes update`` still migrates it.
     """
-    from hermes_cli.update_cmd import _run_config_check_fresh, _run_migrate_config_fresh
+    from hermes_cli.config import check_config_version, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
             get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
-        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
-        active_home = get_process_hermes_home()
-        root = _get_profiles_root()
-        if not root.is_dir():
-            return migrated
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
-                continue
-            try:
-                if entry.resolve() == Path(active_home).resolve():
-                    continue
-            except OSError:
-                continue
-            if not (entry / "config.yaml").is_file():
+        from hermes_cli.backup import _sibling_profile_homes
+        active_home = Path(get_process_hermes_home())
+        for name, profile_home in _sibling_profile_homes(active_home):
+            if not (profile_home / "config.yaml").is_file():
                 continue  # profile never configured — nothing to migrate
-            token = set_hermes_home_override(entry)
+            token = set_hermes_home_override(profile_home)
             try:
-                current_ver, latest_ver = _run_config_check_fresh()
+                current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
                 if current_ver >= latest_ver:
                     continue
-                _run_migrate_config_fresh(interactive=False, quiet=True)
-                after_ver, _ = _run_config_check_fresh()
+                migrate_config(interactive=False, quiet=True)
+                after_ver, _ = check_config_version(raise_on_parse_error=True)
                 if after_ver > current_ver:
-                    migrated.append((entry.name, current_ver, after_ver))
+                    migrated.append((name, current_ver, after_ver))
             except Exception as exc:
-                logger.debug("Config migration for profile %s failed: %s", entry.name, exc)
+                logger.debug("Config migration for profile %s failed: %s", name, exc)
             finally:
                 reset_hermes_home_override(token)
     return migrated
@@ -101,6 +77,12 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         return (
             f"cron/jobs.json lost jobs during this update — restored {r['job_count']} job(s) "
             f"from pre-update snapshot {r['snapshot_id']}.")
+
+    def _prompt_line(r):
+        return (
+            f"cron/jobs.json had agent-job prompt(s) replaced by the job name during this "
+            f"update — restored {r['prompts']} prompt(s) from pre-update snapshot "
+            f"{r['snapshot_id']}.")
 
     def _cfg_line(r):
         return (
@@ -117,6 +99,15 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         if cron_restore:
             print()
             print(f"  ⚠️  {_cron_line(cron_restore)}")
+    with _best_effort("Cron prompt-field auto-restore check failed: %s"):
+        # Safety net: a writer in the update's mutation window replaced agent-job prompts
+        # with the job NAME while the count stayed identical, so the count-based net above
+        # passed it undetected (issue #82990). Restore only the degraded prompt fields.
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
+        if prompt_restore:
+            print()
+            print(f"  ⚠️  {_prompt_line(prompt_restore)}")
     with _best_effort("Config model-settings auto-restore check failed: %s"):
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
         cfg_restore = restore_config_model_settings_if_rewritten(pre_update_snapshot_id)
@@ -128,6 +119,11 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         for _restored in restore_cron_jobs_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
+    with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
+        from hermes_cli.backup import restore_cron_prompt_fields_all_profiles
+        for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
+            print()
+            print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")
     with _best_effort('Sibling config auto-restore check failed: %s'):
         from hermes_cli.backup import restore_config_model_settings_all_profiles
         for _cfg_restored in restore_config_model_settings_all_profiles(_LAST_SIBLING_SNAPSHOTS):
@@ -162,32 +158,31 @@ def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
 def _check_and_apply_config_migration(
     *, assume_yes: bool = False, gateway_mode: bool = False, pre_update_snapshot_id: str | None = None
 ) -> None:
-    """Check/apply config migrations with freshly-reloaded modules. Runs on EVERY completion path
+    """Check/apply config migrations. Runs on EVERY completion path
     (post-pull, venv-repair, Node-deps repair on ``commit_count == 0``) so an interrupted update
     that already pulled code doesn't strand an old config version.
 
     See #91360.
     """
-    from hermes_cli.update_cmd import (
-        _migrate_sibling_profile_configs, _reload_config_modules, _run_config_check_fresh,
-        _run_migrate_config_fresh)
+    from hermes_cli.update_cmd import _migrate_sibling_profile_configs
+    from hermes_cli.config import check_config_version, migrate_config
     print()
     print("→ Checking configuration for new options...")
-    # Reload BEFORE any config reads so all checks use the updated code.
-    _reload_config_modules()
     from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
     # A config-check failure must not break an otherwise-successful update.
     try:
+        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()
-        current_ver, latest_ver = _run_config_check_fresh()
+        current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
     except Exception as exc:
         logger.debug("Config check during update failed: %s", exc)
         print("  ⚠️  Could not check config version.")
         print("     Run 'hermes config migrate' to check manually.")
         return
 
+    owed_error = None
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
     needs_migration = has_new_options or current_ver < latest_ver
@@ -198,7 +193,7 @@ def _check_and_apply_config_migration(
         print()
         print(f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…")
         try:
-            _mig_results = _run_migrate_config_fresh(interactive=False, quiet=True)
+            _mig_results = migrate_config(interactive=False, quiet=True)
             print("  ✓ Config format updated (no new settings to configure)")
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
@@ -211,6 +206,11 @@ def _check_and_apply_config_migration(
         except Exception as _mig_err:
             print(f"  ⚠️  Config format update failed: {_mig_err}")
             print("     Run 'hermes config migrate' to retry.")
+            # Not a silent success: raised after the sibling migration and snapshot safety nets
+            # below (independent of the active write, and the snapshot id is only in hand now), so
+            # the caller's owed-step guard records ``config_migration`` and keeps the tail pending.
+            owed_error = RuntimeError(f"config format v{current_ver} → v{latest_ver} was not written: {_mig_err}")
+            owed_error.__cause__ = _mig_err
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, for an informed yes/no.
@@ -228,7 +228,7 @@ def _check_and_apply_config_migration(
             # Gateway/--yes/non-interactive can't prompt for API keys; still run the
             # non-interactive pass so defaults and version bumps land before the gateway restarts.
             unattended = gateway_mode or assume_yes or response == "auto"
-            results = _run_migrate_config_fresh(interactive=not unattended, quiet=False)
+            results = migrate_config(interactive=not unattended, quiet=False)
             if results["env_added"] or results["config_added"]:
                 print()
                 print("✓ Configuration updated!")
@@ -247,6 +247,8 @@ def _check_and_apply_config_migration(
             print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
+    if owed_error is not None:
+        raise owed_error
 
 
 # {profile: snapshot_id} from this run's pre-update backup, consumed by the per-profile

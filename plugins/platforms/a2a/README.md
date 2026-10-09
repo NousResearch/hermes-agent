@@ -81,11 +81,11 @@ via `tasks/get`.
 | `A2A_PORT` | `9900` | Inbound port. |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies). |
-| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
+| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. Required for a non-loopback bind (with a token set) unless `A2A_ALLOW_ALL_USERS=true`; otherwise dispatch is refused. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. |
+| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

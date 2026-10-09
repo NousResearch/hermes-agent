@@ -195,7 +195,7 @@ class TestCallbackSubprocess:
         registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
         assert len(registered) == 1
 
-        msg, _hook_results = plugins.get_pre_tool_call_block_message(
+        msg = plugins.get_pre_tool_call_block_message(
             tool_name="terminal",
             args={"command": "rm"},
         )

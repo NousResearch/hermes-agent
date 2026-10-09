@@ -406,3 +406,7 @@ From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
 (replace `<tmp>` with that directory). To use the portal stand-in, add
 `HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
 before `npm run dev`. Stop Electron and its dev server after the run.
+
+To rehearse the setup chat on another model, set `onboarding.model` (same keys as `model`: `provider`,
+`default`) in `<tmp>/.hermes/config.yaml` and add its credential with
+`HERMES_HOME=<tmp>/.hermes hermes auth add <provider>` before launching; Reset onboarding re-applies it.

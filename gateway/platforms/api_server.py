@@ -1027,6 +1027,10 @@ class _SessionEventQueue:
         self.session_id = session_id
         self.run_id = run_id
         self.seq = 0
+        # Cross-thread puts handed to the loop and not yet applied. The loop does not order them
+        # against the worker future's completion, so the turn's terminal frames wait on flush().
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
 
     def payload(self, name: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         self.seq += 1
@@ -1042,11 +1046,35 @@ class _SessionEventQueue:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
             running_loop = None
-        with suppress(RuntimeError):
-            if running_loop is self.loop:
+        if running_loop is self.loop:
+            self.queue.put_nowait(event)
+            return
+        with self._inflight_lock:
+            self._inflight += 1
+
+        def _apply() -> None:
+            try:
                 self.queue.put_nowait(event)
-            else:
-                self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+            finally:
+                self._settle_one()
+        try:
+            self.loop.call_soon_threadsafe(_apply)
+        except RuntimeError:  # loop closed: the stream is gone, nothing left to deliver to
+            self._settle_one()
+
+    def _settle_one(self) -> None:
+        with self._inflight_lock:
+            self._inflight -= 1
+
+    async def flush(self) -> None:
+        """Wait until every event a worker thread enqueued has reached the queue. Call it before
+        the terminal frames: a commentary/delta/approval handed over before the worker returned
+        otherwise lands after ``done``/``None`` and the reader never sees it."""
+        while True:
+            with self._inflight_lock:
+                if not self._inflight:
+                    return
+            await asyncio.sleep(0)
 
 
 def _room_grant_delegate(name: str):
@@ -3615,6 +3643,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
+                await events.flush()
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3647,6 +3676,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
+                await events.flush()
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 

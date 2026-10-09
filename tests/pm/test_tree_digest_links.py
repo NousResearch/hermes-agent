@@ -85,3 +85,18 @@ def test_junctions_bind_target_text_without_walking_outside(tmp_path, monkeypatc
         junction.rmdir()
     assert (left / "content").read_bytes() == b"changed outside the tree"
     assert (right / "content").read_bytes() == b"same bytes"
+
+
+def test_a_missing_path_is_not_a_junction_on_windows(tmp_path, monkeypatch):
+    # Install probes `plugins/<name>` before it exists; an lstat() there raised FileNotFoundError
+    # on Windows and failed every first-time plugin install.
+    from pm import filesystem
+
+    class _WindowsOs:
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+
+    monkeypatch.setattr(filesystem, "os", _WindowsOs())
+    assert filesystem.is_junction(tmp_path / "plugins" / "not-installed-yet") is False

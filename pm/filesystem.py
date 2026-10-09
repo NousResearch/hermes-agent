@@ -20,8 +20,10 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists. A missing path is
+    not a junction (callers probe slots that may not exist yet, like a fresh plugin install)."""
+    return (os.name == "nt" and os.path.lexists(path)
+            and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT)
 
 
 _VERBATIM = "\\\\?\\"

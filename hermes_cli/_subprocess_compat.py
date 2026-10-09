@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_detach_popen_kwargs",
     "windows_hide_flags",
+    "windows_probe_encoding",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -794,14 +796,52 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
             pass
 
 
+def windows_probe_encoding() -> str:
+    """Codec for decoding output from Windows-native console probes.
+
+    ``wmic``, ``tasklist`` and Windows PowerShell write in the machine's code
+    page, not UTF-8 -- CP932 on a Japanese host, CP936 on a Chinese one.
+    Decoding that as UTF-8 does not raise at the probe call sites, because they
+    pass ``errors="ignore"``: the bytes are deleted silently, and a DBCS trail
+    byte in the 0x40-0x7E range survives as a literal ASCII character. A path
+    segment whose CP932 bytes are ``90 66 92 66 83 7E`` decodes to ``ff~``, so
+    a later match against the same path read from the filesystem never fires.
+
+    Resolution order: the OEM code page (what a console-mode child writes),
+    then the locale's ANSI code page, then UTF-8. ``locale.getencoding()`` is
+    used rather than ``locale.getpreferredencoding(False)`` because the latter
+    honours Python UTF-8 Mode, which Hermes turns on for its own processes and
+    which has no bearing on what the child emits.
+
+    Always ``"utf-8"`` off Windows.
+    """
+    if not IS_WINDOWS:
+        return "utf-8"
+    try:
+        import ctypes
+
+        code_page = int(ctypes.windll.kernel32.GetOEMCP())
+        if code_page:
+            return "cp%d" % code_page
+    except Exception:
+        pass
+    try:
+        return locale.getencoding() or "utf-8"
+    except Exception:
+        return "utf-8"
+
+
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
+    encoding: str = "utf-8",
     env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
     raise_on_spawn_failure: bool = False, input: "str | None" = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
+    *encoding* defaults to ``"utf-8"`` so git and POSIX probes are unchanged; Windows-native
+    process scans pass :func:`windows_probe_encoding` and ``errors="ignore"``.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
@@ -827,7 +867,7 @@ def bounded_probe_run(
         proc, job = spawn_server(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
-            text=True, encoding="utf-8", errors=errors,
+            text=True, encoding=encoding, errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
         if raise_on_spawn_failure:

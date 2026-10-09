@@ -703,12 +703,13 @@ def _windows_process_listing() -> str | None:
     # slow-WMI machines where the full Win32_Process scan exceeds its budget (#87134). bounded_probe_run
     # also hides the console window: this scan runs inside the windowless pythonw.exe gateway/desktop
     # backend, so a bare wmic/powershell spawn would flash a conhost window on every watchdog probe.
-    from hermes_cli._subprocess_compat import bounded_probe_run
+    from hermes_cli._subprocess_compat import bounded_probe_run, windows_probe_encoding
     wmic_path = shutil.which("wmic")
     result = None
     if wmic_path is not None:
         result = bounded_probe_run(
-            [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"], timeout=10, errors="ignore"
+            [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+            timeout=10, encoding=windows_probe_encoding(), errors="ignore",
         )
     if result is None or result.returncode != 0 or not (result.stdout or ""):
         powershell = shutil.which("powershell") or shutil.which("pwsh")
@@ -722,7 +723,10 @@ def _windows_process_listing() -> str | None:
             "  '' "
             "}"
         )
-        result = bounded_probe_run([powershell, "-NoProfile", "-Command", ps_cmd], timeout=15, errors="ignore")
+        result = bounded_probe_run(
+            [powershell, "-NoProfile", "-Command", ps_cmd],
+            timeout=15, encoding=windows_probe_encoding(), errors="ignore",
+        )
         if result is None:
             return None
     return None if result.returncode != 0 or result.stdout is None else result.stdout

@@ -6,7 +6,7 @@
 - **A — prompt após troca de modelo:** passou sem alteração de produção. O `NULL` imediato é a invalidação intencional; a primeira retomada reconstrói e persiste o blob hasheado, e a segunda restaura os mesmos bytes sem novo warning.
 - **C — contabilidade main/aux:** passou sem alteração de produção. `sessions` reconcilia apenas com `session_model_usage.task=''`; o total de todas as linhas inclui o uso auxiliar.
 - **D — escrita gateway absoluta:** passou sem alteração de produção. Uma atualização absoluta altera somente `sessions`; ela não pode ser atribuída retroativamente às linhas por modelo. Uso auxiliar continua fora do resumo da sessão.
-- **B — dupla compactação idêntica:** passou. Não houve duplicação na projeção ativa/modelo nem na projeção de display. Linhas físicas repetidas só existem no histórico arquivado, que é a semântica documentada e foi preservada.
+- **B — dupla compactação idêntica:** passou. A projeção ativa é literalmente o par compacto, e a projeção de display contém, em ordem, `old question`, `old answer` e uma cópia do par compacto. Linhas físicas repetidas só existem no histórico arquivado, que é a semântica documentada e foi preservada.
 
 Classificação A/C/D/B: `MUDANCA_INTENCIONAL` / mal-entendido diagnóstico; nenhum patch especulativo de produção foi aplicado.
 
@@ -29,19 +29,16 @@ pytest -q \
   tests/hermes_state/test_aux_usage_accounting.py::TestRecordAuxiliaryUsage::test_absolute_gateway_update_changes_session_only_not_per_model_rows \
   tests/hermes_state/test_display_projection_parity.py::TestDisplayProjectionParity::test_repeated_identical_compaction_does_not_duplicate_live_or_display_projection
 
-4 passed in 0.60s
+4 passed (após o fix round 1, ver abaixo)
 ```
 
-Regressão focada documentada foi executada integralmente: `110 passed, 9 failed in 25.42s`.
-
-As 9 falhas não são causadas pelo delta desta task:
-
-- 8 testes importam `run_agent`, que chega a `tools.environments.file_sync` e falha com `ModuleNotFoundError: No module named 'psutil'`.
-- O nono (`test_workspace_snapshot_reprobes_when_cwd_changes`) também é afetado pela mesma dependência ausente: `bounded_git_probe` importa `hermes_cli.local_runtime.processes`, cujo import de `psutil` falha e faz a sonda de `git log` retornar vazio; por isso o snapshot não contém o commit inicial esperado.
-- `psutil==7.2.2` já está declarado em `pyproject.toml`; a causa é o ambiente de testes incompleto. Não foi instalado nem contornado, pois a task não autoriza mudar dependências/ambiente.
+Regressão focada documentada foi rerodada pelo controller Hermes em `.venv`: `119 passed in 27.97s`.
 
 `git diff --check` passou.
 
-## Concern pendente
+## Fix round 1/5 — completude da projeção de display
 
-A suíte focada inteira só ficará verde quando o runner tiver a dependência declarada `psutil` instalada. Os quatro contratos da Task 3 passam no ambiente atual e não há indício de regressão de continuidade, display ou contabilidade.
+- O check tautológico de IDs físicos foi removido: IDs de uma tabela são únicos por construção e não provavam o contrato público.
+- A unicidade isolada de display foi substituída por igualdade literal com o transcript esperado após cada compactação. Assim, tanto um display vazio quanto um display truncado falham; os dois turnos históricos e cada membro do par compacto devem aparecer exatamente uma vez e na ordem correta.
+- RED demonstrado sem alterar produção: ao truncar deliberadamente o display em memória, a antiga verificação de unicidade passava, enquanto a nova igualdade literal falhou como esperado.
+- A regressão focal e o controller de 119 testes foram rerodados após o ajuste.

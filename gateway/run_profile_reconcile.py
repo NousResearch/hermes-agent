@@ -11,7 +11,9 @@ live, so reconciling those three is enough for a profile created after boot to b
 verb (``hermes_cli/profiles.py`` create/delete fire it through the control socket) and by the supervised
 ``_profile_reconcile_watcher`` every ``_PROFILE_RESCAN_INTERVAL_SECS`` as the safety net. A served profile whose ``config.yaml``/``.env``
 changed since its adapters were last built is re-scanned too: creators make the profile first and add the
-bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
+bot token afterwards, and without this an adapter-less profile would stay adapter-less forever. The shell-hook
+allowlist is in the signature as well: a non-TTY gateway skips unconsented hooks at scan time, so consent
+recorded afterwards (CLI session on that profile, or an edited allowlist) must re-scan to register them.
 """
 from __future__ import annotations
 
@@ -27,7 +29,9 @@ from utils import file_signature
 logger = logging.getLogger(__name__)
 
 _PROFILE_RESCAN_INTERVAL_SECS = 30.0
-_PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
+# ``shell-hooks-allowlist.json`` must match agent.shell_hooks.ALLOWLIST_FILENAME (test asserts
+# the two stay in sync): consent recorded after a scan changes hook registration, not config.yaml.
+_PROFILE_SIGNATURE_FILES = ("config.yaml", ".env", "shell-hooks-allowlist.json")
 # Bound for one own-gateway liveness probe (``live_gateway_pid_for_home``): the control-socket
 # read it can end in has no timeout of its own — on Windows the named pipe stalls there until
 # its peer answers — so the await needs one. A healthy identify answers in milliseconds.
@@ -35,7 +39,7 @@ _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
 def profile_serve_signature(home: "Path") -> tuple:
-    """Cheap change detector for a served profile's credentials/config: file signature per file."""
+    """Cheap change detector for a served profile's credentials/config/hooks-consent: signature per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
         try:
@@ -188,7 +192,11 @@ class GatewayProfileReconcileMixin:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)
             else:
-                logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
+                logger.info(
+                    "[MULTIPLEX] Re-scanned profile '%s' after config/.env/allowlist change (%s adapter(s) connected)",
+                    name,
+                    connected,
+                )
                 result["rescanned"].append(name)
         self._served_profile_signatures = sigs
         # Deletion or parking during an awaited connect must win over publication.

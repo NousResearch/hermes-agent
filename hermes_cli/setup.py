@@ -103,7 +103,7 @@ def _sanitize_pasted_input(value: str) -> str:
     return _BRACKETED_PASTE_PATTERN.sub("", value) if isinstance(value, str) and value else value
 
 
-def prompt(question: str, default: str = None, password: bool = False) -> str:
+def prompt(question: str, default: str | None = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     display = color(f"{question} [{default}]: " if default else f"{question}: ", Colors.YELLOW)
     try:
@@ -311,7 +311,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
-def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
+def prompt_checklist(title: str, items: list, pre_selected: list | None = None) -> list:
     """Multi-select checklist; returns the sorted indices of selected items. ``pre_selected``
     start checked; Space toggles, Enter confirms, cancel keeps the pre-selection."""
     from hermes_cli.curses_ui import curses_checklist
@@ -517,8 +517,10 @@ _SEND_CONSENT_EXPLAINER = (
     "(it contains no personal information and is reset by deleting",
     "the shared-metrics directory). Only packages whose entire",
     "collection period falls inside a recorded consent window are",
-    "ever sent — data from before you opt in, or from any gap",
-    "while sending was off, stays on this machine. Sending can be", "turned off again at any time.",
+    "ever sent. Apart from the fresh-install note (noted on this",
+    "machine and counted only once you opt in), data from before",
+    "you opt in, or from any gap while sending was off, stays on",
+    "this machine. Sending can be turned off again at any time.",
 )
 
 
@@ -529,7 +531,9 @@ def setup_telemetry(config: dict):
           "outcomes, error classes (with a fixed-list reason when a memory write or",
           "context compression is refused, fails or is skipped), model routes and",
           "token totals, built-in tool, command and catalog names, bucketed setup",
-          "counts, update results and timing, crashes,",
+          "counts, update and install results and timing (with a fixed-list reason",
+          "and the stage when one fails; a fresh install is noted on this machine and",
+          "counted only once you opt in), crashes,",
           "startup and reply speed, messaging-platform health, how Hermes gets used",
           "(agent accuracy and efficiency, active time per surface, which features and",
           "settings are used or switched off, provider setup outcomes), and coarse",
@@ -575,12 +579,12 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 # Extracted sections, re-exported so callers and test patches keep resolving through
 # hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
-from hermes_cli.setup_tts import setup_tts  # noqa: E402
-from hermes_cli.setup_terminal import setup_terminal_backend  # noqa: E402
-from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
-from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
-from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section  # noqa: E402
-from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
+from hermes_cli.setup_tts import setup_tts
+from hermes_cli.setup_terminal import setup_terminal_backend
+from hermes_cli.setup_platforms import setup_gateway
+from hermes_cli.setup_summary import _print_setup_summary
+from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section
+from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
 
 
 # ── Main Wizard Orchestrator ──

@@ -26,7 +26,7 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
         return False
 
 
-def source_build_env(base_env: dict | None = None, *, explicit: bool = False) -> dict[str, str]:
+def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.paths import repo_root
@@ -43,19 +43,28 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit).env
+    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
+
+
+def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
+    caller's process group, and every descendant killed when it exits; Windows: the owner's
+    kill-on-close job), so the checkout is never handed to a contender while one of them still
+    writes. Outside an update it is ``run_contained`` as is."""
+    from pm.progress import run_contained
+    from hermes_cli.update_custody import contained_command
+
+    with contained_command(command, root=project_root) as (argv, custody):
+        return run_contained(argv, label, **kwargs, **custody)
 
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
-    from pm.progress import run_contained
-
+    command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
     # npm's deprecation warnings are the loudest lines and never actionable
     # here; they still land in the failure tail.
-    run_contained(
-        [shutil.which("node", path=env["PATH"]), str(project_root / script), *args],
-        label, hide=lambda line: line.lower().startswith("npm warn"), indent="  ",
-        cwd=project_root, env=env,
-    )
+    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
+                   indent="  ", cwd=project_root, env=env)
 
 
 def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
@@ -85,6 +94,11 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
 
 
 def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None) -> None:
+    # Bounded build (#63338): the Vite/Rolldown dashboard build saturates small
+    # hosts; cap the V8 heap and the native bundler's rayon thread pool.
+    from hermes_cli.web_build_limits import apply_web_build_limits
+
+    apply_web_build_limits(env)
     # Default-brand icons are committed; installs never render them.
     icons = icons or project_root
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
@@ -145,7 +159,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
 
         def node_dependencies() -> None:
             # Acquiring npm is part of this step: its failure must be reported like the install's.
-            env.update(source_build_env(explicit=True))
+            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # tail); a missing one is still installed explicitly.
+            env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
 
         # Every product compiles from these node_modules: without them there is nothing to build.

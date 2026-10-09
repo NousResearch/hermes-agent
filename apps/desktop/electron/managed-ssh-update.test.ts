@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { exec as execCallback } from 'node:child_process'
+import { exec as execCallback, spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,6 +12,7 @@ import {
   buildRemoteUpdateObservationCommand,
   buildWindowsManagedUpdateLaunch,
   fenceManagedSshBootstrapPublication,
+  joinManagedUpdatesForApply,
   ManagedConnectionUpdateGate,
   managedSshDrainBlocker,
   managedSshRecoveryDisposition,
@@ -613,9 +614,22 @@ test.runIf(process.platform !== 'win32')(
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
     const profileHome = path.join(root, 'profiles', 'research')
 
+    // A v2 claim whose owner is gone and whose delegate is alive at its creation time.
+    const delegate = spawn('python3', ['-c', 'import time;print(time.time(),flush=True);time.sleep(30)'], {
+      stdio: ['ignore', 'pipe', 'inherit']
+    })
+
     try {
+      const ct = await new Promise<string>(resolve =>
+        delegate.stdout.once('data', chunk => resolve(String(chunk).trim()))
+      )
+
+      const now = Math.floor(Date.now() / 1000)
       await mkdir(profileHome, { recursive: true })
-      await writeFile(path.join(root, '.hermes-update-in-progress'), `${process.pid}\n1\n`)
+      await writeFile(
+        path.join(root, '.hermes-update-in-progress'),
+        `0\n${now}\nct:${ct}\ndelegate:${delegate.pid} ct:${ct}\nrun:desk-1\n`
+      )
 
       const command = buildRemoteUpdateObservationCommand(
         {
@@ -631,8 +645,9 @@ test.runIf(process.platform !== 'win32')(
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'live')
-      assert.equal(parsed.markerPid, process.pid)
+      assert.equal(parsed.markerPid, delegate.pid)
     } finally {
+      delegate.kill('SIGKILL')
       await rm(root, { force: true, recursive: true })
     }
   }
@@ -1226,4 +1241,61 @@ test('macOS remotes with no live serve and Linux remotes still update', () => {
   assert.equal(row.skipped, undefined)
   assert.equal(row.ok, false)
   assert.equal(row.error, 'boom')
+})
+
+// Review H3: the join had no bound of its own, so one unresolved (or a
+// late-registered) managed operation parked a local apply forever. A bounded
+// join answers false at its deadline and abandons nothing; unbounded (quit)
+// and an empty or settled set still answer as before.
+test('a bounded managed-operation join answers at its deadline without dropping the operation', async () => {
+  const operations = new Set<Promise<unknown>>()
+  let releaseLate!: () => void
+  const late = new Promise<void>(resolve => (releaseLate = resolve))
+
+  const first = Promise.resolve().then(() => {
+    operations.add(late)
+  })
+
+  operations.add(first)
+  first.finally(() => operations.delete(first))
+
+  const outcome = await Promise.race([
+    waitForManagedUpdateOperations(() => operations, { timeoutMs: 50 }),
+    new Promise(resolve => setTimeout(resolve, 2_000, 'still parked'))
+  ])
+
+  assert.equal(outcome, false)
+  assert.equal(operations.has(late), true, 'the pending operation keeps its registration')
+  releaseLate()
+  late.finally(() => operations.delete(late))
+  await late
+  await Promise.resolve()
+  assert.equal(await waitForManagedUpdateOperations(() => operations, { timeoutMs: 50 }), true)
+})
+
+test('a local apply refuses, without spawning anything, while a managed operation outlives the bounded join', async () => {
+  const pending = new Promise<void>(() => {})
+  const logs: string[] = []
+
+  const refusal = await joinManagedUpdatesForApply(
+    () => [pending],
+    line => logs.push(line),
+    20
+  )
+
+  assert.equal(refusal?.ok, false)
+  assert.equal(refusal?.error, 'managed-update-running')
+  assert.match(logs.join('\n'), /refused until it finishes/)
+  const settling = new Set<Promise<unknown>>()
+  const done = Promise.resolve().then(() => settling.delete(done))
+
+  settling.add(done)
+  assert.equal(
+    await joinManagedUpdatesForApply(
+      () => settling,
+      () => {},
+      1_000
+    ),
+    null
+  )
 })

@@ -30,7 +30,7 @@ def _enable_traces(tmp_path, monkeypatch):
 
     # save_moa_turn reads config via hermes_cli.config.load_config; stub it to
     # return traces-on so the test doesn't depend on a real config file.
-    import agent.moa_trace as moa_trace
+    from agent import moa_trace
 
     monkeypatch.setattr(
         moa_trace,

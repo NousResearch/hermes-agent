@@ -730,7 +730,7 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
             _kill(p.pid)
             try:
                 p.wait(timeout=10)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception:
                 pass
         with mcp_tool._lock:
             for p in (a, b):

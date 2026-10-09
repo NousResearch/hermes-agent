@@ -306,7 +306,7 @@ _ZIP_PARENT = textwrap.dedent('''
         if resume_token and resume_token.get("resume_needed"):
             raise RuntimeError("Could not restart Windows gateway service(s): HermesGatewayProbe")
     hermes_main._resume_windows_gateways_after_update = scm
-    update_cmd._prepare_git_command = lambda: (True, None, False)
+    update_cmd._prepare_git_command = lambda **_: (True, None, False)
     def via_zip(args, *, had_desktop_app_before_update, target_sha=None, completion_request=None, **kwargs):
         completion_request["expected_sha"] = target_sha
         completion_request["apply_mode"] = "zip"

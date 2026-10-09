@@ -1015,6 +1015,42 @@
       }
     },
     {
+      "name": "free_tier.challenge_result",
+      "summary": "Report a browser window outcome for the matching pending attempt; mint remains authoritative.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengeResultParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierChallengeResult"
+        }
+      }
+    },
+    {
+      "name": "free_tier.claim_nudge",
+      "summary": "Claim the due sign-in offer; true for exactly one caller each time an offer comes due.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierClaimNudgeResult"
+        }
+      }
+    },
+    {
       "name": "free_tier.provision",
       "summary": "Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.",
       "params": [
@@ -1952,7 +1988,7 @@
     },
     {
       "name": "onboarding.ensure_setup_profile",
-      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.",
+      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name.",
       "params": [
         {
           "name": "params",
@@ -1965,6 +2001,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/OnboardingEnsureSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.ensure_setup_session",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingEnsureSetupSessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingEnsureSetupSessionResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.mark_seen",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.record_failed_start",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
         }
       }
     },
@@ -1983,6 +2073,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/OnboardingResetSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.state",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStateResult"
         }
       }
     },
@@ -2505,24 +2613,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ProfilesListResult"
-        }
-      }
-    },
-    {
-      "name": "profiles.remember_onboarding",
-      "summary": "Write the onboarding facts into the default profile's user memory and confirm they landed.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfilesRememberOnboardingParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/ProfilesRememberOnboardingResult"
         }
       }
     },
@@ -3477,6 +3567,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionSetHiddenResult"
+        }
+      }
+    },
+    {
+      "name": "session.start_chat",
+      "summary": "Run a start_chat request again from the session that made it (the handoff card's Retry).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionStartChatParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionStartChatResult"
         }
       }
     },
@@ -7541,6 +7649,38 @@
         "title": "CatalogAppState",
         "type": "string"
       },
+      "CatalogApproved": {
+        "additionalProperties": false,
+        "description": "The non-secret Advanced choices the user approved on a catalog row; a Try again after the\noperation settled repeats them.",
+        "properties": {
+          "force": {
+            "title": "Force",
+            "type": "boolean"
+          },
+          "enable": {
+            "title": "Enable",
+            "type": "boolean"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ref"
+          }
+        },
+        "required": [
+          "force",
+          "enable"
+        ],
+        "title": "CatalogApproved",
+        "type": "object"
+      },
       "CatalogScan": {
         "additionalProperties": false,
         "description": "The catalog's security scan of the pinned commit; read-only on the card.",
@@ -7568,6 +7708,26 @@
         ],
         "title": "CatalogScanStatus",
         "type": "string"
+      },
+      "CatalogServerError": {
+        "additionalProperties": false,
+        "description": "An MCP server an installed plugin brought that did not connect, with the raw reason.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "error"
+        ],
+        "title": "CatalogServerError",
+        "type": "object"
       },
       "CatalogTier": {
         "enum": [
@@ -9248,6 +9408,18 @@
           "state": {
             "$ref": "#/components/schemas/ConnectionTargetState"
           },
+          "resolved": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolved"
+          },
           "detail": {
             "anyOf": [
               {
@@ -9459,20 +9631,17 @@
             ],
             "default": null
           },
-          "requirements": {
+          "requires_hermes": {
             "anyOf": [
               {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Requirements"
+            "title": "Requires Hermes"
           },
           "has_desktop_half": {
             "anyOf": [
@@ -9520,6 +9689,82 @@
             ],
             "default": null,
             "title": "Skill"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstallPhase"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "approved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogApproved"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
+          "missing_env": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Missing Env"
+          },
+          "server_errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CatalogServerError"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Server Errors"
+          },
+          "already_installed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Already Installed"
           }
         },
         "required": [
@@ -13944,6 +14189,120 @@
         "title": "FreeTierAckNoticeResult",
         "type": "object"
       },
+      "FreeTierChallengePayload": {
+        "additionalProperties": true,
+        "description": "``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge``\nevent, and ``free_tier.status``'s ``challenge`` field for a client that connected after it.",
+        "properties": {
+          "type": {
+            "const": "browser",
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "url",
+          "required",
+          "expires_in",
+          "message"
+        ],
+        "title": "FreeTierChallengePayload",
+        "type": "object"
+      },
+      "FreeTierChallengeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "FreeTierChallengeResult",
+        "type": "object"
+      },
+      "FreeTierChallengeResultParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed",
+              "closed",
+              "timeout",
+              "refused",
+              "error",
+              "unsupported"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "outcome"
+        ],
+        "title": "FreeTierChallengeResultParams",
+        "type": "object"
+      },
+      "FreeTierClaimNudgeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claimed"
+        ],
+        "title": "FreeTierClaimNudgeResult",
+        "type": "object"
+      },
       "FreeTierProvisionResult": {
         "additionalProperties": false,
         "properties": {
@@ -14086,6 +14445,29 @@
             ],
             "default": null,
             "title": "Retry After"
+          },
+          "challenge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FreeTierChallengePayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "nudge_due_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nudge Due In"
           }
         },
         "required": [
@@ -16548,6 +16930,16 @@
         ],
         "title": "InsightsGetResult",
         "type": "object"
+      },
+      "InstallPhase": {
+        "description": "The slow steps of an install, as ids; the desktop catalog card words them in its own language.",
+        "enum": [
+          "downloading",
+          "python_packages",
+          "loading_tools"
+        ],
+        "title": "InstallPhase",
+        "type": "string"
       },
       "InterruptStatus": {
         "enum": [
@@ -19546,119 +19938,6 @@
         "title": "OkResult",
         "type": "object"
       },
-      "OnboardingAnswers": {
-        "additionalProperties": true,
-        "description": "``tui_gateway/onboarding_personalization.py`` \u2014 the facts agreed during onboarding.",
-        "properties": {
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
-          },
-          "context": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context"
-          },
-          "theme": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Theme"
-          },
-          "accent": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Accent"
-          },
-          "layout": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Layout"
-          },
-          "focus": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Focus"
-          },
-          "connectors": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connectors"
-          },
-          "plugins": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Plugins"
-          }
-        },
-        "title": "OnboardingAnswers",
-        "type": "object"
-      },
       "OnboardingCatalogPlugin": {
         "additionalProperties": false,
         "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
@@ -19720,12 +19999,6 @@
           "created": {
             "title": "Created",
             "type": "boolean"
-          },
-          "role": {
-            "const": "setup",
-            "default": "setup",
-            "title": "Role",
-            "type": "string"
           }
         },
         "required": [
@@ -19735,6 +20008,61 @@
         ],
         "title": "OnboardingEnsureSetupProfileResult",
         "type": "object"
+      },
+      "OnboardingEnsureSetupSessionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages"
+          }
+        },
+        "title": "OnboardingEnsureSetupSessionParams",
+        "type": "object"
+      },
+      "OnboardingEnsureSetupSessionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "empty": {
+            "title": "Empty",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "session_id",
+          "empty"
+        ],
+        "title": "OnboardingEnsureSetupSessionResult",
+        "type": "object"
+      },
+      "OnboardingIntro": {
+        "enum": [
+          "unseen",
+          "seen"
+        ],
+        "title": "OnboardingIntro",
+        "type": "string"
       },
       "OnboardingResetSetupProfileResult": {
         "additionalProperties": false,
@@ -19758,6 +20086,53 @@
           "path"
         ],
         "title": "OnboardingResetSetupProfileResult",
+        "type": "object"
+      },
+      "OnboardingStateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "intro": {
+            "$ref": "#/components/schemas/OnboardingIntro"
+          },
+          "failed_starts": {
+            "title": "Failed Starts",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "eligible",
+          "intro",
+          "failed_starts"
+        ],
+        "title": "OnboardingStateResult",
         "type": "object"
       },
       "OpenRequestEntry": {
@@ -23562,19 +23937,6 @@
             "title": "Previous Names",
             "type": "array"
           },
-          "role": {
-            "anyOf": [
-              {
-                "const": "setup",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
-          },
           "last_session": {
             "anyOf": [
               {
@@ -24498,58 +24860,6 @@
           }
         },
         "title": "ProfilesListResult",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "answers": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OnboardingAnswers"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "title": "ProfilesRememberOnboardingParams",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingResult": {
-        "additionalProperties": false,
-        "properties": {
-          "saved": {
-            "default": true,
-            "title": "Saved",
-            "type": "boolean"
-          },
-          "profile": {
-            "default": "default",
-            "title": "Profile",
-            "type": "string"
-          },
-          "target": {
-            "default": "user",
-            "title": "Target",
-            "type": "string"
-          }
-        },
-        "title": "ProfilesRememberOnboardingResult",
         "type": "object"
       },
       "ProfilesSetAssetParams": {
@@ -26287,6 +26597,18 @@
             ],
             "default": null,
             "title": "Voice Context"
+          },
+          "voice_turn": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Turn"
           },
           "title_preview": {
             "anyOf": [
@@ -29188,6 +29510,13 @@
           "closed": {
             "title": "Closed",
             "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "array"
           }
         },
         "required": [
@@ -30950,6 +31279,18 @@
             "default": "",
             "title": "Source",
             "type": "string"
+          },
+          "_lineage_root_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lineage Root Id"
           }
         },
         "required": [
@@ -31787,6 +32128,128 @@
         "title": "SessionSetHiddenResult",
         "type": "object"
       },
+      "SessionStartChatParams": {
+        "additionalProperties": false,
+        "description": "``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only).",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "args": {
+            "$ref": "#/components/schemas/StartChatArgs"
+          }
+        },
+        "required": [
+          "session_id",
+          "tool_call_id",
+          "args"
+        ],
+        "title": "SessionStartChatParams",
+        "type": "object"
+      },
+      "SessionStartChatResult": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same\narguments may succeed on another try (``retryable``). A call already retried returns that retry's result.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/StartChatStatus"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SessionStartChatResult",
+        "type": "object"
+      },
       "SessionStatusParams": {
         "additionalProperties": false,
         "properties": {
@@ -32323,6 +32786,165 @@
           "cwd"
         ],
         "title": "SessionWorkspaceMoveResult",
+        "type": "object"
+      },
+      "SetupChooseKind": {
+        "enum": [
+          "question",
+          "accent",
+          "theme",
+          "layout",
+          "connectors",
+          "plugins",
+          "tour",
+          "fork",
+          "machine_use"
+        ],
+        "title": "SetupChooseKind",
+        "type": "string"
+      },
+      "SetupChooseOption": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "SetupChooseOption",
+        "type": "object"
+      },
+      "SetupChooseRequestParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SetupChooseKind"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SetupChooseOption"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
+          },
+          "multi_select": {
+            "default": false,
+            "title": "Multi Select",
+            "type": "boolean"
+          },
+          "preselected": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preselected"
+          }
+        },
+        "required": [
+          "session_id",
+          "kind",
+          "question"
+        ],
+        "title": "SetupChooseRequestParams",
+        "type": "object"
+      },
+      "SetupChooseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "picked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Picked"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "said": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Said"
+          }
+        },
+        "title": "SetupChooseResult",
         "type": "object"
       },
       "SetupReadyPayload": {
@@ -34321,6 +34943,53 @@
         ],
         "title": "SpawnTreeSaveResult",
         "type": "object"
+      },
+      "StartChatArgs": {
+        "additionalProperties": false,
+        "description": "The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``).",
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "StartChatArgs",
+        "type": "object"
+      },
+      "StartChatStatus": {
+        "enum": [
+          "started",
+          "rejected"
+        ],
+        "title": "StartChatStatus",
+        "type": "string"
       },
       "StatusUpdatePayload": {
         "additionalProperties": false,
@@ -36627,6 +37296,15 @@
         "title": "ToolsetsListResult",
         "type": "object"
       },
+      "TourPreset": {
+        "description": "Which built-in tour ``start`` without steps runs.",
+        "enum": [
+          "quick",
+          "full"
+        ],
+        "title": "TourPreset",
+        "type": "string"
+      },
       "TourRequestParams": {
         "additionalProperties": false,
         "description": "``tools/tour_tool.py`` field set.",
@@ -36725,6 +37403,17 @@
             ],
             "default": null,
             "title": "Step Index"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TourPreset"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -38249,6 +38938,21 @@
         "title": "VerificationStatusResult",
         "type": "object"
       },
+      "VoicePartialPayload": {
+        "additionalProperties": false,
+        "description": "``methods_voice`` voice.record ``on_partial`` \u2014 live STT text so far (``stt.streaming``).",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "VoicePartialPayload",
+        "type": "object"
+      },
       "VoiceRecordAction": {
         "enum": [
           "start",
@@ -39442,6 +40146,24 @@
       }
     },
     {
+      "name": "setup_choose",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SetupChooseRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SetupChooseResult"
+        }
+      }
+    },
+    {
       "name": "sudo",
       "summary": "Masked sudo password for the terminal tool.",
       "params": [
@@ -39769,6 +40491,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ErrorPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "free_tier.challenge",
+      "summary": "The account service wants a browser challenge cleared before the free-tier token exchange (broadcast); the desktop loads ``url`` in a hidden window.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengePayload"
           }
         }
       ]
@@ -40431,6 +41165,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.partial",
+      "summary": "Live STT text so far while the user is still speaking.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoicePartialPayload"
           }
         }
       ]

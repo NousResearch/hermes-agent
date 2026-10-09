@@ -3,9 +3,10 @@
 ``prepare`` resolves every id against the plugin catalog (the Plugins tab's resolver) or the skills
 hub and fills the row the card draws; an id that does not resolve, or a plugin this OS cannot run,
 is drawn failed with the reason. Nothing installs until the user approves a row. The install runs on
-a worker under the TARGET profile's runtime scope (``default`` unless the Advanced modal named
-another), through the same host install the Plugins tab uses, so the catalog pin, the kill list, the
-security scan and the live activation of the plugin's MCP servers and skills are the host's.
+a worker under the TARGET profile's runtime scope (the calling chat's own home unless the Advanced
+modal named another profile), through the same host install the Plugins tab uses, so the catalog
+pin, the kill list, the security scan and the live activation of the plugin's MCP servers and skills
+are the host's.
 """
 
 from __future__ import annotations
@@ -18,15 +19,17 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_cli.plugin_install_phase import InstallPhase
+from hermes_constants import get_hermes_home, profile_name_for_home
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.mcp import _fail, _move
 from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROFILE = "default"
 # The Advanced modal's own keys (CATALOG-ROW-CONTRACT.md); every other answer key is a credential.
 _OPTION_KEYS = frozenset({"target_profile", "agent_half", "desktop_half", "enable", "force", "ref"})
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -49,19 +52,26 @@ def _display(identifier: str) -> str:
 
 
 @contextlib.contextmanager
-def target_scope(profile: str):
-    """Bind the named profile's home, secrets and terminal policy, the way an RPC for that profile
-    does. The install writes its tree, config and ``.env`` there, never into the setup profile. The
-    home override is bound for the launch profile too: the calling thread carries the setup
-    profile's override, and an unbound launch scope would leave it in place."""
+def target_scope(home: Path):
+    """Bind the profile at *home*: its home, secrets and terminal policy, the way an RPC for that
+    profile does. The install writes its tree, config and ``.env`` there. The home override is
+    bound for the launch profile too: the calling thread may carry another profile's override, and
+    an unbound launch scope would leave it in place."""
     from tui_gateway import server
     from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
 
-    home = server._profile_home(profile)  # None = the launch profile; raises for a missing one
-    scope = (launch_profile_runtime_scope(server._hermes_home) if home is None
+    launch = home.resolve() == Path(server._hermes_home).resolve()
+    scope = (launch_profile_runtime_scope(server._hermes_home) if launch
              else server._session_profile_runtime_scope({"profile_home": str(home)}))
     with scope:
         yield
+
+
+def _named_home(name: str) -> Path:
+    """The home of the profile the Advanced modal named; raises for one that does not exist."""
+    from tui_gateway import server
+
+    return server._profile_home(name) or Path(server._hermes_home)
 
 
 class HostInstaller:
@@ -80,12 +90,13 @@ class HostInstaller:
         raise_if_removed(entry.name, entry.repo)
         _refuse_unsupported_catalog_platform(entry)
 
-    def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str]) -> Dict[str, Any]:
+    def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
+                       on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-        return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref)
+        return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref, on_step=on_step)
 
-    def skill_meta(self, identifier: str) -> Optional[Dict[str, Any]]:
+    def skill_meta(self, identifier: str) -> Optional[dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
         from hermes_cli.skills_hub import _sources
         from tools.skills_hub import skills_hub_http_session
@@ -101,7 +112,7 @@ class HostInstaller:
                             "identifier": meta.identifier or identifier}
         return None
 
-    def install_skill(self, identifier: str, *, force: bool) -> Dict[str, Any]:
+    def install_skill(self, identifier: str, *, force: bool) -> dict[str, Any]:
         """Install headless; ``{name, already_installed}``. ``do_install`` reports only by printing, so
         success is read from the hub lock file and failure from its last line. A skill that is already
         installed (force off) is left as it is and reported so."""
@@ -110,7 +121,7 @@ class HostInstaller:
         from hermes_cli.skills_hub import do_install
         from tools.skills_hub import HubLockFile
 
-        def entry() -> Optional[Dict[str, Any]]:
+        def entry() -> Optional[dict[str, Any]]:
             return next((e for e in HubLockFile().list_installed() if e.get("identifier") == identifier), None)
 
         before = entry()
@@ -132,7 +143,7 @@ class HostInstaller:
 @dataclass
 class _Work:
     done: threading.Event = field(default_factory=threading.Event)
-    outcome: Dict[str, Any] = field(default_factory=dict)
+    outcome: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
 
@@ -142,11 +153,15 @@ class _Runner:
     def __init__(self, installer: HostInstaller):
         self.installer = installer
         self.op_id: Optional[str] = None
-        self.facts: Dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
-        self.work: Dict[str, _Work] = {}
+        self.facts: dict[str, Any] = {}  # row name -> PluginCatalogEntry | skill meta; never on the wire
+        self.work: dict[str, _Work] = {}
         # The Advanced values the user approved per row; Try again (env null) reuses them. Values
         # are credentials in part, so they stay here, off the target.
-        self.approved_env: Dict[str, Dict[str, str]] = {}
+        self.approved_env: dict[str, dict[str, str]] = {}
+        # Built on the tool call's thread: the calling chat's own home is the default install
+        # target, and its profile name labels the row (None for a home that is no named profile).
+        self.home: Path = get_hermes_home()
+        self.label: Optional[str] = profile_name_for_home(self.home)
 
     # -- prepare: resolve each id and draw its row ------------------------------------------------
 
@@ -154,7 +169,7 @@ class _Runner:
         _RUNNERS[operation.op_id] = self
         self.op_id = operation.op_id
         for target in operation.targets:
-            target.extra = {"display": _display(target.name), "target_profile": DEFAULT_PROFILE}
+            target.extra = {"display": _display(target.name), "target_profile": self.label}
             try:
                 self._resolve(target)
             except Exception as exc:
@@ -166,7 +181,7 @@ class _Runner:
             if entry is None:
                 raise LookupError(f"'{target.name}' is not in the Hermes plugin catalog")
             self.facts[target.name] = entry
-            target.extra = _plugin_row(entry)
+            target.extra = _plugin_row(entry, self.label)
             target.required_env = [{"name": name, "required": False, "secret": True, "default": ""}
                                    for name in entry.capabilities.requires_env]
             self.installer.refuse(entry)
@@ -179,12 +194,12 @@ class _Runner:
             "display": str(meta.get("name") or _display(target.name)),
             "description": _first_sentence(meta.get("description") or ""),
             "tier": "official" if meta.get("source") == "official" else "community",
-            "target_profile": DEFAULT_PROFILE,
+            "target_profile": self.label,
         }
 
     # -- the card's answer ------------------------------------------------------------------------
 
-    def approve(self, operation: ConnectionOperation, target: Target, env: Optional[Dict[str, str]]) -> None:
+    def approve(self, operation: ConnectionOperation, target: Target, env: Optional[dict[str, str]]) -> None:
         approved = {**self.approved_env.get(target.name, {}), **(env or {})}
         actor = Actor.user if target.state == TargetState.failed else Actor.backend_watcher
         if target.name not in self.facts:  # failed at prepare: Try again resolves once more
@@ -198,11 +213,17 @@ class _Runner:
             _fail(operation, target, error)
             return
         self.approved_env[target.name] = approved
-        if not _move(operation, target, TargetState.initiated, actor, detail=""):
+        # The non-secret choices go on the row, so a Try again after the operation settled repeats
+        # what the user approved; the credentials are already in the target profile's .env by then.
+        options = {"force": _flag(approved.get("force"), False), "enable": _flag(approved.get("enable"), True),
+                   "ref": approved.get("ref") or None}
+        profile = (approved.get("target_profile") or "").strip()
+        if not _move(operation, target, TargetState.initiated, actor, detail="",
+                     **{**target.extra, "target_profile": profile or self.label, "approved": options}):
             return
-        self._spawn(operation, target, approved)
+        self._spawn(operation, target, approved, options)
 
-    def _check_answer(self, target: Target, env: Dict[str, str]) -> str:
+    def _check_answer(self, target: Target, env: dict[str, str]) -> str:
         if target.kind == "plugin" and env.get("agent_half") == "0":
             return "only the desktop half was selected; install it from Settings, Plugins"
         ref = env.get("ref")
@@ -214,13 +235,20 @@ class _Runner:
             return f"'{target.name}' does not declare {', '.join(undeclared)}"
         return ""
 
-    def _spawn(self, operation: ConnectionOperation, target: Target, env: Dict[str, str]) -> None:
+    def _spawn(self, operation: ConnectionOperation, target: Target, env: dict[str, str],
+               options: dict[str, Any]) -> None:
         work = _Work()
         self.work[target.name] = work
 
+        def step(phase: InstallPhase) -> None:
+            # A row that left ``initiated`` keeps its own state.
+            if not operation.settled and target.state == TargetState.initiated:
+                operation.refresh(target.name, connect_url=None, detail="", actor=Actor.backend_watcher,
+                                  phase=phase.value)
+
         def body() -> None:
             try:
-                work.outcome = self._install(target, env)
+                work.outcome = self._install(target, env, options, step)
             except Exception as exc:
                 work.error = self._detail(exc, target)
             work.done.set()
@@ -230,19 +258,20 @@ class _Runner:
         threading.Thread(target=contextvars.copy_context().run, args=(body,), daemon=True,
                          name=f"catalog-install-{target.name}").start()
 
-    def _install(self, target: Target, env: Dict[str, str]) -> Dict[str, Any]:
-        profile = (env.get("target_profile") or DEFAULT_PROFILE).strip()
-        force = _flag(env.get("force"), False)
-        with target_scope(profile):
+    def _install(self, target: Target, env: dict[str, str], options: dict[str, Any],
+                 step: Callable[[InstallPhase], None]) -> dict[str, Any]:
+        named = (env.get("target_profile") or "").strip()
+        with target_scope(_named_home(named) if named else self.home):
             _save_credentials({k: v for k, v in env.items() if k not in _OPTION_KEYS and v})
             if target.kind == "skill":
                 identifier = str(self.facts[target.name].get("identifier") or target.name)
-                return {"profile": profile, **self.installer.install_skill(identifier, force=force)}
-            enable = _flag(env.get("enable"), True)
-            result = self.installer.install_plugin(target.name, force=force, enable=enable, ref=env.get("ref") or None)
+                step(InstallPhase.downloading)
+                return self.installer.install_skill(identifier, force=options["force"])
+            result = self.installer.install_plugin(target.name, force=options["force"], enable=options["enable"],
+                                                   ref=options["ref"], on_step=step)
         if not result.get("ok"):
             raise RuntimeError(result.get("error") or "the install failed")
-        return {"profile": profile, "enabled": enable, **result}
+        return {"enabled": options["enable"], **result}
 
     # -- the watcher --------------------------------------------------------------------------------
 
@@ -266,31 +295,30 @@ class _Runner:
         from agent.redact import redact_sensitive_text
 
         text = str(exc) or exc.__class__.__name__
-        for value in self.approved_env.get(target.name, {}).values():
-            if value and len(value) > 3:
+        # Only credentials are secret: the Advanced choices (a profile name, a commit) stay readable.
+        for key, value in self.approved_env.get(target.name, {}).items():
+            if key not in _OPTION_KEYS and value and len(value) > 3:
                 text = text.replace(value, "[REDACTED]")
         return redact_sensitive_text(text, force=True) or "error"
 
 
-def target_declared_env(fact: Any) -> List[str]:
+def target_declared_env(fact: Any) -> list[str]:
     caps = getattr(fact, "capabilities", None)
     return list(getattr(caps, "requires_env", None) or ())
 
 
-def _plugin_row(entry: Any) -> Dict[str, Any]:
-    requirements = [f"Hermes {entry.requires_hermes}"] if entry.requires_hermes else []
-    requirements += [f"{name} environment variable" for name in entry.capabilities.requires_env]
+def _plugin_row(entry: Any, label: Optional[str]) -> dict[str, Any]:
     from hermes_cli.plugin_catalog_presence import presence
 
-    row: Dict[str, Any] = {
+    row: dict[str, Any] = {
         "display": getattr(entry, "title", "") or _display(entry.name),
         "description": _first_sentence(entry.description),
         "tier": entry.tier if entry.tier in _TIERS else "community",
         "repo": entry.repo,
         "sha": entry.sha,
-        "requirements": requirements,
+        "requires_hermes": entry.requires_hermes or None,
         "has_desktop_half": False,
-        "target_profile": DEFAULT_PROFILE,
+        "target_profile": label,
         "app_state": presence(entry).state,
     }
     if entry.platforms:
@@ -300,29 +328,33 @@ def _plugin_row(entry: Any) -> Dict[str, Any]:
     return row
 
 
-def _installed_row(target: Target, outcome: Dict[str, Any]) -> tuple:
-    """The connected row's fields (the drawn row plus what went live) and its one-line detail."""
-    extra = {**target.extra, "target_profile": outcome["profile"]}
+def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
+    """The connected row's fields (the drawn row plus what went live, as facts the card words) and
+    the same notes in one English line for the model."""
+    extra = dict(target.extra)
     if target.kind == "skill":
-        detail = "already installed; left as it is (Advanced, force reinstall replaces it)" \
-            if outcome.get("already_installed") else ""
-        return {**extra, "skill": outcome["name"], "tools": []}, detail
+        already = bool(outcome.get("already_installed"))
+        detail = "already installed; left as it is (Advanced, force reinstall replaces it)" if already else ""
+        return {**extra, "skill": outcome["name"], "tools": [], "already_installed": already}, detail
     live = (outcome.get("activation") or {}).get("live_now") or {}
     servers = live.get("mcp_servers") or []
     tools = [name for server in servers if server.get("connected") for name in server.get("tools") or ()]
-    notes = [f"MCP server {s['name']} not connected: {s.get('error') or 'unknown error'}"
-             for s in servers if not s.get("connected")]
-    if not outcome.get("enabled", True):
+    server_errors = [{"name": s["name"], "error": s.get("error") or ""} for s in servers if not s.get("connected")]
+    enabled = bool(outcome.get("enabled", True))
+    missing_env = list(outcome.get("missing_env") or ())
+    notes = [f"MCP server {e['name']} not connected: {e['error'] or 'unknown error'}" for e in server_errors]
+    if not enabled:
         notes.append("installed but not enabled")
-    if outcome.get("missing_env"):
-        notes.append(f"set {', '.join(outcome['missing_env'])} to finish setup")
+    if missing_env:
+        notes.append(f"set {', '.join(missing_env)} to finish setup")
     skills = [s["name"] for s in live.get("skills") or () if s.get("name")]
     if skills:
         extra["skill"] = skills[0]
-    return {**extra, "tools": tools}, "; ".join(notes)
+    facts = {"tools": tools, "enabled": enabled, "missing_env": missing_env, "server_errors": server_errors}
+    return {**extra, **facts}, "; ".join(notes)
 
 
-def _save_credentials(env: Dict[str, str]) -> None:
+def _save_credentials(env: dict[str, str]) -> None:
     from hermes_cli.config import save_env_value, validate_env_var_name_for_write
 
     for key, value in env.items():
@@ -331,7 +363,7 @@ def _save_credentials(env: Dict[str, str]) -> None:
 
 
 # op_id -> the runner driving it, so the card's answer (RPC thread) finds the work.
-_RUNNERS: Dict[str, _Runner] = {}
+_RUNNERS: dict[str, _Runner] = {}
 
 
 def owns(op_id: str) -> bool:
@@ -367,7 +399,7 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
         operation.settle(SettleReason.continue_)
 
 
-def retry(operation: ConnectionOperation, names: List[str]) -> Optional[str]:
+def retry(operation: ConnectionOperation, names: list[str]) -> Optional[str]:
     runner = _RUNNERS.get(operation.op_id)
     if runner is None or operation.settled:
         return "this operation has settled; its result is frozen"
@@ -382,4 +414,4 @@ def open_runner(installer: Optional[HostInstaller] = None) -> _Runner:
     return _Runner(installer or HostInstaller())
 
 
-Callback = Callable[[Dict[str, Any]], Optional[str]]
+Callback = Callable[[dict[str, Any]], Optional[str]]

@@ -73,10 +73,11 @@ def test_failed_update_reports_the_stage_it_never_reached(marks, monkeypatch):
     stages = [data for mark, data in marks.rows if mark == contract.UPDATE_STAGE_MARK]
     assert runs == [{
         "apply_mode": "git", "duration_bucket": "lt_30s", "failed_stage": "deps",
-        "from_version_age_bucket": "7d_to_30d", "kind": "cli", "outcome": "failed",
+        "from_version_age_bucket": "7d_to_30d", "kind": "cli", "outcome": "failed", "failure_class": "deps_failed",
     }]
+    # The stage the run died in carries a failed row, so run and stage counts agree.
     assert [(s["stage"], s["outcome"]) for s in stages] == [
-        ("plan", "success"), ("snapshot", "skipped"), ("apply", "success")]
+        ("plan", "success"), ("snapshot", "skipped"), ("apply", "success"), ("deps", "failed")]
     _assert_valid(marks.rows)
 
 
@@ -185,12 +186,13 @@ def test_opted_out_start_purges_markers_left_while_opted_in(marks, monkeypatch):
 def test_v3_schema_accepts_exactly_the_contract_values():
     from pathlib import Path
 
-    import hermes_cli.observability as observability
+    from hermes_cli import observability
 
     schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}
     for metric in (contract.UPDATE_RUN_METRIC, contract.UPDATE_STAGE_METRIC, contract.PROCESS_EXIT_METRIC):
-        dims = by_name[metric]["properties"]["dimensions"]["properties"]
+        dims = by_name[metric]["properties"]["dimensions"]
+        dims = (dims["oneOf"][0] if "oneOf" in dims else dims)["properties"]  # current shape first
         assert {field: set(spec["enum"]) for field, spec in dims.items()} == {
             field: set(values) for field, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
 

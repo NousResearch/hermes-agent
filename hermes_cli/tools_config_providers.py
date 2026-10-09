@@ -15,6 +15,7 @@ from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, 
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -212,7 +213,20 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
             is_active = _is_provider_active(provider, config)
         return "ready" if is_active else "needs_setup"
 
-    return "ready"
+    return _web_registry_readiness(provider)
+
+
+def _web_registry_readiness(provider: dict) -> str:
+    """Keyless, untiered web rows are ready only when their registry provider is available: the only such
+    row's ``is_available()`` is an account login (OpenAI Native = openai-codex), hence ``needs_auth``.
+    Free-tier rows are exempt: they run on the public keyless ring, which ``is_available()`` ignores."""
+    backend = provider.get("web_backend")
+    if not backend or provider.get("web_tier"):
+        return "ready"
+    from agent.web_search_registry import get_provider
+
+    registered = get_provider(backend)
+    return "ready" if registered is None or registered.is_available() else "needs_auth"
 
 
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fresh: bool = False) -> bool:
@@ -372,7 +386,18 @@ def _web_backend_active(provider: dict, config: dict) -> bool:
     and a shared vendor shadowed by both overrides serves nothing. Managed Nous rows never reach
     here — they answer in ``_managed_provider_active``."""
     backend = provider.get("web_backend")
-    return bool(backend) and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)
+    if not (backend and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)):
+        return False
+    # Rows sharing one backend name (cloud "Firecrawl" vs the "Firecrawl Self-Hosted" setup row) differ only in
+    # the env var they configure, and the one whose var is set is what serves the call. A setup row needs its
+    # var; the registry row also stays active keyless (explicit ``firecrawl`` with no key = anonymous cloud)
+    # unless a sibling setup row's var is set instead.
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _provider_env_ready
+    if not provider.get("env_vars") or _provider_env_ready(provider):
+        return True
+    return bool(provider.get("web_search_plugin_name")) and not any(
+        row.get("web_backend") == backend and row.get("env_vars") and _provider_env_ready(row)
+        for row in TOOL_CATEGORIES["web"]["providers"])
 
 
 # Managed-row marker -> (config section, key) the pick writes, in check order.
@@ -683,28 +708,18 @@ def _select_plugin_gen_provider(section: str, plugin_name: str, config: dict, *,
 _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_gen")
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
-# Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the dashboard selects (web_server _CONFIG_FIELD_META) and the desktop settings
-# enums (apps/desktop/src/app/settings/constants.ts).
-STT_MODEL_CATALOG = {
-    "local": ["base", "tiny", "small", "medium", "large-v3"],
-    "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
-    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
-    "elevenlabs": ["scribe_v2", "scribe_v1"]}
-
-# ElevenLabs historically uses ``model_id`` instead of ``model``.
-_STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
-
-
 def _configure_stt_model(stt_provider: str, config: dict) -> None:
-    """Prompt for the STT model after a provider pick (when a catalog exists)."""
+    """Prompt for the STT model after a provider pick (static catalog, or DeepInfra's live one)."""
     from hermes_cli.tools_config import _cfg_section, _prompt_choice
 
     catalog = STT_MODEL_CATALOG.get(stt_provider)
+    if catalog is None and stt_provider == "deepinfra":
+        from hermes_cli.models import deepinfra_model_ids
+        catalog = deepinfra_model_ids("stt")
     if not catalog:
         return
     prov_cfg = _cfg_section(_cfg_section(config, "stt"), stt_provider)
-    model_key = _STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
+    model_key = STT_MODEL_CONFIG_KEY.get(stt_provider, "model")
     current = str(prov_cfg.get(model_key) or "").strip()
     ordered = list(catalog)
     chosen = ordered[_prompt_choice("  Select STT model:", ordered, ordered.index(current) if current in ordered else 0)]

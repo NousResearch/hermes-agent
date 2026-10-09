@@ -374,7 +374,7 @@ def _download_artifact(
     Returns the path to ``review-status.json`` inside the extracted dir,
     or ``None`` if the download or extraction failed.
     """
-    owner, repo_name = repo.split("/")
+    _owner, _repo_name = repo.split("/")
     archive_download_url = artifact.get("archive_download_url", "")
     if not archive_download_url:
         return None

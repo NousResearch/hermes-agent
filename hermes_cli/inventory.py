@@ -692,15 +692,26 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import _model_requires_account_discovery
+    from hermes_cli.models import _PROVIDER_ALIASES, _model_requires_account_discovery
     from hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor ``model_catalog.excluded_providers`` like ``list_authenticated_providers`` does — unconditionally,
+    # even for the current provider — or ``include_unconfigured`` pickers (TUI ``/model``) resurrect every
+    # excluded provider as a skeleton row (#68816). A slug is hidden when it or any alias is excluded, so an
+    # alias exclusion (``google`` → ``gemini``) can't leak the canonical row back.
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    names_for: dict[str, set[str]] = {}
+    for alias, canon in _PROVIDER_ALIASES.items():
+        names_for.setdefault(canon.lower(), {canon.lower()}).add(alias.lower())
     extras: list[dict] = []
     for entry in listed_canonical_providers():
-        if entry.slug.lower() in seen:
+        slug = entry.slug.lower()
+        if slug in seen:
+            continue
+        if names_for.get(slug, {slug}) & excluded:
             continue
         if current_only and entry.slug.lower() != cur:
             continue

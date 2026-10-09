@@ -37,8 +37,12 @@ def complete_source_checkout(
     completion_message: str | None = None,
     announce: str | None = None,
     followups: list[tuple[str, str]] | None = None,
+    before_build=None,
 ) -> bool:
     """Publish commands, build the products, then run post-build maintenance.
+
+    ``before_build`` (an update's paused-gateway restart) runs once the launchers are published:
+    dependencies are already synced, the long product builds have not started.
 
     Every step runs even when an earlier one failed; each failure is printed as ``⚠``,
     recorded on the open update receipt and appended to ``followups`` as ``(step, reason)``.
@@ -55,8 +59,10 @@ def complete_source_checkout(
     # Claim the shared update lock so stacked completions serialize. A tail whose
     # orchestrator already holds the lock (venv_sync's interrupted-update finish,
     # the updater's completion child) runs under its parent's claim, exactly as
-    # `hermes update` does under the desktop handoff pid.
-    lock = UpdateLock()
+    # `hermes update` does under the desktop handoff pid. The CHECKOUT lock is acquired, not
+    # sampled (R2): a completion from another home must not build a checkout an update owns;
+    # one inside the update's tree joins the lock it inherited.
+    lock = UpdateLock(install_root=root)
     if not lock.acquire():
         raise RuntimeError(
             f"an update is still running ({describe_holder(lock.holder)}); "
@@ -68,6 +74,7 @@ def complete_source_checkout(
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
             completion_message=completion_message, announce=announce, followups=followups,
+            before_build=before_build,
         )
     finally:
         lock.release()
@@ -84,6 +91,7 @@ def _complete_locked(
     completion_message: str | None,
     announce: str | None,
     followups: list[tuple[str, str]] | None = None,
+    before_build=None,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
@@ -96,7 +104,7 @@ def _complete_locked(
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.
         expose_pm_git(root)
-    except Exception as exc:  # noqa: BLE001 — git-less steps below still complete
+    except Exception as exc:
         print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     owed: list[tuple[str, str]] = []
 
@@ -113,6 +121,8 @@ def _complete_locked(
             owed.append((name, reason))
 
     step("launchers", lambda: publish_launchers(root))
+    if before_build is not None:
+        before_build()  # never raises: a failed restart stays owed and is retried after the build
     step("build", lambda: build_update_products(root, desktop=desktop))
     if announce:
         print(announce)
@@ -202,7 +212,13 @@ def main(argv: list[str] | None = None) -> int:
     passthrough = (["--desktop"] if args.desktop else []) + \
                   (["--finish-update"] if args.finish_update else [])
     command = _bootstrap_command(root, passthrough)
-    return subprocess.call(command, cwd=root, env=activation_environment(root))
+    from hermes_cli.update_lock import checkout_lock_fds
+
+    # Called inside an update tree (venv_sync's interrupted-update finish), the prepared child
+    # keeps the checkout lock this bootstrap inherited.
+    fds = checkout_lock_fds(root)
+    return subprocess.call(command, cwd=root, env=activation_environment(root),
+                           **({"pass_fds": fds} if fds else {}))
 
 
 if __name__ == "__main__":

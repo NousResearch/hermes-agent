@@ -25,10 +25,12 @@ Do the thing.
 """
 
 
-def _write_skill(skills_dir, name):
+def _write_skill(skills_dir, name, display_name=None):
     d = skills_dir / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(SKILL_MD.format(name=name), encoding="utf-8")
+    (d / "SKILL.md").write_text(
+        SKILL_MD.format(name=display_name or name), encoding="utf-8"
+    )
 
 
 @pytest.fixture
@@ -77,6 +79,28 @@ class TestSkillContent:
         assert data["name"] == "dashboard-skill"
         assert data["content"].startswith("---")
         assert "Do the thing." in data["content"]
+
+    def test_get_and_update_by_frontmatter_display_name(
+        self, client, isolated_profiles
+    ):
+        skills_dir = isolated_profiles["default"] / "skills"
+        _write_skill(skills_dir, "agong-deep-search-trace", "AGong Deep Search Trace")
+
+        resp = client.get(
+            "/api/skills/content", params={"name": "AGong Deep Search Trace"}
+        )
+        assert resp.status_code == 200
+
+        new_content = resp.json()["content"].replace(
+            "Do the thing.", "Do the NEW thing."
+        )
+        resp = client.put(
+            "/api/skills/content",
+            json={"name": "AGong Deep Search Trace", "content": new_content},
+        )
+        assert resp.status_code == 200
+        skill_md = skills_dir / "agong-deep-search-trace" / "SKILL.md"
+        assert "Do the NEW thing." in skill_md.read_text(encoding="utf-8")
 
     def test_get_content_scopes_to_profile(self, client, isolated_profiles):
         resp = client.get(

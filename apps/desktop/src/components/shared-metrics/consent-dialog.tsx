@@ -13,10 +13,13 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
+import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { $guidedOnboardingSettled, $setupProfileName } from '@/store/onboarding-gate'
 import { $onboardingSurfaces } from '@/store/onboarding-presence'
+import { normalizeProfileKey } from '@/store/profile'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -55,6 +58,9 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
   const surfaces = useStore($onboardingSurfaces)
+  const guidedSettled = useStore($guidedOnboardingSettled)
+  const tourActive = useStore($tourActive)
+  const setupProfile = useStore($setupProfileName)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
@@ -63,15 +69,20 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
 
   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
-  // Never over the provider picker, the free-tier welcome or the guided chat:
+  // Never over the provider picker, the free-tier welcome, the guided chat or a tour on screen:
   // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
-    surfaces.size === 0
+    surfaces.size === 0 &&
+    guidedSettled &&
+    !tourActive
 
-  const ready = enabled && onboardingSettled
+  // The setup profile only hosts the welcome chat; its answer would count for nobody.
+  const inSetupProfile = setupProfile !== null && normalizeProfileKey(setupProfile) === normalizeProfileKey(profile)
+
+  const ready = enabled && onboardingSettled && !inSetupProfile
 
   useEffect(() => {
     $sharedMetricsConsent.set(null)
@@ -115,7 +126,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     <Dialog onOpenChange={open => $sharedMetricsDetailsOpen.set(open)} open>
       <DialogContent className="max-w-md" onOpenAutoFocus={preventCloseButtonAutoFocus}>
         <DialogHeader>
-          <DialogTitle>{copy.consentTitle}</DialogTitle>
+          <DialogTitle>{copy.dialogTitle}</DialogTitle>
           <DialogDescription>{copy.consentBody}</DialogDescription>
         </DialogHeader>
 
@@ -132,26 +143,27 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
           </button>
           {expanded ? (
             <div
-              className="grid gap-2 rounded-lg bg-(--ui-bg-tertiary)/40 px-3 py-2.5 text-[0.8125rem] leading-5 text-(--ui-text-secondary)"
+              className="rounded-lg bg-(--ui-bg-tertiary)/40 px-3 py-2.5 text-[0.8125rem] leading-5 text-(--ui-text-secondary)"
               id={detailsId}
             >
-              <p>{copy.collectedIntro}</p>
               <ul className="list-disc space-y-0.5 pl-5">
                 <li>{copy.collectedActivity}</li>
                 <li>{copy.collectedModels}</li>
                 <li>{copy.collectedNames}</li>
+                <li>{copy.collectedUsage}</li>
                 <li>{copy.collectedMilestones}</li>
                 <li>{copy.collectedReliability}</li>
-                <li>{copy.collectedUsage}</li>
                 <li>{copy.collectedMachine}</li>
               </ul>
-              <p>{copy.installId}</p>
-              <p>{copy.consentWindow}</p>
-              <div>
-                <DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.readDocs}</DocsLink>
-              </div>
             </div>
           ) : null}
+        </div>
+
+        <div className="grid gap-2 text-[0.8125rem] leading-5 text-(--ui-text-secondary)">
+          <p>{copy.sending}</p>
+          <div>
+            <DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.readDocs}</DocsLink>
+          </div>
         </div>
 
         <div className="grid gap-2">
@@ -161,7 +173,6 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
             </Button>
           ))}
         </div>
-        <p className="text-xs text-(--ui-text-tertiary)">{copy.changeLater}</p>
       </DialogContent>
     </Dialog>
   )

@@ -599,7 +599,10 @@ test('readBundledBundleEnv reads the stamped defaults/clears and is absent when 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the resolved home', async (): Promise<void> => {
+test.each<[Record<string, string | null> | undefined]>([
+  [undefined], [{ HERMES_GUEST_ONBOARDING: '1' }], [{ HERMES_HOME: null }],
+])(
+  'bundled smoke admits a fresh home and seeds the resolved provider with defaults %j', async (bundleEnv: Record<string, string | null> | undefined): Promise<void> => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundle-clear-'))
   const home = path.join(root, 'home')
   const userData = path.join(root, 'root', 'user-data')
@@ -610,6 +613,10 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
   fs.mkdirSync(path.join(root, 'root'), { recursive: true })
   fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
   fs.chmodSync(exe, 0o755)
+
+  if (bundleEnv) {
+    fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', bundleEnv }))
+  }
 
   const refuseLaunch = async (): Promise<never> => { throw new Error('launch refused by test') }
 
@@ -635,6 +642,15 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
       // dirs must exist or Windows applyDesktopIdentity crashes at launch.
       for (const dir of ['AppData/Roaming', 'AppData/Local', '.config', '.local/share', '.cache']) {
         expect(fs.statSync(path.join(home, '.desktop-smoke-home', ...dir.split('/'))).isDirectory()).toBe(true)
+      }
+
+      if (bundleEnv) {
+        const predicted = predictSmokeHermesHome(smokeEnvironment({}, home, userData), bundleEnv)
+        const config = path.join(predicted, 'config.yaml')
+        const before = fs.readFileSync(config)
+        await expect(runInstalledDesktopSmoke({ exe, root: path.join(root, 'root'), origin: 'bundled', home,
+          'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) }, refuseLaunch)).rejects.toThrow('refusing to seed an existing profile')
+        expect(fs.readFileSync(config)).toEqual(before)
       }
     } finally {
       await mock.close()

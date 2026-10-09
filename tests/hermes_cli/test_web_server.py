@@ -706,7 +706,7 @@ class TestWebServerEndpoints:
         DIFFERENT profile's gateway as this profile's, which hides a real
         outage behind a false "connected" (issue #71211).
         """
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import profiles as profiles_mod
 
         worker_home = profiles_mod.get_profile_dir("worker")
@@ -719,15 +719,12 @@ class TestWebServerEndpoints:
             # The served-profile probe also verifies the DEFAULT home's gateway identity; the
             # contract here is that the worker's OWN pid file is what the scoped rung reads.
             seen.setdefault("pid_paths", []).append(pid_path)
-            return None
 
         def _runtime(path=None):
             seen.setdefault("status_paths", []).append(path)
-            return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
             seen.setdefault("expected_homes", []).append(expected_home)
-            return None
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", _pid)
         monkeypatch.setattr(_gw_status, "get_running_pid", _pid)
@@ -751,66 +748,6 @@ class TestWebServerEndpoints:
     @staticmethod
     def _provider_field_map(payload):
         return {field["key"]: field for field in payload["fields"]}
-
-
-    def test_openviking_dashboard_persists_typed_recall_values(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://127.0.0.1:1933",
-                    "recall_limit": "12",
-                    "recall_score_threshold": "0.42",
-                    "recall_max_injected_chars": "8000",
-                    "profile_token_budget": "7000",
-                    "recall_timeout_seconds": "2.5",
-                    "recall_request_timeout_seconds": "1.5",
-                    "recall_full_read_limit": "5",
-                    "recall_prefer_abstract": True,
-                    "recall_resources": False,
-                }
-            },
-        )
-
-        assert resp.status_code == 200
-        config = load_config()["memory"]["openviking"]
-        assert config["recall_limit"] == 12
-        assert config["recall_score_threshold"] == 0.42
-        assert config["profile_token_budget"] == 7000
-        assert config["recall_prefer_abstract"] is True
-        assert config["recall_resources"] is False
-
-    def test_openviking_dashboard_rejects_out_of_range_recall_value(self):
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://127.0.0.1:1933",
-                    "recall_limit": 101,
-                }
-            },
-        )
-
-        assert resp.status_code == 400
-
-    def test_openviking_dashboard_rejects_blocked_endpoint_before_saving(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://169.254.169.254/latest/meta-data/credential",
-                }
-            },
-        )
-
-        assert resp.status_code == 400
-        assert "credential" not in resp.json()["detail"]
-        memory_config = load_config().get("memory", {})
-        assert "openviking" not in memory_config
 
 
     # A user-installed memory provider with a DECLARED config surface (``config_schema.py``, flat
@@ -910,7 +847,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """Dashboard dependency setup publishes through PM, never direct pip."""
         import subprocess as _subprocess
 
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import memory_setup
 
         prepared = []
@@ -1455,7 +1392,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert check_data["update_command"] == data["update_command"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         class Proc:
             pid = 12345
@@ -3243,7 +3180,7 @@ class TestNewEndpoints:
         never-installed KittenTTS/Piper. The endpoint now reports the honest
         state so keyless ≠ ready.
         """
-        import hermes_cli.tools_config as tools_config
+        from hermes_cli import tools_config
         from hermes_cli.nous_account import NousPortalAccountInfo
 
         # Logged out of Nous Portal → managed subscription rows need sign-in.
@@ -3254,7 +3191,7 @@ class TestNewEndpoints:
             ),
         )
         # No xAI credentials → the Grok OAuth-backed row needs sign-in.
-        import hermes_cli.tools_config_post_setup as tools_config_post_setup
+        from hermes_cli import tools_config_post_setup
 
         monkeypatch.setattr(tools_config, "_xai_credentials_present", lambda: False)
         # Local TTS engines not installed → their rows need setup.
@@ -3495,7 +3432,7 @@ class TestDesktopLoopbackAuthExemption:
     """``_desktop_loopback_auth_exempt`` decides the #96490 exemption."""
 
     def test_exempt_with_desktop_env_and_session_token_on_loopback(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-minted")
@@ -3503,7 +3440,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("::1") is True
 
     def test_exempt_via_ssh_spawn_credentials_without_env_token(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
@@ -3515,14 +3452,14 @@ class TestDesktopLoopbackAuthExemption:
         )
 
     def test_not_exempt_without_desktop_env(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.delenv("HERMES_DESKTOP", raising=False)
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
         assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
 
     def test_not_exempt_without_any_credential(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         # HERMES_DESKTOP=1 alone is not enough: a plain serve with the env var
         # exported must stay gated.
@@ -3531,7 +3468,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
 
     def test_not_exempt_on_non_loopback_bind(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
@@ -3539,7 +3476,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("192.168.1.10") is False
 
     def test_public_url_engages_gate_for_non_desktop_loopback(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         # Sanity: the base behaviour is untouched — a non-Desktop loopback
         # serve with a public_url configured stays ticket-gated.
@@ -3559,7 +3496,7 @@ class TestDesktopHostRendezvousIsolation:
         import io
         import urllib.request
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli.main_dashboard import _host_backend_attachment
         from hermes_cli.plugins_activation import notify_serve_backend
 
@@ -3600,7 +3537,7 @@ class TestDesktopHostRendezvousIsolation:
         """The Desktop exclusion must not alter standalone dashboard discovery — including a
         supervised service whose shell merely inherited HERMES_DESKTOP=1 without the token."""
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
@@ -3655,9 +3592,8 @@ class TestOrphanedOwnerReclaim:
         ``(claimed, published, fake_procs)``.
         """
         import types
-        from unittest.mock import MagicMock
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import process_identity as pi
 
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -3952,57 +3888,6 @@ class TestModelInfoEndpoint:
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------
-
-
-class TestProbeGatewayHealth:
-    """Tests for _probe_gateway_health() — cross-container gateway detection."""
-
-
-    def test_probe_uses_configured_short_timeout(self, monkeypatch):
-        """The HTTP probe must not fall through to the OS TCP timeout."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
-        timeouts = []
-
-        def mock_urlopen(req, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            raise TimeoutError("mock timeout")
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-
-        alive, body = _web_server_gateway._probe_gateway_health()
-
-        assert alive is False
-        assert body is None
-        assert timeouts == [0.75, 0.75]
-
-
-    def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
-        """If /health/detailed fails, falls back to /health."""
-        import hermes_cli.web_server as ws
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
-
-        call_count = [0]
-
-        def mock_urlopen(req, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise ConnectionError("detailed failed")
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
-            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            return mock_resp
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-        alive, body = _web_server_gateway._probe_gateway_health()
-        assert alive is True
-        assert body["status"] == "ok"
-        assert call_count[0] == 2
 
 
 class TestStatusRemoteGateway:

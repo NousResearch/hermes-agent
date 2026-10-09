@@ -60,7 +60,7 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
     original = deepcopy(catalog)
     _isolated_registry(monkeypatch, catalog)
     monkeypatch.setitem(models_dev.PROVIDER_TO_MODELS_DEV, "fixture-provider", "fixture-provider")
-    monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: {})
+    monkeypatch.setattr(models_dev, "_load_model_overrides", dict)
     providers.register_provider(ProviderProfile(name="fixture-provider", model_capabilities={
         "known": {"context_window": 64000},
         "unknown": {"context_window": 48000},
@@ -82,7 +82,7 @@ def test_provider_wide_vision_flag_gates_tool_results_not_attachments(monkeypatc
     from tools.vision_tools import _supports_media_in_tool_results
 
     _isolated_registry(monkeypatch)
-    monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: {})
+    monkeypatch.setattr(models_dev, "_load_model_overrides", dict)
     providers.register_provider(ProviderProfile(
         name="fixture-relay", supports_vision=True,
         model_capabilities={"seeing": {"supports_vision": True}}))

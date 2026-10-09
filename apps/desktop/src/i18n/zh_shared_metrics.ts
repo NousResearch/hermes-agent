@@ -1,36 +1,31 @@
 export const zhSharedMetrics = {
-  consentTitle: '帮助改进 Hermes？',
+  consentTitle: '分享使用统计？',
+  dialogTitle: '使用统计',
   consentBody:
-    '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
-  whatIsCollected: '收集哪些内容',
-  collectedIntro: '仅限有上限的计数：',
-  collectedActivity:
-    '活动、会话时长、结果和错误类别，包括记忆写入或上下文压缩被拒绝、失败或跳过时的原因（来自固定列表）',
-  collectedModels: '模型路由和 token 总量',
-  collectedNames: '内置工具、命令和目录项名称',
-  collectedMilestones: '分桶的设置计数',
-  collectedReliability: '更新结果与耗时、崩溃、启动与回复速度、消息平台状态',
-  collectedUsage:
-    'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
-  collectedMachine:
-    '概略的机器信息：内存范围、GPU 类型、Hermes 版本新旧与发布通道、落后的更新数、是否使用本地模型服务器',
-  installId:
-    '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。',
-  consentWindow:
-    '只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。',
+    'Hermes 可以统计你的使用情况：会话时长、运行了哪些模型和工具，以及何时出错。它绝不会记录你的消息、文件、路径或错误文本。',
+  whatIsCollected: '统计哪些内容',
+  collectedActivity: '会话：时长、结果、错误类型、每天的活跃时间',
+  collectedModels: '模型：使用了哪些模型、token 总量',
+  collectedNames: '功能：使用或关闭的内置工具、命令、应用区域和设置',
+  collectedMilestones: '设置：完成了哪些步骤、提供商连接，以及技能、插件和任务的数量',
+  collectedReliability: '应用状况：崩溃、启动与回复速度、更新、消息平台连接',
+  collectedUsage: '代理质量：未成功的编辑、出错的工具调用、卡住的循环、每个任务的成本',
+  collectedMachine: '机器：操作系统、内存范围、GPU 类型、Hermes 版本、本地模型使用情况',
+  sending:
+    '除非你选择分享，否则统计数据只保存在这台电脑上。分享的统计数据每天发送给 Nous 一次，并附带此配置文件的随机 ID。除了一条 Hermes 已安装的一次性记录（仅在你同意后计入）之外，你同意之前的统计数据永远不会被发送。你可以随时在设置中更改。',
   readDocs: '查看完整说明',
-  share: '收集并发送给 Nous',
-  local: '仅在本地收集',
+  share: '分享给 Nous',
+  local: '仅保存在这台电脑上',
   off: '不用了',
-  changeLater: '你可以随时在 设置 → 安全 中更改。',
   saveFailed: '无法保存你的选择',
   collectLabel: '收集使用统计',
-  collectDesc: '在此设备上保存有上限的计数。绝不包含提示词、文件、路径或错误文本。',
-  sendLabel: '向 Nous 发送使用统计',
-  sendDesc: '将每日数据包上传到 Nous 遥测服务。只发送同意时段内的数据。需要先开启收集。',
+  collectDesc: '仅包含计数，保存在这台电脑上。绝不包含你的消息、文件、路径或错误文本。',
+  sendLabel: '与 Nous 分享使用统计',
+  sendDesc:
+    '每天一次将统计数据发送给 Nous，并附带此配置文件的随机 ID。除一次性的安装记录外，你同意之前的统计数据绝不会被发送。需要先开启收集。',
   unavailable: '请更新 Hermes 后端以更改此设置。',
-  stripBody: '仅限有界计数器，绝不包含提示词或文件。',
+  stripBody: '仅包含计数，绝不包含你的消息或文件。',
   stripReaskBody: '再次询问：旧版本可能在你看到此问题之前就已保存了“不用了”。',
-  stripChoices: { share: '发送给 Nous', local: '仅本地', off: '不用了' },
+  stripChoices: { share: '分享给 Nous', local: '仅保存在本机', off: '不用了' },
   stripDetails: '详情'
 }

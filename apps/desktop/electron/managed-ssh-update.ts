@@ -15,6 +15,7 @@
  */
 
 import { expandRemotePath, shq } from './remote-lifecycle'
+import { REMOTE_MARKER_JUDGE_PY } from './remote-update-marker-programs'
 import { encodedPowerShell, powerShellCommand, psLiteral } from './windows-remote-lifecycle'
 
 const UPDATE_EXIT_INDEPENDENT_HANDOFF = 75
@@ -331,6 +332,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
 const OBSERVATION_SCRIPT = String.raw`
 import ctypes,json,os,re,sys
 from pathlib import Path
+${REMOTE_MARKER_JUDGE_PY}
 
 home=Path(os.path.expanduser(sys.argv[1]))
 correlation=sys.argv[2]
@@ -345,7 +347,6 @@ marker_path=install_root/'.hermes-update-in-progress'
 status_path=home/('.update_exit_code.'+correlation)
 ready_path=home/('.update_coordinator_ready.'+correlation)
 intent_path=home/('.update_launch_intent.'+correlation)
-marker_re=re.compile(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?\Z')
 
 def pid_alive(pid):
     if os.name!='nt':
@@ -408,15 +409,10 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    match=marker_re.fullmatch(raw)
-    if not match:return {'state':'malformed'}
-    try:
-        pid=int(match.group(1));lease=int(match.group(2))
-        if pid<1 or pid>4294967295 or lease>9007199254740991:raise ValueError()
-    except ValueError:return {'state':'malformed'}
-    live=pid_alive(pid)
-    if live is None:return {'state':'unavailable','pid':pid}
-    return {'state':'live' if live else 'dead','pid':pid}
+    verdict=marker_verdict(raw)
+    if verdict=='UNCERTAIN':return {'state':'malformed'}
+    if verdict=='CLEAR':return {'state':'dead'}
+    return {'state':'live','pid':int(verdict[5:])}
 
 def terminal_code():
     try:raw=status_path.read_bytes()
@@ -1069,18 +1065,72 @@ function managedSshUpdateAllRow<TBase extends object>(base: TBase, result: Manag
   }
 }
 
+/** How long a local update apply waits on managed SSH updates before refusing (review H3). */
+const MANAGED_UPDATE_APPLY_JOIN_MS = 120_000
+
 // before-quit uses this to join remote update transactions before it starts
 // tearing down their SSH transports. Re-read after every batch so an operation
-// registered while the first batch settles is joined too.
-async function waitForManagedUpdateOperations(getOperations: () => Iterable<Promise<unknown>>): Promise<void> {
+// registered while the first batch settles is joined too. With `timeoutMs`
+// the join is bounded: false = operations were still pending at the deadline
+// (they keep running and keep their registration; nothing is abandoned).
+async function waitForManagedUpdateOperations(
+  getOperations: () => Iterable<Promise<unknown>>,
+  { timeoutMs = Infinity }: { timeoutMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+
   for (;;) {
     const pending = [...getOperations()]
 
     if (pending.length === 0) {
-      return
+      return true
     }
 
-    await Promise.allSettled(pending)
+    const remaining = deadline - Date.now()
+
+    if (remaining <= 0) {
+      return false
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const settled = await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      ...(Number.isFinite(remaining)
+        ? [new Promise<boolean>(resolve => (timer = setTimeout(resolve, remaining, false)))]
+        : [])
+    ])
+
+    clearTimeout(timer)
+
+    if (!settled) {
+      return false
+    }
+  }
+}
+
+/**
+ * A local update apply's join (review H3): wait for managed SSH updates and
+ * recoveries, but only up to MANAGED_UPDATE_APPLY_JOIN_MS. Still pending, the
+ * apply is refused (no hand-off is spawned, so no local mutation overlaps a
+ * live remote writer) and the operations keep running under their own
+ * registration. Null = joined; go ahead.
+ */
+async function joinManagedUpdatesForApply(
+  getOperations: () => Iterable<Promise<unknown>>,
+  log: (line: string) => void,
+  timeoutMs = MANAGED_UPDATE_APPLY_JOIN_MS
+): Promise<{ ok: false; error: string; message: string } | null> {
+  if (await waitForManagedUpdateOperations(getOperations, { timeoutMs })) {
+    return null
+  }
+
+  log('[updates] a managed SSH update is still running; local update hand-off refused until it finishes')
+
+  return {
+    ok: false,
+    error: 'managed-update-running',
+    message: 'A remote update is still running. Try again when it finishes.'
   }
 }
 
@@ -1228,6 +1278,7 @@ export {
   DEFAULT_REMOTE_UPDATE_TIMEOUT_MS,
   executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
+  joinManagedUpdatesForApply,
   launchManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,

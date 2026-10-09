@@ -20,6 +20,14 @@
     subagente_fim: "subagente voltou",
   };
 
+  // dois jeitos de desenhar o busto (nyx.js): "preenchimento" (padrão: pintado por shader, contorno que se desfaz,
+  // textura) e "particulas" (~3 milhões de partículas). A escolha fica guardada neste navegador
+  const MODOS = { preenchimento: "preenchimento", particulas: "partículas" };
+  const lerModo = () => {
+    try { const m = localStorage.getItem("nyx.modo"); if (m && MODOS[m]) return m; } catch (_) { /* sem armazenamento */ }
+    return "preenchimento";
+  };
+
   // lê um corpo SSE e entrega cada `data:` já decodificado
   async function lerSSE(resposta, aoEvento) {
     const leitor = resposta.body.getReader();
@@ -47,13 +55,24 @@
     const [conexao, setConexao] = useState("conectando");
     const [ultimo, setUltimo] = useState(null);
     const [erro, setErro] = useState(null);
+    const [modo, setModo] = useState(lerModo);
+
+    // a cena: remonta quando o modo muda (os eventos seguem chegando pelo mesmo fluxo)
+    useEffect(() => {
+      let vivo = true;
+      import(BASE + "nyx.js")
+        .then((m) => { if (vivo) cena.current = m.montar(palco.current, { modo }); })
+        .catch((e) => setErro(String(e && e.message || e)));
+      return () => {
+        vivo = false;
+        if (cena.current) cena.current.destruir();
+        cena.current = null;
+      };
+    }, [modo]);
 
     useEffect(() => {
       let vivo = true;
       const abortar = new AbortController();
-      import(BASE + "nyx.js")
-        .then((m) => { if (vivo) cena.current = m.montar(palco.current); })
-        .catch((e) => setErro(String(e && e.message || e)));
 
       (async function ouvir() {
         while (vivo) {
@@ -78,10 +97,14 @@
       return () => {
         vivo = false;
         abortar.abort();
-        if (cena.current) cena.current.destruir();
-        cena.current = null;
       };
     }, []);
+
+    const trocarModo = () => {
+      const novo = modo === "preenchimento" ? "particulas" : "preenchimento";
+      try { localStorage.setItem("nyx.modo", novo); } catch (_) { /* sem armazenamento: vale só nesta visita */ }
+      setModo(novo);
+    };
 
     const ensaiar = () => { SDK.authedFetch("/api/plugins/nyx/ensaio", { method: "POST" }).catch(() => {}); };
     const texto = ultimo
@@ -94,7 +117,8 @@
         h("span", { className: "nyx-ponto nyx-" + (conexao === "ao vivo" ? "on" : "off") }),
         h("span", null, "Nyx · " + conexao),
         h("span", { className: "nyx-estado" }, texto),
-        h("button", { className: "nyx-botao", onClick: ensaiar, title: "Manda pelo barramento uma sequência de exemplo" }, "ensaio")),
+        h("button", { className: "nyx-botao", onClick: ensaiar, title: "Manda pelo barramento uma sequência de exemplo" }, "ensaio"),
+        h("button", { className: "nyx-botao", onClick: trocarModo, title: "Troca como o busto é desenhado" }, "modo: " + MODOS[modo])),
       erro && h("div", { className: "nyx-erro" }, "Não consegui carregar a cena 3D: " + erro));
   }
 

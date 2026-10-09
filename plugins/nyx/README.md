@@ -11,17 +11,17 @@ pulsa. Subagentes ganham uma galáxia-satélite menor.
 Num Hermes que não tem o Nyx (instala direto deste repositório, já ativado):
 
 ```bash
-hermes plugins install julinhodailha/hermes-agent/plugins/nyx --enable
+hermes plugins install julinhodailha/hermes-agent/plugins/nyx --enable --ref <sha de 40 caracteres>
 hermes dashboard          # aba "Nyx", na seção de plugins da barra lateral
 ```
 
-Enquanto o Nyx não estiver na `main`, fixe o commit da branch com `--ref <sha de 40 caracteres>`.
-Neste fork o plugin já vem junto: basta `hermes plugins enable nyx`.
+Enquanto o Nyx não estiver na `main`, o `--ref` fixa o commit da branch. Pra trocar de versão num Hermes que
+já tem o Nyx instalado, repita o comando com o sha novo e `--force` (sem ele o Hermes recusa, porque o plugin
+já existe). Neste fork o plugin já vem junto: basta `hermes plugins enable nyx`. Depois de atualizar, recarregue
+a aba do dashboard.
 
-Funciona com qualquer superfície que rode o agente (CLI, TUI, desktop, gateway de mensagens): os
-hooks escrevem no barramento do perfil e o painel lê de lá. O botão **ensaio** manda pelo mesmo
-barramento uma sequência de exemplo (pensar → duas ferramentas → responder), sem precisar de uma
-conversa de verdade.
+A aba abre no modo **preenchimento** (o busto pintado por shader); o botão **modo** troca pro modo
+**partículas**, e a escolha fica guardada no navegador.
 
 ## Como funciona
 

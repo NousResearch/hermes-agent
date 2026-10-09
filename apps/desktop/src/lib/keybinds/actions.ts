@@ -7,8 +7,7 @@
 
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
-
-import { IS_MAC } from './combo'
+import { isMacPlatform } from '@/lib/platform'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -91,7 +90,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
   // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
   // or leaving the action unbound.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : ['mod+alt+v'] },
+  { id: 'composer.voice', category: 'composer', defaults: isMacPlatform() ? ['ctrl+b'] : ['mod+alt+v'] },
   // Dictation is intentionally unbound: it is available for users who prefer
   // a keyboard trigger without claiming a chord from text entry by default.
   { id: 'composer.dictate', category: 'composer', defaults: [] },
@@ -339,8 +338,8 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
-  { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
-  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] },
+  { id: 'view.terminalCopy', category: 'view', keys: isMacPlatform() ? ['mod+c'] : ['mod+shift+c'] },
+  { id: 'view.terminalPaste', category: 'view', keys: isMacPlatform() ? ['mod+v'] : ['mod+shift+v'] },
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]

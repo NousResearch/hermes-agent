@@ -2,6 +2,8 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, posix, win32 } from 'node:path'
 
+import { t } from '../i18n/runtime.js'
+
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
 export type FileOps = {
@@ -343,7 +345,7 @@ export async function configureTerminalKeybindings(
   if (isRemoteShellSession(env)) {
     return {
       success: false,
-      message: `${meta.label} terminal setup must be run on the local machine, not inside an SSH session.`
+      message: t('libText.terminalSetup.mustRunLocally', meta.label)
     }
   }
 
@@ -352,7 +354,7 @@ export async function configureTerminalKeybindings(
   if (!configDir) {
     return {
       success: false,
-      message: `Could not determine ${meta.label} settings path on this platform.`
+      message: t('libText.terminalSetup.settingsPathUnknown', meta.label)
     }
   }
 
@@ -372,7 +374,7 @@ export async function configureTerminalKeybindings(
       if (!Array.isArray(parsed)) {
         return {
           success: false,
-          message: `${meta.label} keybindings.json is not a JSON array: ${keybindingsFile}`
+          message: t('libText.terminalSetup.keybindingsNotArray', meta.label, keybindingsFile)
         }
       }
 
@@ -383,7 +385,7 @@ export async function configureTerminalKeybindings(
       if (code !== 'ENOENT') {
         return {
           success: false,
-          message: `Failed to read ${meta.label} keybindings: ${error}`
+          message: t('libText.terminalSetup.readFailed', meta.label, String(error))
         }
       }
     }
@@ -398,8 +400,7 @@ export async function configureTerminalKeybindings(
     if (conflicts.length) {
       return {
         success: false,
-        message:
-          `Existing terminal keybindings would conflict in ${keybindingsFile}: ` + conflicts.map(c => c.key).join(', ')
+        message: t('libText.terminalSetup.conflicts', keybindingsFile, conflicts.map(c => c.key).join(', '))
       }
     }
 
@@ -417,7 +418,7 @@ export async function configureTerminalKeybindings(
     if (!added && !migrated) {
       return {
         success: true,
-        message: `${meta.label} terminal keybindings already configured.`
+        message: t('libText.terminalSetup.alreadyConfigured', meta.label)
       }
     }
 
@@ -430,22 +431,26 @@ export async function configureTerminalKeybindings(
     const parts: string[] = []
 
     if (added) {
-      parts.push(`Added ${added} ${meta.label} terminal keybinding${added === 1 ? '' : 's'}`)
+      parts.push(
+        t(added === 1 ? 'libText.terminalSetup.addedOne' : 'libText.terminalSetup.addedOther', added, meta.label)
+      )
     }
 
     if (migrated) {
-      parts.push(`migrated ${migrated} legacy binding${migrated === 1 ? '' : 's'} to CSI u encoding`)
+      parts.push(
+        t(migrated === 1 ? 'libText.terminalSetup.migratedOne' : 'libText.terminalSetup.migratedOther', migrated)
+      )
     }
 
     return {
       success: true,
       requiresRestart: true,
-      message: `${parts.join(', ')} in ${keybindingsFile}`
+      message: t('libText.terminalSetup.summaryIn', parts.join(', '), keybindingsFile)
     }
   } catch (error) {
     return {
       success: false,
-      message: `Failed to configure ${meta.label} terminal shortcuts: ${error}`
+      message: t('libText.terminalSetup.configureFailed', meta.label, String(error))
     }
   }
 }
@@ -461,7 +466,7 @@ export async function configureDetectedTerminalKeybindings(options?: {
   if (!detected) {
     return {
       success: false,
-      message: 'No supported IDE terminal detected. Supported: VS Code, Cursor, Windsurf.'
+      message: t('libText.terminalSetup.noSupportedIde')
     }
   }
 

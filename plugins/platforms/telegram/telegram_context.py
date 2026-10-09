@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
-def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") -> bool:
+def mentions_other_participants(adapter: TelegramAdapter, message: Message) -> bool:
     """True when a ``mention``/``text_mention`` entity names someone other than this bot."""
     own = adapter._current_bot_username()
     bot_id = getattr(adapter._bot, "id", None) if adapter._bot else None
@@ -29,7 +29,7 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
     return False
 
 
-def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Optional[str]) -> Optional[str]:
+def group_trigger_text(adapter: TelegramAdapter, message: Message, text: Optional[str]) -> Optional[str]:
     """Strip our own handle only when we are the sole addressee. With other participants named,
     ``@research_bot , @ops_bot are you both listening?`` must not reach us as ``, @ops_bot …``."""
     if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
@@ -38,7 +38,7 @@ def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Opt
 
 
 def group_identity_prompt(
-    adapter: "TelegramAdapter", message: "Message", channel_prompt: Optional[str],
+    adapter: TelegramAdapter, message: Message, channel_prompt: Optional[str],
 ) -> Optional[str]:
     """Session-stable identity line so the model can read retained @mentions as itself or not."""
     if not adapter._is_group_chat(message) or not getattr(adapter, "_bot", None):

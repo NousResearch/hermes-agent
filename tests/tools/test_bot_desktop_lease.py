@@ -72,11 +72,11 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
     import sys
 
     lease.acquire("desktop-viewer")
-    probe = ("import sys; sys.path.insert(0, %r)\n"
+    probe = (f"import sys; sys.path.insert(0, {os.getcwd()!r})\n"
              "from tools.bot_desktop import lease\n"
              "try:\n    lease.assert_agent_may_act(); print('AGENT')\n"
              "except lease.HumanHasControl:\n    print('HUMAN')\n"
-             "lease.release('desktop-viewer')\n") % os.getcwd()
+             "lease.release('desktop-viewer')\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=30,
                          stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]})
     assert out.stdout.strip() == "HUMAN", out.stderr
@@ -120,7 +120,6 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     def _approval_cycles_the_lease(scope, args, session_id=""):
         lease.acquire("human")
         lease.release("human")
-        return None
 
     monkeypatch.setattr(tool, "_request_approval", _approval_cycles_the_lease)
     res = json.loads(tool.handle_computer_use({"action": "click", "coordinate": [1, 1]}))
@@ -163,14 +162,14 @@ def test_lease_works_without_fcntl(tmp_path):
     import subprocess
     import sys
 
-    probe = ("import sys; sys.modules['fcntl'] = None; sys.path.insert(0, %r)\n"
+    probe = (f"import sys; sys.modules['fcntl'] = None; sys.path.insert(0, {os.getcwd()!r})\n"
              "from tools.bot_desktop import lease\n"
              "import tools.computer_use.tool\n"
              "assert lease.get().holder == lease.AGENT\n"
              "assert lease.acquire('v1').holder == lease.HUMAN\n"
              "assert lease.get().holder == lease.HUMAN\n"
              "assert lease.release('v1').holder == lease.AGENT\n"
-             "print('OK')\n") % os.getcwd()
+             "print('OK')\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
                          stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
     assert out.stdout.strip() == "OK", out.stderr

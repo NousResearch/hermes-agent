@@ -560,7 +560,7 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     never parks the card as a bare ``blocked``, the run is tagged
     ``infrastructure`` and the guard spaces the retries. A control spawn
     failure on the same card still counts."""
-    import tools.process_registry as process_registry
+    from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
@@ -1606,7 +1606,7 @@ def test_resolve_hermes_argv_module_actually_runs():
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
-    import unittest.mock as mock
+    from unittest import mock
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
@@ -1617,6 +1617,58 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+
+
+def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
+    """A module-form worker must carry the import context that selected it.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in the gateway,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the worker env scrub strips Hermes-owned PYTHONPATH entries, so the bare
+    ``sys.executable -m hermes_cli.main`` child died on import and the board
+    auto-blocked (#122299, #122487, #122500). The spawned env must put the
+    running install's root first on PYTHONPATH — and never for a resolved shim
+    path, which owns its own imports.
+    """
+    import os
+    import sys
+    from pathlib import Path
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    root = str(Path(kbd.__file__).resolve().parents[1])
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_import_root", title="x", body=None, assignee="coder", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="worktree", workspace_path=str(tmp_path / "ws"), claim_lock=None,
+        claim_expires=None, tenant=None, branch_name=None,
+    )
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-m", "hermes_cli.main"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["/opt/hermes/bin/hermes"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert root not in captured["env"].get("PYTHONPATH", "").split(os.pathsep)
 
 
 # ---------------------------------------------------------------------------

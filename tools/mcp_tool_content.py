@@ -3,9 +3,10 @@ capping, _meta filtering, image/audio caching to MEDIA tags, resource links and
 embedded resources."""
 
 import base64
+import json
 import logging
 import mimetypes
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
@@ -47,7 +48,7 @@ def _is_reserved_mcp_meta_key(key: str) -> bool:
     return any(label in ("modelcontextprotocol", "mcp") and i < len(labels) - 1 for i, label in enumerate(labels))
 
 
-def _strip_reserved_meta_keys(meta) -> Optional[Dict[str, Any]]:
+def _strip_reserved_meta_keys(meta) -> Optional[dict[str, Any]]:
     """Drop protocol-reserved keys from ``_meta``; None if nothing model-facing remains or the
     input wasn't a mapping."""
     if not isinstance(meta, dict):
@@ -70,7 +71,7 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
 
 
 def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = None,
-                      cap_suffix: str = "", decode_fail: str = "") -> Tuple[Optional[bytes], str]:
+                      cap_suffix: str = "", decode_fail: str = "") -> tuple[Optional[bytes], str]:
     """Base64-decode one block payload: ``(bytes, "")`` or ``(None, inline_marker)``. With
     ``cap_what`` the payload is rejected on b64 length BEFORE decoding and on decoded size
     after. Decode failures warn and return ``decode_fail`` ("" = drop the block)."""
@@ -87,7 +88,7 @@ def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = 
 
 
 def _write_block_cache(writer: str, what: str, skip_label: str, *args,
-                       unavailable: str = "", failed: str = "", **kwargs) -> Tuple[Optional[str], str]:
+                       unavailable: str = "", failed: str = "", **kwargs) -> tuple[Optional[str], str]:
     """Call ``gateway.platforms.base.<writer>(*args, **kwargs)``: ``(path, "")`` or ``(None,
     marker)``. Fail-open so one bad block never kills the tool result: gateway deps missing
     (cron without gateway) → ``unavailable``; any other cache error → warning + ``failed``."""
@@ -123,6 +124,115 @@ def _cache_mcp_media_block(block, kind: str, writer: str, ext_for, *, cap_what: 
 def _cache_mcp_image_block(block) -> str:
     """Cache an ``ImageContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
     return _cache_mcp_media_block(block, "image", "cache_image_from_bytes", _mcp_image_extension_for_mime_type)
+
+
+_MCP_NATIVE_IMAGE_MAX = 4  # images attached natively from one tool result; the rest stay MEDIA: paths
+_MCP_NATIVE_IMAGE_CANDIDATES = 16  # images prepared at most per result: skips refill the 4 slots, within a bound
+
+
+def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional[str]]]:
+    """``(image_url part, scale note)`` for one cached MCP image, sized like every other native embed (the
+    result is re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized
+    to a provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded safely. The
+    note maps embedded coordinates back to the original image (a screenshot's pixels are the screen's)."""
+    from pathlib import Path
+    from PIL import Image
+    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
+                                    _resize_image_for_vision)
+    from tools.vision_tools_history_budget import resolve_embed_target_bytes
+    from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
+                                               _validate_raster_image_decodable)
+    src = Path(path)
+    mime = _detect_image_mime_type_from_bytes(src.read_bytes())
+    if not mime:
+        return None
+    normalized, mime, err = _normalize_to_supported_image(src, mime)
+    if err or normalized is None:
+        return None
+    scale: dict[str, int] = {}
+    target = min(resolve_embed_target_bytes(), _MAX_BASE64_BYTES)
+    try:
+        # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
+        # part makes the provider reject the whole request, so decode every frame first (as vision_analyze).
+        if _validate_raster_image_decodable(normalized):
+            return None
+        with Image.open(normalized) as image:
+            dims = image.size
+        url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=target,
+                                       max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True, scale_out=scale)
+    finally:
+        if normalized != src:
+            normalized.unlink(missing_ok=True)
+    # The resizer is best-effort on both caps (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px; the
+    # quality ladder can bottom out above a low vision.embed_target_bytes). The part is re-sent every later turn,
+    # so attach only what fits both; the MEDIA: path still carries the rest (vision_analyze can read it).
+    if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > _EMBED_MAX_DIMENSION:
+        return None
+    if len(url) > target:
+        return None
+    return {"type": "image_url", "image_url": {"url": url}}, _build_scale_note(scale or None, None)
+
+
+def _mcp_result_with_native_images(text: str, image_paths: list[str]) -> Any:
+    """*text* as-is, or the ``_multimodal`` envelope carrying the call's cached images when the active route
+    takes images inside tool results — the same gate as ``vision_analyze`` and ``computer_use`` captures
+    (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, catalog vision, provider support).
+    The text half keeps the ``MEDIA:`` paths so sharing and full-resolution reads still work. Any failure
+    keeps the text: the paths already carry the images."""
+    if not image_paths:
+        return text
+    try:
+        import contextvars
+        from tools.vision_tools import _should_use_native_vision_fast_path, _vision_cpu_executor
+        from tools.vision_tools_history_budget import repeat_refusal
+        if not _should_use_native_vision_fast_path():
+            return text
+    except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
+        logger.debug("MCP native image gate failed, keeping MEDIA: paths", exc_info=True)
+        return text
+    attached, notes = [], ""
+    candidates = image_paths[:_MCP_NATIVE_IMAGE_CANDIDATES]
+    # Prepare in waves sized to the free slots, so a damaged or already-in-context image hands its slot to the
+    # next one instead of hiding it. Decode/resize runs on the bounded vision pool (a parallel tool batch of
+    # image-heavy calls must not decode dozens of large images at once on tool threads), each job in a copy of
+    # the caller's context: the active runtime (a managed local model: no WebP) and the profile's vision
+    # settings are ContextVars a bare pool thread would not see.
+    while candidates and len(attached) < _MCP_NATIVE_IMAGE_MAX:
+        wave, candidates = candidates[:_MCP_NATIVE_IMAGE_MAX - len(attached)], candidates[_MCP_NATIVE_IMAGE_MAX - len(attached):]
+        jobs = [(p, _vision_cpu_executor.submit(contextvars.copy_context().run, _mcp_native_image_part, p)) for p in wave]
+        for path, job in jobs:
+            try:
+                ready = job.result()
+            except Exception:  # one bad file keeps its MEDIA: path; the others still attach
+                logger.debug("MCP native image prep failed for %s", path, exc_info=True)
+                continue
+            if not ready:
+                continue
+            part, note = ready
+            # vision.max_calls_per_image: a polled screenshot tool re-sends the same pixels under a fresh cache
+            # path each call, so the reservation keys on the resized data URL (identical pixels, identical key).
+            if repeat_refusal(part["image_url"]["url"]):
+                notes += f"\n- MEDIA:{path}: not attached; this image is already in context (vision.max_calls_per_image)."
+                continue
+            attached.append(part)
+            if note:
+                notes += f"\n- MEDIA:{path}: {note}"
+    if not attached:
+        if not notes:
+            return text
+        # Keep the result valid JSON: the refusal lines ride inside the envelope, not after its closing brace.
+        try:
+            payload = json.loads(text)
+            payload["result"] = f"{payload.get('result') or ''}{notes}"
+            return json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError, AttributeError):
+            return text + notes
+    # The header and the scale notes are their own short part: an oversized tool text gets spilled to a file and
+    # replaced by its head, and the coordinate map must survive that next to the resized screenshot it describes.
+    header = "The image(s) from this call are attached — inspect them with your native vision."
+    return {"_multimodal": True,
+            "content": [{"type": "text", "text": text}, {"type": "text", "text": header + notes}, *attached],
+            "text_summary": text}
 
 
 def _cache_mcp_audio_block(block) -> str:

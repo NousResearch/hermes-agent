@@ -142,6 +142,26 @@ def test_non_hex_sha_fails(tmp_path):
     _expect_error(tmp_path, {"sha": "z" * 40}, "sha")
 
 
+@pytest.mark.parametrize("field, value, ok", [
+    ("subdir", "plugins/browserclaw", True),
+    ("subdir", None, True),               # bare `subdir:` = repo root
+    ("subdir", "../planted", False),      # escapes the pinned clone
+    ("subdir", "plugin/../x", False),
+    ("subdir", "/abs/path", False),
+    ("subdir", "plugin\\..\\x", False),
+    ("subdir", 5, False),
+    ("repo", "https://github.com/x\n::error::f", False),  # echoed into CI logs
+    ("sha", "38fe0fb53eff98d477f807432e965429e665ca33\n", False),  # $ admits a trailing \n
+])
+def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, ok):
+    """The admission CI joins subdir onto the pinned clone and echoes repo/sha into the
+    log; the structural gate must refuse the shapes the pinned gate refuses."""
+    if ok:
+        assert run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, field: value}))).returncode == 0
+    else:
+        _expect_error(tmp_path, {field: value}, field)
+
+
 def test_bad_tier_fails(tmp_path):
     _expect_error(tmp_path, {"tier": "platinum"}, "tier")
 

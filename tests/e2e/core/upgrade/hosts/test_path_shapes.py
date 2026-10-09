@@ -4,7 +4,7 @@ Failure class: PATH shapes. Two things users report once the install "works":
 
 * the installer's PATH wiring duplicates ``~/.local/bin`` when the distro's own startup files
   already put it on PATH with a bare ``PATH=...`` assignment (Fedora ``.bashrc``, Debian
-  ``.profile``), so a login shell carries it more than once (gated on #123424); a re-run of the
+  ``.profile``), so a login shell carries it more than once (#123424); a re-run of the
   installer must not edit the startup files again;
 * a node/npm the user already has, earlier on PATH, must never stand in for the managed toolchain:
   not for the TUI/web builds and not for an MCP server configured with a bare ``command: node``.
@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -186,12 +185,10 @@ def test_login_shell_has_local_bin_once_with_stock_fedora_startup_files(world):
     assert rc_after_rerun == world["rc_after_install"], (
         "re-running the installer edited the startup files again: "
         f"{[n for n in FEDORA_SKEL if rc_after_rerun[n] != world['rc_after_install'][n]]}")
-    with known_failure(r"~/\.local/bin appears [2-9]\d* times",
-                       "gated on #123424: wire_shell_path's existing-setup regex misses bare PATH= assignments"):
-        changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
-        assert count == 1 and count_rerun == 1, (
-            f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
-            f"{line_rerun}\n(startup files the installer changed: {changed})")
+    changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
+    assert count == 1 and count_rerun == 1, (
+        f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
+        f"{line_rerun}\n(startup files the installer changed: {changed})")
 
 
 def test_mcp_server_runs_on_the_managed_node_and_an_abi_mismatch_names_the_rebuild(world, provider):

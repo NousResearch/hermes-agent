@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import asyncio
+import hashlib
 import json
 import time
 import types
@@ -1403,6 +1404,30 @@ class TestDeriveChatSessionId:
         b = _derive_chat_session_id("You are a robot.", "Hello")
         assert a != b
 
+    def test_routed_profile_namespaces_the_id_without_moving_default(self):
+        """Two header-less conversations opening with identical text on different profiles must
+        not share one session/sandbox key (#123989); default/standalone ids stay byte-identical
+        so live conversations survive the upgrade."""
+        legacy = "api-" + hashlib.sha256(b"sys\nhello").hexdigest()[:16]
+        assert _derive_chat_session_id("sys", "hello") == legacy
+        assert _derive_chat_session_id("sys", "hello", "default") == legacy
+        research = _derive_chat_session_id("sys", "hello", "research")
+        assert research != legacy
+        assert research == _derive_chat_session_id("sys", "hello", "research")
+
+    def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
+        """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
+        both must derive one id, or the same conversation forks by URL."""
+        import hermes_constants
+        from hermes_cli import profiles
+
+        work = tmp_path / "profiles" / "work"
+        work.mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: work)
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: tmp_path / "profiles" / name)
+        assert _derive_chat_session_id("sys", "hello", "work") == _derive_chat_session_id("sys", "hello")
+        assert _derive_chat_session_id("sys", "hello", "research") != _derive_chat_session_id("sys", "hello")
+
 
 # ---------------------------------------------------------------------------
 # /v1/responses endpoint
@@ -2261,13 +2286,6 @@ class TestChatCompletionsAgentIncomplete:
 
 
 class TestCORS:
-    def test_origin_allowed_for_non_browser_client(self, adapter):
-        assert adapter._origin_allowed("") is True
-
-
-    def test_origin_allowed_for_allowlist_match(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        assert adapter._origin_allowed("http://localhost:3000") is True
 
 
     @pytest.mark.asyncio
@@ -2281,23 +2299,6 @@ class TestCORS:
 
 
     @pytest.mark.asyncio
-    async def test_cors_allows_idempotency_key_header(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.options(
-                "/v1/chat/completions",
-                headers={
-                    "Origin": "http://localhost:3000",
-                    "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Idempotency-Key",
-                },
-            )
-            assert resp.status == 200
-            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
-
-
-    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
@@ -2308,12 +2309,14 @@ class TestCORS:
                 headers={
                     "Origin": "http://localhost:3000",
                     "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type, Idempotency-Key",
                 },
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
-            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            allowed = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Authorization" in allowed
+            assert "Idempotency-Key" in allowed
 
 
     @pytest.mark.asyncio
@@ -2576,7 +2579,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
         },
     )
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )

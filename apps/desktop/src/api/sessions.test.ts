@@ -5,11 +5,14 @@ import type { SidebarSessionsResponse } from './sessions'
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
+  ambientOwnerConnectionId: vi.fn(() => 'prometheus'),
   capabilityScoped: vi.fn(),
+  connectionScoped: vi.fn(() => ({})),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
-  profileScoped: vi.fn(() => ({}))
+  profileScoped: vi.fn(() => ({})),
+  sessionReadOwnerPin: vi.fn(() => ({}))
 }))
 
 const client = await import('./client')
@@ -17,6 +20,9 @@ const client = await import('./client')
 const {
   deleteSession,
   getSession,
+  getLatestSessionMessages,
+  renameSession,
+  searchSessions,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -198,6 +204,36 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
   })
 })
 
+describe('renameSession profile scoping', () => {
+  it('carries the owning profile in the PATCH body and request', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+
+    await renameSession('sess-r', 'Prep Butler', 'personal')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+  })
+
+  it('falls back to the active request profile when the argument is omitted', async () => {
+    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler' } as never)
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
+
+    await renameSession('sess-r2', 'Prep Butler')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/sessions/sess-r2',
+      profile: 'personal',
+      body: { title: 'Prep Butler', profile: 'personal' }
+    })
+    vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
+  })
+})
+
 describe('listSidebarSessions remote ownership', () => {
   it('stamps active remote rows so a later resume stays on their gateway', async () => {
     hermesApi.mockResolvedValue({
@@ -245,5 +281,59 @@ describe('listSidebarSessions storage health', () => {
     })
 
     expect(result.storage).toEqual({ default: 'corrupt' })
+  })
+})
+
+describe('session reads pin the owner connection (#125372)', () => {
+  beforeEach(() => {
+    // Ambient default: no explicit pin, no owner stamp.
+    vi.mocked(client.capabilityScoped).mockReturnValue({})
+    vi.mocked(client.sessionReadOwnerPin).mockReturnValue({})
+  })
+
+  it('pins getSession to the session owner when the ambient scope differs', async () => {
+    // Regression: a session-scoped read dispatched on the WINDOW's ambient
+    // connection scope. With a registered remote exposing a same-named
+    // profile, the wrong backend answered 404 "Session not found" in both
+    // directions. The read must carry the owner's connectionId (+ backend
+    // profile when the caller named none) so Electron routes to the owner.
+    vi.mocked(client.sessionReadOwnerPin).mockImplementation((id: string) =>
+      id === 'remote-owned' ? { connectionId: 'dale-home-lan-9119', profile: 'default' } : {}
+    )
+
+    await getSession('remote-owned')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/remote-owned?profile=default',
+      connectionId: 'dale-home-lan-9119'
+    })
+  })
+
+  it('keeps an explicit (connection, profile) pin authoritative in getLatestSessionMessages', async () => {
+    // Explicit caller pin: the real capabilityScoped resolves it; the owner
+    // lookup must not override it.
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy', connectionId: 'other-conn' })
+
+    await getLatestSessionMessages('sess-y', { connectionId: 'other-conn', profile: 'tommy' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'other-conn',
+      profile: 'tommy'
+    })
+  })
+})
+
+describe('searchSessions profile scope', () => {
+  it('searches the given profile instead of the primary backend', async () => {
+    // Unscoped, the primary searched its launch profile while the sidebar showed another.
+    hermesApi.mockResolvedValue({ results: [] } as never)
+    vi.mocked(client.profileScoped).mockImplementation(profile => (profile ? { priority: 'foreground', profile } : {}))
+
+    await searchSessions('zebra', 'research')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/search?q=zebra&profile=research',
+      profile: 'research'
+    })
   })
 })

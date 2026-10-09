@@ -317,6 +317,40 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert store.memory_entries == []
     assert wa.pending_count("memory") == 0  # denied, not staged
 
+
+@pytest.mark.parametrize("context", ["single_query", "cron", "webhook"])
+def test_headless_memory_write_stages_without_inline_prompt(
+    hermes_home, approval_callback_cleanup, monkeypatch, context
+):
+    """`hermes chat -q`, cron and unattended platforms can register the CLI callback but have no human to answer
+    it: the write stages at once instead of waiting the approval timeout."""
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setenv(*{"single_query": ("HERMES_SINGLE_QUERY_SESSION", "1"), "cron": ("HERMES_CRON_SESSION", "1"),
+                         "webhook": ("HERMES_SESSION_PLATFORM", "webhook")}[context])
+
+    calls = []
+
+    def approve_if_prompted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "once"
+
+    set_approval_callback(approve_if_prompted)
+    store = MemoryStore()
+    store.load_from_disk()
+
+    r = json.loads(memory_tool("add", "memory", "headless fact", store=store))
+
+    assert calls == []
+    assert r["success"] is True
+    assert r["staged"] is True
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 1
+
+
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.
@@ -327,3 +361,54 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+# ---------------------------------------------------------------------------
+# Staged-write review hint is surface-aware (#98330)
+# ---------------------------------------------------------------------------
+
+def _stage_one_memory_write():
+    from tools.memory_tool import memory_tool, MemoryStore
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "surface hint fact", store=store))
+    assert r.get("staged") is True, r
+    return r
+
+
+def test_staged_hint_names_the_review_command_on_slash_surfaces(hermes_home):
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    r = _stage_one_memory_write()
+    # No headless markers bound (plain foreground turn) → the slash hint stands.
+    assert "/memory pending" in r["message"], r["message"]
+    assert wa.pending_count("memory") == 1
+
+
+def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, monkeypatch):
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    r = _stage_one_memory_write()
+    assert "review with /memory pending" not in r["message"], r["message"]
+    assert "pending records live in" in r["message"]
+    assert str(wa._pending_path(wa.MEMORY, "").parent) in r["message"]
+    monkeypatch.delenv("HERMES_CRON_SESSION")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-7")
+    r = _stage_one_memory_write()
+    assert "review with /memory pending" not in r["message"], r["message"]
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+    r = _stage_one_memory_write()
+    assert "review with /memory pending" not in r["message"], r["message"]
+    assert "pending records live in" in r["message"]
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM")
+    assert wa.pending_count("memory") == 3
+
+
+def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkeypatch):
+    _set_approval("memory", True)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    r = _stage_one_memory_write()
+    assert "/memory pending" in r["message"], r["message"]

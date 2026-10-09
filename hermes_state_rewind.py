@@ -19,19 +19,19 @@ class RewindTargetUnavailableError(ValueError):
 
 @dataclass
 class RewindOutcome:
-    prefix: List[Dict[str, Any]]  # history to install: the warm prefix when ``warm_history`` was given, else durable
-    live_view: Dict[str, Any]  # canonical live projection of the rewound turn (prefill / retry source)
+    prefix: list[dict[str, Any]]  # history to install: the warm prefix when ``warm_history`` was given, else durable
+    live_view: dict[str, Any]  # canonical live projection of the rewound turn (prefill / retry source)
     live_text: str  # lossless retry text when ``require_retryable``, else the display flattening (prefill)
     rewound_count: int
     turns_undone: int
 
 
-def _user_indices(messages: List[Dict[str, Any]]) -> List[int]:
+def _user_indices(messages: list[dict[str, Any]]) -> list[int]:
     from agent.context_compressor import user_originated_turn_view
     return [i for i, m in enumerate(messages) if user_originated_turn_view(m) is not None]
 
 
-def _comparison_content(message: Dict[str, Any]) -> Any:
+def _comparison_content(message: dict[str, Any]) -> Any:
     """Project content the way the durable row stores it (flush projection, then the read-side sanitize) so a
     warm row and its durable twin compare equal."""
     from agent.session_persistence import _durable_content
@@ -43,7 +43,7 @@ class SessionRewindMixin:
     """``SessionDB`` mixin: soft-delete from one user turn onward, validated against the warm history."""
 
     def rewind_user_turn(
-        self, session_id: str, user_ordinal: int, *, warm_history: Optional[List[Dict[str, Any]]] = None,
+        self, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,
         require_retryable: bool = False, require_composite: bool = False, adopt_row_ids: bool = False,
     ) -> RewindOutcome:
         """Rewind the active transcript to just before user turn ``user_ordinal`` (0 = oldest; negative counts
@@ -59,6 +59,7 @@ class SessionRewindMixin:
             _DB_PERSISTED_MARKER, history_before_user_originated_turn, retryable_user_text,
             split_user_originated_turn, user_originated_turn_view)
         from agent.message_content import flatten_message_text
+        from agent.message_metadata import MESSAGE_UID, message_uid_or_none
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
@@ -111,7 +112,10 @@ class SessionRewindMixin:
             replacement_id = result.get("replacement_message_id")
             if not isinstance(replacement_id, int) or not durable_prefix:
                 raise RuntimeError("rewind did not retain its compaction handoff")
+            # The installed scaffold IS the replacement row: carry its identity, not just its row id.
             durable_prefix[-1].update({"_row_id": replacement_id, _DB_PERSISTED_MARKER: True})
+            if replacement_uid := result.get("replacement_message_uid"):
+                durable_prefix[-1][MESSAGE_UID] = replacement_uid
             prefix[-1] = durable_prefix[-1]
         if adopt_row_ids and prefix is not durable_prefix and len(prefix) == len(durable_prefix) and all(
             warm.get("role") == durable_message.get("role")
@@ -123,6 +127,8 @@ class SessionRewindMixin:
             for warm, durable_message in zip(prefix, durable_prefix):
                 if isinstance(row_id := durable_message.get("_row_id"), int):
                     warm["_row_id"] = row_id
+                if uid := message_uid_or_none(durable_message):
+                    warm[MESSAGE_UID] = uid
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),

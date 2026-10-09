@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { linuxOzoneBackend } from './hud-windowing'
 import { wslgLaunchArgs } from './wslg-launch'
 
 const env = { WSL_DISTRO_NAME: 'Ubuntu', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }
@@ -39,6 +40,15 @@ describe('WSLg launch arguments', () => {
     expect(wslgLaunchArgs([], { ...env, SSH_CONNECTION: 'remote' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...env, DISPLAY: 'localhost:10.0' }, 'linux')).toBeNull()
   })
+
+  // main.ts keys the WSL GPU-blocklist override off linuxOzoneBackend: forcing GPU
+  // compositing on WSLg's Wayland ozone segfaults the GPU process (no DRM render node).
+  it('is the backend main.ts sees after the relaunch', () => {
+    expect(linuxOzoneBackend(env, wslgLaunchArgs([], env, 'linux')!)).toBe('wayland')
+
+    const x11 = { ...env, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }
+    expect(linuxOzoneBackend(x11, wslgLaunchArgs([], x11, 'linux')!)).toBe('x11')
+  })
 })
 
 const nativeWayland = { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }
@@ -75,5 +85,25 @@ describe('native Wayland launch arguments', () => {
     expect(wslgLaunchArgs(['.'], nativeWayland, 'linux', ['--disable-gpu'])).toEqual(['.', '--ozone-platform=wayland'])
     expect(wslgLaunchArgs([], { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...nativeWayland, SSH_CONNECTION: 'remote' }, 'linux')).toBeNull()
+  })
+
+  // #126013: the NVIDIA proprietary driver's GPU process dies on Wayland ozone.
+  it('defaults the NVIDIA proprietary driver to x11 unless the user chose wayland', () => {
+    expect(wslgLaunchArgs(['.'], nativeWayland, 'linux', [], true)).toEqual(['.', '--ozone-platform=x11'])
+    expect(wslgLaunchArgs([], { ...nativeWayland, ELECTRON_OZONE_PLATFORM_HINT: 'auto' }, 'linux', [], true)).toEqual([
+      '--ozone-platform=x11'
+    ])
+
+    expect(
+      wslgLaunchArgs([], { ...nativeWayland, ELECTRON_OZONE_PLATFORM_HINT: 'wayland' }, 'linux', [], true)
+    ).toEqual(['--ozone-platform=wayland'])
+    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform-hint=wayland'], true)).toEqual([
+      '--ozone-platform=wayland'
+    ])
+    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform=wayland'], true)).toEqual([
+      '--ozone-platform=wayland'
+    ])
+    expect(wslgLaunchArgs(['--ozone-platform=wayland'], nativeWayland, 'linux', [], true)).toBeNull()
+    expect(wslgLaunchArgs([], { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'linux', [], true)).toBeNull()
   })
 })

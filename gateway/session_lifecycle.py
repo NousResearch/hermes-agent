@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
 from hermes_state_ids import new_session_id
@@ -58,7 +58,7 @@ def auto_continue_freshness_window() -> float:
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
-    def _is_session_ended_in_db(self, session_id: str) -> bool:
+    def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
         """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
         (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as
         ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
@@ -75,8 +75,12 @@ class SessionLifecycleMixin:
         The store is resolved from the row's owning profile rather than the ambient scope: an unscoped
         background writer keeps its own copy of the same session, and comparing against that copy reports a
         live session as ended (#66887).
+
+        Pass *session_key* when the owning key is known but the id may have left the routing index:
+        after the self-heal re-homes the key, the id has no owner and would resolve to the launch
+        store, which never holds a routed profile's rows (#118862).
         """
-        db = self._db_for_session_id(session_id)
+        db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
         try:
@@ -144,7 +148,7 @@ class SessionLifecycleMixin:
                 return None
             # Aware UTC, unlike the local wall clock elsewhere: the next process compares it with
             # epoch transcript timestamps and may run in another zone (DST, container vs unit TZ).
-            self._set_turn_marker_locked(session_key, entry, token, datetime.now(timezone.utc))
+            self._set_turn_marker_locked(session_key, entry, token, datetime.now(UTC))
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:

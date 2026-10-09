@@ -217,7 +217,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         # -uno: skip the untracked-file scan. This runs on the startup-banner
         # path, and a full working-tree walk costs real time on large or cold
         # checkouts. Same semantics as write_install_stamp.py.
-        status_command = ["git", "status", "--porcelain"]
+        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
+        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
+        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
+        # no optional lock.
+        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
         dirty_result = subprocess.run(
@@ -303,7 +307,7 @@ def get_code_identity(refresh: bool = False) -> dict:
     """Return the running install's code identity as a flat dict.
 
     Shape: ``{"sha": full sha | None, "short_sha": str | None, "version":
-    base package version | None, "source": str}`` — what the update
+    base package version | None, "source": str, "commit_date": epoch s | None}`` — what the update
     receipt, runtime inventory, and gateway status stamping consume.
     Backed by :func:`get_version_info` (install stamp first, live git
     second, unknown third), so every consumer shares one resolution
@@ -322,4 +326,5 @@ def get_code_identity(refresh: bool = False) -> dict:
         "short_sha": info.commit[:8] if info.commit else None,
         "version": info.base_version,
         "source": info.source,
+        "commit_date": info.commit_date,
     }

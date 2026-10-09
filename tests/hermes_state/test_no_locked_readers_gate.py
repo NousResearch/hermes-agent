@@ -143,7 +143,7 @@ def _is_self_lock_with(item: ast.withitem) -> bool:
 
 
 def _scan_locked_readers(
-    state_py: "Path | None" = None, class_name: str = "SessionDB"
+    state_py: Path | None = None, class_name: str = "SessionDB"
 ) -> list[str]:
     target = state_py if state_py is not None else _STATE_PY
     tree = ast.parse(target.read_text(encoding="utf-8"))
@@ -180,9 +180,7 @@ def _scan_locked_readers(
                         # how 5 readers hid from the first version of this
                         # gate.
                         unknown += 1
-                    elif _PRAGMA_WRITE_RE.match(word_full or ""):
-                        writes += 1
-                    elif _WRITE_RE.match(word):
+                    elif _PRAGMA_WRITE_RE.match(word_full or "") or _WRITE_RE.match(word):
                         writes += 1
                     elif _READ_RE.match(word):
                         reads += 1

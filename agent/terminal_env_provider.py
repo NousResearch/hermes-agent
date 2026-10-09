@@ -70,22 +70,22 @@ class TerminalEnvironmentProvider(ProviderBase):
     def is_available(self) -> bool:
         """True when this backend can service commands. Cheap, NO network calls: runs during UI paints."""
 
-    def check_requirements(self, config: Dict[str, Any]) -> bool:
+    def check_requirements(self, config: dict[str, Any]) -> bool:
         """Full requirements check with the merged terminal env config; log actionable errors before returning False."""
         return self.is_available()
 
-    def probe(self) -> Tuple[str, str]:
+    def probe(self) -> tuple[str, str]:
         """Dashboard picker health ``(status, detail)``; status ``ready``/``needs_setup``/``unavailable``. Never raise; <~2s."""
         return ("ready", "") if self.is_available() else ("needs_setup", f"{self.display_name} is not configured.")
 
-    def setup_instructions(self) -> List[str]:
+    def setup_instructions(self) -> list[str]:
         """Lines printed by ``hermes setup`` after selection (the wizard persists ``terminal.backend`` itself)."""
         return []
 
     def post_setup(self) -> None:
         """Optional interactive hook run by ``hermes setup`` after selection (prompt for tokens, install SDKs)."""
 
-    def doctor_checks(self) -> List[Tuple[bool, str, str]]:
+    def doctor_checks(self) -> list[tuple[bool, str, str]]:
         """``hermes doctor`` rows ``(ok, label, detail)``; default reflects :meth:`is_available`."""
         try:
             ok = bool(self.is_available())
@@ -96,7 +96,7 @@ class TerminalEnvironmentProvider(ProviderBase):
     @abc.abstractmethod
     def create_environment(
         self, *, cwd: str, timeout: int, task_id: str = "default", image: Optional[str] = None,
-        container_config: Optional[Dict[str, Any]] = None, **kwargs: Any,
+        container_config: Optional[dict[str, Any]] = None, **kwargs: Any,
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;

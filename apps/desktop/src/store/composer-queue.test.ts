@@ -4,13 +4,17 @@ import { $composerAttachments, addComposerAttachment, type ComposerAttachment, m
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  canMergeQueuedPrompts,
   clearQueuedPrompts,
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getFrozenQueuedTransport,
   getQueuedPrompts,
+  isMergeableQueuedEntry,
   isQueueParked,
+  mergeQueuedPrompts,
   migrateQueuedPrompts,
+  noteQueuedPromptDrainFailure,
   parkQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
@@ -564,5 +568,134 @@ describe('composer queue terminal payload persistence', () => {
       })
     ).toBe(true)
     expect(getFrozenQueuedTransport(entry!.id)).toBeUndefined()
+  })
+})
+
+// #41247: several queued follow-ups that are really one thought had to be
+// re-typed by hand — delete two, rewrite one. Merge folds them in place.
+describe('mergeQueuedPrompts (#41247)', () => {
+  const MERGE_KEY = 'session-merge'
+
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+    resetFrozenQueuedTransportsForTests()
+  })
+
+  it('folds every queued turn into one, keeping the head id, queue order and attachments', () => {
+    const head = enqueueQueuedPrompt(MERGE_KEY, { attachments: [attachment('f-1')], text: 'first' })!
+    const second = enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'second' })!
+    const third = enqueueQueuedPrompt(MERGE_KEY, { attachments: [attachment('img-1', 'image')], text: 'third' })!
+
+    const merged = mergeQueuedPrompts(MERGE_KEY)
+
+    expect(merged).toEqual({
+      attachments: [attachment('f-1'), attachment('img-1', 'image')],
+      id: head.id,
+      queuedAt: head.queuedAt,
+      text: 'first\n\nsecond\n\nthird'
+    })
+    expect(getQueuedPrompts(MERGE_KEY)).toEqual([merged])
+    // The merged turn is what the drain sends next.
+    expect(dequeueQueuedPrompt(MERGE_KEY)).toEqual(merged)
+    expect(second.id).not.toBe(third.id)
+  })
+
+  it('persists the merged turn so a renderer restart does not resurrect the originals', () => {
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'one' })
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'two' })
+
+    mergeQueuedPrompts(MERGE_KEY)
+
+    const raw = String(window.localStorage.getItem(QUEUE_STORAGE_KEY))
+
+    expect(JSON.parse(raw)[MERGE_KEY]).toHaveLength(1)
+    expect(JSON.parse(raw)[MERGE_KEY][0].text).toBe('one\n\ntwo')
+  })
+
+  it('takes a custom separator', () => {
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'one' })
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'two' })
+
+    expect(mergeQueuedPrompts(MERGE_KEY, ' then ')!.text).toBe('one then two')
+  })
+
+  it('drops the head drain-failure budget — a merged turn is fresh intent, not a replay', () => {
+    const head = enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'one' })!
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'two' })
+    noteQueuedPromptDrainFailure(MERGE_KEY, head.id)
+
+    expect(getQueuedPrompts(MERGE_KEY)[0]!.drainFailures).toBe(1)
+
+    const merged = mergeQueuedPrompts(MERGE_KEY)!
+
+    expect(merged.drainFailures).toBeUndefined()
+    expect(getQueuedPrompts(MERGE_KEY)[0]!.drainFailures).toBeUndefined()
+  })
+
+  it('is a no-op below two entries', () => {
+    expect(mergeQueuedPrompts(MERGE_KEY)).toBeNull()
+    expect(mergeQueuedPrompts(null)).toBeNull()
+
+    const only = enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'alone' })!
+
+    expect(mergeQueuedPrompts(MERGE_KEY)).toBeNull()
+    expect(getQueuedPrompts(MERGE_KEY)).toEqual([only])
+  })
+
+  it('refuses a queue holding an entry a single merged transport cannot re-express', () => {
+    const chip = enqueueQueuedPrompt(MERGE_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })!
+
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'plain follow-up' })
+
+    expect(isMergeableQueuedEntry(chip)).toBe(false)
+    expect(canMergeQueuedPrompts(getQueuedPrompts(MERGE_KEY))).toBe(false)
+    expect(mergeQueuedPrompts(MERGE_KEY)).toBeNull()
+    expect(getQueuedPrompts(MERGE_KEY)).toHaveLength(2)
+    // The frozen payload of the chip survives the refused merge.
+    expect(getFrozenQueuedTransport(chip.id)).toBe(SELECTION_A_TRANSPORT)
+  })
+
+  it('refuses a queue holding a hidden setup note or a display projection', () => {
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], displayKind: 'hidden', text: 'setup' })
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'plain' })
+
+    expect(mergeQueuedPrompts(MERGE_KEY)).toBeNull()
+    expect(getQueuedPrompts(MERGE_KEY)).toHaveLength(2)
+
+    const projected = enqueueQueuedPrompt(MERGE_KEY, {
+      attachments: [],
+      displayText: '/skill review',
+      text: 'expanded skill body'
+    })!
+
+    expect(isMergeableQueuedEntry(projected)).toBe(false)
+    expect(mergeQueuedPrompts(MERGE_KEY)).toBeNull()
+  })
+
+  it('drops the frozen payloads of the entries it folds away', () => {
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'one' })
+
+    const later = enqueueQueuedPrompt(MERGE_KEY, {
+      attachments: [],
+      text: TERMINAL_CHIP_DRAFT,
+      displayText: TERMINAL_CHIP_DRAFT,
+      frozenTransport: SELECTION_A_TRANSPORT
+    })!
+
+    expect(getFrozenQueuedTransport(later.id)).toBe(SELECTION_A_TRANSPORT)
+
+    // The chip makes the queue unmergeable, so remove it and merge the rest —
+    // the runtime payload must not outlive its entry.
+    removeQueuedPrompt(MERGE_KEY, later.id)
+    enqueueQueuedPrompt(MERGE_KEY, { attachments: [], text: 'two' })
+
+    expect(mergeQueuedPrompts(MERGE_KEY)!.text).toBe('one\n\ntwo')
+    expect(getFrozenQueuedTransport(later.id)).toBeUndefined()
   })
 })

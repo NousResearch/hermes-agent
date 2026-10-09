@@ -169,6 +169,7 @@ export const zhHantChat = {
     queueDelete: '刪除',
     queueResume: '繼續',
     queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
+    mergeQueued: '將所有排隊回合合併為一個',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
     queueDroppedTitle: '已捨棄佇列內容',

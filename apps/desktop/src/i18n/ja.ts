@@ -2605,6 +2605,7 @@ export const jaOverrides = {
     queueDelete: '削除',
     queueResume: '再開',
     queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
+    mergeQueued: 'キュー済みのターンをすべて 1 つにまとめる',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',

@@ -4024,6 +4024,7 @@ export const frOverrides = {
     queueDelete: 'Supprimer',
     queueResume: 'Reprendre',
     queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
+    mergeQueued: 'Fusionner tous les tours en attente en un seul',
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",

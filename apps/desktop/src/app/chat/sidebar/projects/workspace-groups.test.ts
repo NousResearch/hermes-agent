@@ -10,6 +10,7 @@ import {
   kanbanWorktreeDir,
   laneSwitchTarget,
   liveSessionProjectId,
+  liveSessionsForProject,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
   overlayLiveLanes,
@@ -602,6 +603,43 @@ describe('liveSessionProjectId', () => {
     ])
 
     expect(id).toBe('p_sv')
+  })
+})
+
+describe('liveSessionsForProject (#134012)', () => {
+  const projects = [makeProject('p_parent', ['/work/ws']), makeProject('p_child', ['/work/ws/child'])]
+
+  it('drops a row the backend gave to another project, though its cwd sits under this one', () => {
+    // The owner map is the backend's assignment (longest explicit folder wins): the child project
+    // owns the row, so the parent's drill-in must not show it.
+    const childRow = makeCwdSession('/work/ws/child', { git_repo_root: '/work/ws/child' })
+
+    expect(liveSessionsForProject('p_parent', [childRow], projects, new Map([[childRow.id, 'p_child']]))).toEqual([])
+  })
+
+  it('keeps the entered project\'s own rows', () => {
+    const ownRow = makeCwdSession('/work/ws')
+
+    expect(liveSessionsForProject('p_parent', [ownRow], projects, new Map([[ownRow.id, 'p_parent']]))).toEqual([
+      ownRow
+    ])
+  })
+
+  it('keeps rows with no resolvable owner — detached and kanban-task rows', () => {
+    // The path overlay still places these by cwd; filtering them out would empty Home's row.
+    const detached = makeCwdSession(null)
+    const kanban = makeCwdSession('/repo/.worktrees/t_aaaaaaaa')
+
+    expect(liveSessionsForProject('p_parent', [detached, kanban], projects)).toEqual([detached, kanban])
+  })
+
+  it('drops a still-unfiled row whose path resolves into a nested explicit project', () => {
+    // No owner-map entry yet (a brand-new live row): the explicit folder still decides, so the
+    // parent must not claim it before the backend has filed it.
+    const nested = makeCwdSession('/work/ws/child', { git_repo_root: '/work/ws/child' })
+
+    expect(liveSessionsForProject('p_parent', [nested], projects)).toEqual([])
+    expect(liveSessionsForProject('p_child', [nested], projects)).toEqual([nested])
   })
 })
 

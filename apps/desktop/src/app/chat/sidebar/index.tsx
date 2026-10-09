@@ -161,6 +161,7 @@ import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  liveSessionsForProject,
   nestProjectsByParent,
   orderProjectsByIds,
   overlayLiveLanes,
@@ -1001,10 +1002,14 @@ export function ChatSidebar({
     )
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
-  const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
-  )
+  // The entered project's live rows: its own, plus ownerless ones (liveSessionsForProject). The
+  // per-repo overlay re-places every row it is handed by path prefix, so an unfiltered list would
+  // re-insert a NESTED project's chats into this project's lanes (#134012).
+  const enteredProjectOverlaySessions = useMemo(() => {
+    const live = reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions)
+
+    return enteredProjectId ? liveSessionsForProject(enteredProjectId, live, projects, projectOwners) : live
+  }, [agentSessions, overviewEnteredProject?.previewSessions, enteredProjectId, projects, projectOwners])
 
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and

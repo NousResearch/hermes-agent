@@ -505,6 +505,28 @@ export function sessionBucketId(
 }
 
 /**
+ * The live rows an ENTERED project may show: its own, plus rows with no resolvable owner (a detached
+ * chat, a kanban-task worktree) — the per-repo overlay still places those by cwd.
+ *
+ * A row another project owns is dropped here, because that overlay re-places every live row it is
+ * handed by path prefix, and a nested project's cwd sits under its parent's path: the backend assigns
+ * a session to exactly ONE project (longest explicit folder wins), and every optimistic overlay has to
+ * keep that, or entering the parent shows the child's chats under the parent's own lanes (#134012).
+ */
+export function liveSessionsForProject(
+  projectId: string,
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): SessionInfo[] {
+  return live.filter(session => {
+    const owner = liveSessionProjectId(session, explicitProjects, owners)
+
+    return !owner || owner === projectId
+  })
+}
+
+/**
  * The ONE row-level project-filter rule the flat list and the project lanes
  * narrow by. Detached (cwd-less) rows belong to the Home bucket
  * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under

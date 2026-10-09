@@ -273,6 +273,63 @@ describe('ChatSidebar project entry', () => {
 
     expect($currentCwd.get()).toBe(project.path)
   })
+
+  it("keeps a nested project's chats out of the parent's drill-in (#134012)", () => {
+    // The backend assigns each session to ONE project (longest explicit folder wins). The per-repo
+    // overlay re-places every live row it is handed by path prefix — and a nested project's cwd sits
+    // under its parent's path, so an unfiltered list re-inserts the child's chat into the parent.
+    const parentChat = makeSessionInfo({ cwd: '/work/ws', id: 'parent-chat', title: 'Parent chat' })
+    const childChat = makeSessionInfo({
+      cwd: '/work/ws/child',
+      git_repo_root: '/work/ws/child',
+      id: 'child-chat',
+      title: 'Child chat'
+    })
+    const parent = {
+      id: 'p_parent',
+      label: 'ws',
+      path: '/work/ws',
+      previewSessions: [parentChat],
+      repos: [
+        {
+          groups: [{ id: 'lane', isMain: true, label: 'main', path: '/work/ws', sessions: [] }],
+          id: 'p_parent-repo',
+          label: 'ws',
+          path: '/work/ws',
+          sessionCount: 0
+        }
+      ],
+      sessionCount: 1,
+      sessionIds: ['parent-chat']
+    }
+    const child = {
+      id: 'p_child',
+      label: 'child',
+      parentId: 'p_parent',
+      path: '/work/ws/child',
+      previewSessions: [],
+      repos: [],
+      sessionCount: 1,
+      sessionIds: ['child-chat']
+    }
+
+    $projectTree.set([parent, child])
+    $projectScope.set('p_parent')
+    $sessions.set([parentChat, childChat])
+
+    const { container } = renderSidebar('/', 'chat')
+
+    // The parent's own chat is in its lane...
+    expect(screen.queryByText('Parent chat')).not.toBeNull()
+    // ...and the child's chat renders exactly ONCE: under the project that owns it, never also
+    // re-placed into the parent's lanes by the path overlay.
+    expect(screen.queryAllByText('Child chat')).toHaveLength(1)
+    expect(
+      within(container.querySelector<HTMLElement>('[data-sessions-project="p_child"]') as HTMLElement).queryByText(
+        'Child chat'
+      )
+    ).not.toBeNull()
+  })
 })
 
 // Messaging platforms group rows by owner the same way recents does once every

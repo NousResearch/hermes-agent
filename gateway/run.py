@@ -1948,7 +1948,8 @@ _AGENT_ENV_BRIDGE = {
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
     "gateway_startup_restore_drain_timeout": "HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT",
-    "gateway_startup_warmup_timeout": "HERMES_STARTUP_WARMUP_TIMEOUT"}
+    "gateway_startup_warmup_timeout": "HERMES_STARTUP_WARMUP_TIMEOUT",
+    "gateway_state_db_integrity_deadline_s": "HERMES_STATE_DB_INTEGRITY_DEADLINE_S"}
 # config-authoritative knobs for the session-search index (env stays the cross-process carrier).
 _SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
 _DISPLAY_ENV_BRIDGE = {
@@ -5620,6 +5621,48 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
+_STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S = 1800.0
+
+
+def _state_db_integrity_deadline_s() -> float:
+    """Deadline (seconds) for the deferred post-connect state.db integrity scan.
+
+    Config key ``agent.gateway_state_db_integrity_deadline_s`` (bridged to
+    ``HERMES_STATE_DB_INTEGRITY_DEADLINE_S``); default 1800s.  A non-positive or unparsable
+    value falls back to the default so a misconfiguration cannot remove the bound and let a
+    pathological store pin the scan thread.  See t_8a73f016.
+    """
+    raw = os.environ.get("HERMES_STATE_DB_INTEGRITY_DEADLINE_S", "").strip()
+    if not raw:
+        return _STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.debug(
+            "Unparsable HERMES_STATE_DB_INTEGRITY_DEADLINE_S=%r; using default %.0fs",
+            raw, _STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S)
+        return _STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S
+    return value if value > 0 else _STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S
+
+
+def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
+    """Run the forensic state.db scan OFF the startup path, after platforms connected.
+
+    Daemon thread: nothing waits on it, so a slow or deadline-aborted scan can never gate the
+    gateway.  The alerting path stays the bounded per-poll readiness probe
+    (``gateway/readiness.py::_probe_state_db``); this only appends the forensic exit-diag record
+    that used to be written before any platform connected (blocking ``:8644``).  See t_8a73f016.
+    """
+    from gateway.lifecycle_ledger import run_deferred_integrity_check
+
+    deadline_s = _state_db_integrity_deadline_s()
+
+    def _run() -> None:
+        run_deferred_integrity_check(evidence, deadline_s=deadline_s)
+
+    threading.Thread(target=_run, daemon=True, name="state-db-integrity-check").start()
+
+
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
@@ -5867,17 +5910,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _refresh_host_gateway_record(runner)
     _log_standalone_profiles_at_boot(runner)
 
-    def _lifecycle_record_startup() -> None:
+    def _lifecycle_record_startup() -> Optional[Dict[str, Any]]:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
         # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
+        # The forensic state.db integrity scan is DEFERRED to a post-connect daemon thread: run
+        # here it blocked every platform adapter -- including the :8644 fleet peer-DM transport --
+        # for minutes on a large store (t_8a73f016). The evidence is handed back for that thread.
         from gateway.lifecycle_ledger import record_startup
-        record_startup()
+        return record_startup(defer_integrity_check=True)
 
     def _start_keepalive() -> None:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
         start_nous_auth_keepalive()
 
-    _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+    _lifecycle_evidence = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
     _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
     _ensure_windows_gateway_venv_imports()
 
@@ -5899,6 +5945,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not success:
         _shutdown_gateway_health_export(runner)
         return False
+
+    # Platforms are connected (incl. the :8644 fleet peer-DM transport). NOW run the forensic
+    # unclean-exit state.db scan, off the startup path in a daemon thread nothing waits on.
+    if _lifecycle_evidence:
+        _best_effort(
+            lambda: _start_deferred_state_db_integrity_check(_lifecycle_evidence),
+            "Deferred state.db integrity check did not start: %s")
+
     if runner.should_exit_cleanly:
         _shutdown_gateway_health_export(runner)
         if runner.exit_reason:

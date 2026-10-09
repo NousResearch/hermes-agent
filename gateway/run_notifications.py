@@ -1649,7 +1649,9 @@ class GatewayNotificationsMixin:
                 f"\n- … and {omitted} more completion(s); inspect them with "
                 "the process tool if they affect the conclusion."
             )
-        lines.append("If a result does not change the current conclusion, absorb it silently.]")
+        from tools.process_registry_notifications import PROCESS_NOTIFICATION_NO_REPLY_CONTRACT
+
+        lines.append(PROCESS_NOTIFICATION_NO_REPLY_CONTRACT + "]")
         return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
@@ -2079,7 +2081,9 @@ class GatewayNotificationsMixin:
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
-                    synth_text = format_process_notification(completion_evt)
+                    synth_text = format_process_notification(
+                        completion_evt, include_no_reply_contract=True,
+                    )
                     if not synth_text:
                         break
                     # Captured before injection: afterwards the key is busy either way (the injected

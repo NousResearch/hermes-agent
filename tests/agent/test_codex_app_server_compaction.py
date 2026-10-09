@@ -321,3 +321,30 @@ def test_successful_codex_compaction_arms_no_cooldown():
     )
 
     assert agent.context_compressor.recorded == []
+
+
+def test_priced_codex_compaction_fires_no_post_api_request():
+    """A compaction's usage is recorded, but ``post_api_request`` is the turn's provider call: the
+    compaction caller must not fire it (it had no task id to give it, and fired with ``""``)."""
+    from unittest.mock import patch
+
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="compact-turn-1", token_usage_last={
+        "inputTokens": 1000, "cachedInputTokens": 0, "outputTokens": 50, "totalTokens": 1050}))
+    agent.context_compressor.update_from_response = lambda usage: None
+    for bucket in ("api_calls", "prompt_tokens", "completion_tokens", "total_tokens", "input_tokens",
+                   "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
+        setattr(agent, f"session_{bucket}", 0)
+    agent.session_estimated_cost_usd = 0.0
+    agent.model, agent.provider, agent.base_url, agent._session_db = "codex-test-model", "openai", None, None
+    agent._turn_api_call_records = []
+    fired = []
+    with (
+        patch("hermes_cli.lifecycle.has_hook", side_effect=lambda name: name == "post_api_request"),
+        patch("hermes_cli.lifecycle.invoke_hook", side_effect=lambda name, **kw: fired.append((name, kw)) or []),
+    ):
+        compress_context(agent, [{"role": "user", "content": "hi"}], "system",
+                         approx_tokens=100000, task_id="test", force=True)
+
+    assert agent._codex_session.calls == 1
+    assert [r["total_tokens"] for r in agent._turn_api_call_records] == [1050]  # the call is recorded
+    assert [name for name, _ in fired if name == "post_api_request"] == []

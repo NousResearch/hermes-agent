@@ -181,11 +181,20 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 
 
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
+_LOGIN_PROBE_SELECTOR = ("input[type=password], input[autocomplete=current-password], input[autocomplete=new-password], "
+                         "input[id*=password i], input[name*=password i], input[placeholder*=password i], "
+                         "input[placeholder*=密码 i]")
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
+    "login": f"!!document.querySelector('{_LOGIN_PROBE_SELECTOR}')",
     "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
+
+
+def _page_matches(task_id: str, selector: str) -> bool:
+    """True when the page the session is attached to holds an element matching ``selector``."""
+    res = _eval_js(task_id, f"!!document.querySelector('{selector}')")
+    return bool(res.get("success") and res.get("result"))
 
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
@@ -285,8 +294,11 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
-    # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
-    _focus_bound_origin(effective_task_id, "", "login")
+    # the daemon's blank tab); browser_exec navigated to the login page, so the attached tab usually IS
+    # it. Only search other tabs when the current page holds no login form — an unrelated tab with a
+    # real password box must not hijack the save origin (#135451).
+    if not _page_matches(effective_task_id, _LOGIN_PROBE_SELECTOR):
+        _focus_bound_origin(effective_task_id, "", "login")
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})

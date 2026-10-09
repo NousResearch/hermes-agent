@@ -740,6 +740,71 @@ class TestSaveLoginPrompt:
         assert store.list_items() == []
 
 
+
+
+class TestSaveLoginProbeCoverage:
+    """The login probe must not hinge on input[type=password] alone, and save_login must not let
+    an unrelated tab with a real password box hijack the save origin (#135451)."""
+
+    def test_probe_selector_covers_masked_password_fields(self):
+        from tools import browser_vault_tool as bvt
+
+        sel = bvt._LOGIN_PROBE_SELECTOR
+        for needle in ("input[type=password]", "autocomplete=current-password", "autocomplete=new-password",
+                       "id*=password", "name*=password", "placeholder*=password", "密码"):
+            assert needle in sel, needle
+
+    def test_current_page_with_login_form_is_not_abandoned(self, store, monkeypatch):
+        """The tab the session is attached to holds a login form: no other tab is searched, so an
+        unrelated login tab cannot steal the save origin."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool as bvt
+
+        focus_calls = []
+        monkeypatch.setattr(bvt, "_focus_bound_origin",
+                            lambda task_id, origin, kind: focus_calls.append(origin) or origin)
+        monkeypatch.setattr(bvt, "_eval_js", lambda task_id, expr: {
+            "success": True, "result": "https://right.test/login" if "location.href" in expr else True})
+        unlock_mod.set_save_login_prompt_callback(
+            lambda origin, site: {"identifier": "u@right.test", "password": "pw"})
+        monkeypatch.setattr(bvt, "browser_vault_fill",
+                            lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(bvt.browser_vault_save_login(task_id="t1"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True and out["origin"] == "https://right.test"
+        assert focus_calls == []
+        [meta] = store.list_items()
+        assert meta.origin == "https://right.test"
+
+    def test_search_runs_when_current_page_has_no_login_form(self, store, monkeypatch):
+        """A password box masked in CSS (probe false on the attached tab): the tab search runs,
+        and whichever tab it lands on provides the origin."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool as bvt
+
+        focus_calls = []
+        monkeypatch.setattr(bvt, "_focus_bound_origin",
+                            lambda task_id, origin, kind: focus_calls.append(origin) or "https://found.test")
+        monkeypatch.setattr(bvt, "_eval_js", lambda task_id, expr: {
+            "success": True, "result": "https://found.test/login" if "location.href" in expr else False})
+        unlock_mod.set_save_login_prompt_callback(
+            lambda origin, site: {"identifier": "u@found.test", "password": "pw"})
+        monkeypatch.setattr(bvt, "browser_vault_fill",
+                            lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(bvt.browser_vault_save_login(task_id="t1"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True and out["origin"] == "https://found.test"
+        assert focus_calls == [""]
+
+
 class TestManagerAutoDetection:
     def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):
         from agent.vault_backends import base

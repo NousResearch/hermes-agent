@@ -323,7 +323,7 @@ def _custom_provider_reasoning_replay_field_for_agent(
     provider: str,
     model: str,
     base_url: str,
-    custom_providers: List[Dict[str, Any]],
+    custom_providers: list[dict[str, Any]],
 ) -> Optional[str]:
     """Resolve an explicitly configured structured-reasoning replay field."""
     provider_norm = (provider or "").strip().lower()
@@ -367,7 +367,7 @@ def _custom_provider_reasoning_replay_field_for_agent(
 
 
 def _configure_custom_provider_reasoning_replay(
-    agent, custom_providers: List[Dict[str, Any]]
+    agent, custom_providers: list[dict[str, Any]]
 ) -> None:
     replay_field = _custom_provider_reasoning_replay_field_for_agent(
         provider=agent.provider,

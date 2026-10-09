@@ -763,7 +763,7 @@ def resolve_reasoning_replay_field(
     base_url: Any,
     api_mode: Any,
     detected_server_type: Any = None,
-) -> "str | None":
+) -> str | None:
     """Resolve the soft-replay wire carrier for one provider route.
 
     Explicit carriers work on custom/self-hosted Chat Completions routes,

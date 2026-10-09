@@ -983,7 +983,7 @@ class TestPerProviderReasoningEcho:
             model="destination-model",
             base_url="https://destination.example/v1",
         )
-        setattr(agent, "api_mode", "chat_completions")
+        agent.api_mode = "chat_completions"
         hidden_blocks = [
             {
                 "type": "thinking",
@@ -1062,7 +1062,7 @@ class TestPerProviderReasoningEcho:
             model="claude-sonnet",
             base_url="https://anthropic.example/v1",
         )
-        setattr(agent, "api_mode", "anthropic_messages")
+        agent.api_mode = "anthropic_messages"
         hidden_blocks = [
             {
                 "type": "thinking",
@@ -1093,7 +1093,7 @@ class TestPerProviderReasoningEcho:
             model="claude-sonnet",
             base_url="https://anthropic.example/v1",
         )
-        setattr(agent, "api_mode", "anthropic_messages")
+        agent.api_mode = "anthropic_messages"
         hidden_blocks = [
             {
                 "type": "thinking",

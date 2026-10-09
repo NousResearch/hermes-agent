@@ -4708,7 +4708,6 @@ from hermes_cli.gateway_setup_wizard import (
     _WEIXIN_DM_POLICIES,
     _WEIXIN_GROUP_NOTE,
     _setup_weixin,
-    _setup_qqbot,
     _signal_line_input,
     _setup_signal,
     _builtin_setup_fn,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -352,6 +354,77 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    def reap_orphan_messages(self) -> int:
+        """Delete ``messages`` rows whose ``session_id`` no longer names a session.
+
+        ``messages.session_id`` references ``sessions(id)`` but the schema declares no
+        ``ON DELETE CASCADE``, so a session row removed while foreign-key enforcement was OFF
+        (a legacy importer, an older writer that never issued ``PRAGMA foreign_keys=ON``, a
+        bulk cleanup) strands that session's whole transcript. Orphan rows are invisible to
+        every reader — nothing joins them back to a session — yet they stay in ``messages``
+        and in BOTH FTS5 indexes forever, and the session-level retention policy can never
+        age them out because there is no session left to grow old.
+
+        The standard index's ``messages_fts_delete`` trigger fires on any message DELETE and
+        drops the row.  The TRIGRAM index's ``messages_fts_trigram_delete`` does NOT: its
+        ``WHEN`` clause requires the message's session row to still exist
+        (``EXISTS (SELECT 1 FROM sessions WHERE id = old.session_id AND source NOT IN
+        ('cron','subagent') ...)``) — exactly false for an orphan, whose session is already
+        gone.  So this method purges the trigram index EXPLICITLY (the FTS5 ``'delete'``
+        command, bounded to rows the index actually holds via ``messages_fts_trigram_docsize``)
+        before deleting the messages; the ``DELETE`` then fires the standard trigger.  Returns
+        the number of rows deleted (0 when there are no orphans).
+        """
+        orphan = "session_id NOT IN (SELECT id FROM sessions)"
+        def _do(conn):
+            # sessions.id is the TEXT primary key (never NULL) and messages.session_id is
+            # NOT NULL, so ``NOT IN`` cannot hit the NULL-subquery trap that would match
+            # nothing.
+            try:
+                conn.execute(
+                    "INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name) "
+                    "SELECT 'delete', m.id, m.content, m.tool_name FROM messages m "
+                    f"WHERE m.{orphan} AND m.id IN (SELECT id FROM messages_fts_trigram_docsize)")
+            except sqlite3.OperationalError as exc:
+                # No trigram index (older CJK-less store): nothing to purge.
+                logger.debug("No trigram-index purge for orphan reap: %s", exc)
+            cursor = conn.execute(f"DELETE FROM messages WHERE {orphan}")
+            return int(cursor.rowcount or 0)
+        return self._execute_write(_do) or 0
+
+    def _record_state_db_maintenance(self, result: dict[str, Any], now: float) -> None:
+        """Persist one row per maintenance run for audit: the counters the run produced plus
+        the store geometry AFTER it. Written to ``state_meta['last_state_db_maintenance']``
+        (the last run, cheap to read back) and appended as one JSON line to
+        ``<home>/logs/state-db-maintenance.jsonl`` (the per-run history). Never raises:
+        a bookkeeping failure must not fail maintenance.
+        """
+        try:
+            pages = self._page_pragmas(
+                ("page_count", "page_size", "freelist_count"),
+                "Could not read page counts for the maintenance record: %s")
+            record = {
+                "at": now,
+                "at_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now)),
+                "page_count": pages[0] if pages else None,
+                "page_size": pages[1] if pages else None,
+                "freelist_count": pages[2] if pages else None,
+                "retention_days": result.get("retention_days"),
+                "pruned": result.get("pruned"),
+                "closed": result.get("closed"),
+                "reaped_orphan_messages": result.get("reaped_orphan_messages"),
+                "fts_indexes_optimized": result.get("fts_indexes_optimized"),
+                "vacuumed": result.get("vacuumed"),
+                "error": result.get("error"),
+            }
+            self.set_meta("last_state_db_maintenance", json.dumps(record))
+            log_dir = Path(self.db_path).parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(log_dir / "state-db-maintenance.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except Exception as exc:
+            logger.debug("Could not record the state.db maintenance run: %s", exc)
+
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:
         """Integer PRAGMAs over the existing connection (never a byte probe); None + debug log on failure."""
         try:
@@ -430,9 +503,12 @@ class SessionMaintenanceMixin:
         rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
         when their process dies and prune only deletes ended rows, so after pruning, open rows from
         :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
-        (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",
-        "pruned", "closed", "vacuumed"}`` plus ``"freelist_ratio"`` when a VACUUM was considered and
-        ``"error"`` on failure.
+        (``startup_orphan_reap``); they stay resumable and age from their close.  After pruning it
+        reaps orphan ``messages`` rows (:meth:`reap_orphan_messages`) and merges BOTH FTS5 indexes
+        (:meth:`optimize_fts`), then optionally VACUUMs; a per-run record is written by
+        :meth:`_record_state_db_maintenance`.  Returns ``{"skipped", "pruned", "closed",
+        "reaped_orphan_messages", "fts_indexes_optimized", "vacuumed"}`` plus ``"freelist_ratio"``
+        when a VACUUM was considered and ``"error"`` on failure.
 
         Records the last run timestamp in state_meta so subsequent calls within ``min_interval_hours``
         no-op. Designed to be called once at startup from long-lived entrypoints (CLI, gateway, cron
@@ -443,6 +519,7 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        result["retention_days"] = retention_days
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended
             # session; auto_prune=false is the disable switch, not a negative bound.
@@ -477,11 +554,27 @@ class SessionMaintenanceMixin:
                 respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
             )
             result["closed"] = len(closed)
+            # Orphan reap: a ``messages`` row whose session row was removed without going
+            # through prune_sessions is invisible to every reader yet lives on in
+            # ``messages`` and in BOTH FTS5 shadow indexes, and no retention window can age
+            # it out. Reap it BEFORE the FTS merge so the merged index does not carry its
+            # segments, and count it as freed rows for the VACUUM admission below.
+            report_startup_progress(900.0, phase="state_db_auto_reap_orphan_messages")
+            result["reaped_orphan_messages"] = reaped = self.reap_orphan_messages()
+            # Merge both FTS5 indexes on EVERY maintenance run, independent of the VACUUM
+            # gates below. 'optimize' is what reclaims the index segments left behind by
+            # deleted rows, and the freelist-ratio gate SKIPS the VACUUM on a dense store —
+            # exactly when the merge is the only reclaim available.
+            report_startup_progress(900.0, phase="state_db_auto_fts_optimize")
+            try:
+                result["fts_indexes_optimized"] = self.optimize_fts()
+            except Exception as exc:
+                logger.warning("state.db FTS optimize failed: %s", exc)
             # VACUUM only if rows were freed, the time throttle passed AND the
             # freelist ratio passed — it holds an exclusive lock for a full rewrite.
             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
             vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
-            if vacuum and pruned > 0 and vacuum_due:
+            if vacuum and (pruned > 0 or reaped > 0) and vacuum_due:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
                 # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
@@ -516,10 +609,14 @@ class SessionMaintenanceMixin:
                                  ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
             # Record even when pruned == 0 so the throttle holds.
             self.set_meta("last_auto_prune", str(now))
-            if closed or pruned > 0:
-                logger.info("state.db auto-maintenance: closed %d stale open session(s), "
-                            "pruned %d session(s) inactive for %d days%s",
-                            len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")
+            self._record_state_db_maintenance(result, now)
+            if closed or pruned > 0 or reaped > 0:
+                logger.info(
+                    "state.db auto-maintenance: closed %d stale open session(s), pruned %d session(s) "
+                    "inactive for %d days, reaped %d orphan message row(s), merged %d FTS index(es)%s",
+                    len(closed), pruned, retention_days, reaped,
+                    result.get("fts_indexes_optimized") or 0,
+                    " + VACUUM" if result["vacuumed"] else "")
         except Exception as exc:
             # Maintenance must never block startup.
             logger.warning("state.db auto-maintenance failed: %s", exc)

@@ -22,7 +22,7 @@ def sha256_file(file: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict | None = None) -> None:
+def stamp_matches(stamp: dict, tag: str | None, commit: str, *, channel_request: dict | None = None) -> None:
     if channel_request is not None and channel_request.get("receiverCandidate"):
         if (stamp.get("channelBuild") is not None or stamp.get("source") != "build"
                 or stamp.get("receiverProtocol") != 1 or stamp.get("displayVersion") != channel_request["version"]
@@ -35,6 +35,8 @@ def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict |
                 or stamp.get("commit") != channel_request["commit"] or stamp.get("tag")):
             raise ValueError("Built package provenance does not match the channel request")
         return
+    if not isinstance(tag, str):
+        raise ValueError("Tag is required for non-channel artifact provenance")
     if (stamp.get("commit") != commit or stamp.get("tag") != tag
             or stamp.get("baseVersion") != tag.removeprefix("v")):
         raise ValueError("Built package provenance does not match the release")
@@ -60,10 +62,21 @@ def desktop_application(manifest: ET.Element, channel_request: dict | None) -> E
     return application
 
 
-def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
+def record(platform: str, arch: str, root: Path, tag: str | None, commit: str, out: Path,
            *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
-    row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
+    if channel_request is not None:
+        metadata_tag = channel_request.get("releaseTag")
+        base_version = channel_request["sourceVersion"]
+        payload_version = channel_request["version"]
+    else:
+        if not isinstance(tag, str):
+            raise ValueError("Tag is required for non-channel artifact recording")
+        metadata_tag = tag
+        base_version = tag.removeprefix("v")
+        payload_version = tag[1:]
+    row: dict = {"platform": platform, "arch": arch, "tag": metadata_tag,
+                 "baseVersion": base_version, "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
         if channel_request is None and not package.name.endswith(f"-{tag[1:]}-win-{arch}.msix"):
@@ -121,7 +134,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         fields = subprocess.check_output(["dpkg-deb", "--field", str(package), "Package", "Version", "Architecture"], text=True, encoding="utf-8")
         parsed = dict(line.split(": ", 1) for line in fields.splitlines())
         row.update(identity=parsed["Package"], version=parsed["Version"], filename=package.relative_to(root).as_posix())
-        if parsed["Version"] != f"{tag[1:]}-1":
+        if parsed["Version"] != f"{payload_version}-1":
             raise ValueError("Termux artifact version differs from release tag")
         if parsed["Architecture"] != "aarch64":
             raise ValueError("Wrong Termux package architecture")

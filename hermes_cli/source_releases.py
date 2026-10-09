@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from html.parser import HTMLParser
+import http.client
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ import urllib.error
 import urllib.request
 
 from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
+from hermes_cli.release_channels import UPDATER_HEADERS
 
 logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
@@ -49,6 +51,7 @@ class SourceTarget:
     branch: str | None = None
     version: str | None = None
     build_id: str | None = None
+    ancestry_verified: bool = True
 
     @property
     def retired(self) -> bool:
@@ -72,8 +75,14 @@ def _resolve_channel(name: str, repository: str):
     return ChannelReader(_PUBLIC_BASE, repository=repository).resolve(name)
 
 
-def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
-    """Resolve every subscription, including default labels, through R2."""
+def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None,
+                          strict: bool = True) -> SourceTarget:
+    """Resolve every subscription, including default labels, through R2.
+
+    ``strict=False`` marks passive checkers: they never fetch, so an
+    unprovable retirement ancestry stays permissive and is reported through
+    :attr:`SourceTarget.ancestry_verified` instead of refusing the update.
+    """
     from hermes_cli.release_channels import ChannelNotFound, validate_name
 
     validate_name(channel)
@@ -105,60 +114,292 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     if not isinstance(commit, str) or not _SHA.fullmatch(commit):
         raise ValueError("Channel build has no exact source commit")
     if resolved.requested["state"] == "retired":
-        _refuse_retirement_downgrade(request, terminal, git_cmd, cwd)
+        verified = _retirement_commit_proof(request, terminal, git_cmd, cwd, strict)
+    else:
+        verified = True
     return SourceTarget(channel, destination, repository, commit=commit,
-                        version=request["sourceVersion"], build_id=request["buildId"])
+                        version=request["sourceVersion"], build_id=request["buildId"],
+                        ancestry_verified=verified)
 
 
-def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) -> None:
-    """Qualification of preview data is not permission to roll back newer source."""
+def _stamp_commit(cwd) -> str | None:
+    """The installed build's commit from its install stamp, or None.
+
+    Packaged trees (the no-Git Windows ZIP path and embedded desktop payloads)
+    carry ``install-stamp.json`` naming the exact source commit they were
+    built from; the updater's own stamp writer binds it to the checkout.
+    """
     from pathlib import Path
-    import tomllib
 
     if cwd is None:
-        return
-    version_file = Path(cwd) / "pyproject.toml"
-    if version_file.exists():
-        with version_file.open("rb") as file:
-            project = tomllib.load(file).get("project")
-        installed_version = project.get("version") if isinstance(project, dict) else None
-        if not isinstance(installed_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", installed_version, re.ASCII):
-            raise ValueError("Source retirement cannot verify the installed source version")
-        if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
-            raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
-    if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
+        return None
+    from pm.paths import install_stamp_path
 
-        result = subprocess.run(
-            [*git_cmd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"], cwd=cwd,
+    try:
+        commit = json.loads(install_stamp_path(Path(cwd)).read_text(encoding="utf-8-sig")).get("commit")
+    except (OSError, ValueError):
+        return None
+    return commit if isinstance(commit, str) and _SHA.fullmatch(commit) else None
+
+
+def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
+                             strict: bool) -> bool:
+    """Prove the installed source is not newer than the qualified retirement build.
+
+    Returns whether the ancestry was proven. Raises for the rollback shapes
+    every transport can see: an installed commit newer than the qualified
+    build, a descendant commit, and — on the strict no-Git apply path — an
+    install that carries no stamp naming the pinned build. Passive checkers
+    and Git-verified installs instead fail open to the unverified answer
+    rather than stranding the retirement (main's posture, with the
+    newer-source hole the reviews demonstrated closed).
+
+    ``terminal["head"]`` is a raw record head (see :func:`_head`). The strict
+    Git path never needs publication metadata from it; the no-Git stamp check
+    additionally admits a stamp naming the pinned target commit.
+    """
+    from pathlib import Path
+    if cwd is None:
+        return True
+    if git_cmd is not None:
+        return _git_retirement_proof(request, terminal, git_cmd, cwd, strict)
+    # No Git: the ZIP updater and the embedded desktop checker. The only
+    # ordering authority this transport has is the install stamp binding the
+    # tree to a commit: a stamp naming the pinned target is positive proof.
+    # pyproject.toml is NOT evidence — its 0.0.0 placeholder is inert on real
+    # checkouts (update_cmd_maint._checkout_version) and writable in any tree,
+    # so a version comparison against it proves nothing and fails the strict
+    # apply open. A stamp naming a different commit (or no stamp at all)
+    # cannot show the install predates the qualified build, and the strict
+    # apply path refuses rather than treating unverified ordering as rollback
+    # authorization; selecting the destination channel explicitly is the
+    # remedy. Passive checkers keep main's permissive answer (reported as
+    # ancestryUnverified) instead of stranding installs that cannot prove
+    # anything without Git.
+    stamp = _stamp_commit(cwd)
+    if stamp is not None and stamp == request["commit"]:
+        return True
+    if strict:
+        raise ValueError(
+            "Source retirement cannot verify that this install is not newer than the "
+            f"qualified {terminal['name']} build; select the destination channel explicitly "
+            f"(hermes update --channel {terminal['name']})")
+    return False
+
+
+def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,
+                          strict: bool) -> bool:
+    """Git half of :func:`_retirement_commit_proof`; see there for the contract."""
+    from pathlib import Path
+
+    from hermes_cli.source_check import source_git_env
+
+    def run_git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             stdin=subprocess.DEVNULL, env=source_git_env(),
         )
-        # The target need not exist locally before the updater's fetch. When it
-        # does, any descendants prove that this pinned build would roll us back.
-        if result.returncode == 0 and result.stdout.strip():
+
+    result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
+    if result.returncode == 0 and result.stdout.strip():
+        raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
+    if result.returncode == 0:
+        # Git saw the target. On a full history rev-list/merge-base are
+        # decisive; on a shallow checkout a graft can DISCONNECT the histories
+        # (a depth-1 fetch of the target leaves it parentless), which makes an
+        # OLDER HEAD read as a descendant and any divergent pair unprovable.
+        # Classify first, refill the grafted history once, then re-judge.
+        descendant = bool(result.stdout.strip())
+        shallow = run_git("rev-parse", "--is-shallow-repository")
+        shallow_p = shallow.returncode == 0 and shallow.stdout.strip() == "true"
+        if descendant and not shallow_p:
             raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
-        if terminal["head"]["sequence"] > request["sequence"]:
-            # Shallow checkouts may lack the qualified commit, even when HEAD is
-            # today's stable build. Read it with the protocol's full digest checks.
+        proof = run_git("merge-base", "--is-ancestor", "HEAD", request["commit"])
+        if proof.returncode == 0:
+            return True
+        if not shallow_p:
+            raise ValueError("Source retirement cannot verify that the installed source is equal to or an ancestor of the destination; select the destination channel explicitly")
+        if not strict:
+            # A passive checker never fetches: the graft hides the ancestry
+            # (both the descendant and the divergent reading are unreliable),
+            # so fail open to the unverified answer instead of stranding the
+            # retirement. The apply path re-judges decisively below.
+            return False
+        # The apply path CAN fetch: judge the fetched objects first, refill
+        # the grafted history only when the proof is still inconclusive, then
+        # re-judge on real history (all owned by the shared classifier).
+        return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
+    # The target commit is not locally visible (the depth-1 era never healed,
+    # and update_cmd keeps shallow installs shallow until the apply fetch).
+    # main's fetch-free refusal still applies first: an install already sitting
+    # on the newer destination build is visibly newer without local ancestry.
+    # The re-read is conditional: it can only add a refusal when the
+    # destination moved past the qualified build (a strictly newer sequence).
+    # When it has not, the first read already supplied the pinned target, and
+    # the answer must not depend on a second publication fetch succeeding.
+    head = terminal.get("head") or {}
+    if head.get("sequence") is not None and head["sequence"] > request.get("sequence", 0):
+        try:
             current_manifest = _resolve_channel(terminal["name"], request["repository"]).manifest
-            if current_manifest is None:
-                raise ValueError("Source retirement cannot verify the current destination build")
-            current = current_manifest["request"]
-            installed = subprocess.run(
-                [*git_cmd, "rev-parse", "HEAD"], cwd=cwd, check=True,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-                stdin=subprocess.DEVNULL, env=source_git_env(),
-            ).stdout.strip()
-            if installed == current["commit"] and installed != request["commit"]:
-                raise ValueError("Source retirement would downgrade the newer destination build; select the destination channel explicitly")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # An unreadable destination must not strand the retirement: the
+            # guarded shapes are re-checked from real history after the fetch
+            # below, which provably refuses a destination descendant.
+            current_manifest = None
+        current = None if current_manifest is None else current_manifest["request"]
+        installed = run_git("rev-parse", "HEAD").stdout.strip()
+        if (current is not None and _SHA.fullmatch(installed)
+                and installed == current["commit"] and installed != request["commit"]):
+            raise ValueError("Source retirement would downgrade the newer destination build; select the destination channel explicitly")
+    if not strict:
+        # A passive checker never fetches: stay permissive with main's answer
+        # and let the presentation flag the unproven ancestry instead.
+        return False
+    # The apply path CAN fetch. Pull exactly the pinned commit (cheap even on
+    # shallow installs, unlike a full unshallow) and judge on real history
+    # through the same bounded shallow-aware classifier as the refilled path
+    # above.
+    try:
+        _strict_git_fetch(git_cmd, cwd, ["fetch", "--no-tags", "origin", request["commit"]], 300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly") from exc
+    return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
+
+
+def _guarded_history_refill(git_cmd, cwd, target: str, timeout: int) -> subprocess.CompletedProcess:
+    """The history-refill fetch: guarded preparation, custody runner, partial-clone policy.
+
+    A grafted-history refill needs the commits behind a shallow boundary, not
+    their file contents, so it must not hydrate blob history. It applies the
+    same filter selection as :func:`hermes_cli.gitlock.fetch_full_commit_graph`
+    — preserve an existing partial-clone filter; convert a depth-limited full
+    clone whose boundary commits really lack parents to ``blob:none`` instead
+    of a raw ``--unshallow`` that downloads every historical file version —
+    while keeping :func:`_strict_git_fetch`'s stale-lock preparation and
+    custody lane. The pinned target rides along so the re-judge below sees it
+    when the refill lands a different boundary. Raises on fetch failure.
+    """
+    from pathlib import Path
+
+    from hermes_cli.gitlock import (
+        _batch_missing_parents,
+        _partial_clone_filter,
+        _shallow_file_path,
+        disable_tree0_auto_maintenance,
+        mark_unmarked_packs_promisor,
+    )
+    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.source_check import source_git_env
+    from hermes_cli.update_custody import run_git as custody_git
+
+    root = Path(cwd)
+    clear_stale_git_locks(root)
+    shallow_path = _shallow_file_path(root)
+    if shallow_path is None:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    fetch_filter = _partial_clone_filter(root)
+    # git writes the partial-clone config before it fetches, so mark the packs
+    # even when the fetch fails (#124272) — same contract as the gitlock owner.
+    converts = fetch_filter is None and bool(
+        _batch_missing_parents(root, shallow_path.read_text(encoding="utf-8-sig").split()))
+    if converts:
+        # The one deliberate conversion: a depth-limited full clone whose
+        # boundary commits really lack parents unshallows as a partial clone,
+        # because an unfiltered --unshallow downloads every historical file
+        # version and ancestry proof does not need them.
+        fetch_filter = "blob:none"
+    try:
+        fetch = custody_git(
+            git_cmd,
+            ["fetch", "--quiet", "--unshallow",
+             *([f"--filter={fetch_filter}"] if fetch_filter else []),
+             "--no-tags", "origin", target],
+            cwd=cwd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+            stdin=subprocess.DEVNULL, env=source_git_env(),
+        )
+    finally:
+        if converts:
+            mark_unmarked_packs_promisor(root)
+            disable_tree0_auto_maintenance(root)
+    if fetch.returncode != 0:
+        raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    return fetch
+
+
+def _strict_git_fetch(git_cmd, cwd, fetch_args, timeout: int) -> subprocess.CompletedProcess:
+    """The one strict-fetch lane: guarded preparation, then the custody fetch.
+
+    Both apply-path fetch branches (the grafted-history refill and the pinned
+    -target fetch) share this: the age/liveness-guarded stale-lock cleanup
+    (an abandoned ``shallow.lock`` otherwise fails every fetch with exit 128
+    before the updater's own later recovery is reachable), then the fetch
+    itself through the updater's custody runner (git_argv custody config,
+    job-bound child on Windows, the owner-death watchdog's fetch lane) instead
+    of a bare ``subprocess.run`` a killed updater could orphan.
+    """
+    from pathlib import Path
+
+    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.source_check import source_git_env
+    from hermes_cli.update_custody import run_git as custody_git
+
+    clear_stale_git_locks(Path(cwd))
+    fetch = custody_git(
+        git_cmd, fetch_args, cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout,
+        stdin=subprocess.DEVNULL, env=source_git_env(),
+    )
+    if fetch.returncode != 0:
+        raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    return fetch
+
+
+def _classify_strict_ancestry(request: dict, git_cmd, cwd, run_git) -> bool:
+    """The one post-fetch verdict, shared by both strict fetch branches.
+
+    Judge the fetched objects first: when the ancestry is already provable
+    (``rev-list`` succeeds empty and ``HEAD`` is an ancestor of the target),
+    the verdict returns without any history refill — a shallow boundary can
+    survive the pinned fetch while the ``HEAD -> target`` relation is already
+    decided, and unconditionally ``--unshallow``-ing it would download the
+    whole blob history behind the boundary (the reason the updater owns
+    ``fetch_full_commit_graph`` and its ``blob:none`` conversion). Only an
+    inconclusive shallow result enters the guarded refill — policy-aware
+    (an existing partial-clone filter is preserved, a depth-limited full
+    clone is converted to ``blob:none``) and under the same stale-lock
+    preparation and custody lane — then re-judge on real history; only a
+    real-history descendant or divergent pair is refused, so the first
+    attempt admits an eligible older install instead of requiring a retry.
+    """
+    result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
+    if result.returncode == 0 and not result.stdout.strip():
+        proof = run_git("merge-base", "--is-ancestor", "HEAD", request["commit"])
+        if proof.returncode == 0:
+            return True
+    shallow = run_git("rev-parse", "--is-shallow-repository")
+    if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+        try:
+            _guarded_history_refill(git_cmd, cwd, request["commit"], 900)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass  # the classification below keeps the refusal honest
+    result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
+    if result.returncode != 0:
+        raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    if result.stdout.strip():
+        raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
+    proof = run_git("merge-base", "--is-ancestor", "HEAD", request["commit"])
+    if proof.returncode != 0:
+        raise ValueError("Source retirement cannot verify that the installed source is equal to or an ancestor of the destination; select the destination channel explicitly")
+    return True
 
 
 def _read(url: str, *, missing_ok: bool = False) -> str | None:
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "hermes-update", "Cache-Control": "no-cache",
-        "Accept": "application/json, text/html",
-    })
+    request = urllib.request.Request(
+        url,
+        headers={**UPDATER_HEADERS, "Accept": "application/json, text/html"},
+    )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.read(2 * 1024 * 1024).decode("utf-8-sig")
@@ -166,6 +407,8 @@ def _read(url: str, *, missing_ok: bool = False) -> str | None:
         if missing_ok and exc.code == 404:
             return None
         raise
+    except http.client.HTTPException as exc:
+        raise OSError("source release response was incomplete") from exc
 
 
 class _BuildMetadata(HTMLParser):

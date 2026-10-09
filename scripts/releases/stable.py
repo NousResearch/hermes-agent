@@ -494,10 +494,17 @@ def check_claim(env: dict, run=output) -> dict:
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
+    """Return the payload identity derived from the admitted claim.
+
+    RELEASE_TAG here is the payload tag (``version:`` input), carried by the
+    ``complete`` job and the candidate jobs. Native metadata and channel
+    admission consume the payload tag derived from the admitted claim; they
+    must not take an independent tag from the caller.
+    """
     claim = check_claim(env, run=run)
     tag = env.get("RELEASE_TAG")
     if not isinstance(tag, str) or tag != claim["tag"]:
-        raise ValueError("Stable payload tag differs from the admitted claim")
+        raise ValueError("Stable release tag differs from the admitted claim")
     return tag, claim["commit"], claim
 
 

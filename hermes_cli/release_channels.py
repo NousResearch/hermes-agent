@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
+import http.client
 import json
 import re
 from urllib.error import HTTPError, URLError
@@ -13,6 +14,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_SEQUENCE = 2**32 - 1
 MAX_METADATA = 4 * 1024 * 1024
+
+UPDATER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0",
+    "Cache-Control": "no-cache",
+}
 
 _POLICIES = ("preview", "stable-release", "canary-release", "source-branch")
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
@@ -290,7 +296,12 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
+            with self.opener(Request(
+                url,
+                # ``read_bytes`` also serves YAML/XML feeds during publication;
+                # keep representation negotiation neutral at this byte layer.
+                headers={**UPDATER_HEADERS, "Accept": "*/*"},
+            ), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)
@@ -301,7 +312,7 @@ class ChannelReader:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
-        except (OSError, URLError) as exc:
+        except (OSError, URLError, http.client.HTTPException) as exc:
             raise ChannelError("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")

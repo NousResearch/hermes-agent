@@ -71,8 +71,11 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
     from hermes_cli.source_releases import resolve_source_target
 
     print(f"→ Update channel: {selected_channel}")
+    # The CLI check must stay fetch-free (the strict resolution fetches the
+    # pinned retirement target on the apply path only); it reports presence,
+    # so a passive answer with the unverified-ancestry flag suffices.
     try:
-        target = resolve_source_target(selected_channel, git_cmd, root)
+        target = resolve_source_target(selected_channel, git_cmd, root, strict=False)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)

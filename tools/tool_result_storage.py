@@ -371,7 +371,7 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):
         if total_size <= config.turn_budget:
             break
-        content = tool_messages[idx]["content"]
+        content = tool_messages[idx].get("content", "")
         tool_use_id = tool_messages[idx].get("tool_call_id", f"budget_{idx}")
         if isinstance(content, list):
             parts, saved = _spill_largest_text_part(content, tool_use_id, env, config)

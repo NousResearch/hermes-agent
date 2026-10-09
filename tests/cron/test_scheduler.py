@@ -1875,7 +1875,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         import time
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         events = []
 
         async def slow_send(chat_id, content, **_kw):
@@ -1891,6 +1892,9 @@ class TestDeliverResultTimeoutCancelsFuture:
             time.sleep(0.6)
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
@@ -1901,7 +1905,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         import time
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         loop.call_soon_threadsafe(time.sleep, 0.8)  # wedge the running loop past the 0.3s wait
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=MagicMock(success=True))
@@ -1910,6 +1915,9 @@ class TestDeliverResultTimeoutCancelsFuture:
             time.sleep(0.8)  # the loop un-wedges: the abandoned send must still never go out
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         assert result is None, f"standalone should have delivered, got {result!r}"
         standalone_send.assert_awaited_once()
         adapter.send.assert_not_awaited()
@@ -1924,7 +1932,8 @@ class TestDeliverResultPartialSplitDelivery:
         from gateway.platforms.base import SendResult
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         adapter = MagicMock()
         adapter.splits_long_messages = True
         adapter.send = AsyncMock(return_value=SendResult(
@@ -1943,6 +1952,9 @@ class TestDeliverResultPartialSplitDelivery:
                 result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         finally:
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            loop.close()
         adapter.send.assert_awaited_once()
         standalone_send.assert_not_awaited()
         assert result and "delivered 2 of 5 chunks" in result, result

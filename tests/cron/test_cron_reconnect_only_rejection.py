@@ -32,9 +32,15 @@ def _fresh_ledger(tmp_path, monkeypatch):
 @pytest.fixture
 def gateway_loop():
     loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
-    yield loop
-    loop.call_soon_threadsafe(loop.stop)
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        loop.close()
 
 
 def _deliver_through_router(monkeypatch, loop, *, live_error: str):

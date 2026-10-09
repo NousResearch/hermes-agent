@@ -1424,7 +1424,7 @@ class TestDeriveChatSessionId:
         work = tmp_path / "profiles" / "work"
         work.mkdir(parents=True)
         monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: work)
-        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: tmp_path / "profiles" / name)
+        monkeypatch.setattr("profiles.paths.get_profile_dir", lambda name: tmp_path / "profiles" / name)
         assert _derive_chat_session_id("sys", "hello", "work") == _derive_chat_session_id("sys", "hello")
         assert _derive_chat_session_id("sys", "hello", "research") != _derive_chat_session_id("sys", "hello")
 

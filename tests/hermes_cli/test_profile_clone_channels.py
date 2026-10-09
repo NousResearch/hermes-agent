@@ -165,13 +165,14 @@ def test_clone_all_never_writes_through_a_symlinked_source_env(home, tmp_path):
 def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
     """The multiplexer enumerates ``profiles/`` while a clone is built; the final directory must not
     exist (and no listable profile may appear) until the channel strip has run."""
-    from hermes_cli import profile_channels, profiles
+    from hermes_cli import profile_channels
+    from gateway.profile_serving import profiles_to_serve
     seen = {}
     real_strip = profile_channels.strip_channel_settings
 
     def _observing_strip(profile_dir, **kw):
         seen["final_exists"] = (home / "profiles" / "bot2").exists()
-        seen["served"] = [n for n, _ in profiles.profiles_to_serve(multiplex=True)]
+        seen["served"] = [n for n, _ in profiles_to_serve(multiplex=True)]
         seen["work_dir_hidden"] = profile_dir.name.startswith(".")
         return real_strip(profile_dir, **kw)
 
@@ -179,7 +180,7 @@ def test_clone_is_published_atomically_after_stripping(home, monkeypatch):
     profile_dir = create_profile("bot2", clone_config=True, no_alias=True)
 
     assert seen == {"final_exists": False, "served": ["default"], "work_dir_hidden": True}
-    assert profile_dir.is_dir() and [n for n, _ in profiles.profiles_to_serve(multiplex=True)] == ["default", "bot2"]
+    assert profile_dir.is_dir() and [n for n, _ in profiles_to_serve(multiplex=True)] == ["default", "bot2"]
     assert not [p for p in (home / "profiles").iterdir() if p.name.startswith(".")]
 
 

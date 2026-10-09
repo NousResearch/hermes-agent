@@ -1062,8 +1062,8 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
     profiles_root = tmp_path / "profiles"
     (profiles_root / "workerb").mkdir(parents=True)
     (profiles_root / "workerb" / ".env").write_text("KANBAN_AUX_SCOPE_TEST_KEY=key-of-worker-b\n")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: kanban_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: kanban_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
 
     seen: list = []
 

@@ -4835,8 +4835,8 @@ class TestPluginAPISecretScopeProductionMount:
         # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
         # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
         profiles_root = default_home / "profiles"
-        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+        monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
 
         # Named profile B: a live profile (``.env`` is both an identity marker and the
         # secret source) with its OWN value for the probe key.

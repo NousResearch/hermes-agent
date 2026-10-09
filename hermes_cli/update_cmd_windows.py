@@ -1080,7 +1080,8 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
     with _best_effort("Could not evaluate per-profile attested cold-starts before update: %s"):
         if not _desktop_owns_gateway_lifecycle():
             return
-        from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+        from profiles.current import get_active_profile_name
+        from gateway.profile_serving import profiles_to_serve
         active = get_active_profile_name() or "default"
         cold: dict[str, str] = {}
         # An activation list, not inventory: parked profiles stay offline.
@@ -1098,7 +1099,7 @@ def _cold_start_attested_profiles(token: dict) -> None:
     """Spawn each ``cold_start_profiles`` entry under its own HERMES_HOME and consume exactly the
     generation that authorized it; one profile's failure never aborts the others (#110959)."""
     from hermes_cli import gateway_windows
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     pending = dict(token.get("cold_start_profiles") or {})
     if not pending:
         return
@@ -1274,7 +1275,7 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
     """The stable gateway *name*'s service process supervises (in *profile*'s home when known): SCM
     ``running`` proves only the wrapper started, not that the gateway it hosts came up."""
     from hermes_cli import gateway_windows
-    from hermes_cli.profiles import get_profile_dir
+    from profiles.paths import get_profile_dir
     psutil, service = _win_service(name)
 
     def under_service(pids):
@@ -1501,7 +1502,7 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
     deadline = _time.monotonic() + _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
     taken: set = set()
     # Profiles first: a gateway on a profile's home is that profile's, never an unmapped entry's.

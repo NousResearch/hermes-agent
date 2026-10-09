@@ -102,7 +102,7 @@ def _join_url(base: str, prefix: str) -> str:
 
 def _active_profile_name() -> str:
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         return get_active_profile_name() or "default"
     except Exception:
         return os.getenv("HERMES_PROFILE", "default") or "default"
@@ -110,7 +110,7 @@ def _active_profile_name() -> str:
 
 def _profile_home(profile: str) -> Optional[str]:
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         return str(get_profile_dir(profile))
     if profile and profile != "default":
         return os.path.expanduser(f"~/.hermes/profiles/{profile}")

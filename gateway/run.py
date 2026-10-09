@@ -1656,7 +1656,7 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     reserved = getattr(config, "_runtime_profile_homes", None)
     if reserved is not None:
         return list(reserved)
-    from hermes_cli.profiles import profiles_to_serve
+    from gateway.profile_serving import profiles_to_serve
     return list(profiles_to_serve(multiplex=True))
 
 
@@ -1666,7 +1666,8 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
     process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
     already skips ``active``."""
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+    from profiles.current import get_active_profile_name
+    from profiles.paths import get_profile_dir
 
     homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
@@ -3694,7 +3695,7 @@ class GatewayRunner(
                 _profile = source.profile
             else:
                 try:
-                    from hermes_cli.profiles import get_active_profile_name
+                    from profiles.current import get_active_profile_name
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
@@ -3819,7 +3820,7 @@ class GatewayRunner(
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from profiles.current import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
@@ -4253,7 +4254,9 @@ class GatewayRunner(
         ``build_source``), then the active profile."""
         from gateway.profile_routing import ProfileRouteRejected
         from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
+        from profiles.current import get_active_profile_name
+        from profiles.paths import get_profile_dir
+        from profiles.registry import profile_exists
         from hermes_constants import get_hermes_home
         identity = identity_of(source)
         if identity is not None:
@@ -4970,7 +4973,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     from gateway.host_attach import (
         ATTACH_CHANNEL_WAIT_S, START, host_gateway, launched_by_other_tenant, standalone_attach_decision,
     )
-    from hermes_cli.profiles import profile_is_standalone
+    from gateway.profile_serving import profile_is_standalone
     if owner is not None and launched_by_other_tenant(owner.home, get_hermes_home()):
         # The lock is per OS user, so a second tenant root can never win it against the first:
         # refusing 75 here would retry forever and its gateway would never start (#121352).
@@ -5065,7 +5068,7 @@ def _log_standalone_profiles_at_boot(runner) -> None:
     try:
         if not getattr(runner.config, "multiplex_profiles", False):
             return
-        from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
+        from gateway.profile_serving import profiles_to_serve, profile_is_standalone
         from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
         for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):

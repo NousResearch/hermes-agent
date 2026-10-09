@@ -14,14 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles
+import hermes_cli.profiles as profiles
+import profiles.metadata as profile_metadata
 
 
 @pytest.fixture(autouse=True)
 def _clear_memo():
     profiles._PROFILE_FILE_CACHE.clear()
+    profile_metadata._PROFILE_FILE_CACHE.clear()
     yield
     profiles._PROFILE_FILE_CACHE.clear()
+    profile_metadata._PROFILE_FILE_CACHE.clear()
 
 
 @pytest.fixture
@@ -58,16 +61,22 @@ def test_a_missing_file_is_not_cached_and_is_picked_up_when_created(tmp_path):
 def test_an_unchanged_file_is_parsed_once_across_repeated_reads(profile_dir, monkeypatch):
     """The saving itself — the roster poll stops re-parsing files that have not moved."""
     parsed: list = []
-    real = profiles._load_yaml_dict
+    real_distribution = profiles._profile_load_yaml
+    real_profile = profile_metadata._load_yaml_dict
 
-    def _counting(path):
+    def _counting_distribution(path):
         parsed.append(Path(path).name)
-        return real(path)
+        return real_distribution(path)
 
-    monkeypatch.setattr(profiles, "_load_yaml_dict", _counting)
+    def _counting_profile(path):
+        parsed.append(Path(path).name)
+        return real_profile(path)
+
+    monkeypatch.setattr(profiles, "_profile_load_yaml", _counting_distribution)
+    monkeypatch.setattr(profile_metadata, "_load_yaml_dict", _counting_profile)
 
     for _ in range(3):
-        profiles.read_profile_meta(profile_dir)
+        profile_metadata.read_profile_meta(profile_dir)
         profiles._read_distribution_meta(profile_dir)
 
     assert parsed.count("profile.yaml") == 1

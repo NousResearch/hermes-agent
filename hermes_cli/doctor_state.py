@@ -637,7 +637,8 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+    from profiles.registry import profile_exists
+    from hermes_cli.profiles import list_profiles, _get_wrapper_dir
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:

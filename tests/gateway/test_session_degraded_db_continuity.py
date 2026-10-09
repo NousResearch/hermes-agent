@@ -59,7 +59,7 @@ def _make_gateway_agent(session_db):
     # The multiplexed profile scope would resolve the active profile name to
     # the route's profile (e.g. "orion"); pin it so the row + origin_json
     # carry the profile deterministically.
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="orion"):
+    with patch("profiles.current.get_active_profile_name", return_value="orion"):
         agent._ensure_db_session()
     return agent
 

@@ -38,7 +38,7 @@ def _args(**over):
 
 def _wire_common(main_mod, monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        "profiles.current.get_active_profile_name", lambda: "default"
     )
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())

@@ -8,6 +8,7 @@ lock the tombstone + no-mkdir contract without depending on Desktop.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,16 +16,15 @@ import pytest
 
 from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
+from gateway.profile_serving import profiles_to_serve
+from profiles.current import set_active_profile
+from profiles.paths import resolve_profile_env
+from profiles.registry import list_profile_names, profile_exists
 from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
     delete_profile,
-    list_profile_names,
     list_profiles,
-    profile_exists,
-    profiles_to_serve,
-    resolve_profile_env,
-    set_active_profile,
 )
 from hermes_constants import (
     named_profile_home,
@@ -224,7 +224,7 @@ class TestDeletedProfileTombstone:
         # naming the stray dir, and leave every byte in place (never rmtree a non-tombstoned dir).
         (shell / "skills" / "my-skill").mkdir(parents=True)
         (shell / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
-        with pytest.raises(FileExistsError, match=str(shell)):
+        with pytest.raises(FileExistsError, match=re.escape(str(shell))):
             create_profile("ghost", no_alias=True, no_skills=True)
         assert (shell / "skills" / "my-skill" / "SKILL.md").exists()
         assert "ghost" not in _named_homes(profile_env)

@@ -1790,11 +1790,8 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
     """
     homes: list[tuple[str, Path]] = []
     try:
-        from hermes_cli.profiles import (
-            _get_default_hermes_home,
-            _get_profiles_root,
-            _PROFILE_ID_RE,
-        )
+        from hermes_constants import PROFILE_ID_RE
+        from profiles.paths import _get_default_hermes_home, _get_profiles_root
 
         invoking = invoking_home.resolve()
         default_home = _get_default_hermes_home()
@@ -1806,7 +1803,7 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
                 if (
                     entry.is_dir()
                     and entry.name != "default"
-                    and _PROFILE_ID_RE.match(entry.name)
+                    and PROFILE_ID_RE.match(entry.name)
                     and entry.resolve() != invoking
                 ):
                     homes.append((entry.name, entry))

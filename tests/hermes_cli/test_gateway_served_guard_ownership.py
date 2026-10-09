@@ -113,7 +113,7 @@ def test_cron_status_restart_hint_names_the_profile_hosting_the_scheduler(tmp_pa
     _use_home(monkeypatch, fake_home, own_home)
     _publish_host(monkeypatch, own_home, ("argus",))
     monkeypatch.setattr(cron_mod, "_active_cron_provider_name", lambda: "builtin")
-    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "argus")
+    monkeypatch.setattr("profiles.current.get_active_profile_name", lambda: "argus")
     monkeypatch.setattr("gateway.host_topology.host_gateway_serving",
                         lambda name=None: HostGatewayTopology(4242, ("argus",), "host_record"))
     seen = []

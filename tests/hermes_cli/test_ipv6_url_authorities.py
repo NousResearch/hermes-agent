@@ -145,7 +145,7 @@ class TestAttachUrl:
         monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
         monkeypatch.setattr(hr, "probe_owner", lambda _r: {"servesSpa": True, "pid": 4242})
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+            "profiles.current.get_active_profile_name", lambda: "worker_x"
         )
 
         args = types.SimpleNamespace(

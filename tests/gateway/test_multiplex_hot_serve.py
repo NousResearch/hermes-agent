@@ -119,7 +119,7 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
     solo = _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
     own_pids = {}
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         adapter = runner._profile_adapters["solo"][Platform.DISCORD]
         (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
@@ -155,7 +155,7 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
 
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
 
         released = threading.Event()
@@ -208,7 +208,7 @@ async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
     del runner._start_one_profile_adapters
     runner._register_config_hooks = lambda *a, **kw: None
     caplog.set_level("INFO")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         assert _served_record(home) == ["default"]
         assert "profile 'worker' is parked (gateway.parked); not served by this gateway" in caplog.text
@@ -225,7 +225,7 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
     from gateway import run_profile_reconcile as verbs
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         stop = verbs.unserve_profile_verb(runner)
         start = verbs.serve_profile_verb(runner)
@@ -255,7 +255,7 @@ async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch)
     from gateway import control_socket
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         server = await _start_gateway_start_control_socket(runner)
         assert server is not None
@@ -278,7 +278,7 @@ async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch)
 async def test_created_then_credentialed_profile_is_served_without_restart(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
@@ -318,7 +318,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
@@ -408,7 +408,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         # its home — the ``.__agent.lock`` lock handle on Windows, the log stream on POSIX.
         assert all(_holds_open_log_file(handler) for handler in gamma_handlers)
 
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        with patch("profiles.current.get_active_profile_name", return_value="default"):
             await runner._start_secondary_profile_adapters()
             mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
             result = await runner.reconcile_served_profiles()
@@ -439,7 +439,7 @@ async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, mo
     reconcile retries it. Only the deliberate MultiplexConfigError park is acknowledged."""
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
 
         _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
@@ -541,7 +541,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _flaky)
 
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         assert connected == []
         assert "gamma" not in runner._served_profile_signatures
@@ -568,7 +568,7 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         return 1
 
     runner._start_one_profile_adapters = _start
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("profiles.current.get_active_profile_name", return_value="default"):
         _boot(runner, home)
         await runner._start_secondary_profile_adapters()
         _mkprofile(home, "dupe", "DISCORD_BOT_TOKEN=shared\n")

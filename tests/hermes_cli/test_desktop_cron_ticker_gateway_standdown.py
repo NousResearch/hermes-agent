@@ -133,7 +133,7 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monke
             started["kwargs"] = kwargs
 
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _InProcess())
-    monkeypatch.setattr(profiles, "profiles_to_serve", lambda **_kw: [("default", home)])
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", lambda **_kw: [("default", home)])
     monkeypatch.setattr(hermes_logging, "enable_profile_log_routing", lambda _homes: None)
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
@@ -159,7 +159,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
             started["kwargs"] = kwargs
 
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _InProcess())
-    monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", _enumeration_fails)
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
 
@@ -195,7 +195,7 @@ def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_pat
 
     multiplexer = {"serves": True}
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _InProcess())
-    monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", _enumeration_fails)
     monkeypatch.setattr(profiles, "_check_gateway_running", lambda _home: False)
     monkeypatch.setattr(
         profiles, "_served_by_running_multiplexer", lambda name: multiplexer["serves"] and name == "worker")
@@ -221,7 +221,7 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     from hermes_cli import web_server
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
+    monkeypatch.setattr("gateway.profile_serving.profiles_to_serve", _enumeration_fails)
     monkeypatch.setattr(profiles, "_check_gateway_running", lambda _home: True)
     monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
     ticked, beats, cleared = [], [], []

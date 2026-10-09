@@ -62,3 +62,26 @@ def record_mcp_add(entry: Any, server_config: Mapping[str, Any], saved: bool) ->
     source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
     record_mcp_install(source, entry.name if entry is not None else None, "success" if saved else "failed",
                        failure_class=None if saved else "config_rejected")
+
+def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]:
+    """Resolve the optional ``profile`` param to a HERMES_HOME override token.
+
+    Returns ``(token, error)``: ``token`` is None for the launch profile (no
+    override) or an opaque reset token; ``error`` is a JSON-RPC error dict
+    (built via ``err_fn``) when the named profile doesn't exist. Callers reset
+    ``token`` in a finally via :func:`reset_profile`.
+    """
+    profile = str(params.get("profile") or "").strip()
+    if not profile:
+        return None, None
+    from profiles.paths import get_profile_dir
+    from hermes_constants import set_hermes_home_override
+
+    try:
+        profile_dir = get_profile_dir(profile)
+    except ValueError:
+        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
+    if not profile_dir or not profile_dir.is_dir():
+        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
+    return set_hermes_home_override(str(profile_dir)), None
+# ---- END PLUGIN-COMPAT ----

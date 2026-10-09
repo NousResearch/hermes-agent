@@ -178,7 +178,7 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
         return HostAttachDecision(START, "")
 
     monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
-    monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
+    monkeypatch.setattr("gateway.profile_serving.profile_is_standalone", lambda home: True)
     monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
     handle = _hold_host_lock_from_another_description(hr)
     try:

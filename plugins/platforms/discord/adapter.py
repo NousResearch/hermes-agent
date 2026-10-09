@@ -4256,7 +4256,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return adapters, runner.config
         from gateway.config import load_gateway_config
         from gateway.run import _async_profile_runtime_scope
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         async with _async_profile_runtime_scope(get_profile_dir(profile)):
             return adapters, load_gateway_config()
 
@@ -4275,7 +4275,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         try:
             if profile:
                 from gateway.run import _async_profile_runtime_scope
-                from hermes_cli.profiles import get_profile_dir
+                from profiles.paths import get_profile_dir
                 async with _async_profile_runtime_scope(get_profile_dir(profile)):
                     await self._deliver_unauthorized_slash_alert(
                         runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason)

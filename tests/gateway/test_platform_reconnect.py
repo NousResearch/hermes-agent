@@ -540,7 +540,7 @@ class TestReconnectKeepsInboundDedup:
         runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a: setattr(runner, "_running", False))
         if mode != "connect-raises":  # stub the attempt; connect-raises runs the real one's own teardown
             runner._secondary_reconnect_attempt = attempt
-        with patch("hermes_cli.profiles.get_profile_dir"), \
+        with patch("profiles.paths.get_profile_dir"), \
              patch("hermes_cli.env_loader.hydrate_profile_secret_sources"), \
              patch("gateway.run._profile_runtime_scope", MagicMock()), \
              patch("gateway.run._platform_has_bot_credential", return_value=True), \

@@ -1084,7 +1084,7 @@ class TestNativeEnvironmentContracts:
         """
         from tools.environments import local
         from tools.environments import local_pythonpath
-        from hermes_cli.profiles import resolve_profile_env
+        from profiles.paths import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
         physical_root = physical_home / "hermes-agent"

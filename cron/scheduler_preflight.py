@@ -130,7 +130,7 @@ def _credential_store_scope_label() -> str:
     profile, a gateway launched without the shell's env) otherwise reports a bare "No credentials
     stored" that cannot be told apart from a real login gap (#116213).
     """
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     from hermes_constants import get_hermes_home
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
@@ -170,7 +170,7 @@ def _primary_profile_routes_for_current_home() -> list:
             return []
 
         from gateway.profile_routing import parse_profile_routes
-        from hermes_cli.profiles import profile_matches_home
+        from profiles.registry import profile_matches_home
         return [
             route for route in parse_profile_routes(routes_raw)
             if route.enabled and profile_matches_home(route.profile)

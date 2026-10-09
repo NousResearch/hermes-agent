@@ -217,7 +217,7 @@ def test_set_active_missing_profile_is_still_404(client, monkeypatch):
     def fake_set_active(name):
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
 
-    monkeypatch.setattr(profiles_mod, "set_active_profile", fake_set_active)
+    monkeypatch.setattr("profiles.current.set_active_profile", fake_set_active)
 
     assert client.post("/api/profiles/active", json={"name": "demo"}).status_code == 404
 

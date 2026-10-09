@@ -855,7 +855,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 
     requested = (requested_profile or "").strip()
     if not requested or requested.lower() == "current":
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
 
         # The dashboard's own profile. "custom" (unrecognized HERMES_HOME) is outside
         # the profiles tree, so a multiplexed gateway never serves it.

@@ -515,7 +515,7 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 def cron_status():
     """Show cron execution status."""
     from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
-    from hermes_cli.profiles import get_active_profile_name
+    from profiles.current import get_active_profile_name
     print()
 
     store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)

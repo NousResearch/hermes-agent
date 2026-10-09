@@ -34,8 +34,8 @@ def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     )
     (worker_home / ".env").write_text("", encoding="utf-8")
 
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker_alpha": worker_home}
 
 

@@ -168,7 +168,8 @@ def _collect_profile_gateway_topology() -> dict[str, Any]:
     platform maps per live gateway, an internal aggregation input never exposed directly.
     """
     try:
-        from hermes_cli.profiles import _check_gateway_running, profiles_to_serve, profile_is_parked
+        from gateway.profile_serving import profile_is_parked, profiles_to_serve
+        from hermes_cli.profiles import _check_gateway_running
         from gateway.status import read_runtime_status
         homes = profiles_to_serve(True, include_standalone=True, include_parked=True)
     except Exception:
@@ -599,7 +600,7 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
     if not requested or requested.lower() in {"current", "default"}:
         return None
     served = _profile_is_multiplexed(requested)
-    from hermes_cli.profiles import profile_is_parked, profile_is_standalone
+    from gateway.profile_serving import profile_is_parked, profile_is_standalone
     from hermes_cli.web_server_profiles import _resolve_profile_dir
     profile_dir = _resolve_profile_dir(requested)
     standalone = profile_is_standalone(profile_dir)

@@ -922,7 +922,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         profile = get_active_profile_name()
     except Exception:
         profile = "default"
@@ -953,7 +953,7 @@ def _route_named_profile_dashboard(
     routing applies.
     """
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from profiles.current import get_active_profile_name
         _launch_profile = get_active_profile_name()
     except Exception:
         _launch_profile = "default"

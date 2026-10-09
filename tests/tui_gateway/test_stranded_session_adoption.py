@@ -175,7 +175,7 @@ def gateway(tmp_path, monkeypatch):
 
     # session.resume resolves the profile via hermes_cli.profiles
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir", lambda name: str(profile_home)
+        "profiles.paths.get_profile_dir", lambda name: str(profile_home)
     )
 
     yield mod, default_db, profile_home

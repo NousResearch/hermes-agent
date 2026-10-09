@@ -363,7 +363,7 @@ class GatewayAuthorizationMixin:
         if profile is None:
             from hermes_constants import get_process_hermes_home
             return get_process_hermes_home()  # the primary bot's home, never the per-turn override
-        from hermes_cli.profiles import get_profile_dir
+        from profiles.paths import get_profile_dir
         return get_profile_dir(profile)
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:

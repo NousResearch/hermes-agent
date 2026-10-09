@@ -26,9 +26,9 @@ def fleet(monkeypatch, tmp_path):
     _write_state(work_home, 200)  # pre-stamp gateway: no code identity
 
     import re
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: default_home / "profiles")
-    monkeypatch.setattr("hermes_cli.profiles._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
+    monkeypatch.setattr("profiles.paths._get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: default_home / "profiles")
+    monkeypatch.setattr("profiles.names._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
     # A runtime is a VERIFIED gateway identity: live PID whose command line is a gateway's for that home.
     monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
@@ -117,7 +117,7 @@ class TestCollectInventory:
         for target in (
             "hermes_cli.config.detect_install_method",
             "hermes_cli.version_info.get_code_identity",
-            "hermes_cli.profiles._get_default_hermes_home",
+            "profiles.paths._get_default_hermes_home",
             "hermes_cli.gateway._get_service_pids",
             "hermes_cli.gateway.find_profile_gateway_processes",
         ):

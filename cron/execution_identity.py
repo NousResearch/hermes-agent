@@ -30,7 +30,7 @@ _CURRENT: ContextVar[Optional[CronExecution]] = ContextVar("hermes_cron_executio
 
 def enter_cron_execution(job: Mapping[str, Any], execution_id: str, record: Mapping[str, Any]) -> Token:
     """Bind this fire's identity from *record*, the ledger row of the running transition."""
-    from hermes_cli.profiles import current_profile_name
+    from profiles.current import current_profile_name
 
     return _CURRENT.set(CronExecution(
         job_id=str(job["id"]),

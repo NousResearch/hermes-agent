@@ -20,27 +20,25 @@ import hermes_yaml as yaml
 import pytest
 
 from hermes_cli import profiles
+from gateway import profile_serving
+from gateway.profile_serving import profiles_to_serve
+from profiles.current import get_active_profile, get_active_profile_name, set_active_profile
+from profiles.metadata import read_profile_meta, write_profile_meta
+from profiles.names import normalize_profile_name, validate_profile_name
+from profiles.paths import _get_default_hermes_home, get_profile_dir, resolve_profile_env
+from profiles.registry import profile_exists
 from hermes_cli.profiles import (
     _clone_all_copytree_ignore,
-    normalize_profile_name,
-    validate_profile_name,
-    get_profile_dir,
     create_profile,
     delete_profile,
     list_profiles,
-    set_active_profile,
-    get_active_profile,
-    get_active_profile_name,
-    resolve_profile_env,
     check_alias_collision,
     create_wrapper_script,
     remove_wrapper_script,
     rename_profile,
     export_profile,
-    _get_default_hermes_home,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
-    profiles_to_serve,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -127,7 +125,7 @@ class TestGetProfileDir:
 
     @pytest.mark.parametrize("name", ["..", "../outside", "a/b"])
     def test_profile_exists_false_for_invalid_names(self, name, profile_env):
-        assert profiles.profile_exists(name) is False
+        assert profile_exists(name) is False
 
 
 # ===================================================================
@@ -153,7 +151,8 @@ class TestCreateProfile:
             for line in content.splitlines()
         )
         mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if os.name != "nt":
+            assert mode == 0o600
 
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
@@ -517,7 +516,8 @@ class TestBackfillProfileEnvs:
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
             assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if os.name != "nt":
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
@@ -1049,6 +1049,7 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX wrapper format")
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
@@ -1134,7 +1135,7 @@ class TestFindAliasForProfile:
         info = next(p for p in list_profiles() if p.name == "steve")
         assert info.alias_name == "qiaobusi"
         assert info.alias_path is not None
-        assert info.alias_path.name == "qiaobusi"
+        assert info.alias_path.stem == "qiaobusi"
 
 
 # ===================================================================
@@ -1363,7 +1364,7 @@ class TestRenameProfile:
 
         # The history write is best-effort: it must never fail the rename.
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
+             patch("profiles.metadata.write_profile_meta", side_effect=OSError("disk full")):
             new_dir = rename_profile("oldname", "newname")
 
         assert new_dir.is_dir()
@@ -1507,7 +1508,7 @@ class TestWriteProfileMetaDurability:
     def _seed(tmp_path):
         profile_dir = tmp_path / "coder"
         profile_dir.mkdir()
-        profiles.write_profile_meta(
+        write_profile_meta(
             profile_dir, description="Curated by hand", description_auto=False
         )
         return profile_dir
@@ -1528,7 +1529,7 @@ class TestWriteProfileMetaDurability:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(yaml, "safe_dump", _boom)
             with pytest.raises(RuntimeError):
-                profiles.write_profile_meta(profile_dir, description_auto=True)
+                write_profile_meta(profile_dir, description_auto=True)
 
     def test_failed_write_leaves_existing_file_intact(self, tmp_path):
         profile_dir = self._seed(tmp_path)
@@ -1548,8 +1549,8 @@ class TestWriteProfileMetaDurability:
 
         # The user retries; this call does not pass a description, so the
         # documented merge contract requires the existing one to survive.
-        profiles.write_profile_meta(profile_dir, description_auto=True)
-        meta = profiles.read_profile_meta(profile_dir)
+        write_profile_meta(profile_dir, description_auto=True)
+        meta = read_profile_meta(profile_dir)
         assert meta["description"] == "Curated by hand"
         assert meta["description_auto"] is True
 
@@ -1561,12 +1562,12 @@ class TestWriteProfileMetaDurability:
         """
         profile_dir = tmp_path / "wizard"
         profile_dir.mkdir()
-        profiles.write_profile_meta(profile_dir, description="Code wizard 🧙 ✨")
+        write_profile_meta(profile_dir, description="Code wizard 🧙 ✨")
 
         raw = (profile_dir / "profile.yaml").read_text(encoding="utf-8-sig")
         assert "\\U" not in raw
         assert "🧙" in raw
-        assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
+        assert read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
 
     def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
         """Guard on the conversion, not a behavior change.
@@ -1584,7 +1585,7 @@ class TestWriteProfileMetaDurability:
         real.write_text("description: from dotfiles\n", encoding="utf-8")
         (profile_dir / "profile.yaml").symlink_to(real)
 
-        profiles.write_profile_meta(profile_dir, description="updated")
+        write_profile_meta(profile_dir, description="updated")
 
         assert (profile_dir / "profile.yaml").is_symlink()
         assert "updated" in real.read_text(encoding="utf-8-sig")
@@ -1714,14 +1715,14 @@ class TestProfilesToServe:
     def test_default_profile_with_key_still_served_with_one_warning(self, profile_env, caplog):
         """The default profile IS the host: the key is ignored (still served, never
         standalone) with exactly one warning per process."""
-        profiles._STANDALONE_WARNED = False
+        profile_serving._STANDALONE_WARNED = False
         default_home = _get_default_hermes_home()
         (default_home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         caplog.clear()
         with caplog.at_level("WARNING", logger="hermes_cli.profiles"):
             serve = dict(profiles_to_serve(multiplex=True))
-            assert profiles.profile_is_standalone(default_home) is False
-            assert profiles.profile_is_standalone(default_home) is False
+            assert profile_serving.profile_is_standalone(default_home) is False
+            assert profile_serving.profile_is_standalone(default_home) is False
         assert list(serve) == ["default"]
         assert serve["default"] == default_home
         assert len([r for r in caplog.records if "ignored on the default profile" in r.message]) == 1
@@ -1732,7 +1733,7 @@ class TestProfilesToServe:
         home = get_profile_dir("solo")
         (home / "config.yaml").write_text(content, encoding="utf-8")
         for _ in range(2):
-            assert profiles.profile_is_standalone(home) is False
+            assert profile_serving.profile_is_standalone(home) is False
             assert "solo" in dict(profiles_to_serve(True))
         warnings = [r for r in caplog.records if "Cannot read gateway.standalone" in r.message]
         assert len(warnings) == (1 if content == "gateway: [" else 0)
@@ -1762,11 +1763,11 @@ class TestProfilesToServe:
                 m.setattr(Path, "stat", denied)
             else:
                 m.setattr(config, "read_user_config_raw", unreadable)
-            assert profiles.profile_is_standalone(home) is False
-            assert profiles.profile_is_standalone(home) is False
+            assert profile_serving.profile_is_standalone(home) is False
+            assert profile_serving.profile_is_standalone(home) is False
         assert len([r for r in caplog.records if "Cannot read gateway.standalone" in r.message]) == 1
         # Restoring access does not change mtime/size/inode; a read failure is not config.
-        assert profiles.profile_is_standalone(home) is True
+        assert profile_serving.profile_is_standalone(home) is True
 
     def test_standalone_answer_is_per_home_and_memo_invalidates_on_replacement(self, profile_env):
         """A->B->A: signatures never cross homes; atomic replacement invalidates the memo."""
@@ -1774,16 +1775,16 @@ class TestProfilesToServe:
         create_profile("beta", no_alias=True)
         alpha, beta = get_profile_dir("alpha"), get_profile_dir("beta")
         (alpha / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
-        assert profiles.profile_is_standalone(alpha) is True
-        assert profiles.profile_is_standalone(beta) is False
-        assert profiles.profile_is_standalone(alpha) is True  # memo hit, still True
+        assert profile_serving.profile_is_standalone(alpha) is True
+        assert profile_serving.profile_is_standalone(beta) is False
+        assert profile_serving.profile_is_standalone(alpha) is True  # memo hit, still True
         cfg = alpha / "config.yaml"
         replacement = alpha / "replacement.yaml"
         replacement.write_text("gateway:\n  standalone: false\n", encoding="utf-8")
         replacement.replace(cfg)
-        assert profiles.profile_is_standalone(alpha) is False
-        assert profiles.profile_is_standalone(beta) is False
-        assert profiles.profile_is_standalone(alpha) is False
+        assert profile_serving.profile_is_standalone(alpha) is False
+        assert profile_serving.profile_is_standalone(beta) is False
+        assert profile_serving.profile_is_standalone(alpha) is False
 
 
 # ---------------------------------------------------------------------------

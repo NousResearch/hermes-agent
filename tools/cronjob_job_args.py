@@ -262,7 +262,8 @@ def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
         return None
     try:
         from cron.scheduler_delivery import parse_bot_chat_deliver_token
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from profiles.names import normalize_profile_name
+        from profiles.registry import profile_exists
     except Exception:
         return None  # best-effort; resolution re-checks at fire time
     for part in str(deliver).split(","):

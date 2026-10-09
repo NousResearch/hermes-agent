@@ -23,7 +23,7 @@ def test_plugins_manage_profile_reads_that_profiles_dir(tmp_path, monkeypatch):
     # Route the profile name the handler resolves to our temp home.
     from hermes_cli import profiles
 
-    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda name: profile_home)
 
     resp = server.handle_request(
         {
@@ -50,7 +50,7 @@ def test_plugins_manage_unknown_profile_errors(tmp_path, monkeypatch):
     from hermes_cli import profiles
 
     missing = tmp_path / "profiles" / "ghost"
-    monkeypatch.setattr(profiles, "get_profile_dir", lambda name: missing)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda name: missing)
 
     resp = server.handle_request(
         {

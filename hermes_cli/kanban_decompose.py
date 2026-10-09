@@ -17,6 +17,9 @@ up with ``assignee=None``.
 
 from __future__ import annotations
 
+from profiles import current as profile_current
+from profiles import registry as profile_registry
+
 import logging
 import re
 from dataclasses import dataclass
@@ -143,12 +146,12 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
     for candidate in (explicit, (fallback or "").strip()):
         if candidate:
             try:
-                if profiles_mod.profile_exists(candidate):
+                if profile_registry.profile_exists(candidate):
                     return candidate
             except Exception:
                 pass
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        return profile_current.get_active_profile_name() or "default"
     except Exception:
         return "default"
 

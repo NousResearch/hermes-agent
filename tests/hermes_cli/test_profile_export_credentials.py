@@ -22,9 +22,9 @@ _LEAKED_KEY = "sk-or-v1-reallyLongSecretKeyValue12345678"
 
 
 def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: profiles_root)
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: profile_dir)
-    monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+    monkeypatch.setattr("profiles.paths._get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("profiles.paths.get_profile_dir", lambda n: profile_dir)
+    monkeypatch.setattr("profiles.names.validate_profile_name", lambda n: None)
 
 
 # Stores named here as well as in PROFILE_CREDENTIAL_PATHS, so dropping one from the list fails a test:
@@ -130,6 +130,13 @@ class TestCredentialExclusion:
         with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
             members = {m.name: m for m in tf.getmembers()}
             note = tf.extractfile("testprofile/config.yaml.bak-my-note").read().decode()
+        # Seed the default-profile root independently. Canonical default-profile resolution maps a named HERMES_HOME back to its root.
+        _seed_stores(tmp_path)
+        for rel in [*nested, "skills/s/.config/other/settings.json"]:
+            target = tmp_path / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fake-credential")
+
         # The default profile's root allow-list keeps skills/, so its nested copies need the same drop.
         with tarfile.open(export_profile("default", str(tmp_path / "default.tar.gz")), "r:gz") as tf:
             default_members = set(tf.getnames())

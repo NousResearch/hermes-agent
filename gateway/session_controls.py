@@ -46,10 +46,9 @@ class AuthorityConnection:
 
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
-        home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
-        reaches a sibling; a profile-bound ticket naming any other profile is a mismatch, exactly
-        like a profile nobody here serves. Never a fallback, never a rewritten profile_id."""
-        from hermes_cli.profiles import profile_matches_home
+        home. One native socket serves every profile this process multiplexes (the Desktop's
+        shared-primary route); a profile nobody here serves is a mismatch, never a fallback."""
+        from profiles.registry import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
         if self._identity.get('profile_scope') != 'host':
@@ -65,9 +64,28 @@ class AuthorityConnection:
                 return connection
         raise RuntimeStoreError('profile_mismatch')
 
-    def handlers(self):
-        """Method → handler for every verb ``dispatch`` serves outside the group controls; each
-        name is declared in ``tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
+    async def dispatch(self, request):
+        rid = request.get('id')
+        method = request.get('method')
+        params = request.get('params') or {}
+        if not isinstance(params, dict):
+            # Every handler indexes params as a mapping; refuse the frame before ``.get``.
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
+        profile = params.get('profile')
+        if isinstance(profile, str) and profile:
+            try:
+                routed = self._sibling_for(profile)
+            except RuntimeStoreError as exc:
+                return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+            if routed is not None:
+                return await routed.dispatch(request)
+            # Our own home: the scope is implicit for the strict session verbs, which refuse
+            # unknown keys; every other handler validates ``profile`` itself.
+            if method in _PROFILE_IMPLICIT:
+                params = {key: value for key, value in params.items() if key != 'profile'}
+        ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
@@ -96,42 +114,6 @@ class AuthorityConnection:
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
-        return handlers
-
-    async def dispatch(self, request):
-        rid = request.get('id')
-        method = request.get('method')
-        params = request.get('params') or {}
-        if not isinstance(params, dict):
-            # Every handler indexes params as a mapping; refuse the frame before ``.get``.
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
-        profile = params.get('profile')
-        if isinstance(profile, str) and profile:
-            try:
-                routed = self._sibling_for(profile)
-            except RuntimeStoreError as exc:
-                return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
-            if routed is not None:
-                return await routed.dispatch(request)
-            # Our own home: the scope is implicit for the strict session verbs, which refuse
-            # unknown keys; every other handler validates ``profile`` itself.
-            if method in _PROFILE_IMPLICIT:
-                params = {key: value for key, value in params.items() if key != 'profile'}
-        ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
-        from tui_gateway.contracts.registry import (
-            CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
-        )
-        contract = CANONICAL_METHODS.get(method)
-        if contract is not None and (problems := canonical_param_problems(contract, params)):
-            # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
-            # key set: an unknown or missing key never reaches the handler.
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
-        original_params = dict(params)
-        contract = contract or METHODS.get(method)
-        handlers = self.handlers()
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
             # Every handler reads config/jobs/policy for the OWNING profile: enter its home so
@@ -142,16 +124,14 @@ class AuthorityConnection:
             with owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
-                elif method not in handlers:
+                    return {'jsonrpc': '2.0', 'id': rid, 'result': result}
+                if method not in handlers:
                     # JSON-RPC's own verdict: clients key compat fallbacks on -32601, and a
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
                         'code': -32601, 'message': f'unknown method: {method}',
                         'data': {'reason': 'unknown_method'}}}
-                else:
-                    result = await handlers[method](ref, params)
-            check_params_accepted(contract, original_params)
-            check_result(contract, result)
+                result = await handlers[method](ref, params)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
@@ -251,24 +231,7 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
-            skills_prompt = None
-            if 'skills' in params:
-                # Skill files are read off the owner loop, once per NEW session (a retried
-                # request_id resumes the frozen policy and never re-renders).
-                import asyncio
-                from gateway.session_local_recovery import local_identity
-                from gateway.session_policy import render_launch_skills
-                params.setdefault('request_id', uuid.uuid4().hex)
-                sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
-                if self.authority.db.get_session(sid) is None:
-                    skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
-            ref = create_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
-            if params.get('accept_hooks') is True:
-                import asyncio
-                from gateway.session_policy import accept_launch_hooks, restore_policy
-                from hermes_state_local import local_receipt
-                policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
-                await asyncio.to_thread(accept_launch_hooks, policy)
+            ref = create_local_session(self.authority, self.actor, params)
             if title:
                 title_new_session(self.authority, ref, title)
             if hidden:
@@ -284,11 +247,11 @@ class AuthorityConnection:
 
     async def describe(self, ref, params):
         await self.ping(ref, params)
-        from gateway.session_policy import CREATE_FIELDS, SURFACES
+        from gateway.session_policy import CREATE_FIELDS
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
-                'session_create': {'sources': sorted(SURFACES),
+                'session_create': {'sources': ['cli', 'tui', 'gui', 'acp'],
                                    'parameters': sorted(CREATE_FIELDS | {'title'})}}
 
     async def info(self, ref, params):
@@ -322,7 +285,6 @@ class AuthorityConnection:
                                   'message_count': row.get('message_count', 0),
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
-        from hermes_state_sessions import INTERNAL_LISTING_SOURCES
         sessions = []
         for sid in tuple(self.authority.sessions):
             candidate = SessionRef(self.actor.profile_id, sid)
@@ -333,10 +295,6 @@ class AuthorityConnection:
                     raise
                 continue
             row = self.authority.db.get_session(sid)
-            # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
-            # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES:
-                continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0),

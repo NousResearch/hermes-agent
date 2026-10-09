@@ -459,6 +459,55 @@ class TestAuxiliaryClientBedrockResolution:
 
         assert isinstance(client, AnthropicAuxiliaryClient)
 
+    def test_multiplex_bearer_only_profiles_use_their_own_token(self, tmp_path, monkeypatch):
+        """Served profiles keep AWS_BEARER_TOKEN_BEDROCK in their own .env, not in the process env.
+        Profile A must admit, route Claude to Converse, and sign with A's token. Profile B, with no
+        credential of its own, must not inherit A's or the launch env's token (#29309)."""
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
+        from agent import bedrock_adapter, secret_scope
+        from agent.auxiliary_client import BedrockAuxiliaryClient, resolve_provider_client
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
+        for home in (home_a, home_b):
+            home.mkdir()
+        (home_a / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-A\n")
+        (home_b / ".env").write_text("")
+        for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-launch")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setattr(bedrock_adapter, "_boto3_chain_has_credentials", lambda: False)
+        bedrock_adapter.reset_client_cache()
+
+        def in_scope(home, fn):
+            h_tok = set_hermes_home_override(str(home))
+            s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+            try:
+                return fn()
+            finally:
+                secret_scope.reset_secret_scope(s_tok)
+                reset_hermes_home_override(h_tok)
+
+        try:
+            client, _ = in_scope(home_a, lambda: resolve_provider_client(
+                "bedrock", "global.anthropic.claude-opus-5-5"))
+            assert isinstance(client, BedrockAuxiliaryClient)
+            boto_a = in_scope(home_a, lambda: bedrock_adapter._get_bedrock_runtime_client("us-east-1"))
+            assert boto_a._client_config.signature_version == "bearer"
+            token = boto_a._request_signer._auth_token.token
+            assert token == "bearer-A"
+
+            assert in_scope(home_b, bedrock_adapter.resolve_bedrock_bearer_token) == ""
+            assert in_scope(home_b, bedrock_adapter.has_aws_credentials) is False
+            assert in_scope(home_b, lambda: resolve_provider_client(
+                "bedrock", "global.anthropic.claude-opus-5-5")) == (None, None)
+            with pytest.raises(RuntimeError, match="refused for this profile"):
+                in_scope(home_b, lambda: bedrock_adapter._get_bedrock_runtime_client("us-east-1"))
+        finally:
+            bedrock_adapter.reset_client_cache()
+
     def test_bedrock_returns_none_without_credentials(self, monkeypatch):
         """Without AWS credentials, Bedrock should return (None, None) gracefully."""
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):

@@ -231,7 +231,9 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: dict[str, Any],
     auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
     guardrail_config = bedrock_guardrail_config({"bedrock": bedrock_cfg})
     current_model = str(target_model or model_cfg.get("default") or "").strip()
-    has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
+    # Scoped read, not os.environ: under multiplexing the process env holds the LAUNCH profile's
+    # bearer, which must not steer a served profile's model routing.
+    has_bearer_token = bool(resolve_bedrock_bearer_token())
     runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",
                           source=auth_source, region=region, requested_provider=requested_provider)
     if bedrock_openai_uses_mantle(current_model):

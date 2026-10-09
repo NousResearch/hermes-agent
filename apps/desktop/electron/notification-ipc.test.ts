@@ -8,7 +8,8 @@ import type { HermesNotification } from './notification-types'
 const host = vi.hoisted(() => ({
   handle: vi.fn(),
   fromWebContents: vi.fn(),
-  shown: [] as EventEmitter[]
+  shown: [] as EventEmitter[],
+  showEvent: 'show' as 'show' | 'failed' | 'none'
 }))
 
 vi.mock('electron', () => ({
@@ -21,6 +22,10 @@ vi.mock('electron', () => ({
 
     show() {
       host.shown.push(this)
+
+      if (host.showEvent !== 'none') {
+        queueMicrotask(() => this.emit(host.showEvent))
+      }
     }
   }
 }))
@@ -38,6 +43,56 @@ beforeEach(() => {
   host.handle.mockReset()
   host.fromWebContents.mockReset()
   host.shown.length = 0
+  host.showEvent = 'show'
+})
+
+it('reports a macOS native failure after show returns', async () => {
+  host.showEvent = 'failed'
+  const source = windowStub()
+  host.fromWebContents.mockReturnValue(source)
+  registerNativeNotifications({
+    getMainWindow: () => source as unknown as BrowserWindow,
+    focusWindow: vi.fn(),
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  expect(await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
+    kind: 'test', title: 'Test'
+  })).toBe(false)
+})
+
+it('bounds a macOS notification with no native delivery event', async () => {
+  vi.useFakeTimers()
+
+  try {
+    host.showEvent = 'none'
+    const source = windowStub()
+    host.fromWebContents.mockReturnValue(source)
+    registerNativeNotifications({
+      getMainWindow: () => source as unknown as BrowserWindow,
+      focusWindow: vi.fn(),
+      platform: 'darwin'
+    })
+
+    const notify = host.handle.mock.calls[0][1] as (
+      event: IpcMainInvokeEvent,
+      payload: HermesNotification
+    ) => Promise<boolean>
+
+    const delivery = notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
+      kind: 'test', title: 'Test'
+    })
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await delivery).toBe(false)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it('returns native clicks and approval actions to the emitting window, not the primary', async () => {

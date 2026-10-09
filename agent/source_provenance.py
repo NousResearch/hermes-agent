@@ -358,6 +358,73 @@ def clear_agent_source_provenance(agent, *, request_id: str | None = None) -> No
     registry.clear_turn(str(getattr(agent, "_current_turn_id", "") or ""))
 
 
+
+def clear_pending_source_provenance(agent) -> None:
+    """Abandon preparation without clearing authority owned by an admitted turn."""
+    pending = str(getattr(agent, "_source_provenance_pending_turn_id", "") or "")
+    registry = getattr(agent, "_source_provenance_registry", None)
+    if pending and isinstance(registry, SourceProvenanceRegistry):
+        registry.clear_turn(pending)
+        agent._source_provenance_pending_turn_id = None
+
+
+def _renew_context_slice(registry, grant, *, session_id, request_id):
+    content = _read_bounded_slice(grant.canonical_path, grant.line_start, grant.line_end)
+    if not compare_digest(sha256(content).hexdigest(), grant.content_sha256):
+        raise SourceProvenanceError("content_mismatch")
+    return registry.issue_file_slice(
+        path=grant.canonical_path, line_start=grant.line_start, line_end=grant.line_end,
+        content=content, session_id=session_id, turn_id=grant.turn_id,
+        request_id=request_id, policy_digest=grant.policy_digest,
+    )
+
+
+def admit_agent_context_sources(agent, *, turn_id, prepared_session_id):
+    """Bind explicit pre-turn slices only after durable admission settles identity."""
+    registry = getattr(agent, "_source_provenance_registry", None)
+    agent._source_provenance_context_grants = ()
+    if not isinstance(registry, SourceProvenanceRegistry):
+        return
+    request_id = f"{turn_id}:api:1"
+    prepared = registry.grants_for_request(request_id)
+    registry.clear_request(request_id)
+    admitted = []
+    for grant in prepared:
+        if grant.session_id != prepared_session_id or grant.turn_id != turn_id:
+            raise SourceProvenanceError("grant_binding_mismatch")
+        admitted.append(_renew_context_slice(
+            registry, grant, session_id=str(getattr(agent, "session_id", "") or ""),
+            request_id=request_id,
+        ))
+    agent._source_provenance_context_grants = tuple(admitted)
+
+
+def renew_agent_context_sources(agent, *, session_id, turn_id, request_id, policy_digest):
+    """Reverify the same admitted raw slices for each request in this turn."""
+    grants = getattr(agent, "_source_provenance_context_grants", ())
+    if not grants:
+        return
+    registry = getattr(agent, "_source_provenance_registry", None)
+    if not isinstance(registry, SourceProvenanceRegistry):
+        raise SourceProvenanceError("missing_identity")
+    if not request_id.startswith(f"{turn_id}:api:"):
+        raise SourceProvenanceError("grant_binding_mismatch")
+    existing = registry.grants_for_request(request_id)
+    for grant in grants:
+        if (grant.session_id, grant.turn_id, grant.policy_digest) != (
+            session_id, turn_id, policy_digest,
+        ):
+            raise SourceProvenanceError("grant_binding_mismatch")
+        if any((current.canonical_path, current.line_start, current.line_end,
+                current.content_sha256, current.session_id, current.turn_id,
+                current.policy_digest) == (
+                    grant.canonical_path, grant.line_start, grant.line_end,
+                    grant.content_sha256, session_id, turn_id, policy_digest,
+                ) for current in existing):
+            continue
+        _renew_context_slice(registry, grant, session_id=session_id, request_id=request_id)
+
+
 def following_api_request_id(request_id: str, turn_id: str) -> str:
     """Bind trusted tool output to the API request that will consume it."""
 

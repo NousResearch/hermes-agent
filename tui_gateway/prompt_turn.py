@@ -1054,6 +1054,8 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
     """Finally-path, before settlement: drop snapshots, end turn audio, undo a one-turn model, reset scopes (not home)."""
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
+    from agent.source_provenance import clear_pending_source_provenance
+    clear_pending_source_provenance(st.agent)
     history, run_kwargs = st.history, st.run_kwargs
     history.clear()
     if isinstance(run_kwargs, dict):

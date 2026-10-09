@@ -381,38 +381,26 @@ def _segment_protected_context(
 ) -> SanitizedSegment | SourceBoundSegment | ValidatedToolSyntaxSegment | OutboundText:
     """Preserve exact text while typing narrow application-owned identifiers."""
 
+    # Match complete verified slices before identifier typing can split them.
+    sourced = _segment_text(
+        text, grant_texts, used_grants, sanitized_cap=sanitized_cap,
+        allow_line_split=allow_line_split,
+    )
+    spans = sourced.segments if isinstance(sourced, OutboundText) else (sourced,)
     segments: list[SanitizedSegment | SourceBoundSegment | ValidatedToolSyntaxSegment] = []
-    cursor = 0
-    for match in _APPLICATION_IDENTIFIER_TOKEN.finditer(text):
-        if match.start() > cursor:
-            prefix = _segment_text(
-                text[cursor : match.start()],
-                grant_texts,
-                used_grants,
-                sanitized_cap=sanitized_cap,
-                allow_line_split=allow_line_split,
-            )
-            segments.extend(prefix.segments if isinstance(prefix, OutboundText) else (prefix,))
-        token = validate_tool_syntax(match.group(0), "application_identifier")
-        segments.append(ValidatedToolSyntaxSegment(token, "application_identifier"))
-        cursor = match.end()
-    if cursor < len(text):
-        suffix = _segment_text(
-            text[cursor:],
-            grant_texts,
-            used_grants,
-            sanitized_cap=sanitized_cap,
-            allow_line_split=allow_line_split,
-        )
-        segments.extend(suffix.segments if isinstance(suffix, OutboundText) else (suffix,))
-    if not segments:
-        return _segment_text(
-            text,
-            grant_texts,
-            used_grants,
-            sanitized_cap=sanitized_cap,
-            allow_line_split=allow_line_split,
-        )
+    for span in spans:
+        if isinstance(span, SourceBoundSegment):
+            segments.append(span)
+            continue
+        cursor = 0
+        for match in _APPLICATION_IDENTIFIER_TOKEN.finditer(span.text):
+            if match.start() > cursor:
+                segments.append(_approved_sanitized(span.text[cursor:match.start()], cap=sanitized_cap))
+            token = validate_tool_syntax(match.group(0), "application_identifier")
+            segments.append(ValidatedToolSyntaxSegment(token, "application_identifier"))
+            cursor = match.end()
+        if cursor < len(span.text) or not span.text:
+            segments.append(_approved_sanitized(span.text[cursor:], cap=sanitized_cap))
     return segments[0] if len(segments) == 1 else OutboundText(tuple(segments))
 
 
@@ -867,6 +855,11 @@ def authorize_agent_sdk_kwargs(
         getattr(agent, "_llm_egress_policy_digest", "")
         or getattr(agent, "llm_egress_policy_digest", "")
         or DEFAULT_POLICY_DIGEST
+    )
+    from agent.source_provenance import renew_agent_context_sources
+    renew_agent_context_sources(
+        agent, session_id=session_id, turn_id=turn_id, request_id=request_id,
+        policy_digest=policy_digest,
     )
     registry = getattr(agent, "_source_provenance_registry", None)
     grants = (

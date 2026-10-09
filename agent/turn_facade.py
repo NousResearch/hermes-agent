@@ -99,6 +99,10 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            from agent.source_provenance import admit_agent_context_sources
+            admit_agent_context_sources(
+                self, turn_id=relay_turn_id, prepared_session_id=session_id,
+            )
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,
@@ -207,6 +211,7 @@ class TurnFacadeMixin:
                     # Always clear mid-turn labels on exit — including interrupted early returns
                     # that skip finalize_turn. Keep ts.
                     from agent.source_provenance import SourceProvenanceRegistry
+                    self._source_provenance_context_grants = ()
                     provenance_registry = getattr(self, "_source_provenance_registry", None)
                     if isinstance(provenance_registry, SourceProvenanceRegistry):
                         provenance_registry.clear_turn(relay_turn_id)

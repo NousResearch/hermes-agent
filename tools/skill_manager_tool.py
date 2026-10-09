@@ -760,7 +760,7 @@ def apply_skill_pending(payload: dict[str, Any]) -> str:
 # payload would compare equal to nothing. Instead every staging pass mints a fresh random token,
 # records it here, and stamps it into the payload. A caller cannot guess a token (secrets, minted
 # per pass, never reused), and public ingress rejects the "_staged_by" key outright, so an injected
-# _candidate_content can never be written verbatim. The set is bounded and cleared on replay.
+# _candidate_content can never be written verbatim. The set is bounded, and cleared when the cap is reached.
 _STAGED_TOKENS: "set[str]" = set()
 _STAGED_TOKENS_MAX = 512
 

@@ -543,7 +543,7 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, smart_escalate_reason: str | None = None) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
@@ -553,6 +553,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     pending["description"] = description
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
+    if smart_escalate_reason:
+        pending["smart_escalate_reason"] = smart_escalate_reason
     submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
@@ -574,6 +576,12 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     }
     if smart_denied:
         result.update(smart_denied=True, allow_permanent=False)
+    if smart_escalate_reason:
+        # Not a guardian judgment: the human (and the agent reading this result) should know
+        # the escalate was the fail-closed fallback for a broken judge, not a risk verdict (#135802).
+        result["smart_escalate_reason"] = smart_escalate_reason
+        result["message"] += (f"\n\nℹ️ The approval guardian is unavailable "
+                              f"({smart_escalate_reason}); this card is the fail-closed fallback.")
     return result
 
 
@@ -738,12 +746,46 @@ _ACTION_GATE = _GateSpec(
 )
 
 
+def _gateway_approval_data(command: str, description: str, pattern_key: str,
+                          pattern_keys: list[str], smart_denied: bool,
+                          smart_escalate_reason: str | None) -> dict:
+    """The gateway approval payload: scope flags for a smart-DENY override, plus the
+    fail-closed reason when the escalate was not a guardian verdict (#135802)."""
+    data = {
+        "command": command, "pattern_key": pattern_key,
+        "pattern_keys": pattern_keys, "description": description,
+        "allow_permanent": not smart_denied,
+        "allow_session": not smart_denied,
+    }
+    if smart_denied:
+        data["smart_denied"] = True
+    if smart_escalate_reason:
+        data["smart_escalate_reason"] = smart_escalate_reason
+    return data
+
+
+def _guardian_note(smart: bool, escalate_reason: str | None) -> str | None:
+    """One-line guardian context for human-facing prompts: distinguishes a fail-closed
+    escalate (the judge never produced a verdict — fix the judge) from a guardian that
+    genuinely wants a human (#135802). ``None`` outside smart mode."""
+    if not smart:
+        return None
+    from agent.i18n import t
+    if escalate_reason:
+        return t("approval.guardian_unavailable", reason=escalate_reason)
+    return t("approval.guardian_uncertain")
+
+
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
-                human_present: bool) -> tuple[dict | None, bool]:
-    """Guardian-LLM step -> ``(result, smart_denied_for_owner)``: a result ends the gate;
-    ``smart_denied_for_owner`` means an interactive owner may still override the DENY for this
-    one operation (once/deny only, nothing persists).
+                human_present: bool) -> tuple[dict | None, bool, str | None]:
+    """Guardian-LLM step -> ``(result, smart_denied_for_owner, escalate_reason)``: a result ends
+    the gate; ``smart_denied_for_owner`` means an interactive owner may still override the DENY
+    for this one operation (once/deny only, nothing persists). ``escalate_reason`` is the
+    fail-closed reason when the verdict was an escalate the guardian did not choose (call
+    failed, empty/unrecognized answer) — ``None`` for a genuine ESCALATE verdict, so the
+    human-facing surfaces can say "guardian unavailable" instead of "guardian uncertain"
+    (#135802).
 
     APPROVE approves this command only — pattern-level persistence would let one benign
     command suppress review of later commands in the same broad detector category. A DENY
@@ -751,15 +793,16 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     normal, potentially persistent manual behavior.
     """
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    escalate_reason = getattr(verdict, "reason", None)
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
-        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
+        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False, None
     if verdict != "deny":
-        return None, False
+        return None, False, escalate_reason
     _record_denial(session_key)
     if human_present:
-        return None, True
+        return None, True, None
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
@@ -767,7 +810,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
                     f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,
-    }, True
+    }, True, None
 
 
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
@@ -783,9 +826,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
+    smart_escalate_reason: str | None = None
     if smart:
-        result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
-                                           session_key, human_present=is_cli or is_gateway or is_ask)
+        result, smart_denied, smart_escalate_reason = _smart_gate(spec, command, description, pattern_key,
+                                                                 pattern_keys,
+                                                                 session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
@@ -833,16 +878,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         display_description = redact_sensitive_text(description)
         notify_cb = _gateway_notify_cb(session_key)
         if notify_cb is not None:
-            # Smart DENY overrides are one-operation decisions, so the UI must not offer a
-            # permanent or session scope.
-            data = {
-                "command": display_command, "pattern_key": pattern_key,
-                "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
-            }
-            if smart_denied:
-                data["smart_denied"] = True
+            data = _gateway_approval_data(display_command, display_description, pattern_key,
+                                          pattern_keys, smart_denied, smart_escalate_reason)
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
@@ -878,6 +915,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                smart_escalate_reason=smart_escalate_reason,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
@@ -888,8 +926,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
+    guardian_note = _guardian_note(smart, smart_escalate_reason)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       smart_denied=smart_denied, approval_callback=approval_callback,
+                                       guardian_note=guardian_note)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")

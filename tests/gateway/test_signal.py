@@ -607,6 +607,69 @@ class TestSignalInboundMessageTypeClassification:
         )
 
 
+class TestSignalRawMessageKeepsMentions:
+    """_handle_envelope must carry signal-cli's mention list in raw_message.
+
+    Before the fix, raw_message held only sender/timestamp_ms/quote, so a
+    pre_gateway_dispatch plugin could not tell "@bot where should we stay?"
+    from "where should we stay?" once _apply_group_mention_rules stripped the
+    bot's mention from the agent-facing text.
+    """
+
+    def _group_envelope(self, message: str, mentions: list) -> dict:
+        return {
+            "envelope": {
+                "sourceNumber": "+15559876543",
+                "sourceName": "Test User",
+                "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "timestamp": 1700000000000,
+                    "message": message,
+                    "mentions": mentions,
+                    "groupInfo": {"groupId": "abc123==", "type": "DELIVER"},
+                },
+            }
+        }
+
+    def _adapter(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch, group_allowed="abc123==", require_mention=False,
+        )
+        captured: dict = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        return adapter, captured
+
+    @pytest.mark.asyncio
+    async def test_group_mention_survives_in_raw_message(self, monkeypatch):
+        """The bot's @mention is stripped from text but preserved verbatim in raw_message."""
+        adapter, captured = self._adapter(monkeypatch)
+        mentions = [{"start": 0, "length": 1, "number": "+15551234567"}]
+        await adapter._handle_envelope(
+            self._group_envelope("\uFFFC where should we stay?", mentions))
+
+        assert "event" in captured, "Group message must reach handle_message"
+        event = captured["event"]
+        assert event.raw_message["mentions"] == mentions
+        assert "@+15551234567" not in event.text
+        assert "where should we stay?" in event.text
+
+    @pytest.mark.asyncio
+    async def test_mentionless_message_gets_empty_list(self, monkeypatch):
+        """Messages without mentions expose an empty list, not a missing key."""
+        adapter, captured = self._adapter(monkeypatch)
+        envelope = self._group_envelope("plain group chatter", [])
+        envelope["envelope"]["dataMessage"].pop("mentions")
+        await adapter._handle_envelope(envelope)
+
+        assert "event" in captured
+        assert captured["event"].raw_message["mentions"] == []
+
+
 # ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)
 # ---------------------------------------------------------------------------

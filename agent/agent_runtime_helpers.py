@@ -1482,6 +1482,14 @@ def restore_primary_runtime(agent, *, transition=None, effect_sink=None) -> bool
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
+        if transition is not None and transition.has_owner_work():
+            # Once restore has registered component-owned work, ``False`` no
+            # longer means a harmless retry/no-op: the coordinator deliberately
+            # commits owners attached to ordinary False results.  Propagate so
+            # it aborts those tickets in reverse order and restores the host
+            # snapshot.  Legacy/direct restores still retain their False
+            # contract when no staged owner exists.
+            raise
         return False
 
 

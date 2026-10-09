@@ -1918,6 +1918,177 @@ def test_primary_restore_stages_pool_and_client_until_after_compressor_commit(
     assert "Restore re-selected pool entry" not in caplog.text
 
 
+def test_primary_restore_post_rebind_failure_aborts_staged_owners_and_host(
+    monkeypatch,
+    caplog,
+):
+    """A post-rebind helper error is not an ordinary committable False result."""
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        STRATEGY_FILL_FIRST,
+        CredentialPool,
+        PooledCredential,
+    )
+
+    _patch_policy(monkeypatch)
+    events = []
+    compressor = _CoordinatorCompressor(events)
+    agent = object.__new__(AIAgent)
+    _install_runtime(agent, compressor)
+
+    pool = CredentialPool(
+        provider="openai-codex",
+        entries=[
+            PooledCredential.from_dict(
+                "openai-codex",
+                {
+                    "id": "primary-entry",
+                    "label": "primary",
+                    "provider": "openai-codex",
+                    "auth_type": AUTH_TYPE_OAUTH,
+                    "source": "device_code",
+                    "priority": 0,
+                    "access_token": "fresh-primary-key",
+                    "refresh_token": "refresh-primary-key",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                },
+            )
+        ],
+    )
+    pool._strategy = STRATEGY_FILL_FIRST
+    agent._credential_pool = pool
+    agent._credential_pool_entry_id = "fallback-entry"
+
+    original_client = _CoordinatorClient()
+    replacement_client = _CoordinatorClient()
+    agent.client = original_client
+    agent._anthropic_client = None
+    agent._anthropic_api_key = ""
+    agent._anthropic_base_url = None
+    agent._is_anthropic_oauth = False
+    agent.model = "fallback-model"
+    agent.provider = "openrouter"
+    agent.requested_provider = "openrouter"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.api_mode = "chat_completions"
+    agent.api_key = "fallback-key"
+    agent._client_kwargs = {
+        "api_key": "fallback-key",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    agent._transport_cache = {"fallback": object()}
+    agent._reasoning_echo_flag = False
+    agent.reasoning_config = {"enabled": False}
+    agent.request_overrides = {"fallback": True}
+    agent.runtime_capabilities = {"fallback": True}
+    agent._custom_providers = []
+    agent._use_prompt_caching = False
+    agent._use_native_cache_layout = False
+    agent._cache_disabled = False
+    agent._compression_feasibility_checked = False
+    agent._fallback_activated = True
+    agent._fallback_index = 1
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._provider_fallback_active = True
+    agent._provider_fallback_route = ("fallback-model", "openrouter")
+    agent._restore_wait_logged = False
+    agent._rate_limit_backoff_count = 0
+    agent._rate_limited_until = 0
+    agent._consecutive_stale_streams = 0
+    agent._unavailable_fallback_keys = set()
+    agent._create_openai_client = (
+        lambda *_args, **_kwargs: replacement_client
+    )
+
+    class SwapTicket:
+        def __init__(self):
+            self.commit_calls = 0
+            self.abort_calls = 0
+
+        def commit(self, _entry):
+            self.commit_calls += 1
+            events.append("swap:commit")
+            return True
+
+        def abort(self):
+            self.abort_calls += 1
+            events.append("swap:abort")
+
+    swap_ticket = SwapTicket()
+    agent._prepare_credential_swap = lambda _entry: swap_ticket
+    agent._primary_runtime = {
+        "model": "gpt-6-astra",
+        "provider": "openai-codex",
+        "requested_provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_mode": "codex_responses",
+        "api_key": "snapshot-primary-key",
+        "client_kwargs": {
+            "api_key": "snapshot-primary-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+        "use_prompt_caching": False,
+        "use_native_cache_layout": False,
+        "compressor_model": compressor.model,
+        "compressor_context_length": compressor.context_length,
+        "compressor_base_url": compressor.base_url,
+        "compressor_api_key": compressor.api_key,
+        "compressor_provider": compressor.provider,
+        "compressor_api_mode": compressor.api_mode,
+        # ``dict(saved_reasoning)`` fails after pool/swap owners are staged.
+        "reasoning_config": ["malformed"],
+    }
+    original_route = (
+        agent.model,
+        agent.provider,
+        agent.base_url,
+        agent.api_mode,
+        agent.api_key,
+    )
+    original_compressor = {
+        name: getattr(compressor, name)
+        for name in (
+            "model",
+            "context_length",
+            "max_tokens",
+            "threshold_tokens",
+            "base_url",
+            "api_key",
+            "provider",
+            "api_mode",
+        )
+    }
+    caplog.set_level("INFO")
+
+    with pytest.raises(ValueError, match="dictionary update sequence"):
+        agent._restore_primary_runtime()
+
+    assert (
+        agent.model,
+        agent.provider,
+        agent.base_url,
+        agent.api_mode,
+        agent.api_key,
+    ) == original_route
+    assert agent.client is original_client
+    assert original_client.close_calls == 0
+    assert replacement_client.close_calls == 1
+    assert agent._credential_pool is pool
+    assert agent._credential_pool_entry_id == "fallback-entry"
+    assert pool.current() is None
+    assert [entry.request_count for entry in pool.entries()] == [0]
+    assert swap_ticket.commit_calls == 0
+    assert swap_ticket.abort_calls == 1
+    assert "swap:commit" not in events
+    assert "compressor:commit" not in events
+    assert {
+        name: getattr(compressor, name) for name in original_compressor
+    } == original_compressor
+    assert "Restore re-selected pool entry" not in caplog.text
+    assert "Primary runtime restored" not in caplog.text
+
+
 def test_switch_commit_failure_discards_destination_reasoning_info(monkeypatch, caplog):
     """Switch preparation may resolve reasoning, but INFO publishes only after owner commit."""
     _patch_policy(monkeypatch)

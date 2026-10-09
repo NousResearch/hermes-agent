@@ -158,6 +158,68 @@ class TestRestorePrimaryPoolReselect:
         assert [entry.request_count for entry in pool.entries()] == [0, 0]
 
 
+    def test_selection_ticket_abort_preserves_interleaved_round_robin_selection(
+        self,
+        monkeypatch,
+    ):
+        """Abort removes only its selection, not one interleaved after validation."""
+        pool = _build_mock_pool(
+            [
+                _make_entry("entry-1", "key-1", priority=0),
+                _make_entry("entry-2", "key-2", priority=1),
+            ],
+            strategy="round_robin",
+        )
+        monkeypatch.setattr(pool, "_persist", MagicMock())
+        ticket = pool.prepare_selection(model="gpt-5.5")
+        assert ticket is not None
+        assert ticket.candidate.id == "entry-1"
+
+        validate = pool._validate_selection_basis
+        interleaved_state = {}
+
+        def validate_then_interleave(selection_ticket):
+            validate(selection_ticket)
+            concurrent = pool.select(model="gpt-5.5")
+            assert concurrent is not None
+            interleaved_state["cursor"] = pool.current().id
+            interleaved_state["rows"] = [
+                (entry.id, entry.priority, entry.request_count)
+                for entry in pool.entries()
+            ]
+
+        monkeypatch.setattr(
+            pool,
+            "_validate_selection_basis",
+            validate_then_interleave,
+        )
+
+        selected = ticket.commit()
+        assert selected.id == "entry-1"
+        assert [
+            (entry.id, entry.priority, entry.request_count)
+            for entry in pool.entries()
+        ] == [
+            ("entry-2", 0, 0),
+            ("entry-1", 1, 2),
+        ]
+
+        ticket.abort()
+
+        assert interleaved_state == {
+            "cursor": "entry-1",
+            "rows": [
+                ("entry-2", 0, 0),
+                ("entry-1", 1, 1),
+            ],
+        }
+        assert pool.current().id == interleaved_state["cursor"]
+        assert [
+            (entry.id, entry.priority, entry.request_count)
+            for entry in pool.entries()
+        ] == interleaved_state["rows"]
+
+
 
 
 

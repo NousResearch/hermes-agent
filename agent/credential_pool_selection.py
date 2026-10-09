@@ -19,13 +19,17 @@ class CredentialSelectionTicketState(Enum):
     ABORTED = auto()
 
 
-def _selection_projection(pool: Any) -> tuple[Any, tuple[tuple[Any, int, int], ...]]:
+def _selection_projection(
+    pool: Any,
+) -> tuple[Any, tuple[tuple[Any, int, int], ...], int, Any]:
     return (
         getattr(pool, "_current_id", None),
         tuple(
             (entry.id, int(entry.priority), int(entry.request_count))
             for entry in getattr(pool, "_entries", ())
         ),
+        int(getattr(pool, "_unmatched_rotation_streak", 0)),
+        getattr(pool, "_last_no_entries_log_at", None),
     )
 
 
@@ -40,13 +44,9 @@ class CredentialSelectionTicket:
         self._prepared_generation = int(
             getattr(pool, "_entry_generations", {}).get(candidate.id, 0)
         )
-        self._prepared_projection = _selection_projection(pool)
-        self._prepared_unmatched_streak = int(
-            getattr(pool, "_unmatched_rotation_streak", 0)
-        )
-        self._prepared_last_empty_log = getattr(pool, "_last_no_entries_log_at", None)
-        self._committed_epoch: Optional[int] = None
-        self._committed_projection = None
+        self._owned_before_projection = None
+        self._owned_after_epoch: Optional[int] = None
+        self._owned_after_projection = None
         self.candidate = candidate
         self.state = CredentialSelectionTicketState.PREPARED
 
@@ -119,63 +119,96 @@ class CredentialPoolSelectionMixin:
     def _commit_credential_selection_ticket(
         self, ticket: CredentialSelectionTicket,
     ) -> Any:
+        entry = None
         with self._lock:
             self._validate_selection_basis(ticket)
-        entry = None
-        try:
-            entry, pending_refresh = self._select_under_lock(
-                model=ticket._model, preferred_id=ticket._candidate_id
+            available, pending_refresh = self._available_entries(
+                clear_expired=True,
+                refresh=True,
+                model=ticket._model,
             )
-            if pending_refresh:
-                self._refresh_pending_entries(pending_refresh)
-                if entry is None:
-                    entry, _ = self._select_under_lock(
-                        model=ticket._model, preferred_id=ticket._candidate_id
-                    )
-        finally:
-            # Selection/refresh may fail after partially mutating owner state.
-            # Mark that state as compensatable before propagating the error.
+            available_ids = {candidate.id for candidate in available}
+            pending_ids = {candidate.id for candidate in pending_refresh}
+            if ticket._candidate_id in available_ids:
+                entry, pending_refresh = self._select_ticket_candidate_locked(ticket)
+            elif ticket._candidate_id not in pending_ids:
+                raise RuntimeError("prepared credential is no longer selectable")
+
+        if pending_refresh:
+            self._refresh_pending_entries(pending_refresh)
+        if entry is None:
             with self._lock:
-                ticket._committed_epoch = int(getattr(self, "_mutation_epoch", 0))
-                ticket._committed_projection = _selection_projection(self)
-                ticket.state = CredentialSelectionTicketState.COMMITTED
+                entry, _ = self._select_ticket_candidate_locked(ticket)
         if entry is None or entry.id != ticket._candidate_id:
             raise RuntimeError("prepared credential is no longer selectable")
-        self._unmatched_rotation_streak = 0
         ticket.candidate = entry
         return entry
+
+    def _select_ticket_candidate_locked(
+        self,
+        ticket: CredentialSelectionTicket,
+    ) -> tuple[Any, list[Any]]:
+        """Own one selection delta while validation/selection stay atomic."""
+        ticket._owned_before_projection = _selection_projection(self)
+        try:
+            entry, pending_refresh = self._select_unlocked(
+                model=ticket._model,
+                preferred_id=ticket._candidate_id,
+            )
+            if entry is not None:
+                self._unmatched_rotation_streak = 0
+            return entry, pending_refresh
+        finally:
+            # Selection may raise after partially changing bookkeeping.  The
+            # immediate before/after pair contains only this ticket's atomic
+            # delta; refreshes and prior concurrent selections are baselines.
+            ticket._owned_after_epoch = int(getattr(self, "_mutation_epoch", 0))
+            ticket._owned_after_projection = _selection_projection(self)
+            ticket.state = CredentialSelectionTicketState.COMMITTED
 
     def _abort_credential_selection_ticket(
         self, ticket: CredentialSelectionTicket,
     ) -> None:
         """Undo only selection bookkeeping; refreshed credential material survives."""
-        if ticket._committed_epoch is None or ticket._committed_projection is None:
+        if (
+            ticket._owned_before_projection is None
+            or ticket._owned_after_epoch is None
+            or ticket._owned_after_projection is None
+        ):
             return
         with self._lock:
             if (
-                ticket._committed_epoch == ticket._prepared_epoch
-                and ticket._committed_projection == ticket._prepared_projection
+                int(getattr(self, "_mutation_epoch", 0))
+                != ticket._owned_after_epoch
+                or _selection_projection(self) != ticket._owned_after_projection
             ):
                 return
-            if (
-                int(getattr(self, "_mutation_epoch", 0)) != ticket._committed_epoch
-                or _selection_projection(self) != ticket._committed_projection
-            ):
+            if ticket._owned_after_projection == ticket._owned_before_projection:
                 return
-            prepared_current, prepared_rows = ticket._prepared_projection
-            prepared_by_id = {
+            (
+                before_current,
+                before_rows,
+                before_unmatched_streak,
+                before_last_empty_log,
+            ) = ticket._owned_before_projection
+            before_by_id = {
                 entry_id: (priority, request_count)
-                for entry_id, priority, request_count in prepared_rows
+                for entry_id, priority, request_count in before_rows
             }
             current_by_id = {entry.id: entry for entry in self._entries}
-            if set(current_by_id) != set(prepared_by_id):
+            if set(current_by_id) != set(before_by_id):
                 return
             priority_changed = False
+            rows_changed = False
             compensated = []
-            for entry_id, _priority, _request_count in prepared_rows:
+            for entry_id, _priority, _request_count in before_rows:
                 current = current_by_id[entry_id]
-                priority, request_count = prepared_by_id[entry_id]
+                priority, request_count = before_by_id[entry_id]
                 priority_changed = priority_changed or current.priority != priority
+                rows_changed = rows_changed or (
+                    current.priority != priority
+                    or current.request_count != request_count
+                )
                 compensated.append(
                     replace(
                         current,
@@ -183,9 +216,10 @@ class CredentialPoolSelectionMixin:
                         request_count=request_count,
                     )
                 )
-            self._replace_all_entries(compensated)
-            self._current_id = prepared_current
-            self._unmatched_rotation_streak = ticket._prepared_unmatched_streak
-            self._last_no_entries_log_at = ticket._prepared_last_empty_log
+            if rows_changed:
+                self._replace_all_entries(compensated)
+            self._current_id = before_current
+            self._unmatched_rotation_streak = before_unmatched_streak
+            self._last_no_entries_log_at = before_last_empty_log
             if priority_changed:
                 self._persist()

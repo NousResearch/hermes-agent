@@ -1483,3 +1483,45 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+class TestWorkerLifecycleSurvivesDisabledKanban:
+    """#98808: `agent.disabled_toolsets: [kanban]` keeps the board out of ordinary
+    chat, but must not strip the lifecycle tools injected for dispatcher workers."""
+
+    def _select(self, monkeypatch, *, task, owned=True, delegated=False, enabled=("terminal",)):
+        import model_tools as mt
+        if task:
+            monkeypatch.setenv("HERMES_KANBAN_TASK", task)
+        else:
+            monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setattr(mt, "_is_dispatcher_owned_worker", lambda: owned)
+        monkeypatch.setattr(mt, "_is_delegated_child_context", lambda: delegated)
+        return mt._select_tool_names(None if enabled is None else list(enabled), ["kanban"], True)
+
+    def test_dispatcher_worker_keeps_lifecycle_tools(self, monkeypatch):
+        names = self._select(monkeypatch, task="t_worker")
+        assert {"kanban_complete", "kanban_block", "kanban_heartbeat"} <= names
+
+    def test_dispatcher_worker_with_all_toolsets_keeps_lifecycle_tools(self, monkeypatch):
+        assert "kanban_complete" in self._select(monkeypatch, task="t_worker", enabled=None)
+
+    def test_normal_chat_still_honors_disable(self, monkeypatch):
+        assert not any(n.startswith("kanban_") for n in self._select(monkeypatch, task=None, owned=False))
+
+    def test_delegated_child_still_honors_disable(self, monkeypatch):
+        names = self._select(monkeypatch, task="t_worker", delegated=True)
+        assert not any(n.startswith("kanban_") for n in names)
+
+    def test_non_owner_execution_still_honors_disable(self, monkeypatch):
+        # e.g. a cron job fired in-process from a worker inherits the env var.
+        names = self._select(monkeypatch, task="t_worker", owned=False)
+        assert not any(n.startswith("kanban_") for n in names)
+
+    def test_other_disabled_toolsets_still_apply(self, monkeypatch):
+        import model_tools as mt
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+        monkeypatch.setattr(mt, "_is_dispatcher_owned_worker", lambda: True)
+        monkeypatch.setattr(mt, "_is_delegated_child_context", lambda: False)
+        names = mt._select_tool_names(["terminal", "file"], ["kanban", "terminal"], True)
+        assert "kanban_complete" in names and "terminal" not in names

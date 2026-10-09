@@ -315,12 +315,13 @@ def _apply_toolset_selection(tools: set, names: list[str], quiet_mode: bool, *, 
 def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]], quiet_mode: bool) -> set:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
+    # Dispatcher-spawned kanban workers always get the lifecycle handoff tools,
+    # even when the assignee profile restricts or disables its chat toolsets.
+    kanban_worker = os.environ.get("HERMES_KANBAN_TASK", "") != "" and not _is_delegated_child_context() \
+        and _is_dispatcher_owned_worker()
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
-        # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
+        if kanban_worker and "kanban" not in enabled:
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
@@ -332,6 +333,11 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
+    # A profile's `agent.disabled_toolsets: [kanban]` (keeping the board out of
+    # ordinary chat) must not strip the tools injected above, or the worker can
+    # never complete/block its task (#98808). Same gate as the injection.
+    if disabled_toolsets and kanban_worker:
+        disabled_toolsets = [name for name in disabled_toolsets if name != "kanban"]
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
     return tools

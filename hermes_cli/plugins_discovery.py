@@ -75,8 +75,15 @@ def start_background_plugin_discovery() -> None:
 
         def _run() -> None:
             try:
-                manager.discover_and_load()
-                plugins._persist_plugin_toolset_keys()
+                with manager._discovery_lock:
+                    if manager._retired:
+                        return
+                    manager.discover_and_load()
+                    if manager._retired:
+                        return
+                    plugins._persist_plugin_toolset_keys(
+                        manager=manager, home=manager.home_path
+                    )
             except Exception:  # health: allow BLE001 -- discovery runs plugin code and startup must fail open
                 logger.warning("background plugin discovery failed", exc_info=True)
 

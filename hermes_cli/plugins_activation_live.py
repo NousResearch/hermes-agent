@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-def connect_plugin_mcp(activation: Dict[str, Any], portable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Connect every portable MCP server ``activation`` defers, under the caller's profile scope.
     ``portable`` is the manager's portable server configs, read together with ``activation``.
 
@@ -47,7 +47,7 @@ def connect_plugin_mcp(activation: Dict[str, Any], portable: Dict[str, Dict[str,
         except Exception as exc:
             rows.append({"name": name, "connected": False, "tools": [], "error": str(exc)})
             continue
-        row: Dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
+        row: dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
         if not tools:
             row["error"] = _server_error(name) or "the server did not connect"
         rows.append(row)
@@ -72,7 +72,7 @@ def _server_error(name: str) -> Optional[str]:
     return None
 
 
-def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
+def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
     """``[{name, description}]`` for the skills ``plugin_key`` registered (qualified ``<ns>:<skill>``)."""
     try:
         from hermes_cli.plugins import get_plugin_manager
@@ -83,7 +83,7 @@ def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
             for qualified, entry in sorted(skills.items()) if entry.get("plugin_key") == plugin_key]
 
 
-def live_notice(activation: Dict[str, Any]) -> str:
+def live_notice(activation: dict[str, Any]) -> str:
     """The note an open chat gets on its next turn: connected MCP servers with their tools, skills,
     and what waits for the next session. Empty when nothing became usable."""
     live = activation.get("live_now") or {}
@@ -113,7 +113,7 @@ def live_notice(activation: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _tool_listing(names: List[str]) -> str:
+def _tool_listing(names: list[str]) -> str:
     """``name: first sentence`` per tool."""
     try:
         from tools.registry import registry

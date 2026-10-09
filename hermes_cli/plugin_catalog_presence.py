@@ -21,7 +21,7 @@ _TIMEOUT = 5.0
 _MAX_BYTES = 256 * 1024
 # (repo, sha, subdir) -> manifest dict, or None when the pin has no readable plugin.json. A pin is
 # immutable, so the process keeps the answer.
-_manifests: Dict[Tuple[str, str, str], Optional[Dict[str, Any]]] = {}
+_manifests: dict[tuple[str, str, str], Optional[dict[str, Any]]] = {}
 
 
 @dataclass(frozen=True)
@@ -43,12 +43,12 @@ def _raw_manifest_url(repo: str, sha: str, subdir: str) -> Optional[str]:
     return f"https://raw.githubusercontent.com/{match.group(1)}/{match.group(2)}/{sha}/{path}"
 
 
-def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[Dict[str, Any]]:
+def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[dict[str, Any]]:
     key = (repo, sha, subdir)
     if key in _manifests:
         return _manifests[key]
     url = _raw_manifest_url(repo, sha, subdir)
-    manifest: Optional[Dict[str, Any]] = None
+    manifest: Optional[dict[str, Any]] = None
     if url:
         try:
             import httpx
@@ -123,7 +123,7 @@ def presence(entry: Any) -> Presence:
     return min(found, key=lambda p: rank[p.state]) if found else UNKNOWN
 
 
-def onboarding_entries() -> list[Dict[str, Any]]:
+def onboarding_entries() -> list[dict[str, Any]]:
     """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
     each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
     from hermes_cli.plugin_catalog import load_catalog_live

@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pathlib import Path
-from typing import Optional  # noqa: F811 — historical duplicate import kept
+from typing import Optional
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
@@ -236,7 +236,7 @@ def _ws_request_view(ws: "WebSocket") -> "Request":
     return Request({
         "type": "http",
         "headers": [(k.lower().encode("latin-1"), v.encode("latin-1"))
-                    for k, v in getattr(ws.headers, "items", lambda: {})()],
+                    for k, v in getattr(ws.headers, "items", dict)()],
         "client": (ws.client.host, 0) if ws.client else None,
         "server": None,
         "scheme": "ws",

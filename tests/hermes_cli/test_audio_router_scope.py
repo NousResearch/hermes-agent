@@ -17,7 +17,7 @@ from fastapi import HTTPException
 def _restore_process_scope_state():
     """``_config_profile_scope``/``launch_secret_scope`` can freeze the launch-env
     snapshot (one-way process state); restore it so sibling suites are unaffected."""
-    import agent.secret_scope as secret_scope
+    from agent import secret_scope
     from tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
@@ -65,7 +65,7 @@ async def test_voices_route_scope_failure_never_borrows_env(tmp_path, monkeypatc
 async def test_voices_route_bounds_response_read(monkeypatch, tmp_path):
     """The ElevenLabs voices fetch must read the body with a size cap."""
     from hermes_cli import web_server_gateway
-    import hermes_cli.web_routers.audio as audio
+    from hermes_cli.web_routers import audio
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
@@ -99,7 +99,7 @@ async def test_voices_route_bounds_response_read(monkeypatch, tmp_path):
 async def test_voices_route_rejects_oversized_response(monkeypatch, tmp_path):
     """An oversized ElevenLabs voices body must fail as 502, not buffer."""
     from hermes_cli import web_server_gateway
-    import hermes_cli.web_routers.audio as audio
+    from hermes_cli.web_routers import audio
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()

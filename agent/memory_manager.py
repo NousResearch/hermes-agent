@@ -33,6 +33,11 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
+# A provider-declared prefetch budget may widen the spill threshold at most this far past the
+# shared cap: the hook is an opt-in for providers that already size-control their block, not a
+# license to lift the user-configured cap entirely (#130974).
+PREFETCH_SPILL_BUDGET_CAP_MULTIPLIER = 10
+
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
 
@@ -550,9 +555,22 @@ class MemoryManager:
         if result and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            # A provider that declares its own prefetch budget already size-controls the block:
+            # the threshold rises toward that budget (never below the shared cap, at most 10x above
+            # it) instead of re-cutting a relevance-ranked block to a head/tail preview (#130974).
+            spill_config = self._external_prefetch_spill_config
+            try:
+                budget = int(provider.prefetch_spill_budget() or 0)
+            except Exception:
+                budget = 0
+            if spill_config is not None and budget > 0:
+                shared_cap = int(spill_config.get("max_chars") or 0)
+                widened = min(budget, shared_cap * PREFETCH_SPILL_BUDGET_CAP_MULTIPLIER)
+                if widened > shared_cap:
+                    spill_config = dict(spill_config, max_chars=widened)
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
-                config=self._external_prefetch_spill_config,
+                config=spill_config,
             )
         return result
 

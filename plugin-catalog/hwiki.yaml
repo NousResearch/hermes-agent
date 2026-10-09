@@ -1,0 +1,20 @@
+name: hwiki
+repo: https://github.com/ottosulin/hwiki
+sha: d1961956eaafbd64fef71cb7135d475efcc8f954
+version: "1.0.0"
+description: "Markdown wiki as Hermes long-term memory: plain files you and the agent edit together (Obsidian-compatible, git-versionable), local SQLite FTS5 search with optional qmd hybrid retrieval. Disclosure: no network calls with the default backend; the optional qmd backend runs local models."
+maintainer: ottosulin
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/ottosulin/hwiki
+readme: true
+capabilities:
+  provides_tools:
+  - wiki_memory_search
+  - wiki_memory_read
+  - wiki_memory_write
+  - wiki_memory_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

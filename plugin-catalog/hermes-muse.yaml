@@ -1,7 +1,7 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: 6423ba132f2a9917a856d58c20f4ef43e9d62702
-version: "0.1.9"
+sha: 8a30b5cfecd292d702a9a75226b0760aa0bc18fb
+version: "0.1.10"
 description: >-
   A proactive personal agent for Hermes, inspired by Meta Muse. It follows goals
   and temporary interests, prepares reminders, maintains memory and a quiet Feed,
@@ -10,7 +10,9 @@ description: >-
   Cron jobs, including weekly outcome/cost review and monthly workflow audit.
   These two scheduled reports propose changes and also go to Bot Chat.
   A native output hook finalizes approved patrol/watch notice bodies; other
-  conversations and review reports are unchanged.
+  conversations and review reports are unchanged. Fixed jobs invoke the model
+  on every scheduled tick; patrols inspect available connected sources/devices
+  before deciding whether to notify, including weather and interest news when useful.
   Disclosure: first load creates profile-local muse files/SQLite state and owned
   scripts/Cron jobs; conversation hooks retain short real-user excerpts for upkeep;
   scheduled work uses the user's configured model/tools and may incur their normal
@@ -21,7 +23,7 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/6423ba132f2a9917a856d58c20f4ef43e9d62702/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/8a30b5cfecd292d702a9a75226b0760aa0bc18fb/README.md
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [muse_manage]

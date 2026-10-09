@@ -378,7 +378,13 @@ def _route_single_query_images(
         # ``_preprocess_images_with_vision`` only knows local files; when only URLs
         # were supplied keep the original query text intact.
         if single_query_images:
-            return cli._preprocess_images_with_vision(query, single_query_images, announce=False)
+            # Match the representation decision to the realized route. Explicit
+            # auxiliary.vision settings still take precedence in the resolver.
+            from agent.auxiliary_client import scoped_runtime_main
+            route_runtime = (turn_route or {}).get("runtime") or {}
+            route_model = (turn_route or {}).get("model") or cli.model
+            with scoped_runtime_main({**route_runtime, "model": route_model}):
+                return cli._preprocess_images_with_vision(query, single_query_images, announce=False)
         return effective_query
 
     if _img_mode != "native" or _build_parts is None:

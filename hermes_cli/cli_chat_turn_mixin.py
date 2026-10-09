@@ -193,14 +193,16 @@ class CLIChatTurnMixin:
         if not images:
             return message
         text = message if isinstance(message, str) else ""
+        runtime = (turn_route or {}).get("runtime") or {}
+        model = (turn_route or {}).get("model", getattr(self, "model", ""))
+        _runtime_model = (_split_model_config_default(model)[0]
+                          if isinstance(model, dict) else str(model or ""))
+        provider = runtime.get("provider", getattr(self, "provider", ""))
+        requested_provider = runtime.get("requested_provider", getattr(self, "requested_provider", ""))
         try:
             from agent.image_routing import build_native_content_parts, decide_image_input_mode
             from hermes_cli.config import load_config
 
-            runtime = (turn_route or {}).get("runtime") or {}
-            model = (turn_route or {}).get("model", self.model)
-            provider = runtime.get("provider", self.provider)
-            requested_provider = runtime.get("requested_provider", self.requested_provider)
             _img_model = (_split_model_config_default(model)[0]
                           if isinstance(model, dict) else str(model or ""))
             _img_provider = (_split_model_config_default(provider)[1]
@@ -226,7 +228,12 @@ class CLIChatTurnMixin:
                 # All images unreadable — fall back to text enrichment.
             except Exception as _img_exc:
                 logging.warning("native image attach failed, falling back to text: %s", _img_exc)
-        return self._preprocess_images_with_vision(text, images)
+
+        # The representation decision and the auxiliary description must use the same realized
+        # route. Explicit auxiliary.vision settings still take precedence in the resolver.
+        from agent.auxiliary_client import scoped_runtime_main
+        with scoped_runtime_main({**runtime, "model": _runtime_model}):
+            return self._preprocess_images_with_vision(text, images)
 
     def _handle_initiate_setup_command(self, cmd: str):
         from agent.initiate_setup_prompt import build_initiate_setup_prompt

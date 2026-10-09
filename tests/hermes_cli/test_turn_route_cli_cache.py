@@ -391,13 +391,36 @@ def test_chat_prepares_images_for_realized_turn_route(routed_chat, monkeypatch, 
     monkeypatch.setattr("agent.image_routing.build_native_content_parts",
                         lambda text, _paths: ([{"type": "text", "text": text},
                                                {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}}], []))
-    shell._preprocess_images_with_vision = lambda text, _images: f"described: {text}"
+    import agent.auxiliary_client as aux
+    observed_aux_runtime = []
+    observed_auto_runtime = []
+
+    def preprocess(text, _images):
+        observed_aux_runtime.append(aux._RUNTIME_MAIN_CONTEXT.get())
+        with patch.object(
+            aux,
+            "_resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch.object(
+            aux,
+            "_vision_auto_route",
+            side_effect=lambda runtime, *_args: (
+                observed_auto_runtime.append((runtime.get("provider"), runtime.get("model")))
+                or (None, None, None)
+            ),
+        ):
+            aux.resolve_vision_provider_client()
+        return f"described: {text}"
+
+    shell._preprocess_images_with_vision = preprocess
     selected.update(model="beta", provider="provider-b")
     assert shell.chat("inspect", images=[Path("image.png")]) == "beta"
     if vision_model == "beta":
         assert isinstance(staged[-1], list)
     else:
         assert staged[-1] == "described: inspect"
+        assert observed_aux_runtime[-1]["model"] == "beta"
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None
     assert decisions[-1] == ("provider-b", "beta", "provider-b")
 
     selected.update(model="alpha", provider="provider-a")
@@ -406,7 +429,40 @@ def test_chat_prepares_images_for_realized_turn_route(routed_chat, monkeypatch, 
         assert isinstance(staged[-1], list)
     else:
         assert staged[-1] == "described: inspect again"
+        assert observed_aux_runtime[-1]["model"] == "alpha"
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None
     assert decisions[-1] == ("provider-a", "alpha", "provider-a")
+    expected_auto_runtime = (
+        [("provider-b", "beta")] if vision_model == "alpha" else [("provider-a", "alpha")]
+    )
+    assert observed_auto_runtime == expected_auto_runtime
+
+
+def test_interactive_image_text_fallback_restores_outer_runtime_on_error(routed_chat, monkeypatch):
+    shell, _selected, _credential, _agents, _turn_agents = routed_chat
+    del shell._chat_route_images
+    import agent.auxiliary_client as aux
+
+    monkeypatch.setattr("agent.image_routing.decide_image_input_mode", lambda *_args, **_kwargs: "text")
+    seen = []
+
+    def fail(_text, _images):
+        seen.append(aux._RUNTIME_MAIN_CONTEXT.get())
+        raise RuntimeError("synthetic image preprocessing failure")
+
+    shell._preprocess_images_with_vision = fail
+    route = {
+        "model": "model-b",
+        "runtime": {"provider": "provider-b", "requested_provider": "provider-b"},
+    }
+    outer = {"provider": "provider-outer", "model": "model-outer"}
+    with aux.scoped_runtime_main(outer):
+        with pytest.raises(RuntimeError, match="synthetic image preprocessing failure"):
+            shell._chat_route_images("inspect", [Path("image.png")], turn_route=route)
+        assert aux._RUNTIME_MAIN_CONTEXT.get() == outer
+
+    assert seen == [{"provider": "provider-b", "requested_provider": "provider-b", "model": "model-b"}]
+    assert aux._RUNTIME_MAIN_CONTEXT.get() is None
 
 
 @pytest.mark.parametrize("routed_budget", [50, 200])

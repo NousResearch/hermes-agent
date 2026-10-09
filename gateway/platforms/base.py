@@ -839,6 +839,8 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
     return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
 
 
+_MEDIA_DELIVERY_LEGACY_CACHE_DIRS = (
+    "image_cache", "audio_cache", "video_cache", "document_cache", "browser_screenshots")
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). A superset of the
 # agent/file_safety.py read+write denies so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
@@ -855,15 +857,8 @@ _ROOT_CREDENTIAL_PATHS = (
 
 
 def _profile_cache_roots() -> list[Path]:
-    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` (the static safe
-    roots cover only the active HERMES_HOME). Enumerated at check time so profiles created after
-    startup count and are allowlisted BEFORE the ``/root`` denylist (HERMES_HOME symlinked).
-
-    ``HERMES_HOME=/opt/data``) while the model emits a profile-scoped path silently fails delivery.
-    Enumerated dynamically at check time so profiles created after startup are covered, and so the resolved
-    profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
-    when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
-    """
+    """Enumerate profile caches at validation time, before the system denylist,
+    so new profiles and symlinked Hermes roots remain deliverable (#31733)."""
     return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
 
 
@@ -916,7 +911,10 @@ def _media_delivery_allowed_roots() -> list[Path]:
         root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
-    return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
+    active_home = get_hermes_home()
+    return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS),
+            *(active_home / "cache" / sub for sub in _MEDIA_DELIVERY_CACHE_SUBDIRS),
+            *(active_home / sub for sub in _MEDIA_DELIVERY_LEGACY_CACHE_DIRS), *_profile_cache_roots(),
             *_kanban_attachment_roots(), *operator_roots]
 
 

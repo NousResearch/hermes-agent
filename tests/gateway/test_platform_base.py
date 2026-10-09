@@ -20,6 +20,41 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent
 
 
+def test_media_delivery_roots_follow_runtime_profile_home(tmp_path, monkeypatch):
+    """Profile selection after import must move generated-media authority too."""
+    import gateway.platforms.base as platform_base
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(platform_base, "_HERMES_ROOT", launch_home)
+    monkeypatch.setattr(platform_base, "MEDIA_DELIVERY_SAFE_ROOTS", ())
+    caches = ("cache/images", "cache/audio", "cache/videos", "cache/documents", "cache/screenshots",
+              "image_cache", "audio_cache", "video_cache", "document_cache", "browser_screenshots")
+    homes = (tmp_path / "profile-a", tmp_path / "profile-b")
+    for home in homes:
+        home.mkdir()
+        (home / "config.yaml").write_text("gateway:\n  strict: true\n  trust_recent_files: false\n")
+        for rel in (*caches, "unmanaged"):
+            path = home / rel / "artifact.bin"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"generated artifact")
+            os.utime(path, (0, 0))
+        (home / ".env").write_text("SECRET=synthetic\n")
+    for active_home in (homes[0], homes[1], homes[0]):
+        token = set_hermes_home_override(active_home)
+        try:
+            assert all(BasePlatformAdapter.validate_media_delivery_path(str(active_home / rel / "artifact.bin"))
+                       for rel in caches)
+            assert BasePlatformAdapter.validate_media_delivery_path(str(active_home / ".env")) is None
+            assert BasePlatformAdapter.validate_media_delivery_path(str(active_home / "unmanaged" / "artifact.bin")) is None
+            other_home = homes[1] if active_home == homes[0] else homes[0]
+            assert BasePlatformAdapter.validate_media_delivery_path(str(other_home / "image_cache" / "artifact.bin")) is None
+        finally:
+            reset_hermes_home_override(token)
+
+
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
     from gateway.platforms import base
@@ -837,6 +872,7 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_ROOT", hermes_root
         )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
 
         assert (
             BasePlatformAdapter.validate_media_delivery_path(str(image))

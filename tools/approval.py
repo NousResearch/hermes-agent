@@ -740,26 +740,30 @@ _ACTION_GATE = _GateSpec(
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
-                human_present: bool) -> tuple[dict | None, bool]:
-    """Guardian-LLM step -> ``(result, smart_denied_for_owner)``: a result ends the gate;
-    ``smart_denied_for_owner`` means an interactive owner may still override the DENY for this
-    one operation (once/deny only, nothing persists).
+                human_present: bool) -> tuple[dict | None, bool, str]:
+    """Guardian-LLM step -> ``(result, smart_denied_for_owner, smart_reason)``: a result ends
+    the gate; ``smart_denied_for_owner`` means an interactive owner may still override the
+    DENY for this one operation (once/deny only, nothing persists). ``smart_reason`` is the
+    guardian's short explanation for a non-approve verdict ('' when it gave none), shown
+    on the human approval card so the escalation explains itself.
 
     APPROVE approves this command only — pattern-level persistence would let one benign
     command suppress review of later commands in the same broad detector category. A DENY
     counts toward the denial breaker even when an owner may override it. ESCALATE follows the
     normal, potentially persistent manual behavior.
     """
-    verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    verdict, reason = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
     if verdict == "approve":
         _reset_denials(session_key)
         logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
-        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
+        return {"approved": True, "message": None, "smart_approved": True, "description": description}, False, ""
     if verdict != "deny":
-        return None, False
+        return None, False, reason
     _record_denial(session_key)
     if human_present:
-        return None, True
+        return None, True, reason
+    if reason:
+        logger.info("Smart approvals: unattended DENY (%s): %s", description, reason)
     return {
         # Unattended programmatic platforms (webhook/msgraph_webhook/ api_server): respect unattended_mode
         # config. Resolves instantly — never a pending approval nobody can answer (#37284, #87509).
@@ -767,7 +771,23 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
         "message": (f"BLOCKED by smart approval: {description}. The command was assessed as genuinely "
                     f"dangerous. Do NOT retry.{_denial_breaker_addendum(session_key)}"),
         "smart_denied": True,
-    }, True
+    }, True, reason
+
+
+def _apply_smart_fields(data: dict, smart_denied: bool, smart_reason: str) -> None:
+    """Merge the guardian's escalation context into a gateway approval payload.
+
+    ``smart_denied`` strips the persistent choices (the card only offers once/deny);
+    ``smart_reason`` is the guardian's own explanation for the escalation — the card
+    renders it so the user sees WHY, not just the detector category. It is already
+    redacted+sanitized at the source; redact again here so the payload boundary stays
+    the trust boundary even if a caller hands in a raw reason. Absent when empty.
+    """
+    from agent.redact import redact_sensitive_text
+    if smart_denied:
+        data["smart_denied"] = True
+    if smart_reason:
+        data["smart_reason"] = redact_sensitive_text(smart_reason, force=True)
 
 
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
@@ -783,9 +803,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_sensitive_text
 
     smart_denied = False
+    smart_reason = ""
     if smart:
-        result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
-                                           session_key, human_present=is_cli or is_gateway or is_ask)
+        result, smart_denied, smart_reason = _smart_gate(
+            spec, command, description, pattern_key, pattern_keys,
+            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
@@ -841,8 +863,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "allow_permanent": not smart_denied,
                 "allow_session": not smart_denied,
             }
-            if smart_denied:
-                data["smart_denied"] = True
+            _apply_smart_fields(data, smart_denied, smart_reason)
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,

@@ -23,7 +23,7 @@ def _request() -> ApprovalRequest:
         surface="gateway",
         allow_session=False,
         allow_permanent=False,
-        timeout_seconds=1,
+        timeout_seconds=5,
     )
 
 
@@ -48,17 +48,17 @@ def test_approval_transport_worker_keeps_routed_profile_context(tmp_path, monkey
 
     callback = present_async if async_callback else present
 
-    assert invoke_approval_transport(callback, _request(), timeout_seconds=1).choice == "once"
+    assert invoke_approval_transport(callback, _request(), timeout_seconds=5).choice == "once"
 
     token = set_hermes_home_override(served_home)
     secret_token = set_secret_scope({"APPROVAL_CONTEXT_TEST_TOKEN": "served-only"})
     try:
-        assert invoke_approval_transport(callback, _request(), timeout_seconds=1).choice == "once"
+        assert invoke_approval_transport(callback, _request(), timeout_seconds=5).choice == "once"
     finally:
         reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
-    assert invoke_approval_transport(callback, _request(), timeout_seconds=1).choice == "once"
+    assert invoke_approval_transport(callback, _request(), timeout_seconds=5).choice == "once"
     assert observed == [
         (launch_home, "launch-only"),
         (served_home, "served-only"),

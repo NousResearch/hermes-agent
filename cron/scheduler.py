@@ -543,6 +543,22 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
     return evidence or "Cron agent reported failure."
 
 
+def _completed_turn_failure_error(final_response: str, all_blocked_calls: int) -> tuple[Optional[str], bool]:
+    """Failure evidence for a turn that ran to completion: the agent's own ``[CRON_FAILURE]``
+    marker (agent-declared, delivered verbatim) or, failing that, runtime evidence that every
+    tool call was blocked before dispatch — a turn that could do no work must not be booked as
+    healthy just because the model never emitted the exact token (#135544). Returns
+    ``(error, agent_declared)``.
+    """
+    marker_error = _cron_failure_marker_error(final_response)
+    if marker_error is not None:
+        return marker_error, True
+    if all_blocked_calls:
+        return (f"Agent completed but all {all_blocked_calls} tool call(s) were blocked before "
+                "execution (plugin/scope policy) — no work was performed"), False
+    return None, False
+
+
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.
@@ -3404,15 +3420,10 @@ def _run_one_job_body(
         # ledger, and notification routing instead of recording a false healthy result.
         agent_declared = False
         if success and not job.get("no_agent"):
-            marker_error = _cron_failure_marker_error(final_response)
-            if marker_error is not None:
-                success, error, agent_declared = False, marker_error, True
-            elif _all_tool_calls_blocked:
-                # Runtime evidence, not a model self-report: every tool call was blocked before
-                # dispatch, so the turn could do no work even though it "completed" (#135544).
-                success = False
-                error = (f"Agent completed but all {_all_tool_calls_blocked} tool call(s) were "
-                         "blocked before execution (plugin/scope policy) — no work was performed")
+            turn_error, agent_declared = _completed_turn_failure_error(
+                final_response, _all_tool_calls_blocked)
+            if turn_error is not None:
+                success, error = False, turn_error
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
